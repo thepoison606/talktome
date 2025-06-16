@@ -1,0 +1,1 @@
+{"version":3,"file":"srtpParametersTypes.d.ts","sourceRoot":"","sources":["../src/srtpParametersTypes.ts"],"names":[],"mappings":"AAAA;;GAEG;AACH,MAAM,MAAM,cAAc,GAAG;IAC5B;;OAEG;IACH,WAAW,EAAE,eAAe,CAAC;IAE7B;;OAEG;IACH,SAAS,EAAE,MAAM,CAAC;CAClB,CAAC;AAEF;;GAEG;AACH,MAAM,MAAM,eAAe,GACxB,kBAAkB,GAClB,kBAAkB,GAClB,yBAAyB,GACzB,yBAAyB,CAAC"}

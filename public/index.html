@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Talk to me - intercom</title>
+    <style>
+      /* Prevent double-tap zoom on iOS */
+      html,
+      body {
+        touch-action: manipulation;
+      }
+
+      .controls {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+      }
+      .controls button {
+        flex: 1;
+      }
+
+      /* Global */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: sans-serif;
+        padding: 1rem;
+        background-color: #f5f5f5;
+      }
+
+      .container {
+        max-width: 800px;
+        margin: 0 auto;
+        background: white;
+        padding: 2rem;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+
+      h2 {
+        color: #333;
+        margin-bottom: 1.5rem;
+      }
+
+      h3 {
+        color: #555;
+        margin-top: 1.5rem;
+        margin-bottom: 1rem;
+      }
+
+      .status {
+        margin: 1rem 0;
+        padding: 1rem;
+        background: #e3f2fd;
+        border-radius: 4px;
+        border-left: 4px solid #2196f3;
+      }
+
+      /* Controls Wrapper for equal button widths */
+      .controls {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+      }
+      .controls button {
+        /* Disable text selection and callouts */
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        -webkit-touch-callout: none;
+
+        padding: 1.5rem 1rem;
+        margin: 0.25rem;
+        border: 2px solid transparent;
+        border-radius: 4px;
+        color: white;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        font-size: 14px;
+      }
+
+      #users {
+        margin: 1rem 0;
+        list-style: none;
+        padding: 0;
+      }
+
+      #users li {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.75rem 1rem;
+        margin: 0.5rem 0;
+        background: #f8f9fa;
+        border-radius: 4px;
+        border: 2px solid transparent;
+        transition: all 0.3s ease;
+        cursor: pointer;
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+      }
+
+      #users li:hover:not(.you) {
+        background: #f0f0f0;
+      }
+
+      #users li.speaking {
+        border-color: #4caf50;
+        background: #e8f5e9;
+        box-shadow: 0 0 10px rgba(76, 175, 80, 0.3);
+        animation: speakingPulse 1s ease-in-out infinite;
+      }
+      @keyframes speakingPulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.8;
+        }
+      }
+
+      #users li.last-spoke {
+        border-color: #ffc107;
+        background: #fff8e1;
+      }
+
+      #users li.talking-to {
+        border-color: #9c27b0;
+        background: #f3e5f5;
+        box-shadow: 0 0 10px rgba(156, 39, 176, 0.3);
+      }
+
+      .user-info {
+        display: flex;
+        align-items: center;
+        flex: 1;
+      }
+
+      .user-icon {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        background: #2196f3;
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-right: 1rem;
+        font-weight: bold;
+      }
+
+      .user-icon.speaking {
+        background: #4caf50;
+        animation: pulse 1s infinite;
+      }
+
+      .user-icon.muted {
+        background: #f44336;
+      }
+
+      .mute-btn {
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        -webkit-touch-callout: none; /* iOS long-press menu */
+        padding: 1.5rem 1.5rem;
+        margin-left: 0.5rem;
+        background: #607d8b;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 15px;
+        transition: all 0.2s ease;
+      }
+      .mute-btn:hover {
+        background: #455a64;
+      }
+      .mute-btn.muted {
+        background: #f44336;
+      }
+      .mute-btn.muted:hover {
+        background: #d32f2f;
+      }
+
+      @keyframes pulse {
+        0% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(1.1);
+        }
+        100% {
+          transform: scale(1);
+        }
+      }
+
+      /* Base button styles */
+      button {
+        user-select: none;
+        touch-action: manipulation;
+        border: 2px solid transparent;
+        border-radius: 4px;
+        color: white;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        font-size: 16px;
+        padding: 1.5rem;
+        margin: 0.25rem;
+        background: #2196f3;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      /* Non-active normal state */
+      #talk-all:not(.active) {
+        background: #4caf50;
+      }
+      #reply :not(.active) {
+        background: #2196f3;
+      }
+      #talk-all:not(.active):hover:not(:disabled) {
+        background: #45a049;
+      }
+      #reply :not(.active):hover:not(:disabled) {
+        background: #1976d2;
+      }
+
+      /* Active state (lila) */
+      #talk-all.active,
+      #reply.active {
+        background: #f3e5f5;
+        border-color: #9c27b0;
+        box-shadow: 0 0 10px rgba(156, 39, 176, 0.3);
+        color: #000;
+      }
+
+      /* Specific talk-user style if used elsewhere */
+      .talk-user {
+        background: #ff9800;
+      }
+      .talk-user:hover:not(:disabled) {
+        background: #f57c00;
+      }
+      .talk-user.active {
+        background: #f44336;
+      }
+
+      /* Hidden audio container */
+      #audio-streams {
+        position: absolute;
+        left: -9999px;
+        opacity: 0;
+      }
+    </style>
+  </head>
+  <body>
+  <div class="container">
+    <!-- Login Section -->
+    <div id="login-container">
+      <h2>Login</h2>
+      <form id="login-form">
+        <input
+          type="text"
+          id="login-username"
+          placeholder="Username"
+          required
+        />
+        <input
+          type="password"
+          id="login-password"
+          placeholder="Password"
+          required
+        />
+        <button type="submit">Login</button>
+      </form>
+      <div id="login-error" style="color: red; margin-top: 1em;"></div>
+    </div>
+
+    <!-- Intercom App (initially hidden until login) -->
+    <div id="intercom-app" style="display: none;">
+      <div style="text-align: right; margin-bottom: 1em;">
+        <button id="logout-btn">Logout</button>
+      </div>
+
+      <h2>Talk to me - Intercom</h2>
+      <div class="status">Logged in as: <span id="my-id">Connecting...</span></div>
+
+      <div class="controls">
+        <button id="talk-all" disabled>🔊 ALL</button>
+        <button id="reply" disabled>🔊 REPLY</button>
+      </div>
+
+      <ul id="users"></ul>
+      <div id="audio-streams"></div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      document.querySelectorAll(".mute-btn").forEach((btn) => {
+        btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+      });
+    });
+  </script>
+  <script src="/mediasoup-client.js"></script>
+  <script>
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices
+        .getUserMedia({ audio: true })
+        .then((stream) => stream.getTracks().forEach((track) => track.stop()))
+        .catch((error) =>
+          console.warn("Microphone access denied or error:", error)
+        );
+    }
+  </script>
+  <script src="client.js"></script>
+  <script>
+    (function () {
+      let lastTouchEnd = 0;
+      document.addEventListener(
+        "touchend",
+        function (event) {
+          const now = Date.now();
+          if (now - lastTouchEnd <= 300) {
+            event.preventDefault();
+          }
+          lastTouchEnd = now;
+        },
+        false
+      );
+    })();
+  </script>
+</body>

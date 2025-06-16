@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Admin Panel</title>
+<style>
+  body { font-family: sans-serif; padding: 20px; }
+  form, ul { margin-bottom: 20px; }
+  ul { list-style-type: none; padding-left: 0; }
+  li { margin-bottom: 4px; }
+  .nested { margin-left: 1.5em; font-size: 0.95em; color: #333; }
+  button.small { font-size: 0.75em; margin-left: 0.5em; }
+  input[type="text"].inline-edit { width: 120px; margin-right: 4px; }
+</style>
+
+</head>
+<body>
+  <h1>Admin Panel</h1>
+  <div id="message" style="margin-bottom: 1em; color: red; font-weight: bold;"></div>
+
+  <h2>Add User</h2>
+  <form id="user-form">
+    <input type="text" id="username" placeholder="Name" required />
+    <input type="password" id="password" placeholder="Password" required />
+    <button type="submit">Add User</button>
+  </form>
+
+  <h3>All Users</h3>
+  <ul id="user-list"></ul>
+
+  <h2>Add Conference</h2>
+  <form id="conf-form">
+    <input type="text" id="confname" placeholder="Conference Name" required />
+    <button type="submit">Add Conference</button>
+  </form>
+
+  <h3>All Conferences</h3>
+  <ul id="conf-list"></ul>
+
+  <h2>Assign User to Conference</h2>
+  <form id="assign-form">
+    <select id="assign-user"></select>
+    <select id="assign-conf"></select>
+    <button type="submit">Assign</button>
+  </form>
+
+  <script src="admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Audio Intercom Debug</title>
+</head>
+<body>
+  <h2>Debug Test</h2>
+  <div id="debug"></div>
+  
+  <script>
+    const debug = document.getElementById('debug');
+    
+    // Test 1: Check if server is running
+    fetch('/').then(r => {
+      debug.innerHTML += '<p>✓ Server läuft</p>';
+    }).catch(e => {
+      debug.innerHTML += '<p>✗ Server nicht erreichbar</p>';
+    });
+    
+    // Test 2: Check Socket.IO
+    const script1 = document.createElement('script');
+    script1.src = '/socket.io/socket.io.js';
+    script1.onload = () => {
+      debug.innerHTML += '<p>✓ Socket.IO geladen</p>';
+    };
+    script1.onerror = () => {
+      debug.innerHTML += '<p>✗ Socket.IO nicht gefunden</p>';
+    };
+    document.head.appendChild(script1);
+    
+    // Test 3: Check mediasoup-client paths
+    const paths = [
+      '/node_modules/mediasoup-client/lib/mediasoup-client.js',
+      '/node_modules/mediasoup-client/lib/index.js',
+      '/node_modules/mediasoup-client/lib/mediasoup-client.min.js',
+      '/node_modules/mediasoup-client/build/mediasoup-client.js'
+    ];
+    
+    paths.forEach(path => {
+      fetch(path).then(r => {
+        if (r.ok) {
+          debug.innerHTML += `<p style="color:green">✓ Gefunden: ${path}</p>`;
+        } else {
+          debug.innerHTML += `<p style="color:red">✗ Nicht gefunden: ${path} (${r.status})</p>`;
+        }
+      }).catch(e => {
+        debug.innerHTML += `<p style="color:red">✗ Fehler: ${path}</p>`;
+      });
+    });
+    
+    // Test 4: List node_modules content
+    setTimeout(() => {
+      debug.innerHTML += '<h3>Empfehlung:</h3>';
+      debug.innerHTML += '<pre>npm list mediasoup-client</pre>';
+      debug.innerHTML += '<p>Führen Sie diesen Befehl aus um zu prüfen ob mediasoup-client installiert ist.</p>';
+    }, 1000);
+  </script>
+</body>
+</html>

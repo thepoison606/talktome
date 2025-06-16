@@ -1,0 +1,35 @@
+{
+    "name": "@types/ini",
+    "version": "4.1.1",
+    "description": "TypeScript definitions for ini",
+    "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/ini",
+    "license": "MIT",
+    "contributors": [
+        {
+            "name": "Marcin Porębski",
+            "githubUsername": "marcinporebski",
+            "url": "https://github.com/marcinporebski"
+        },
+        {
+            "name": "Chris Arnesen",
+            "githubUsername": "carnesen",
+            "url": "https://github.com/carnesen"
+        },
+        {
+            "name": "Adaline Simonian",
+            "githubUsername": "adalinesimonian",
+            "url": "https://github.com/adalinesimonian"
+        }
+    ],
+    "main": "",
+    "types": "index.d.ts",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/ini"
+    },
+    "scripts": {},
+    "dependencies": {},
+    "typesPublisherContentHash": "fb34b1090e26e9e48ebb49b4c0e27d67ef209ce93b090b4aa2c34f5b31096701",
+    "typeScriptVersion": "4.7"
+}

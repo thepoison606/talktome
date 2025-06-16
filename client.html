@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Intercom Client - Debug Version (Audio Fix)</title>
+  <style>
+    body { 
+      font-family: Arial, sans-serif; 
+      padding: 20px; 
+      background: #f5f5f5;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    button { 
+      padding: 15px 30px; 
+      font-size: 18px; 
+      margin: 10px; 
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .talk-btn {
+      background: #4CAF50;
+      color: white;
+      font-size: 24px;
+      padding: 20px 40px;
+    }
+    .talk-btn:hover { background: #45a049; }
+    .talk-btn:active, .talk-btn.active { 
+      background: #ff4444; 
+      transform: scale(0.95);
+    }
+    
+    .connect-btn {
+      background: #2196F3;
+      color: white;
+    }
+    .connect-btn:hover { background: #1976D2; }
+    
+    .test-btn {
+      background: #FF9800;
+      color: white;
+    }
+    .test-btn:hover { background: #F57C00; }
+    
+    .audio-fix-btn {
+      background: #9C27B0;
+      color: white;
+    }
+    .audio-fix-btn:hover { background: #7B1FA2; }
+    
+    .status { 
+      margin: 15px 0; 
+      padding: 15px; 
+      background: #e8f4fd; 
+      border-radius: 5px;
+      border-left: 4px solid #2196F3;
+    }
+    .users-list {
+      margin: 20px 0;
+      padding: 15px;
+      background: #f9f9f9;
+      border-radius: 5px;
+    }
+    .user-item {
+      padding: 8px;
+      margin: 5px 0;
+      background: #e8f5e8;
+      border-radius: 3px;
+      border-left: 3px solid #4CAF50;
+    }
+    .current-user {
+      background: #fff3cd;
+      border-left-color: #ffc107;
+    }
+    .debug-panel {
+      margin: 20px 0;
+      padding: 15px;
+      background: #fff3cd;
+      border-radius: 5px;
+      border-left: 4px solid #ff9800;
+    }
+    .debug-log {
+      background: #000;
+      color: #0f0;
+      padding: 10px;
+      border-radius: 5px;
+      font-family: monospace;
+      font-size: 12px;
+      max-height: 300px;
+      overflow-y: auto;
+      margin: 10px 0;
+    }
+    .audio-levels {
+      margin: 10px 0;
+    }
+    .level-bar {
+      width: 100%;
+      height: 20px;
+      background: #ddd;
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 5px 0;
+    }
+    .level-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #4CAF50, #FFC107, #F44336);
+      width: 0%;
+      transition: width 0.1s;
+    }
+    h2 { color: #333; }
+    .controls {
+      text-align: center;
+      margin: 20px 0;
+    }
+    .error { 
+      background: #ffebee; 
+      color: #c62828; 
+      border-left-color: #f44336;
+    }
+    .success { 
+      background: #e8f5e8; 
+      color: #2e7d2e; 
+      border-left-color: #4caf50;
+    }
+    .warning { 
+      background: #fff3e0; 
+      color: #e65100; 
+      border-left-color: #ff9800;
+    }
+    .audio-warning {
+      background: #f3e5f5;
+      color: #6a1b9a;
+      border-left-color: #9c27b0;
+      margin: 10px 0;
+      padding: 15px;
+      border-radius: 5px;
+      border-left: 4px solid #9c27b0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>🔊 Intercom System - Debug Version (Audio Fix)</h2>
+    
+    <div class="controls">
+      <button class="connect-btn" onclick="connect()">📡 Verbinden</button>
+      <button class="test-btn" onclick="testMicrophone()">🎤 Mikrofon Test</button>
+      <button class="audio-fix-btn" onclick="fixAudioDevices()">🔧 Audio Fix</button>
+      <button class="talk-btn" 
+              onmousedown="startTalking()" 
+              onmouseup="stopTalking()"
+              ontouchstart="startTalking()" 
+              ontouchend="stopTalking()"
+              disabled>
+        🎤 Sprechen (Halten)
+      </button>
+    </div>
+    
+    <div id="status" class="status">Bereit zum Verbinden...</div>
+    <div id="audioWarning" class="audio-warning" style="display: none;"></div>
+    
+    <div class="debug-panel">
+      <h3>🔧 Debug Information</h3>
+      <div class="audio-levels">
+        <strong>Mikrofon Pegel:</strong>
+        <div class="level-bar">
+          <div id="micLevel" class="level-fill"></div>
+        </div>
+        <strong>Empfangs Pegel:</strong>
+        <div class="level-bar">
+          <div id="receiveLevel" class="level-fill"></div>
+        </div>
+      </div>
+      
+      <div>
+        <strong>WebRTC Status:</strong>
+        <div id="webrtcStats">Nicht verbunden</div>
+      </div>
+      
+      <div>
+        <strong>Audio Devices:</strong>
+        <div id="audioDevices">Lade...</div>
+      </div>
+      
+      <div>
+        <strong>Browser Info:</strong>
+        <div id="browserInfo">Lade...</div>
+      </div>
+      
+      <button onclick="clearLog()" style="background: #666; color: white; padding: 5px 10px; font-size: 12px;">Log leeren</button>
+      <div id="debugLog" class="debug-log"></div>
+    </div>
+    
+    <div class="users-list">
+      <h3>Verbundene Benutzer:</h3>
+      <div id="users">Keine Benutzer verbunden</div>
+    </div>
+  </div>
+  
+  <script>
+    let pc = null;
+    let localStream = null;
+    let isTalking = false;
+    let isConnected = false;
+    let currentUser = null;
+    let audioContext = null;
+    let micAnalyser = null;
+    let receiveAnalyser = null;
+    let remoteAudioElements = [];
+    let audioDevicesLoaded = false;
+    
+    function debugLog(message) {
+      const timestamp = new Date().toLocaleTimeString();
+      const logDiv = document.getElementById('debugLog');
+      logDiv.innerHTML += `[${timestamp}] ${message}\n`;
+      logDiv.scrollTop = logDiv.scrollHeight;
+      console.log(`[DEBUG] ${message}`);
+    }
+    
+    function clearLog() {
+      document.getElementById('debugLog').innerHTML = '';
+    }
+    
+    function updateStatus(message, type = 'info') {
+      const statusDiv = document.getElementById('status');
+      statusDiv.textContent = message;
+      statusDiv.className = `status ${type}`;
+      debugLog(`STATUS: ${message}`);
+    }
+    
+    function showAudioWarning(message) {
+      const warningDiv = document.getElementById('audioWarning');
+      warningDiv.textContent = message;
+      warningDiv.style.display = 'block';
+    }
+    
+    function hideAudioWarning() {
+      document.getElementById('audioWarning').style.display = 'none';
+    }
+    
+    function updateUsers(users, current) {
+      const usersDiv = document.getElementById('users');
+      if (users.length === 0) {
+        usersDiv.innerHTML = 'Keine Benutzer verbunden';
+        return;
+      }
+      
+      usersDiv.innerHTML = users.map(user => 
+        `<div class="user-item ${user === current ? 'current-user' : ''}">
+          ${user === current ? '👤 ' : '🟢 '}${user}${user === current ? ' (Du)' : ''}
+        </div>`
+      ).join('');
+    }
+    
+    function detectBrowser() {
+      const userAgent = navigator.userAgent;
+      const browserInfo = document.getElementById('browserInfo');
+      
+      let browser = 'Unknown';
+      let os = 'Unknown';
+      
+      if (userAgent.includes('iPhone') || userAgent.includes('iPad')) {
+        os = userAgent.includes('iPhone') ? 'iOS (iPhone)' : 'iOS (iPad)';
+        browser = userAgent.includes('Safari') && !userAgent.includes('CriOS') ? 'Safari' : 'Chrome iOS';
+      } else if (userAgent.includes('Android')) {
+        os = 'Android';
+        browser = userAgent.includes('Chrome') ? 'Chrome Android' : 'Android Browser';
+      } else if (userAgent.includes('Mac')) {
+        os = 'macOS';
+        browser = userAgent.includes('Safari') && !userAgent.includes('Chrome') ? 'Safari' : 'Chrome Mac';
+      } else if (userAgent.includes('Windows')) {
+        os = 'Windows';
+        browser = userAgent.includes('Chrome') ? 'Chrome' : userAgent.includes('Firefox') ? 'Firefox' : 'Edge/IE';
+      }
+      
+      browserInfo.innerHTML = `${os} - ${browser}`;
+      debugLog(`Browser erkannt: ${os} - ${browser}`);
+      
+      // Spezielle Warnungen für problematische Browser
+      if (os.includes('iOS') && browser === 'Safari') {
+        showAudioWarning('⚠️ iOS Safari hat Einschränkungen bei Audio-Ausgabe. Versuche "Audio Fix" Button!');
+      }
+      
+      return { os, browser };
+    }
+    
+    async function loadAudioDevices() {
+      try {
+        // Erst User-Medien anfordern um Berechtigungen zu bekommen
+        if (!audioDevicesLoaded) {
+          await navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+            stream.getTracks().forEach(track => track.stop());
+          });
+          audioDevicesLoaded = true;
+        }
+        
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devices.filter(device => device.kind === 'audioinput');
+        const audioOutputs = devices.filter(device => device.kind === 'audiooutput');
+        
+        const devicesDiv = document.getElementById('audioDevices');
+        devicesDiv.innerHTML = `
+          <div>Mikrofone: ${audioInputs.length}</div>
+          <div>Lautsprecher: ${audioOutputs.length}</div>
+        `;
+        
+        debugLog(`Audio-Geräte gefunden: ${audioInputs.length} Mikrofone, ${audioOutputs.length} Lautsprecher`);
+        
+        // Detaillierte Geräte-Info
+        audioInputs.forEach((device, i) => {
+          debugLog(`  Mikrofon ${i}: ${device.label || device.deviceId.substr(0, 8) + '...'}`);
+        });
+        
+        audioOutputs.forEach((device, i) => {
+          debugLog(`  Lautsprecher ${i}: ${device.label || device.deviceId.substr(0, 8) + '...'}`);
+        });
+        
+        // Warnung wenn keine Lautsprecher
+        if (audioOutputs.length === 0) {
+          showAudioWarning('⚠️ Keine Lautsprecher erkannt! Audio-Ausgabe funktioniert möglicherweise nicht. Versuche "Audio Fix"!');
+          debugLog('WARNUNG: Keine Audio-Ausgabegeräte gefunden!');
+        } else {
+          hideAudioWarning();
+        }
+        
+      } catch (error) {
+        debugLog(`Fehler beim Laden der Audio-Geräte: ${error.message}`);
+        devicesDiv.innerHTML = `Fehler: ${error.message}`;
+        showAudioWarning('❌ Konnte Audio-Geräte nicht laden. Mikrofonberechtigung erforderlich!');
+      }
+    }
+    
+    async function fixAudioDevices() {
+      debugLog('Starte Audio-Fix...');
+      updateStatus('Führe Audio-Fix durch...', 'warning');
+      
+      try {
+        // 1. AudioContext aktivieren (wichtig für iOS)
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          debugLog('AudioContext erstellt');
+        }
+        
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume();
+          debugLog('AudioContext aktiviert');
+        }
+        
+        // 2. Dummy Audio abspielen um Browser zu "wecken"
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        
+        gainNode.gain.setValueAtTime(0.001, audioContext.currentTime); // Sehr leise
+        oscillator.frequency.setValueAtTime(440, audioContext.currentTime);
+        oscillator.start();
+        oscillator.stop(audioContext.currentTime + 0.1); // 100ms
+        
+        debugLog('Dummy Audio abgespielt');
+        
+        // 3. Neulade Audio-Geräte
+        setTimeout(async () => {
+          await loadAudioDevices();
+          updateStatus('Audio-Fix abgeschlossen!', 'success');
+          debugLog('Audio-Fix abgeschlossen');
+        }, 500);
+        
+      } catch (error) {
+        debugLog(`Audio-Fix Fehler: ${error.message}`);
+        updateStatus(`Audio-Fix fehlgeschlagen: ${error.message}`, 'error');
+      }
+    }
+    
+    function setupAudioAnalysis() {
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      
+      if (localStream && !micAnalyser) {
+        const source = audioContext.createMediaStreamSource(localStream);
+        micAnalyser = audioContext.createAnalyser();
+        micAnalyser.fftSize = 256;
+        source.connect(micAnalyser);
+        
+        debugLog('Mikrofon-Analyse eingerichtet');
+      }
+    }
+    
+    function updateAudioLevels() {
+      if (micAnalyser) {
+        const dataArray = new Uint8Array(micAnalyser.frequencyBinCount);
+        micAnalyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+        const percentage = (average / 255) * 100;
+        document.getElementById('micLevel').style.width = `${percentage}%`;
+      }
+      
+      // Wiederhole alle 100ms
+      requestAnimationFrame(updateAudioLevels);
+    }
+    
+    async function testMicrophone() {
+      try {
+        debugLog('Teste Mikrofon...');
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          } 
+        });
+        
+        // Setup Audio-Analyse für Test
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        
+        const source = audioContext.createMediaStreamSource(stream);
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        
+        updateStatus('Mikrofon-Test läuft... Sprich etwas! (3 Sekunden)', 'success');
+        
+        // Test für 3 Sekunden mit Level-Anzeige
+        let testInterval = setInterval(() => {
+          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          analyser.getByteFrequencyData(dataArray);
+          const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+          const percentage = (average / 255) * 100;
+          document.getElementById('micLevel').style.width = `${percentage}%`;
+          
+          if (percentage > 5) {
+            debugLog(`Mikrofon-Level: ${percentage.toFixed(1)}%`);
+          }
+        }, 100);
+        
+        setTimeout(() => {
+          clearInterval(testInterval);
+          stream.getTracks().forEach(track => track.stop());
+          updateStatus('Mikrofon-Test abgeschlossen', 'success');
+          debugLog('Mikrofon-Test erfolgreich');
+        }, 3000);
+        
+      } catch (error) {
+        updateStatus(`Mikrofon-Test fehlgeschlagen: ${error.message}`, 'error');
+        debugLog(`Mikrofon-Test Fehler: ${error.message}`);
+      }
+    }
+    
+    function updateWebRTCStats() {
+      if (!pc) return;
+      
+      const statsDiv = document.getElementById('webrtcStats');
+      statsDiv.innerHTML = `
+        <div>Connection State: ${pc.connectionState || 'unknown'}</div>
+        <div>ICE State: ${pc.iceConnectionState || 'unknown'}</div>
+        <div>Signaling State: ${pc.signalingState || 'unknown'}</div>
+      `;
+      
+      // Detaillierte Stats alle 5 Sekunden
+      if (isConnected) {
+        pc.getStats().then(stats => {
+          let audioStats = '';
+          stats.forEach(report => {
+            if (report.type === 'inbound-rtp' && report.mediaType === 'audio') {
+              audioStats += `Empfangen: ${report.packetsReceived || 0} Pakete, ${report.bytesReceived || 0} Bytes\n`;
+            }
+            if (report.type === 'outbound-rtp' && report.mediaType === 'audio') {
+              audioStats += `Gesendet: ${report.packetsSent || 0} Pakete, ${report.bytesSent || 0} Bytes\n`;
+            }
+          });
+          if (audioStats) {
+            debugLog(`WebRTC Stats:\n${audioStats}`);
+          }
+        }).catch(e => debugLog(`Stats Error: ${e.message}`));
+      }
+    }
+    
+    async function loadUsers() {
+      if (!isConnected) return;
+      
+      try {
+        const response = await fetch('/users');
+        if (response.ok) {
+          const data = await response.json();
+          updateUsers(data.users, data.current_user);
+          currentUser = data.current_user;
+        }
+      } catch (error) {
+        debugLog(`Fehler beim Laden der Benutzer: ${error.message}`);
+      }
+    }
+    
+    async function connect() {
+      try {
+        updateStatus('Verbinde...', 'info');
+        debugLog('Starte Verbindung...');
+        
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('getUserMedia nicht verfügbar. HTTPS erforderlich!');
+        }
+        
+        // AudioContext früh initialisieren
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          await audioContext.resume();
+          debugLog('AudioContext initialisiert und aktiviert');
+        }
+        
+        pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' }
+          ]
+        });
+        
+        debugLog('RTCPeerConnection erstellt');
+        
+        // Erstelle lokalen Stream
+        localStream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            sampleRate: 48000
+          } 
+        });
+        
+        debugLog('Lokaler Audio-Stream erhalten');
+        setupAudioAnalysis();
+        updateAudioLevels();
+        
+        // Stoppe Audio erstmal (wird beim Sprechen aktiviert)
+        localStream.getAudioTracks().forEach(track => {
+          track.enabled = false;
+          pc.addTrack(track, localStream);
+          debugLog(`Audio-Track hinzugefügt: ${track.label}`);
+        });
+        
+        // Event Handlers
+        pc.onconnectionstatechange = () => {
+          debugLog(`Connection state changed: ${pc.connectionState}`);
+          updateWebRTCStats();
+        };
+        
+        pc.oniceconnectionstatechange = () => {
+          debugLog(`ICE connection state changed: ${pc.iceConnectionState}`);
+          updateStatus(`ICE Status: ${pc.iceConnectionState}`, 'info');
+          updateWebRTCStats();
+          
+          if (pc.iceConnectionState === 'connected') {
+            isConnected = true;
+            document.querySelector('.talk-btn').disabled = false;
+            updateStatus('Verbunden! Bereit zum Sprechen.', 'success');
+            loadUsers();
+            setInterval(loadUsers, 3000);
+            setInterval(updateWebRTCStats, 5000);
+          } else if (pc.iceConnectionState === 'failed') {
+            updateStatus('Verbindung fehlgeschlagen!', 'error');
+            debugLog('ICE Connection failed');
+          }
+        };
+        
+        pc.onsignalingstatechange = () => {
+          debugLog(`Signaling state changed: ${pc.signalingState}`);
+        };
+        
+        // Empfange Audio von anderen - VERBESSERT
+        pc.ontrack = (event) => {
+          debugLog(`Track empfangen: ${event.track.kind} von ${event.streams[0].id}`);
+          
+          const remoteAudio = new Audio();
+          remoteAudio.srcObject = event.streams[0];
+          remoteAudio.autoplay = true;
+          remoteAudio.volume = 1.0;
+          
+          // iOS/Safari spezielle Behandlung
+          remoteAudio.playsInline = true;
+          remoteAudio.muted = false;
+          
+          // Füge zur Liste hinzu
+          remoteAudioElements.push(remoteAudio);
+          
+          // Versuche mehrfach abzuspielen
+          const tryPlay = async (attempts = 3) => {
+            for (let i = 0; i < attempts; i++) {
+              try {
+                await remoteAudio.play();
+                debugLog(`Remote Audio gestartet (Versuch ${i + 1})`);
+                return;
+              } catch (e) {
+                debugLog(`Remote Audio play error (Versuch ${i + 1}): ${e.message}`);
+                if (i < attempts - 1) {
+                  await new Promise(resolve => setTimeout(resolve, 100));
+                }
+              }
+            }
+            
+            // Als letzter Ausweg: warte auf User-Interaktion
+            debugLog('Warte auf User-Interaktion für Audio...');
+            const playOnInteraction = () => {
+              remoteAudio.play().then(() => {
+                debugLog('Remote Audio nach User-Interaktion gestartet');
+              }).catch(err => debugLog(`Final play failed: ${err.message}`));
+              document.removeEventListener('click', playOnInteraction);
+              document.removeEventListener('touchstart', playOnInteraction);
+            };
+            
+            document.addEventListener('click', playOnInteraction);
+            document.addEventListener('touchstart', playOnInteraction);
+          };
+          
+          tryPlay();
+        };
+        
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        debugLog('Offer erstellt und gesetzt');
+        
+        const response = await fetch('/offer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            sdp: offer.sdp, 
+            type: offer.type 
+          })
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Server error: ${response.status}`);
+        }
+        
+        const answer = await response.json();
+        await pc.setRemoteDescription(answer);
+        debugLog('Answer empfangen und gesetzt');
+        
+      } catch (error) {
+        debugLog(`Verbindungsfehler: ${error.message}`);
+        updateStatus(`Fehler: ${error.message}`, 'error');
+      }
+    }
+    
+    function startTalking() {
+      if (!isConnected || isTalking) return;
+      
+      debugLog('Sprechen gestartet');
+      isTalking = true;
+      
+      // Aktiviere Mikrofon
+      if (localStream) {
+        localStream.getAudioTracks().forEach(track => {
+          track.enabled = true;
+          debugLog(`Track aktiviert: ${track.label}`);
+        });
+      }
+      
+      // Visuelles Feedback
+      const btn = document.querySelector('.talk-btn');
+      btn.classList.add('active');
+      btn.textContent = '🔴 Sende...';
+      
+      updateStatus('🎤 Spreche jetzt - alle können dich hören!', 'success');
+    }
+    
+    function stopTalking() {
+      if (!isTalking) return;
+      
+      debugLog('Sprechen gestoppt');
+      isTalking = false;
+      
+      // Deaktiviere Mikrofon
+      if (localStream) {
+        localStream.getAudioTracks().forEach(track => {
+          track.enabled = false;
+          debugLog(`Track deaktiviert: ${track.label}`);
+        });
+      }
+      
+      // Visuelles Feedback
+      const btn = document.querySelector('.talk-btn');
+      btn.classList.remove('active');
+      btn.textContent = '🎤 Sprechen (Halten)';
+      
+      updateStatus('Verbunden! Bereit zum Sprechen.', 'success');
+    }
+    
+    // Verhindere Kontext-Menü auf Touch-Geräten
+    document.addEventListener('DOMContentLoaded', () => {
+      const talkBtn = document.querySelector('.talk-btn');
+      if (talkBtn) {
+        talkBtn.addEventListener('contextmenu', e => e.preventDefault());
+      }
+    });
+    
+    // Initialisierung
+    detectBrowser();
+    loadAudioDevices();
+    loadUsers();
+    updateWebRTCStats();
+    
+    debugLog('Client initialisiert - Audio Fix Version');
+  </script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+{"version":3,"file":"direct-transport.d.ts","sourceRoot":"","sources":["../../src/fbs/direct-transport.ts"],"names":[],"mappings":"AAIA,OAAO,EAAE,sBAAsB,EAAE,uBAAuB,EAAE,MAAM,6CAA6C,CAAC;AAC9G,OAAO,EAAE,YAAY,EAAE,aAAa,EAAE,MAAM,kCAAkC,CAAC;AAC/E,OAAO,EAAE,gBAAgB,EAAE,iBAAiB,EAAE,MAAM,uCAAuC,CAAC;AAC5F,OAAO,EAAE,gBAAgB,EAAE,iBAAiB,EAAE,MAAM,sCAAsC,CAAC"}
