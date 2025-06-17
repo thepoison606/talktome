@@ -14,32 +14,64 @@ async function fetchJSON(url) {
 }
 
 async function loadData() {
-  const users = await fetchJSON('/users');
+  // 1) Daten holen
+  const users       = await fetchJSON('/users');
   const conferences = await fetchJSON('/conferences');
 
-  const userList = document.getElementById('user-list');
-  const confList = document.getElementById('conf-list');
-  const assignUser = document.getElementById('assign-user');
-  const assignConf = document.getElementById('assign-conf');
+  // 2) Container referenzieren und leeren
+  const userList   = document.getElementById('user-list');
+  const confList   = document.getElementById('conf-list');
+  userList.innerHTML   = '';
+  confList.innerHTML   = '';
 
-  userList.innerHTML = '';
-  confList.innerHTML = '';
-  assignUser.innerHTML = '';
-  assignConf.innerHTML = '';
 
+// 3) Iterate Users
   for (const user of users) {
     const li = document.createElement('li');
     li.innerHTML = `
-      <span style="cursor:pointer;" onclick="toggleUserConfs(${user.id}, this)">▶</span> 
-      ${user.name} (id: ${user.id})
-      <button class="small" onclick="editUser(${user.id}, '${user.name}')">Edit</button>
-      <button class="small" onclick="deleteUser(${user.id})">🗑️</button>
-      <ul class="nested" id="user-confs-${user.id}"></ul>
-    `;
+    <span style="cursor:pointer;" onclick="toggleUserConfs(${user.id}, this)">▶</span>
+    ${user.name} (id: ${user.id})
+    <button class="small" onclick="editUser(${user.id}, '${user.name}')">Edit</button>
+    <button class="small" onclick="deleteUser(${user.id})">🗑️</button>
+
+    <!-- Combined collapsible container -->
+    <div class="nested" id="user-nested-${user.id}">
+      <strong>Part of Conferences</strong>
+      <ul id="user-confs-${user.id}"></ul>
+
+      <!-- NEW: Add user→conference UI -->
+      <div style="margin-top:1em;">
+        <select id="add-user-conf-${user.id}">
+          ${conferences.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+        </select>
+        <button class="small" onclick="assignUserToConference(${user.id})">➕ Add User to Conference</button>
+      </div>
+
+      <!-- Force a line-break before Target Buttons -->
+      <div style="margin-top:1em;">
+        <strong>Target Buttons</strong><br/>
+        <ul id="user-targets-${user.id}"></ul>
+
+        <!-- Add target-button UI -->
+        <select id="add-target-type-${user.id}">
+          <option value="user">User</option>
+          <option value="conference">Conference</option>
+        </select>
+        <select id="add-target-id-${user.id}"></select>
+        <button class="small" onclick="addTarget(${user.id})">➕ Add Target Button</button>
+      </div>
+    </div>
+  `;
     userList.appendChild(li);
-    assignUser.innerHTML += `<option value="${user.id}">${user.name}</option>`;
+
+    await loadUserTargets(user.id, users, conferences);
   }
 
+
+
+
+
+  // 4) Conferences iterieren
   for (const conf of conferences) {
     const li = document.createElement('li');
     li.innerHTML = `
@@ -49,9 +81,69 @@ async function loadData() {
       <ul class="nested" id="conf-users-${conf.id}"></ul>
     `;
     confList.appendChild(li);
-    assignConf.innerHTML += `<option value="${conf.id}">${conf.name}</option>`;
   }
+}  // <— Hier muss die loadData-Funktion geschlossen werden
+
+// Fetch and render targets + rebuild the “type → id” dropdown
+async function loadUserTargets(userId, allUsers, allConfs) {
+  const targets = await fetchJSON(`/users/${userId}/targets`);
+  const ul = document.getElementById(`user-targets-${userId}`);
+  ul.innerHTML = targets.map(t =>
+      `<li>
+       ${t.name} (${t.targetType})
+       <button class="small"
+               onclick="removeTarget(${userId}, '${t.targetType}', '${t.targetId}')">
+         🗑️
+       </button>
+     </li>`
+  ).join('');
+
+  const selType = document.getElementById(`add-target-type-${userId}`);
+  const selId   = document.getElementById(`add-target-id-${userId}`);
+  const list    = selType.value === 'user' ? allUsers : allConfs;
+
+  selId.innerHTML = list.map(item =>
+      `<option value="${item.id}">${item.name}</option>`
+  ).join('');
+
+  // Re-load the ID dropdown whenever the type changes
+  selType.onchange = () =>
+      loadUserTargets(userId, allUsers, allConfs);
 }
+
+// Called by the “➕” button
+window.addTarget = async function(userId) {
+  const type = document.getElementById(`add-target-type-${userId}`).value;
+  const id   = document.getElementById(`add-target-id-${userId}`).value;
+  const res = await fetch(`/users/${userId}/targets`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ targetType: type, targetId: id })
+  });
+  if (!res.ok) {
+    showMessage('❌ Failed to add target');
+  } else {
+    // Refresh only that user’s target list
+    const users = await fetchJSON('/users');
+    const confs = await fetchJSON('/conferences');
+    await loadUserTargets(userId, users, confs);
+  }
+};
+
+// Called by each 🗑️ in the target list
+window.removeTarget = async function(userId, type, tid) {
+  const res = await fetch(
+      `/users/${userId}/targets/${type}/${tid}`, { method: 'DELETE' }
+  );
+  if (!res.ok) {
+    showMessage('❌ Failed to remove target');
+  } else {
+    const users = await fetchJSON('/users');
+    const confs = await fetchJSON('/conferences');
+    await loadUserTargets(userId, users, confs);
+  }
+};
+
 
 window.editUser = async function (userId, currentName) {
   const newName = prompt('New username:', currentName);
@@ -72,40 +164,63 @@ window.editUser = async function (userId, currentName) {
 };
 
 window.toggleUserConfs = async function (userId, arrowEl) {
-  const ul = document.getElementById(`user-confs-${userId}`);
-  if (ul.innerHTML !== '') {
-    ul.innerHTML = '';
-    arrowEl.textContent = '▶';
+  const confUl    = document.getElementById(`user-confs-${userId}`);
+  const targetDiv = document.getElementById(`user-nested-${userId}`);
+
+  if (confUl.innerHTML !== '') {
+    // closing both conferences and targets
+    confUl.innerHTML     = '';
+    confUl.style.display = 'none';
+    targetDiv.style.display = 'none';
+    arrowEl.textContent  = '▶';
     return;
   }
 
+  // opening conferences…
   const confs = await fetchJSON(`/users/${userId}/conferences`);
-  ul.innerHTML = confs.map(c =>
-    `<li>
-      ${c.name}
-      <button class="small" onclick="confirmUnassign(${userId}, ${c.id})">Remove</button>
-    </li>`
+  confUl.innerHTML = confs.map(c =>
+      `<li>
+       ${c.name}
+       <button class="small"
+               onclick="confirmUnassign(${userId}, ${c.id})">
+         Remove
+       </button>
+     </li>`
   ).join('');
-  arrowEl.textContent = '▼';
+
+  // show both
+  confUl.style.display    = 'block';
+  targetDiv.style.display = 'block';
+  arrowEl.textContent     = '▼';
 };
+
+
 
 window.toggleConfUsers = async function (confId, arrowEl) {
   const ul = document.getElementById(`conf-users-${confId}`);
+
   if (ul.innerHTML !== '') {
+    // hide the list again
     ul.innerHTML = '';
+    ul.style.display = 'none';
     arrowEl.textContent = '▶';
     return;
   }
 
+  // fetch and render
   const users = await fetchJSON(`/conferences/${confId}/users`);
   ul.innerHTML = users.map(u =>
-    `<li>
-      ${u.name}
-      <button class="small" onclick="confirmUnassign(${u.id}, ${confId})">Remove</button>
-    </li>`
+      `<li>
+       ${u.name}
+       <button class="small" onclick="confirmUnassign(${u.id}, ${confId})">Remove</button>
+     </li>`
   ).join('');
+
+  // make it visible
+  ul.style.display = 'block';
   arrowEl.textContent = '▼';
 };
+
 
 window.confirmUnassign = function (userId, confId) {
   if (confirm('Are you sure you want to remove this user from the conference?')) {
@@ -209,21 +324,26 @@ document.getElementById('conf-form').addEventListener('submit', async (e) => {
   }
 });
 
-document.getElementById('assign-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const userId = document.getElementById('assign-user').value;
-  const confId = document.getElementById('assign-conf').value;
 
+// Called by the "Add to Conf" button inside each user's block
+window.assignUserToConference = async function(userId) {
+  const sel = document.getElementById(`add-user-conf-${userId}`);
+  const confId = sel.value;
   const res = await fetch(`/conferences/${confId}/users/${userId}`, {
     method: 'POST'
   });
-
   if (res.ok) {
-    showMessage('✅ User assigned', 'green');
-    loadData();
+    showMessage('✅ User assigned to conference', 'green');
+    // If the conferences list is already open, refresh it:
+    const confUl = document.getElementById(`user-confs-${userId}`);
+    if (confUl && confUl.innerHTML !== '') {
+      // re-open to refresh
+      await toggleUserConfs(userId, document.querySelector(`#user-nested-${userId}`).previousElementSibling);
+    }
   } else {
-    showMessage('❌ Failed to assign user');
+    showMessage('❌ Failed to assign user to conference');
   }
-});
+};
+
 
 loadData();

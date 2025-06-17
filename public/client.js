@@ -4,6 +4,13 @@ socket.onAny((event, ...args) => {
   console.log("[socket.onAny] got event", event, args);
 });
 
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${res.status} fetching ${url}`);
+  return res.json();
+}
+
+
 document.addEventListener("DOMContentLoaded", () => {
   console.log("DOM loaded, initializing...");
 
@@ -116,74 +123,79 @@ document.addEventListener("DOMContentLoaded", () => {
       .forEach((btn) => (btn.disabled = true));
   });
 
-  socket.on("user-list", (users) => {
-    console.log("Received user-list:", users);
+  socket.on("user-list", async (users) => {
+    // 1️⃣ fetch your allowed targets and build a Set of their IDs
+    const dbUserId = localStorage.getItem("userId");
+    const targets = await fetchJSON(`/users/${dbUserId}/targets`);
+    const allowedNames = new Set(targets.map(t => t.name));
+
+    console.log("Received full user-list:", users);
+    console.log("Filtering to only targets:", Array.from(allowedNames));
+
+    // 2️⃣ clear out the old list
     usersList.innerHTML = "";
 
-    users.forEach(({ id, name }) => {
-      if (id === socket.id) return;
+    // 3️⃣ only show peers that are both connected AND in your target list
+    for (const { id, name } of users) {
+      // skip yourself
+      if (id === socket.id) continue;
+      // skip anyone not in allowedIds
+      if (!allowedNames.has(name)) continue;
 
       const li = document.createElement("li");
       li.id = `user-${id}`;
       li.className = id === socket.id ? "you" : "";
 
+      // user info
       const userInfo = document.createElement("div");
       userInfo.className = "user-info";
 
       const icon = document.createElement("div");
       icon.className = "user-icon";
       icon.textContent = name
-        ? name.charAt(0).toUpperCase()
-        : id.substring(0, 2).toUpperCase();
+          ? name.charAt(0).toUpperCase()
+          : id.substring(0, 2).toUpperCase();
 
       const label = document.createElement("span");
       label.textContent = name || id;
 
-      userInfo.appendChild(icon);
-      userInfo.appendChild(label);
+      userInfo.append(icon, label);
       li.appendChild(userInfo);
 
+      // build the mute & push-to-talk controls if it's not you
       if (id !== socket.id) {
         const muteBtn = document.createElement("button");
         muteBtn.className = "mute-btn";
         muteBtn.textContent = "Mute";
         muteBtn.title = "Stummschalten";
-        muteBtn.addEventListener("pointerdown", (e) => e.stopPropagation());
-        muteBtn.addEventListener("pointerup", (e) => e.stopPropagation());
-        muteBtn.addEventListener("click", (e) => {
+        muteBtn.addEventListener("pointerdown", e => e.stopPropagation());
+        muteBtn.addEventListener("pointerup",   e => e.stopPropagation());
+        muteBtn.addEventListener("click", e => {
           e.stopPropagation();
           toggleMute(id);
           muteBtn.classList.toggle("muted");
           muteBtn.textContent = muteBtn.classList.contains("muted")
-            ? "Muted"
-            : "Mute";
+              ? "Muted"
+              : "Mute";
           muteBtn.title = muteBtn.classList.contains("muted")
-            ? "Ton einschalten"
-            : "Stummschalten";
+              ? "Ton einschalten"
+              : "Stummschalten";
         });
-
         li.appendChild(muteBtn);
 
-        li.addEventListener("pointerdown", (e) => {
-          if (e.target.closest(".mute-btn")) return;
-          handleTalk(e, id);
-        });
-        li.addEventListener("pointerup", (e) => {
-          if (e.target.closest(".mute-btn")) return;
-          handleStopTalking(e);
-        });
-        li.addEventListener("pointerleave", (e) => {
-          if (e.target.closest(".mute-btn")) return;
-          handleStopTalking(e);
-        });
-        li.addEventListener("pointercancel", (e) => {
-          if (e.target.closest(".mute-btn")) return;
-          handleStopTalking(e);
+        // push-to-talk
+        ["down","up","leave","cancel"].forEach(ev => {
+          li.addEventListener(`pointer${ev}`, e => {
+            if (e.target.closest(".mute-btn")) return;
+            if (ev === "down") return handleTalk(e, id);
+            else                  return handleStopTalking(e);
+          });
         });
       }
 
       usersList.appendChild(li);
 
+      // restore any speaking/muted highlights
       if (speakingPeers.has(id)) {
         li.classList.add("speaking");
         icon.classList.add("speaking");
@@ -192,15 +204,16 @@ document.addEventListener("DOMContentLoaded", () => {
         li.classList.add("last-spoke");
       }
       if (mutedPeers.has(id)) {
-        const muteBtn = li.querySelector(".mute-btn");
-        if (muteBtn) {
-          muteBtn.classList.add("muted");
-          muteBtn.textContent = "Muted";
+        const mb = li.querySelector(".mute-btn");
+        if (mb) {
+          mb.classList.add("muted");
+          mb.textContent = "Muted";
           icon.classList.add("muted");
         }
       }
-    });
+    }
   });
+
 
   // Initialize MediaSoup
   async function initializeMediaSoup() {

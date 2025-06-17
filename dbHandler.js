@@ -23,15 +23,6 @@ function createUser(name, password) {
   }
 }
 
-function checkUserPassword(name, plainPassword) {
-  const stmt = db.prepare('SELECT password FROM users WHERE name = ?');
-  const user = stmt.get(name);
-  if (!user) return false;
-
-  return bcrypt.compareSync(plainPassword, user.password);
-}
-
-
 function createConference(name) {
   try {
     const stmt = db.prepare('INSERT INTO conferences (name) VALUES (?)');
@@ -103,6 +94,74 @@ function deleteConference(confId) {
   db.prepare('DELETE FROM conferences WHERE id = ?').run(confId);
 }
 
+// Liefert alle Targets, die ein User sehen darf, inkl. aufgelöstem Namen:
+function getUserTargets(userId) {
+  return db.prepare(`
+    -- alle „user → user“ Targets
+    SELECT
+      'user'       AS targetType,
+      u.id         AS targetId,
+      u.name       AS name
+    FROM user_user_targets ut
+    JOIN users             u ON u.id = ut.target_user
+    WHERE ut.user_id = ?
+
+    UNION ALL
+
+    -- alle „user → conference“ Targets
+    SELECT
+      'conference' AS targetType,
+      c.id         AS targetId,
+      c.name       AS name
+    FROM user_conf_targets ct
+    JOIN conferences       c ON c.id = ct.target_conf
+    WHERE ct.user_id = ?
+  `).all(userId, userId);
+}
+
+
+function addUserTargetToUser(userId, targetUserId) {
+  db.prepare(`
+    INSERT OR IGNORE INTO user_user_targets (user_id, target_user)
+    VALUES (?, ?)
+  `).run(userId, targetUserId);
+}
+
+function addUserTargetToConference(userId, targetConfId) {
+  db.prepare(`
+    INSERT OR IGNORE INTO user_conf_targets (user_id, target_conf)
+    VALUES (?, ?)
+  `).run(userId, targetConfId);
+}
+
+
+function removeUserTarget(userId, type, targetId) {
+  if (type === "user") {
+    return removeUserUserTarget(userId, targetId);
+  } else {
+    return removeUserConfTarget(userId, targetId);
+  }
+}
+
+// Entfernt ein User-Target (User → User)
+function removeUserUserTarget(userId, targetUserId) {
+  db.prepare(`
+    DELETE FROM user_user_targets
+    WHERE user_id    = ?
+      AND target_user = ?
+  `).run(userId, targetUserId);
+}
+
+// Entfernt ein Conf-Target (User → Conference)
+function removeUserConfTarget(userId, targetConfId) {
+  db.prepare(`
+    DELETE FROM user_conf_targets
+    WHERE user_id     = ?
+      AND target_conf = ?
+  `).run(userId, targetConfId);
+}
+
+
 
 module.exports = {
   getAllUsers,
@@ -116,6 +175,9 @@ module.exports = {
   updateUserName,
   deleteUser,
   deleteConference,
-  checkUserPassword,
   verifyUser,
+  getUserTargets,
+  addUserTargetToUser,
+  addUserTargetToConference,
+  removeUserTarget
 };

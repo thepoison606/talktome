@@ -20,6 +20,10 @@ const {
   deleteUser,
   deleteConference,
   verifyUser,
+  getUserTargets,
+  addUserTargetToUser,
+  addUserTargetToConference,
+  removeUserTarget
 } = require("./dbHandler");
 
 const app = express();
@@ -44,13 +48,26 @@ app.get("/users/:id/conferences", (req, res) => {
   }
 });
 
-app.get("/conferences/:id/users", (req, res) => {
+app.get('/conferences/:id/users', (req, res) => {
+  const confId = req.params.id;
+  console.log(`[DEBUG] GET /conferences/${confId}/users → looking up in DB…`);
   try {
-    const users = getUsersForConference(req.params.id);
+    const users = getUsersForConference(confId);
+    console.log(`[DEBUG]  → found users:`, users);
     res.json(users);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Internal server error" });
+    console.error(`[ERROR] fetching users for conf ${confId}:`, err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+app.get('/users/:id/targets', (req, res) => {
+  try {
+    const targets = getUserTargets(req.params.id);
+    res.json(targets);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -102,9 +119,25 @@ app.post("/conferences", (req, res) => {
   }
 });
 
-app.post("/conferences/:conferenceId/users/:userId", (req, res) => {
+app.post('/conferences/:conferenceId/users/:userId', (req, res) => {
   addUserToConference(req.params.userId, req.params.conferenceId);
   res.sendStatus(204);
+});
+
+
+app.post('/users/:id/targets', (req, res) => {
+  const { targetType, targetId } = req.body;
+  try {
+    if (targetType === 'user') {
+      addUserTargetToUser(req.params.id, targetId);
+    } else {
+      addUserTargetToConference(req.params.id, targetId);
+    }
+    res.sendStatus(204);
+  } catch (err) {
+    console.error('Fehler in add‐target:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // === PUT ===
@@ -153,6 +186,16 @@ app.delete("/conferences/:id", (req, res) => {
     res.status(500).json({ error: "Failed to delete conference" });
   }
 });
+
+app.delete("/users/:id/targets/:type/:tid", (req, res) => {
+  try {
+    removeUserTarget(req.params.id, req.params.type, req.params.tid);
+    res.sendStatus(204);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // Erstelle selbst-signiertes Zertifikat falls nicht vorhanden
 const certDir = path.join(__dirname, "certs");
