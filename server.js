@@ -266,9 +266,10 @@ const peers = new Map();
 })();
 
 function getUserList() {
-  return Array.from(peers.entries()).map(([id, peer]) => ({
-    id,
-    name: peer.name || null,
+  return Array.from(peers.entries()).map(([socketId, peer]) => ({
+    socketId,
+    userId: peer.userId || null,    // <-- hier speichern wir die DB-ID
+    name: peer.name || null
   }));
 }
 
@@ -276,12 +277,27 @@ io.on("connection", (socket) => {
   console.log(`[CONN] Client connected: ${socket.id}`);
   peers.set(socket.id, {
     socket,
+    userId:   null,
+    name:     null,
     consumers: new Map(),
     producers: new Map(),
   });
 
-  // Emit user list
+  // Emit lists
   io.emit("user-list", getUserList());
+  socket.emit("conference-list", getAllConferences());
+
+  socket.on("register-user", ({ id, name }) => {
+    const peer = peers.get(socket.id);
+    if (!peer) return;
+
+    peer.userId = id;    // die echte DB-ID
+    peer.name   = name;  // Anzeigename
+    console.log(`[USER] Registered ${name} (${id}) on socket ${socket.id}`);
+
+    // Aktualisierte Liste an alle Clients schicken
+    io.emit("user-list", getUserList());
+  });
 
   socket.on("producer-close", ({ producerId }) => {
     console.log(
@@ -462,71 +478,82 @@ io.on("connection", (socket) => {
   });
 
   socket.on("produce", async ({ kind, rtpParameters, appData }, callback) => {
-    console.log(`[PRODUCE] Client ${socket.id} wants to produce ${kind}`);
+    console.log(`[PRODUCE] Client ${socket.id} wants to produce ${kind}`, appData);
+
     try {
       const peer = peers.get(socket.id);
       const transport = peer.sendTransport;
 
-      // 1. Producer anlegen
-      const producer = await transport.produce({
-        kind,
-        rtpParameters,
-        appData,
-      });
+      // 1️⃣ Producer anlegen
+      const producer = await transport.produce({ kind, rtpParameters, appData });
       peer.producers.set(producer.id, producer);
-      console.log(
-        `[PRODUCE] Producer created: ${producer.id} for ${socket.id}`
-      );
+      console.log(`[PRODUCE] Producer created: ${producer.id} for ${socket.id}`);
 
-      // 2. Rückgabe an den produzierenden Client
+      // 2️⃣ ID zurück an den produzierenden Client
       callback({ id: producer.id });
 
-      // 3. Notify über neuen Producer (wie gehabt)
-      const targetPeer = appData?.targetPeer;
-      if (targetPeer) {
-        const targetSocket = peers.get(targetPeer)?.socket;
-        targetSocket?.emit("new-producer", {
-          peerId: socket.id,
-          producerId: producer.id,
-          appData,
-        });
-        console.log(`[PRODUCE] Notified peer ${targetPeer} about new producer`);
+      // 3️⃣ Routing je nach appData.type
+      const { type, id: targetId } = appData || {};
+
+      if (type === "user") {
+        // Einzelziel: nur an diesen User senden
+        const targetPeer = peers.get(targetId);
+        if (targetPeer) {
+          targetPeer.socket.emit("new-producer", {
+            peerId: socket.id,
+            producerId: producer.id,
+            appData
+          });
+          console.log(`[ROUTE] Sent to user ${targetId}`);
+        } else {
+          console.warn(`[ROUTE] User ${targetId} not connected`);
+        }
+
+      } else if (type === "conf") {
+        // Konferenz: alle Mitglieder der Konferenz holen und benachrichtigen
+        const members = getUsersForConference(targetId);  // [{ id, name }, …]
+        for (const member of members) {
+          for (const [sid, p] of peers) {
+            if (p.userId === member.id && sid !== socket.id) {
+              p.socket.emit("new-producer", {
+                peerId: socket.id,
+                producerId: producer.id,
+                appData
+              });
+            }
+          }
+        }
+        console.log(`[ROUTE] Sent to conference ${targetId}`);
+
       } else {
+        // Fallback: Broadcast an alle anderen Clients
         socket.broadcast.emit("new-producer", {
           peerId: socket.id,
           producerId: producer.id,
-          appData,
+          appData
         });
-        console.log(
-          `[PRODUCE] Notified all peers about new producer from ${socket.id}`
-        );
+        console.log(`[ROUTE] Broadcast to all`);
       }
 
-      // 4. Wenn der Producer geschlossen wird, broadcasten wir an alle
+      // 4️⃣ Cleanup beim Schließen
       producer.on("close", () => {
-        // internen Zustand aufräumen
         peer.producers.delete(producer.id);
-        console.log(
-          `[PRODUCE] Producer closed: ${producer.id} for ${socket.id}`
-        );
-
-        // anderen Clients mitteilen, dass Sprechen aufgehört hat
         socket.broadcast.emit("producer-closed", {
           peerId: socket.id,
-          producerId: producer.id,
+          producerId: producer.id
         });
       });
-
-      // wie gehabt: Cleanup bei Transport-Close
       producer.on("transportclose", () => {
-        console.log(`[PRODUCE] Producer transport closed for ${producer.id}`);
         peer.producers.delete(producer.id);
       });
+
     } catch (error) {
       console.error("[PRODUCE] Error:", error);
       callback({ error: error.message });
     }
   });
+
+
 
   socket.on("consume", async ({ producerId, rtpCapabilities }, callback) => {
     console.log(

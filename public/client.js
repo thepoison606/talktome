@@ -30,7 +30,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const logoutBtn = document.getElementById("logout-btn");
 
   const myIdEl = document.getElementById("my-id");
-  const usersList = document.getElementById("users");
+  const targetsList = document.getElementById("targets-list");
   const btnAll = document.getElementById("talk-all");
   const btnReply = document.getElementById("reply");
   const audioStreamsDiv = document.getElementById("audio-streams");
@@ -56,7 +56,7 @@ document.addEventListener("DOMContentLoaded", () => {
     loginContainer.style.display = "none";
     intercomApp.style.display = "block";
     myIdEl.textContent = userName;
-    socket.emit("register-name", userName);
+    socket.emit("register-user", { id: userId, name: userName });
   }
 
   // Login Handler
@@ -84,7 +84,7 @@ document.addEventListener("DOMContentLoaded", () => {
       localStorage.setItem("userId", user.id);
       localStorage.setItem("userName", user.name);
 
-      socket.emit("register-name", user.name);
+      socket.emit("register-user", { id: user.id, name: user.name });
 
       loginContainer.style.display = "none";
       intercomApp.style.display = "block";
@@ -107,9 +107,12 @@ document.addEventListener("DOMContentLoaded", () => {
   // Signaling Events
   socket.on("connect", async () => {
     console.log("Connected to signaling server as", socket.id);
-    myIdEl.textContent = `${localStorage.getItem("userName")}`;
-
-    // Initialize MediaSoup immediately after connection
+    const dbUserId   = localStorage.getItem("userId");
+    const dbUserName = localStorage.getItem("userName");
+    if (dbUserId && dbUserName) {
+      socket.emit("register-user", { id: dbUserId, name: dbUserName });
+      myIdEl.textContent = dbUserName;
+    }
     await initializeMediaSoup();
   });
 
@@ -123,96 +126,130 @@ document.addEventListener("DOMContentLoaded", () => {
       .forEach((btn) => (btn.disabled = true));
   });
 
-  socket.on("user-list", async (users) => {
-    // 1️⃣ fetch your allowed targets and build a Set of their IDs
-    const dbUserId = localStorage.getItem("userId");
-    const targets = await fetchJSON(`/users/${dbUserId}/targets`);
-    const allowedNames = new Set(targets.map(t => t.name));
+  socket.on("user-list", async users => {
+    const dbUserId    = localStorage.getItem("userId");
+    const targets     = await fetchJSON(`/users/${dbUserId}/targets`);
 
-    console.log("Received full user-list:", users);
-    console.log("Filtering to only targets:", Array.from(allowedNames));
+    // Erlaubte User-IDs (db-) und Conference-Ziele trennen
+    const userTargetIds = new Set(
+        targets
+            .filter(t => t.targetType === "user")
+            .map(t => Number(t.targetId))
+    );
+    const confTargets = targets.filter(t => t.targetType === "conference");
 
-    // 2️⃣ clear out the old list
-    usersList.innerHTML = "";
+    const list = document.getElementById("targets-list");
+    list.innerHTML = ""; // Liste leeren
 
-    // 3️⃣ only show peers that are both connected AND in your target list
-    for (const { id, name } of users) {
-      // skip yourself
-      if (id === socket.id) continue;
-      // skip anyone not in allowedIds
-      if (!allowedNames.has(name)) continue;
+    // 1️⃣ User-Targets (nur, wenn Datenbank-ID matcht und online)
+    for (const { socketId, userId, name } of users) {
+      // 2️⃣ auch hier casten
+      if (!userTargetIds.has(Number(userId)) || socketId === socket.id) continue;
 
       const li = document.createElement("li");
-      li.id = `user-${id}`;
-      li.className = id === socket.id ? "you" : "";
+      li.id = `user-${socketId}`;
+      li.classList.add("target-item", "user-target");
 
-      // user info
-      const userInfo = document.createElement("div");
-      userInfo.className = "user-info";
-
+      // Icon & Label
       const icon = document.createElement("div");
       icon.className = "user-icon";
       icon.textContent = name
           ? name.charAt(0).toUpperCase()
-          : id.substring(0, 2).toUpperCase();
+          : socketId.substr(0, 2);
 
       const label = document.createElement("span");
-      label.textContent = name || id;
+      label.textContent = name || socketId;
 
-      userInfo.append(icon, label);
-      li.appendChild(userInfo);
+      li.append(icon, label);
 
-      // build the mute & push-to-talk controls if it's not you
-      if (id !== socket.id) {
-        const muteBtn = document.createElement("button");
-        muteBtn.className = "mute-btn";
-        muteBtn.textContent = "Mute";
-        muteBtn.title = "Stummschalten";
-        muteBtn.addEventListener("pointerdown", e => e.stopPropagation());
-        muteBtn.addEventListener("pointerup",   e => e.stopPropagation());
-        muteBtn.addEventListener("click", e => {
-          e.stopPropagation();
-          toggleMute(id);
-          muteBtn.classList.toggle("muted");
-          muteBtn.textContent = muteBtn.classList.contains("muted")
-              ? "Muted"
-              : "Mute";
-          muteBtn.title = muteBtn.classList.contains("muted")
-              ? "Ton einschalten"
-              : "Stummschalten";
+      // ——— Mute-Button ———
+      const muteBtn = document.createElement("button");
+      muteBtn.className = "mute-btn";
+      muteBtn.textContent = "Mute";
+      muteBtn.title = "Stummschalten";
+      muteBtn.addEventListener("pointerdown", e => e.stopPropagation());
+      muteBtn.addEventListener("click", e => {
+        e.stopPropagation();
+        toggleMute(socketId);
+        const muted = muteBtn.classList.toggle("muted");
+        muteBtn.textContent = muted ? "Unmute" : "Mute";
+        icon.classList.toggle("muted", muted);
+      });
+      li.appendChild(muteBtn);
+
+      // ——— Push-to-Talk ———
+      ["down", "up", "leave", "cancel"].forEach(ev => {
+        li.addEventListener(`pointer${ev}`, e => {
+          if (e.target.closest(".mute-btn")) return;
+          if (ev === "down") handleTalk(e, { type: "user", id: socketId });
+          else handleStopTalking(e);
         });
-        li.appendChild(muteBtn);
+      });
 
-        // push-to-talk
-        ["down","up","leave","cancel"].forEach(ev => {
-          li.addEventListener(`pointer${ev}`, e => {
-            if (e.target.closest(".mute-btn")) return;
-            if (ev === "down") return handleTalk(e, id);
-            else                  return handleStopTalking(e);
-          });
-        });
-      }
-
-      usersList.appendChild(li);
-
-      // restore any speaking/muted highlights
-      if (speakingPeers.has(id)) {
-        li.classList.add("speaking");
-        icon.classList.add("speaking");
-      }
-      if (lastSpokePeers.has(id) && !speakingPeers.has(id)) {
-        li.classList.add("last-spoke");
-      }
-      if (mutedPeers.has(id)) {
-        const mb = li.querySelector(".mute-btn");
-        if (mb) {
-          mb.classList.add("muted");
-          mb.textContent = "Muted";
-          icon.classList.add("muted");
-        }
-      }
+      list.appendChild(li);
     }
+
+    // 2️⃣ Conference-Targets (immer anzeigen)
+    for (const { targetId: id, name } of confTargets) {
+      const li = document.createElement("li");
+      li.id = `conf-${id}`;
+      li.classList.add("target-item", "conf-target");
+
+      // Icon & Label
+      const icon = document.createElement("div");
+      icon.className = "conf-icon";
+      icon.textContent = "📡";
+
+      const label = document.createElement("span");
+      label.textContent = name;
+
+      li.append(icon, label);
+
+      // Mute-Button
+      const muteBtn = document.createElement("button");
+      muteBtn.className = "mute-btn";
+      muteBtn.textContent = "Mute";
+      muteBtn.title = "Stummschalten";
+      muteBtn.addEventListener("pointerdown", e => e.stopPropagation());
+      muteBtn.addEventListener("click", e => {
+        e.stopPropagation();
+        toggleMute(id);
+        const muted = muteBtn.classList.toggle("muted");
+        muteBtn.textContent = muted ? "Unmute" : "Mute";
+        icon.classList.toggle("muted", muted);
+      });
+      li.appendChild(muteBtn);
+
+      // Push-to-Talk
+      ["down", "up", "leave", "cancel"].forEach(ev => {
+        li.addEventListener(`pointer${ev}`, e => {
+          if (e.target.closest(".mute-btn")) return;
+          if (ev === "down") handleTalk(e, { type: "conference", id });
+          else handleStopTalking(e);
+        });
+      });
+
+      list.appendChild(li);
+    }
+
+    // 3️⃣ Highlights (speaking, last-spoke, muted)
+    document.querySelectorAll(".target-item").forEach(li => {
+      const [type, id] = li.id.split("-");
+      const icon = li.querySelector(
+          type === "user" ? ".user-icon" : ".conf-icon"
+      );
+
+      const isSpeaking = speakingPeers.has(id);
+      li.classList.toggle("speaking", isSpeaking);
+      if (icon) icon.classList.toggle("speaking", isSpeaking);
+
+      li.classList.toggle("last-spoke", lastSpokePeers.has(id));
+      li.classList.toggle("muted", mutedPeers.has(id));
+      if (icon) icon.classList.toggle("muted", mutedPeers.has(id));
+    });
   });
+
+
 
 
   // Initialize MediaSoup
@@ -521,7 +558,7 @@ document.addEventListener("DOMContentLoaded", () => {
       mutedPeers.add(peerId);
     }
 
-    // Neue Variante: direkt alle aktiven consumer pro Peer ansprechen
+    // alle aktiven consumer pro Peer ansprechen
     const consumers = peerConsumers.get(peerId);
     if (consumers) {
       consumers.forEach((consumer) => {
@@ -546,49 +583,62 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // Gemeinsame Push-to-Talk-Funktion
-  async function handleTalk(e, targetPeer) {
+// target = null               → broadcast an alle
+// target = { type: "user", id: "<userId>" }
+// target = { type: "conf", id: "<confId>" }
+  async function handleTalk(e, target) {
     e.preventDefault();
     if (producer) return; // schon sprechender Producer? abbrechen
 
-    isTalking = true; // Flag: Button gedrückt
-    currentTargetPeer = targetPeer;
+    isTalking = true;
+    currentTarget = target;
 
     try {
-      // 1) Mikrofon holen
+      // Mikrofon holen
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true,
-        },
+          autoGainControl: true
+        }
       });
       const track = stream.getAudioTracks()[0];
 
-      // 2) Gemeinsam produzieren, evtl. mit Ziel-Info
+      // Producer-Parameter
       const params = { track };
-      if (targetPeer) params.appData = { targetPeer };
+      if (target) {
+        // für einen einzelnen User
+        // target = { type: "user", id: userId }
+        // oder für eine Konferenz:
+        // target = { type: "conf", id: confId }
+        params.appData = { type: target.type, id: target.id };
+      }
+
+      // Produktion starten
       const newProducer = await sendTransport.produce(params);
 
-      // 3) Abbruch, wenn Button schon losgelassen
+      // Falls Button inzwischen losgelassen wurde
       if (!isTalking) {
         newProducer.close();
         track.stop();
         return;
       }
 
-      // 4) Übernehmen & UI aktualisieren
+      // Zustand übernehmen & UI aktualisieren
       producer = newProducer;
-      if (targetPeer === null) {
-        btnAll.classList.add("active");
-      } else {
-        btnReply.classList.add("active");
-        const el = document.getElementById(`user-${targetPeer}`);
-        if (el) el.classList.add("talking-to");
+      btnAll.classList.toggle("active", target === null);
+      btnReply.classList.toggle("active", target !== null);
+
+      // Visuelles Feedback: speaking-to
+      if (target) {
+        const selector = target.type === "user"
+            ? `#user-${target.id}`
+            : `#conf-${target.id}`;
+        document.querySelector(selector)?.classList.add("talking-to");
       }
     } catch (err) {
       console.error("Mikrofon-Fehler:", err);
-      alert("Mikrofon-Fehler: " + err.message);
+      alert("Fehler beim Starten des Mikrofons: " + err.message);
       // UI zurücksetzen
       isTalking = false;
       btnAll.classList.remove("active");
@@ -596,17 +646,20 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+
+
   // Event-Handler für die Buttons:
-  btnAll.addEventListener("pointerdown", (e) => handleTalk(e, null));
+  btnAll.addEventListener("pointerdown", e => handleTalk(e, null));
   btnAll.addEventListener("pointerup", handleStopTalking);
   btnAll.addEventListener("pointerleave", handleStopTalking);
   btnAll.addEventListener("pointercancel", handleStopTalking);
 
-  btnReply.addEventListener("pointerdown", (e) => {
+  btnReply.addEventListener("pointerdown", e => {
     e.preventDefault();
     if (!lastSpeaker) return;
     handleTalk(e, lastSpeaker);
   });
+
   btnReply.addEventListener("pointerup", handleStopTalking);
   btnReply.addEventListener("pointerleave", handleStopTalking);
   btnReply.addEventListener("pointercancel", handleStopTalking);
@@ -633,11 +686,15 @@ document.addEventListener("DOMContentLoaded", () => {
     producer = null;
 
     // 5) UI: „talking-to“ entfernen
-    if (currentTargetPeer) {
-      const userEl = document.getElementById(`user-${currentTargetPeer}`);
-      if (userEl) userEl.classList.remove("talking-to");
+    if (currentTarget) {
+      const selector = currentTarget.type === "user"
+          ? `#user-${currentTarget.id}`
+          : `#conf-${currentTarget.id}`;
+      const el = document.querySelector(selector);
+      if (el) el.classList.remove("talking-to");
     }
-    currentTargetPeer = null;
+
+    currentTarget = null;
   }
 
   // Initial connection check
