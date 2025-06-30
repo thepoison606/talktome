@@ -4,9 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c99d1509-ef6d-42f4-a111-54d08d98e754" name="Changes" comment="Updated admin logic">
+    <list default="true" id="c99d1509-ef6d-42f4-a111-54d08d98e754" name="Changes" comment="Added conference type. &#10;&#10;Bugs: Conference not mutable, reply not working anymore, button glowup not working properly">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/app.db" beforeDir="false" afterPath="$PROJECT_DIR$/app.db" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/public/client.js" beforeDir="false" afterPath="$PROJECT_DIR$/public/client.js" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/server.js" beforeDir="false" afterPath="$PROJECT_DIR$/server.js" afterDir="false" />
     </list>
@@ -71,7 +70,7 @@
       <updated>1750146838027</updated>
       <workItem from="1750146839123" duration="31668000" />
       <workItem from="1751267571841" duration="115000" />
-      <workItem from="1751271428952" duration="6810000" />
+      <workItem from="1751271428952" duration="8404000" />
     </task>
     <task id="LOCAL-00001" summary="Updated admin logic">
       <option name="closed" value="true" />
@@ -81,7 +80,23 @@
       <option name="project" value="LOCAL" />
       <updated>1750165599819</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="Added conference type. &#10;&#10;Bugs: Conference not mutable, reply not working anymore, button glowup not working properly">
+      <option name="closed" value="true" />
+      <created>1751278617946</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1751278617946</updated>
+    </task>
+    <task id="LOCAL-00003" summary="Added conference type. &#10;&#10;Bugs: Conference not mutable, reply not working anymore, button glowup not working properly">
+      <option name="closed" value="true" />
+      <created>1751278693837</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1751278693837</updated>
+    </task>
+    <option name="localTasksCounter" value="4" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -89,6 +104,7 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Updated admin logic" />
-    <option name="LAST_COMMIT_MESSAGE" value="Updated admin logic" />
+    <MESSAGE value="Added conference type. &#10;&#10;Bugs: Conference not mutable, reply not working anymore, button glowup not working properly" />
+    <option name="LAST_COMMIT_MESSAGE" value="Added conference type. &#10;&#10;Bugs: Conference not mutable, reply not working anymore, button glowup not working properly" />
   </component>
 </project>

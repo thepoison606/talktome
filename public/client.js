@@ -199,24 +199,23 @@ document.addEventListener("DOMContentLoaded", () => {
       const icon = document.createElement("div");
       icon.className = "conf-icon";
       icon.textContent = "📡";
-
       const label = document.createElement("span");
       label.textContent = name;
-
       li.append(icon, label);
 
       // Mute-Button
+      const key = `conf-${id}`;  // wird in toggleMute verwendet
       const muteBtn = document.createElement("button");
       muteBtn.className = "mute-btn";
-      muteBtn.textContent = "Mute";
+      muteBtn.textContent = mutedPeers.has(key) ? "Unmute" : "Mute";
       muteBtn.title = "Stummschalten";
       muteBtn.addEventListener("pointerdown", e => e.stopPropagation());
       muteBtn.addEventListener("click", e => {
         e.stopPropagation();
         toggleMute(id);
-        const muted = muteBtn.classList.toggle("muted");
-        muteBtn.textContent = muted ? "Unmute" : "Mute";
-        icon.classList.toggle("muted", muted);
+        // Button-Text nach aktuellem Zustand aktualisieren
+        const nowMuted = mutedPeers.has(key);
+        muteBtn.textContent = nowMuted ? "Unmute" : "Mute";
       });
       li.appendChild(muteBtn);
 
@@ -231,6 +230,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       list.appendChild(li);
     }
+
 
     // 3️⃣ Highlights (speaking, last-spoke, muted)
     document.querySelectorAll(".target-item").forEach(li => {
@@ -399,109 +399,82 @@ document.addEventListener("DOMContentLoaded", () => {
 // Hilfsfunktion (falls noch nicht global definiert)
   function toKey(rawId, appData) {
     if (appData?.type === "conference") return `conf-${appData.id}`;
-    // Falls rawId schon ein fertiger Key ist:
     if (rawId.startsWith?.("user-") || rawId.startsWith?.("conf-")) return rawId;
-    return `user-${rawId}`;                            // Socket → DOM-Key
+    return `user-${rawId}`;
   }
 
   socket.on("new-producer", async ({ peerId, producerId, appData }) => {
-    console.log(`New producer ${producerId} from peer ${peerId}`);
+    console.log(`New producer ${producerId} from peer ${peerId}`, appData);
 
-    // ---------- Key bestimmen ----------
-    const key = toKey(peerId, appData);               // "user-…" oder "conf-…"
+    // ─── Key bestimmen ───────────────────────────────────────────
+    // Conference-Streams bekommen den Key "conf-<id>", alles andere "user-<socketId>"
+    const key = appData?.type === "conference"
+        ? `conf-${appData.id}`
+        : `user-${peerId}`;
 
-    // Skip our own producers
+    // ─── Eigene Streams ignorieren ───────────────────────────────
     if (peerId === socket.id) return;
 
-    // Optionales Server-Flag: Ist der Stream nur für einen bestimmten Peer?
-    const targetPeer = appData?.targetPeer;
-    if (targetPeer && targetPeer !== socket.id) {
+    // ─── Streams nur für bestimmte Peers überspringen ────────────
+    if (appData?.targetPeer && appData.targetPeer !== socket.id) {
       console.log("Producer not for us, skipping");
       return;
     }
 
     try {
-      // ---------- Highlight an ----------
+      // ─── Highlight einschalten (grün) ───────────────────────────
       speakingPeers.add(key);
       updateSpeakerHighlight(key, true);
 
-      // ---------- Consumer anlegen ----------
-      const consumeParams = await new Promise((resolve) => {
-        socket.emit(
-            "consume",
-            { producerId, rtpCapabilities: device.rtpCapabilities },
-            resolve
-        );
-      });
-
-      if (consumeParams.error) throw new Error(consumeParams.error);
+      // ─── Consumer anlegen ───────────────────────────────────────
+      const { error, ...consumeParams } = await new Promise(resolve =>
+          socket.emit(
+              "consume",
+              { producerId, rtpCapabilities: device.rtpCapabilities },
+              resolve
+          )
+      );
+      if (error) throw new Error(error);
 
       const consumer = await recvTransport.consume(consumeParams);
-      consumers.set(consumer.id, { consumer, key });
 
-      // Map nach Key für sofortiges Muten
+      // Damit ihr auch das Muten sauber drüberspielen könnt
       if (!peerConsumers.has(key)) peerConsumers.set(key, new Set());
       peerConsumers.get(key).add(consumer);
 
-      // Sofort muten, falls Key bereits stumm
+      // Sofort stummschalten, wenn gewünscht
       if (mutedPeers.has(key)) consumer.pause();
 
-      // ---------- Audio-Element ----------
+      // ─── Audio-Element bauen & anhängen ─────────────────────────
       const audio = document.createElement("audio");
       audio.srcObject = new MediaStream([consumer.track]);
-      audio.autoplay  = true;
-      audio.volume    = mutedPeers.has(key) ? 0 : 1.0;
-
+      audio.autoplay = true;
+      audio.volume   = mutedPeers.has(key) ? 0 : 1.0;
       audioStreamsDiv.appendChild(audio);
       audioElements.set(consumer.id, { audio, key });
 
-      // Autoplay-Fallback
-      try {
-        await audio.play();
-        console.log("✓ Audio playback started");
-      } catch (playErr) {
-        console.warn("Autoplay failed:", playErr);
-        if (!document.getElementById("enable-audio-btn")) {
-          const btn = document.createElement("button");
-          btn.id = "enable-audio-btn";
-          btn.textContent = "Please click to enable audio";
-          Object.assign(btn.style, {
-            position: "fixed",
-            top: "50%",
-            left: "50%",
-            transform: "translate(-50%, -50%)",
-            zIndex: 1000,
-            background: "#ff9800",
-            padding: "100px 100px"
-          });
-          btn.onclick = async () => {
-            for (const a of audioStreamsDiv.querySelectorAll("audio")) {
-              try { await a.play(); } catch {}
-            }
-            btn.remove();
-          };
-          document.body.appendChild(btn);
-        }
-      }
+      // Probier Autoplay
+      try { await audio.play(); console.log("✓ Audio playback started"); } catch {}
 
-      // ---------- Consumer starten ----------
-      await new Promise((res) => {
-        socket.emit("resume-consumer", { consumerId: consumer.id }, res);
-      });
+      // ─── Resume starten ──────────────────────────────────────────
+      await new Promise(res =>
+          socket.emit("resume-consumer", { consumerId: consumer.id }, res)
+      );
 
-      // ---------- Cleanup ----------
+      // ─── Cleanup, wenn dieser Producer schließt ─────────────────
       consumer.on("producerclose", () => {
         console.log(`Producer closed for consumer ${consumer.id}`);
         speakingPeers.delete(key);
         updateSpeakerHighlight(key, false);
 
-        const aData = audioElements.get(consumer.id);
-        if (aData) {
-          aData.audio.remove();
+        // Audio-Element entfernen
+        const stored = audioElements.get(consumer.id);
+        if (stored) {
+          stored.audio.remove();
           audioElements.delete(consumer.id);
         }
-        peerConsumers.get(key)?.delete(consumer);
-        consumers.delete(consumer.id);
+        // Consumer aus Map löschen
+        peerConsumers.get(key).delete(consumer);
       });
     } catch (err) {
       console.error("Error consuming:", err);
@@ -509,47 +482,70 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
 
+
   socket.on("producer-closed", ({ peerId, appData }) => {
-    const key = makeKey(appData, peerId);     // appData jetzt mitsenden!
+    // 1️⃣ Key berechnen wie immer
+    const key = appData?.type === "conference"
+        ? `conf-${appData.id}`
+        : `user-${peerId}`;
+
+    // 2️⃣ Nur weiter, wenn wir für diesen Key wirklich konsumiert hatten
+    const consumersSet = peerConsumers.get(key);
+    if (!consumersSet || consumersSet.size === 0) {
+      // wir hören diesen Stream gar nicht – kein Gelb
+      return;
+    }
+
+    // 3️⃣ Bereinigung aller verbliebenen Consumer
+    consumersSet.forEach(c => { try { c.close(); } catch {} });
+    peerConsumers.delete(key);
+
+    // 4️⃣ speakingPeers aufräumen
+    speakingPeers.delete(key);
+
+    // 5️⃣ Last-Spoke (Gelb) setzen
     updateSpeakerHighlight(key, false);
   });
 
 
+
+
   // Update speaker highlight
   function updateSpeakerHighlight(targetKey, isSpeaking) {
-    const el   = document.getElementById(targetKey);
+    const el = document.getElementById(targetKey);
     if (!el) return;
 
-    const icon = el.querySelector(
-        targetKey.startsWith("conf-") ? ".conf-icon" : ".user-icon"
-    );
+    // Wähle das richtige Icon
+    const iconCls = targetKey.startsWith("conf-") ? ".conf-icon" : ".user-icon";
+    const icon    = el.querySelector(iconCls);
 
     if (isSpeaking) {
+      // ─── Sprecher läuft gerade ───────────────────────────────
       el.classList.add("speaking");
       el.classList.remove("last-spoke");
       icon?.classList.add("speaking");
     } else {
+      // ─── Sprecher hat aufgehört ───────────────────────────────
       el.classList.remove("speaking");
       icon?.classList.remove("speaking");
 
-      // 1) Setze lastSpeaker und aktiviere Reply-Button
-      lastSpeaker = peerId;
-      if (peerId !== socket.id) {
+      // 1) Setze lastSpeaker auf diesen Key und aktiviere Reply
+      lastSpeaker = targetKey;
+      // Reply nur, wenn es nicht wir selbst sind (bei User)
+      if (targetKey !== `user-${socket.id}`) {
         btnReply.disabled = false;
       }
 
-      // 2) Markiere als letzte Stimme
-      document
-        .querySelectorAll(".last-spoke")
-        .forEach((el) => el.classList.remove("last-spoke"));
-      userEl.classList.add("last-spoke");
+      // 2) Entferne alle alten last-spoke-Klassen und markiere diesen Eintrag
+      document.querySelectorAll(".last-spoke").forEach(e => e.classList.remove("last-spoke"));
+      el.classList.add("last-spoke");
 
-      // 3) Nach 20s wieder aufräumen
+      // 3) Nach 20 s wieder aufräumen (falls er nicht erneut spricht)
       setTimeout(() => {
-        if (!speakingPeers.has(peerId)) {
-          userEl.classList.remove("last-spoke");
-          // Button ggf. wieder deaktivieren
-          if (lastSpeaker === peerId) {
+        if (!speakingPeers.has(targetKey)) {
+          el.classList.remove("last-spoke");
+
+          if (lastSpeaker === targetKey) {
             lastSpeaker = null;
             btnReply.disabled = true;
           }

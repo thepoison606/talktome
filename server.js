@@ -301,28 +301,33 @@ io.on("connection", (socket) => {
 
   socket.on("producer-close", ({ producerId }) => {
     console.log(
-      `[SIGNAL] producer-close von Client ${socket.id} erhalten für Producer ${producerId}`
+        `[SIGNAL] producer-close von Client ${socket.id} erhalten für Producer ${producerId}`
     );
 
-    const peer = peers.get(socket.id);
+    const peer     = peers.get(socket.id);
     const producer = peer?.producers.get(producerId);
     if (!producer) {
       console.warn(`[SIGNAL] Kein Producer mit ID ${producerId} gefunden.`);
       return;
     }
 
+    // AppData mitlesen, damit der Client weiß, welche Kachel es war
+    const { appData } = producer;
+
     // 2. Producer schließen und internen Zustand aufräumen
     producer.close();
     peer.producers.delete(producerId);
 
-    // 3. Broadcast sofort an alle anderen Clients
+    // 3. Broadcast sofort an alle anderen Clients, inkl. appData
     socket.broadcast.emit("producer-closed", {
-      peerId: socket.id,
+      peerId:     socket.id,
       producerId,
+      appData
     });
 
     console.log(`[SIGNAL] producer-closed an alle anderen gesendet`);
   });
+
 
   socket.on("register-name", (name) => {
     const peer = peers.get(socket.id);
@@ -576,14 +581,17 @@ io.on("connection", (socket) => {
           //----------------------------------------------------------------
           // 4️⃣  Cleanup-Listener
           //----------------------------------------------------------------
+          producer.appData = appData;  // einmalig speichern
+
           producer.on("close", () => {
             peer.producers.delete(producer.id);
             socket.broadcast.emit("producer-closed", {
-              peerId: socket.id,
+              peerId:     socket.id,
               producerId: producer.id,
-              appData
+              appData     // jetzt mit
             });
           });
+
 
           producer.on("transportclose", () => {
             peer.producers.delete(producer.id);
