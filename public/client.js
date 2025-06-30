@@ -440,7 +440,8 @@ document.addEventListener("DOMContentLoaded", () => {
       consumers.set(consumer.id, { consumer, key });
 
       // Map nach Key für sofortiges Muten
-      (peerConsumers.get(key) ??= new Set()).add(consumer);
+      if (!peerConsumers.has(key)) peerConsumers.set(key, new Set());
+      peerConsumers.get(key).add(consumer);
 
       // Sofort muten, falls Key bereits stumm
       if (mutedPeers.has(key)) consumer.pause();
