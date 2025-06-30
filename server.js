@@ -56,7 +56,7 @@ app.get('/conferences/:id/users', (req, res) => {
     console.log(`[DEBUG]  → found users:`, users);
     res.json(users);
   } catch (err) {
-    console.error(`[ERROR] fetching users for conf ${confId}:`, err);
+    console.error(`[ERROR] fetching users for conference ${confId}:`, err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -337,7 +337,10 @@ io.on("connection", (socket) => {
 
   // Send RTP capabilities on request
   socket.on("get-router-rtp-capabilities", (callback) => {
-    console.log(`[RTP] Client ${socket.id} requests RTP capabilities`);
+    if (!router) {
+      console.warn("[RTP] Router not ready yet – rejecting request");
+      return callback({ error: "Router not initialized, try again" });
+    }
     callback(router.rtpCapabilities);
   });
 
@@ -477,81 +480,121 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("produce", async ({ kind, rtpParameters, appData }, callback) => {
-    console.log(`[PRODUCE] Client ${socket.id} wants to produce ${kind}`, appData);
-
-    try {
-      const peer = peers.get(socket.id);
-      const transport = peer.sendTransport;
-
-      // 1️⃣ Producer anlegen
-      const producer = await transport.produce({ kind, rtpParameters, appData });
-      peer.producers.set(producer.id, producer);
-      console.log(`[PRODUCE] Producer created: ${producer.id} for ${socket.id}`);
-
-      // 2️⃣ ID zurück an den produzierenden Client
-      callback({ id: producer.id });
-
-      // 3️⃣ Routing je nach appData.type
-      const { type, id: targetId } = appData || {};
-
-      if (type === "user") {
-        // Einzelziel: nur an diesen User senden
-        const targetPeer = peers.get(targetId);
-        if (targetPeer) {
-          targetPeer.socket.emit("new-producer", {
-            peerId: socket.id,
-            producerId: producer.id,
+  socket.on(
+      "produce",
+      async ({ kind, rtpParameters, appData }, callback) => {
+        console.log(
+            `[PRODUCE] Client ${socket.id} wants to produce ${kind}`,
             appData
+        );
+
+        //------------------------------------------------------------------
+        // 0️⃣  Eingehende Daten validieren
+        //------------------------------------------------------------------
+        const { type, id: targetId } = appData || {};
+        const validTypes = ["user", "conference", "global"];
+
+        if (!type || !targetId || !validTypes.includes(type)) {
+          console.warn("[PRODUCE] Ungültiges appData:", appData);
+          callback({
+            error:
+                "Ungültiges appData: 'type' = 'user' | 'conference' und 'id' müssen gesetzt sein",
           });
-          console.log(`[ROUTE] Sent to user ${targetId}`);
-        } else {
-          console.warn(`[ROUTE] User ${targetId} not connected`);
+          return; // ⬅︎  Abbruch, kein Producer wird angelegt
         }
 
-      } else if (type === "conf") {
-        // Konferenz: alle Mitglieder der Konferenz holen und benachrichtigen
-        const members = getUsersForConference(targetId);  // [{ id, name }, …]
-        for (const member of members) {
-          for (const [sid, p] of peers) {
-            if (p.userId === member.id && sid !== socket.id) {
-              p.socket.emit("new-producer", {
+        try {
+          //----------------------------------------------------------------
+          // 1️⃣  Producer anlegen
+          //----------------------------------------------------------------
+          const peer = peers.get(socket.id);
+          const transport = peer.sendTransport;
+
+          const producer = await transport.produce({
+            kind,
+            rtpParameters,
+            appData,
+          });
+
+          peer.producers.set(producer.id, producer);
+          console.log(
+              `[PRODUCE] Producer created: ${producer.id} for ${socket.id}`
+          );
+
+          //----------------------------------------------------------------
+          // 2️⃣  ID an den Client zurück
+          //----------------------------------------------------------------
+          callback({ id: producer.id });
+
+          //----------------------------------------------------------------
+          // 3️⃣  Routing
+          //----------------------------------------------------------------
+          if (type === "user") {
+            // 🎯 Direktziel (Socket-ID)
+            const targetPeer = peers.get(targetId);
+            if (targetPeer) {
+              targetPeer.socket.emit("new-producer", {
                 peerId: socket.id,
                 producerId: producer.id,
-                appData
+                appData,
               });
+              console.log(`[ROUTE] Sent to user ${targetId}`);
+            } else {
+              console.warn(`[ROUTE] User ${targetId} not connected`);
             }
+          } else if (type === "conference") {
+            // 👥 Konferenz: alle Teilnehmer benachrichtigen
+            const members = getUsersForConference(targetId); // [{ id, name }, …]
+
+            for (const member of members) {
+              for (const [sid, p] of peers) {
+                if (String(p.userId) === String(member.id) && sid !== socket.id) {
+                  p.socket.emit("new-producer", {
+                    peerId: socket.id,
+                    producerId: producer.id,
+                    appData,
+                  });
+                }
+              }
+            }
+            console.log(`[ROUTE] Sent to conference ${targetId}`);
           }
+          else if (type === "global") {
+            for (const [sid, p] of peers) {
+              if (sid !== socket.id) {
+                p.socket.emit("new-producer", {
+                  peerId: socket.id,
+                  producerId: producer.id,
+                  appData
+                });
+              }
+            }
+            console.log("[ROUTE] Sent to ALL via global broadcast");
+          }
+
+
+          //----------------------------------------------------------------
+          // 4️⃣  Cleanup-Listener
+          //----------------------------------------------------------------
+          producer.on("close", () => {
+            peer.producers.delete(producer.id);
+            socket.broadcast.emit("producer-closed", {
+              peerId: socket.id,
+              producerId: producer.id,
+              appData
+            });
+          });
+
+          producer.on("transportclose", () => {
+            peer.producers.delete(producer.id);
+          });
+        } catch (error) {
+          console.error("[PRODUCE] Error:", error);
+          callback({ error: error.message });
         }
-        console.log(`[ROUTE] Sent to conference ${targetId}`);
-
-      } else {
-        // Fallback: Broadcast an alle anderen Clients
-        socket.broadcast.emit("new-producer", {
-          peerId: socket.id,
-          producerId: producer.id,
-          appData
-        });
-        console.log(`[ROUTE] Broadcast to all`);
       }
+  );
 
-      // 4️⃣ Cleanup beim Schließen
-      producer.on("close", () => {
-        peer.producers.delete(producer.id);
-        socket.broadcast.emit("producer-closed", {
-          peerId: socket.id,
-          producerId: producer.id
-        });
-      });
-      producer.on("transportclose", () => {
-        peer.producers.delete(producer.id);
-      });
-
-    } catch (error) {
-      console.error("[PRODUCE] Error:", error);
-      callback({ error: error.message });
-    }
-  });
 
 
 

@@ -317,24 +317,34 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       );
 
-      sendTransport.on("produce", async (parameters, callback, errback) => {
-        try {
-          const response = await new Promise((resolve) => {
-            socket.emit(
-              "produce",
-              {
-                kind: parameters.kind,
-                rtpParameters: parameters.rtpParameters,
-                appData: { targetPeer: currentTargetPeer }, // Send target info
-              },
-              resolve
-            );
-          });
-          callback({ id: response.id });
-        } catch (error) {
-          errback(error);
-        }
-      });
+      // currentTargetPeer → Socket-ID des Users, wenn du P2P reden willst.
+      sendTransport.on(
+          "produce",
+          async ({ kind, rtpParameters, appData }, callback, errback) => {
+            try {
+              // App-Daten aus handleTalk() beibehalten und ggf. targetPeer ergänzen
+              const mergedAppData = {
+                ...appData,                     // { type: "user"/"conference", id: … }
+                ...(currentTargetPeer
+                    ? { targetPeer: currentTargetPeer }
+                    : {})                         // nur anhängen, wenn definiert
+              };
+
+              const response = await new Promise((resolve) => {
+                socket.emit(
+                    "produce",
+                    { kind, rtpParameters, appData: mergedAppData },
+                    resolve
+                );
+              });
+
+              callback({ id: response.id });
+            } catch (error) {
+              errback(error);
+            }
+          }
+      );
+
 
       // 4. Create Receive Transport
       console.log("4. Creating receive transport...");
@@ -386,13 +396,24 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Handle new producers
+// Hilfsfunktion (falls noch nicht global definiert)
+  function toKey(rawId, appData) {
+    if (appData?.type === "conference") return `conf-${appData.id}`;
+    // Falls rawId schon ein fertiger Key ist:
+    if (rawId.startsWith?.("user-") || rawId.startsWith?.("conf-")) return rawId;
+    return `user-${rawId}`;                            // Socket → DOM-Key
+  }
+
   socket.on("new-producer", async ({ peerId, producerId, appData }) => {
     console.log(`New producer ${producerId} from peer ${peerId}`);
+
+    // ---------- Key bestimmen ----------
+    const key = toKey(peerId, appData);               // "user-…" oder "conf-…"
 
     // Skip our own producers
     if (peerId === socket.id) return;
 
-    // Check if this producer is meant for us (or for all)
+    // Optionales Server-Flag: Ist der Stream nur für einen bestimmten Peer?
     const targetPeer = appData?.targetPeer;
     if (targetPeer && targetPeer !== socket.id) {
       console.log("Producer not for us, skipping");
@@ -400,100 +421,85 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     try {
-      // Add speaker to list and highlight
-      speakingPeers.add(peerId);
-      updateSpeakerHighlight(peerId, true);
+      // ---------- Highlight an ----------
+      speakingPeers.add(key);
+      updateSpeakerHighlight(key, true);
 
-      // Consume the audio
+      // ---------- Consumer anlegen ----------
       const consumeParams = await new Promise((resolve) => {
         socket.emit(
-          "consume",
-          {
-            producerId,
-            rtpCapabilities: device.rtpCapabilities,
-          },
-          resolve
+            "consume",
+            { producerId, rtpCapabilities: device.rtpCapabilities },
+            resolve
         );
       });
 
-      if (consumeParams.error) {
-        console.warn("Consumer konnte nicht erzeugt werden für", peerId);
-        throw new Error(consumeParams.error);
-      }
+      if (consumeParams.error) throw new Error(consumeParams.error);
 
       const consumer = await recvTransport.consume(consumeParams);
-      consumers.set(consumer.id, { consumer, peerId });
+      consumers.set(consumer.id, { consumer, key });
 
-      // Speichern des Consumers nach peerId für sofortiges Muten
-      if (!peerConsumers.has(peerId)) {
-        peerConsumers.set(peerId, new Set());
-      }
-      peerConsumers.get(peerId).add(consumer);
+      // Map nach Key für sofortiges Muten
+      (peerConsumers.get(key) ??= new Set()).add(consumer);
 
-      if (mutedPeers.has(peerId)) {
-        consumer.pause();
-      }
+      // Sofort muten, falls Key bereits stumm
+      if (mutedPeers.has(key)) consumer.pause();
 
-      // Create hidden audio element
+      // ---------- Audio-Element ----------
       const audio = document.createElement("audio");
       audio.srcObject = new MediaStream([consumer.track]);
-      audio.autoplay = true;
-      audio.volume = mutedPeers.has(peerId) ? 0 : 1.0;
+      audio.autoplay  = true;
+      audio.volume    = mutedPeers.has(key) ? 0 : 1.0;
 
-      // Add to hidden container
       audioStreamsDiv.appendChild(audio);
-      audioElements.set(consumer.id, { audio, peerId });
+      audioElements.set(consumer.id, { audio, key });
 
-      // Try to play
+      // Autoplay-Fallback
       try {
         await audio.play();
         console.log("✓ Audio playback started");
-      } catch (playError) {
-        console.warn("Autoplay failed:", playError);
-        // Create a hidden play button that the user needs to click once
+      } catch (playErr) {
+        console.warn("Autoplay failed:", playErr);
         if (!document.getElementById("enable-audio-btn")) {
-          const enableBtn = document.createElement("button");
-          enableBtn.id = "enable-audio-btn";
-          enableBtn.textContent = "Please click to enable audio";
-          enableBtn.style.position = "fixed";
-          enableBtn.style.top = "50%";
-          enableBtn.style.left = "50%";
-          enableBtn.style.transform = "translate(-50%, -50%)";
-          enableBtn.style.zIndex = "1000";
-          enableBtn.style.background = "#ff9800";
-          enableBtn.style.padding = "100px 100px";
-          enableBtn.onclick = async () => {
-            // Try to play all audio elements
-            const audioEls = audioStreamsDiv.querySelectorAll("audio");
-            for (const a of audioEls) {
-              try {
-                await a.play();
-              } catch (e) {
-                console.error("Play failed:", e);
-              }
+          const btn = document.createElement("button");
+          btn.id = "enable-audio-btn";
+          btn.textContent = "Please click to enable audio";
+          Object.assign(btn.style, {
+            position: "fixed",
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            zIndex: 1000,
+            background: "#ff9800",
+            padding: "100px 100px"
+          });
+          btn.onclick = async () => {
+            for (const a of audioStreamsDiv.querySelectorAll("audio")) {
+              try { await a.play(); } catch {}
             }
-            enableBtn.remove();
+            btn.remove();
           };
-          document.body.appendChild(enableBtn);
+          document.body.appendChild(btn);
         }
       }
 
-      // Resume consumer
-      await new Promise((resolve) => {
-        socket.emit("resume-consumer", { consumerId: consumer.id }, resolve);
+      // ---------- Consumer starten ----------
+      await new Promise((res) => {
+        socket.emit("resume-consumer", { consumerId: consumer.id }, res);
       });
 
-      // Monitor when producer closes
+      // ---------- Cleanup ----------
       consumer.on("producerclose", () => {
         console.log(`Producer closed for consumer ${consumer.id}`);
-        speakingPeers.delete(peerId);
-        updateSpeakerHighlight(peerId, false);
-        // Clean up
-        const audioData = audioElements.get(consumer.id);
-        if (audioData) {
-          audioData.audio.remove();
+        speakingPeers.delete(key);
+        updateSpeakerHighlight(key, false);
+
+        const aData = audioElements.get(consumer.id);
+        if (aData) {
+          aData.audio.remove();
           audioElements.delete(consumer.id);
         }
+        peerConsumers.get(key)?.delete(consumer);
         consumers.delete(consumer.id);
       });
     } catch (err) {
@@ -501,26 +507,29 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  socket.on("producer-closed", ({ peerId }) => {
-    console.log(`Producer von ${peerId} geschlossen – entferne .speaking`);
-    updateSpeakerHighlight(peerId, false);
+
+  socket.on("producer-closed", ({ peerId, appData }) => {
+    const key = makeKey(appData, peerId);     // appData jetzt mitsenden!
+    updateSpeakerHighlight(key, false);
   });
 
+
   // Update speaker highlight
-  function updateSpeakerHighlight(peerId, isSpeaking) {
-    const userEl = document.getElementById(`user-${peerId}`);
-    if (!userEl) return;
-    const icon = userEl.querySelector(".user-icon");
+  function updateSpeakerHighlight(targetKey, isSpeaking) {
+    const el   = document.getElementById(targetKey);
+    if (!el) return;
+
+    const icon = el.querySelector(
+        targetKey.startsWith("conf-") ? ".conf-icon" : ".user-icon"
+    );
 
     if (isSpeaking) {
-      // Jemand spricht gerade
-      userEl.classList.add("speaking");
-      userEl.classList.remove("last-spoke");
-      if (icon) icon.classList.add("speaking");
+      el.classList.add("speaking");
+      el.classList.remove("last-spoke");
+      icon?.classList.add("speaking");
     } else {
-      // Jemand hat aufgehört zu sprechen
-      userEl.classList.remove("speaking");
-      if (icon) icon.classList.remove("speaking");
+      el.classList.remove("speaking");
+      icon?.classList.remove("speaking");
 
       // 1) Setze lastSpeaker und aktiviere Reply-Button
       lastSpeaker = peerId;
@@ -548,40 +557,44 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
-  // Toggle mute for a peer
-  function toggleMute(peerId) {
-    const isMuted = mutedPeers.has(peerId);
+// ---------- Hilfsfunktion einmal zentral definieren ----------
+  function toKey(rawId) {
+    // Ist es schon ein fertiger Key?
+    if (rawId.startsWith("user-") || rawId.startsWith("conf-")) return rawId;
+    // Konferenz-IDs sind rein numerisch → alles andere ist Socket-ID
+    return isFinite(rawId) ? `conf-${rawId}` : `user-${rawId}`;
+  }
 
-    if (isMuted) {
-      mutedPeers.delete(peerId);
-    } else {
-      mutedPeers.add(peerId);
-    }
+// ---------- Toggle mute ----------
+  function toggleMute(rawId) {
+    const key     = toKey(rawId);                 // "user-<socket>" oder "conf-<id>"
+    const isMuted = mutedPeers.has(key);
 
-    // alle aktiven consumer pro Peer ansprechen
-    const consumers = peerConsumers.get(peerId);
+    // Mute-Status umschalten
+    if (isMuted) mutedPeers.delete(key);
+    else         mutedPeers.add(key);
+
+    // Alle Consumer dieses Keys ansprechen
+    const consumers = peerConsumers.get(key);
     if (consumers) {
-      consumers.forEach((consumer) => {
-        if (!consumer?.pause || !consumer?.resume) return;
-
-        if (mutedPeers.has(peerId)) {
-          consumer.pause(); // Ton sofort stoppen
-        } else {
-          consumer.resume(); // Ton sofort aktivieren
-        }
+      consumers.forEach((c) => {
+        if (!c?.pause || !c?.resume) return;
+        mutedPeers.has(key) ? c.pause() : c.resume();
       });
     } else {
-      console.warn(
-        `Kein aktiver Consumer für ${peerId}, mute wird vorgemerkt.`
-      );
+      console.warn(`Kein aktiver Consumer für ${key}, mute wird vorgemerkt.`);
     }
 
-    // Icon updaten
-    const icon = document.querySelector(`#user-${peerId} .user-icon`);
-    if (icon) {
-      icon.classList.toggle("muted", mutedPeers.has(peerId));
-    }
+    // Icon & Listeneintrag updaten
+    const elSelector   = `#${key}`;
+    const iconSelector = key.startsWith("conf-")
+        ? `${elSelector} .conf-icon`
+        : `${elSelector} .user-icon`;
+
+    document.querySelector(elSelector)?.classList.toggle("muted", mutedPeers.has(key));
+    document.querySelector(iconSelector)?.classList.toggle("muted", mutedPeers.has(key));
   }
+
 
 // target = null               → broadcast an alle
 // target = { type: "user", id: "<userId>" }
@@ -649,7 +662,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
   // Event-Handler für die Buttons:
-  btnAll.addEventListener("pointerdown", e => handleTalk(e, null));
+  btnAll.addEventListener("pointerdown", e => handleTalk(e, { type: "global", id: "broadcast" }));
   btnAll.addEventListener("pointerup", handleStopTalking);
   btnAll.addEventListener("pointerleave", handleStopTalking);
   btnAll.addEventListener("pointercancel", handleStopTalking);
