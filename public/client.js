@@ -1,10 +1,5 @@
 const socket = io();
 
-document.addEventListener("click", e => {
-  console.log("[GLOBAL CLICK]", e.target);
-});
-
-
 socket.onAny((event, ...args) => {
   console.log("[socket.onAny] got event", event, args);
 });
@@ -15,11 +10,10 @@ async function fetchJSON(url) {
   return res.json();
 }
 
-
 document.addEventListener("DOMContentLoaded", () => {
   console.log("DOM loaded, initializing...");
 
-  // 🔒 Check ob mediasoup-client geladen wurde
+  // Check ob mediasoup-client geladen wurde
   if (typeof mediasoupClient === "undefined") {
     console.error("mediasoup-client not loaded!");
     alert("MediaSoup Client konnte nicht geladen werden!");
@@ -35,7 +29,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const logoutBtn = document.getElementById("logout-btn");
 
   const myIdEl = document.getElementById("my-id");
-  const targetsList = document.getElementById("targets-list");
   const btnAll = document.getElementById("talk-all");
   const btnReply = document.getElementById("reply");
   const audioStreamsDiv = document.getElementById("audio-streams");
@@ -43,7 +36,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // MediaSoup Variablen
   let device, sendTransport, recvTransport, producer;
-  const consumers = new Map();
   const audioElements = new Map();
   const speakingPeers = new Set();
   const lastSpokePeers = new Map();
@@ -554,7 +546,7 @@ document.addEventListener("DOMContentLoaded", () => {
           .forEach(elem => elem.classList.remove("last-spoke"));
       el.classList.add("last-spoke");
 
-      // 3) Nach 20s wieder aufräumen
+/*      // 3) Nach 20s wieder aufräumen
       setTimeout(() => {
         if (!speakingPeers.has(targetKey)) {
           el.classList.remove("last-spoke");
@@ -568,7 +560,7 @@ document.addEventListener("DOMContentLoaded", () => {
             btnReply.disabled = true;
           }
         }
-      }, 20000);
+      }, 20000);*/
     }
   }
 

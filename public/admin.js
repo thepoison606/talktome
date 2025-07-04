@@ -30,14 +30,17 @@ async function loadData() {
     const li = document.createElement('li');
     li.innerHTML = `
     <span style="cursor:pointer;" onclick="toggleUserConfs(${user.id}, this)">▶</span>
-    ${user.name} (id: ${user.id})
-    <button class="small" onclick="editUser(${user.id}, '${user.name}')">Edit</button>
-    <button class="small" onclick="deleteUser(${user.id})">🗑️</button>
+    ${user.name}
+
 
     <!-- Combined collapsible container -->
     <div class="nested" id="user-nested-${user.id}">
-      <strong>Part of Conferences</strong>
-      <ul id="user-confs-${user.id}"></ul>
+      <button class="small" onclick="editUser(${user.id}, '${user.name}')">Rename</button>
+      <button class="small" onclick="deleteUser(${user.id})">Delete User 🗑️</button><br/>
+      <div style="margin-top:1em;">
+        <strong>Part of Conferences</strong>
+        <ul id="user-confs-${user.id}"></ul>
+      </div>
 
       <!-- NEW: Add user→conference UI -->
       <div style="margin-top:1em;">
@@ -69,19 +72,26 @@ async function loadData() {
 
 
   // 4) Conferences iterieren
+// 4) Conferences iterieren
   for (const conf of conferences) {
     const li = document.createElement('li');
     li.innerHTML = `
     <span style="cursor:pointer;" onclick="toggleConfUsers(${conf.id}, this)">▶</span>
-    ${conf.name} (id: ${conf.id})
-    <button class="small"
-            onclick="editConference(${conf.id}, '${conf.name.replace(/'/g, "\\'")}')">
-      Edit
-    </button>
-    <button class="small"
-            onclick="deleteConference(${conf.id})">
-      🗑️
-    </button>
+    <span>${conf.name}</span>
+
+    <!-- Controls direkt unter dem Namen -->
+    <div class="nested" id="conf-controls-${conf.id}" style="margin: 0.5em 0;">
+      <button class="small"
+              onclick="editConference(${conf.id}, '${conf.name.replace(/'/g, "\\'")}')">
+        Rename Conference
+      </button>
+      <button class="small"
+              onclick="deleteConference(${conf.id})">
+        Delete Conference 🗑️
+      </button>
+    </div>
+
+    <!-- Aufklappbare User-Liste -->
     <ul class="nested" id="conf-users-${conf.id}"></ul>
   `;
     confList.appendChild(li);
@@ -185,7 +195,7 @@ window.toggleUserConfs = async function (userId, arrowEl) {
       <li>
         ${c.name}
         <button class="small" onclick="confirmUnassign(${userId}, ${c.id})">
-          Remove
+          🗑️
         </button>
       </li>
     `).join('');
@@ -225,29 +235,33 @@ window.editConference = async function(confId, currentName) {
 
 
 window.toggleConfUsers = async function (confId, arrowEl) {
-  const ul = document.getElementById(`conf-users-${confId}`);
+  const usersUl   = document.getElementById(`conf-users-${confId}`);
+  const controls  = document.getElementById(`conf-controls-${confId}`);
+  const isOpen    = usersUl.style.display === 'block';
 
-  if (ul.innerHTML !== '') {
-    // hide the list again
-    ul.innerHTML = '';
-    ul.style.display = 'none';
-    arrowEl.textContent = '▶';
-    return;
+  if (isOpen) {
+    // schließen
+    usersUl.innerHTML   = '';
+    usersUl.style.display    = 'none';
+    controls.style.display   = 'none';
+    arrowEl.textContent       = '▶';
+  } else {
+    // öffnen
+    const users = await fetchJSON(`/conferences/${confId}/users`);
+    usersUl.innerHTML = users.map(u =>
+        `<li>
+         ${u.name}
+         <button class="small" onclick="confirmUnassign(${u.id},${confId})">
+           Remove
+         </button>
+       </li>`
+    ).join('');
+    usersUl.style.display    = 'block';
+    controls.style.display   = 'block';
+    arrowEl.textContent       = '▼';
   }
-
-  // fetch and render
-  const users = await fetchJSON(`/conferences/${confId}/users`);
-  ul.innerHTML = users.map(u =>
-      `<li>
-       ${u.name}
-       <button class="small" onclick="confirmUnassign(${u.id}, ${confId})">Remove</button>
-     </li>`
-  ).join('');
-
-  // make it visible
-  ul.style.display = 'block';
-  arrowEl.textContent = '▼';
 };
+
 
 
 window.confirmUnassign = function (userId, confId) {
@@ -372,6 +386,5 @@ window.assignUserToConference = async function(userId) {
     showMessage('❌ Failed to assign user to conference');
   }
 };
-
 
 loadData();

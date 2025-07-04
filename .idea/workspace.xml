@@ -4,13 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c99d1509-ef6d-42f4-a111-54d08d98e754" name="Changes" comment="Fixed Reply Button color">
+    <list default="true" id="c99d1509-ef6d-42f4-a111-54d08d98e754" name="Changes" comment="Updated Admin page to rename conferences. Fixed admin page bugs.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/app.db" beforeDir="false" afterPath="$PROJECT_DIR$/app.db" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/dbHandler.js" beforeDir="false" afterPath="$PROJECT_DIR$/dbHandler.js" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/public/admin.html" beforeDir="false" afterPath="$PROJECT_DIR$/public/admin.html" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/public/admin.js" beforeDir="false" afterPath="$PROJECT_DIR$/public/admin.js" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/server.js" beforeDir="false" afterPath="$PROJECT_DIR$/server.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/public/client.js" beforeDir="false" afterPath="$PROJECT_DIR$/public/client.js" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -73,7 +71,7 @@
       <updated>1750146838027</updated>
       <workItem from="1750146839123" duration="31668000" />
       <workItem from="1751267571841" duration="115000" />
-      <workItem from="1751271428952" duration="16425000" />
+      <workItem from="1751271428952" duration="18618000" />
     </task>
     <task id="LOCAL-00001" summary="Updated admin logic">
       <option name="closed" value="true" />
@@ -115,7 +113,15 @@
       <option name="project" value="LOCAL" />
       <updated>1751624464836</updated>
     </task>
-    <option name="localTasksCounter" value="6" />
+    <task id="LOCAL-00006" summary="Updated Admin page to rename conferences. Fixed admin page bugs.">
+      <option name="closed" value="true" />
+      <created>1751625499562</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1751625499562</updated>
+    </task>
+    <option name="localTasksCounter" value="7" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -127,6 +133,7 @@
     <MESSAGE value="Fixes.&#10;&#10;Bugs: Conference not mutable, reply not working" />
     <MESSAGE value="Bug Fixes." />
     <MESSAGE value="Fixed Reply Button color" />
-    <option name="LAST_COMMIT_MESSAGE" value="Fixed Reply Button color" />
+    <MESSAGE value="Updated Admin page to rename conferences. Fixed admin page bugs." />
+    <option name="LAST_COMMIT_MESSAGE" value="Updated Admin page to rename conferences. Fixed admin page bugs." />
   </component>
 </project>
