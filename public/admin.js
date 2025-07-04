@@ -68,21 +68,25 @@ async function loadData() {
   }
 
 
-
-
-
   // 4) Conferences iterieren
   for (const conf of conferences) {
     const li = document.createElement('li');
     li.innerHTML = `
-      <span style="cursor:pointer;" onclick="toggleConfUsers(${conf.id}, this)">▶</span>
-      ${conf.name} (id: ${conf.id})
-      <button class="small" onclick="deleteConference(${conf.id})">🗑️</button>
-      <ul class="nested" id="conf-users-${conf.id}"></ul>
-    `;
+    <span style="cursor:pointer;" onclick="toggleConfUsers(${conf.id}, this)">▶</span>
+    ${conf.name} (id: ${conf.id})
+    <button class="small"
+            onclick="editConference(${conf.id}, '${conf.name.replace(/'/g, "\\'")}')">
+      Edit
+    </button>
+    <button class="small"
+            onclick="deleteConference(${conf.id})">
+      🗑️
+    </button>
+    <ul class="nested" id="conf-users-${conf.id}"></ul>
+  `;
     confList.appendChild(li);
   }
-}  // <— Hier muss die loadData-Funktion geschlossen werden
+}
 
 // Fetch and render targets + rebuild the “type → id” dropdown
 async function loadUserTargets(userId, allUsers, allConfs) {
@@ -164,36 +168,60 @@ window.editUser = async function (userId, currentName) {
 };
 
 window.toggleUserConfs = async function (userId, arrowEl) {
-  const confUl    = document.getElementById(`user-confs-${userId}`);
   const targetDiv = document.getElementById(`user-nested-${userId}`);
+  const confUl    = document.getElementById(`user-confs-${userId}`);
+  // prüfen, ob wir gerade offen sind
+  const isOpen    = targetDiv.style.display === 'block';
 
-  if (confUl.innerHTML !== '') {
-    // closing both conferences and targets
-    confUl.innerHTML     = '';
-    confUl.style.display = 'none';
+  if (isOpen) {
+    // ─── Schließen ────────────────────────────────────────────
     targetDiv.style.display = 'none';
-    arrowEl.textContent  = '▶';
-    return;
+    arrowEl.textContent     = '▶';
+  } else {
+    // ─── Öffnen ────────────────────────────────────────────────
+    // 1) Inhalte nachladen
+    const confs = await fetchJSON(`/users/${userId}/conferences`);
+    confUl.innerHTML = confs.map(c => `
+      <li>
+        ${c.name}
+        <button class="small" onclick="confirmUnassign(${userId}, ${c.id})">
+          Remove
+        </button>
+      </li>
+    `).join('');
+
+    // 2) Anzeigen & Pfeil umdrehen
+    targetDiv.style.display = 'block';
+    arrowEl.textContent     = '▼';
   }
-
-  // opening conferences…
-  const confs = await fetchJSON(`/users/${userId}/conferences`);
-  confUl.innerHTML = confs.map(c =>
-      `<li>
-       ${c.name}
-       <button class="small"
-               onclick="confirmUnassign(${userId}, ${c.id})">
-         Remove
-       </button>
-     </li>`
-  ).join('');
-
-  // show both
-  confUl.style.display    = 'block';
-  targetDiv.style.display = 'block';
-  arrowEl.textContent     = '▼';
 };
 
+
+// === Konferenzen umbenennen ===
+window.editConference = async function(confId, currentName) {
+  const newName = prompt('New conference name:', currentName);
+  if (!newName || newName === currentName) return;
+
+  try {
+    const res = await fetch(`/conferences/${confId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName })
+    });
+
+    if (res.status === 409) {
+      showMessage('⚠️ Conference name already exists!');
+    } else if (res.ok) {
+      showMessage('✅ Conference updated', 'green');
+      loadData();
+    } else {
+      showMessage('❌ Failed to update conference');
+    }
+  } catch (err) {
+    console.error('Error updating conference:', err);
+    showMessage('❌ Error updating conference: ' + err.message);
+  }
+};
 
 
 window.toggleConfUsers = async function (confId, arrowEl) {

@@ -13,6 +13,7 @@ const {
   addUserToConference,
   removeUserFromConference,
   updateUserName,
+  updateConferenceName,
   getUsersForConference,
   getConferencesForUser,
   getAllUsers,
@@ -155,6 +156,24 @@ app.put("/users/:id", (req, res) => {
     }
   }
 });
+
+// Rename conference
+app.put('/conferences/:id', (req, res) => {
+  const { name } = req.body;
+  try {
+    const success = updateConferenceName(req.params.id, name);
+    if (!success) return res.status(404).json({ error: 'Conference not found' });
+    res.sendStatus(204);
+  } catch (err) {
+    if (err.message.includes('UNIQUE')) {
+      res.status(409).json({ error: 'Conference name already exists' });
+    } else {
+      console.error('Error renaming conference:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+});
+
 
 // === DELETE (specific routes FIRST) ===
 app.delete("/conferences/:conferenceId/users/:userId", (req, res) => {
@@ -720,6 +739,7 @@ const PORT = process.env.PORT || 443;
 server.listen(PORT, () => {
   console.log(`🔒 HTTPS Server running on port ${PORT}`);
   console.log(`📍 Access via: https://YOUR-IP:${PORT}`);
+  console.log(`🛠️ Administration via: https://YOUR-IP:${PORT}/admin.html`);
   console.log("");
   console.log("⚠️  Browsers will show a certificate warning.");
   console.log('   Click "Advanced" → "Proceed to site" to continue.');

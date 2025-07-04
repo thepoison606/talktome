@@ -84,6 +84,12 @@ function updateUserName(id, name) {
   return result.changes > 0;
 }
 
+function updateConferenceName(id, name) {
+  const stmt = db.prepare('UPDATE conferences SET name = ? WHERE id = ?');
+  const result = stmt.run(name, id);
+  return result.changes > 0;
+}
+
 function deleteUser(userId) {
   db.prepare('DELETE FROM user_conference WHERE user_id = ?').run(userId);
   db.prepare('DELETE FROM users WHERE id = ?').run(userId);
@@ -173,6 +179,7 @@ module.exports = {
   getConferencesForUser,
   removeUserFromConference,
   updateUserName,
+  updateConferenceName,
   deleteUser,
   deleteConference,
   verifyUser,
