@@ -1,5 +1,10 @@
 const socket = io();
 
+document.addEventListener("click", e => {
+  console.log("[GLOBAL CLICK]", e.target);
+});
+
+
 socket.onAny((event, ...args) => {
   console.log("[socket.onAny] got event", event, args);
 });
@@ -44,7 +49,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const lastSpokePeers = new Map();
   const mutedPeers = new Set();
   let currentTargetPeer = null;
-  let lastSpeaker = null;
+  let lastTarget = null;
   let isTalking = false;
 
   // Auto-Login prüfen
@@ -141,41 +146,40 @@ document.addEventListener("DOMContentLoaded", () => {
     const list = document.getElementById("targets-list");
     list.innerHTML = ""; // Liste leeren
 
-    // 1️⃣ User-Targets (nur, wenn Datenbank-ID matcht und online)
+    // 1️⃣ User-Targets
     for (const { socketId, userId, name } of users) {
-      // 2️⃣ auch hier casten
       if (!userTargetIds.has(Number(userId)) || socketId === socket.id) continue;
 
       const li = document.createElement("li");
       li.id = `user-${socketId}`;
       li.classList.add("target-item", "user-target");
 
-      // Icon & Label
+      // Icon & Label …
       const icon = document.createElement("div");
       icon.className = "user-icon";
-      icon.textContent = name
-          ? name.charAt(0).toUpperCase()
-          : socketId.substr(0, 2);
-
+      icon.textContent = name ? name.charAt(0).toUpperCase() : socketId.slice(0,2);
       const label = document.createElement("span");
       label.textContent = name || socketId;
-
       li.append(icon, label);
 
-      // ——— Mute-Button ———
-      const muteBtn = document.createElement("button");
-      muteBtn.className = "mute-btn";
-      muteBtn.textContent = "Mute";
-      muteBtn.title = "Stummschalten";
-      muteBtn.addEventListener("pointerdown", e => e.stopPropagation());
-      muteBtn.addEventListener("click", e => {
+      // ——— Mute-Button für User ———
+      const userMuteBtn = document.createElement("button");
+      userMuteBtn.className = "mute-btn";
+      userMuteBtn.textContent = mutedPeers.has(`user-${socketId}`) ? "Unmute" : "Mute";
+      userMuteBtn.title = "Stummschalten";
+      userMuteBtn.addEventListener("pointerdown", e => e.stopPropagation());
+      userMuteBtn.addEventListener("click", e => {
         e.stopPropagation();
-        toggleMute(socketId);
-        const muted = muteBtn.classList.toggle("muted");
-        muteBtn.textContent = muted ? "Unmute" : "Mute";
-        icon.classList.toggle("muted", muted);
+        // Debug für User-Mute
+        const rawId = socketId;
+        const key   = `user-${rawId}`;
+        console.log("[DEBUG] User Mute-Button geklickt:", { rawId, key });
+        toggleMute(rawId);
+        const nowMuted = mutedPeers.has(key);
+        userMuteBtn.textContent = nowMuted ? "Unmute" : "Mute";
+        userMuteBtn.classList.toggle("muted", nowMuted);
       });
-      li.appendChild(muteBtn);
+      li.appendChild(userMuteBtn);
 
       // ——— Push-to-Talk ———
       ["down", "up", "leave", "cancel"].forEach(ev => {
@@ -190,12 +194,15 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // 2️⃣ Conference-Targets (immer anzeigen)
+    // 2️⃣ Conference-Targets
     for (const { targetId: id, name } of confTargets) {
+      const key = `conf-${id}`; // unser DOM-Key
+
       const li = document.createElement("li");
-      li.id = `conf-${id}`;
+      li.id = key;
       li.classList.add("target-item", "conf-target");
 
-      // Icon & Label
+      // Icon & Label …
       const icon = document.createElement("div");
       icon.className = "conf-icon";
       icon.textContent = "📡";
@@ -203,21 +210,25 @@ document.addEventListener("DOMContentLoaded", () => {
       label.textContent = name;
       li.append(icon, label);
 
-      // Mute-Button
-      const key = `conf-${id}`;  // wird in toggleMute verwendet
-      const muteBtn = document.createElement("button");
-      muteBtn.className = "mute-btn";
-      muteBtn.textContent = mutedPeers.has(key) ? "Unmute" : "Mute";
-      muteBtn.title = "Stummschalten";
-      muteBtn.addEventListener("pointerdown", e => e.stopPropagation());
-      muteBtn.addEventListener("click", e => {
+      // ——— Mute-Button für Conference ———
+      const confMuteBtn = document.createElement("button");
+      confMuteBtn.className = "mute-btn";
+      const initiallyMuted = mutedPeers.has(key);
+      confMuteBtn.textContent = initiallyMuted ? "Unmute" : "Mute";
+      if (initiallyMuted) confMuteBtn.classList.add("muted");
+      confMuteBtn.title = "Stummschalten";
+
+      confMuteBtn.addEventListener("pointerdown", e => e.stopPropagation());
+      confMuteBtn.addEventListener("click", e => {
         e.stopPropagation();
+        // Debug für Conference-Mute
+        console.log("[DEBUG] Conference Mute-Button geklickt:", { rawId: id, key });
         toggleMute(id);
-        // Button-Text nach aktuellem Zustand aktualisieren
         const nowMuted = mutedPeers.has(key);
-        muteBtn.textContent = nowMuted ? "Unmute" : "Mute";
+        confMuteBtn.textContent = nowMuted ? "Unmute" : "Mute";
+        confMuteBtn.classList.toggle("muted", nowMuted);
       });
-      li.appendChild(muteBtn);
+      li.appendChild(confMuteBtn);
 
       // Push-to-Talk
       ["down", "up", "leave", "cancel"].forEach(ev => {
@@ -515,38 +526,45 @@ document.addEventListener("DOMContentLoaded", () => {
     const el = document.getElementById(targetKey);
     if (!el) return;
 
-    // Wähle das richtige Icon
     const iconCls = targetKey.startsWith("conf-") ? ".conf-icon" : ".user-icon";
     const icon    = el.querySelector(iconCls);
 
     if (isSpeaking) {
-      // ─── Sprecher läuft gerade ───────────────────────────────
+      // Sprecher läuft gerade
       el.classList.add("speaking");
       el.classList.remove("last-spoke");
       icon?.classList.add("speaking");
     } else {
-      // ─── Sprecher hat aufgehört ───────────────────────────────
+      // Sprecher hat aufgehört
       el.classList.remove("speaking");
       icon?.classList.remove("speaking");
 
-      // 1) Setze lastSpeaker auf diesen Key und aktiviere Reply
-      lastSpeaker = targetKey;
-      // Reply nur, wenn es nicht wir selbst sind (bei User)
-      if (targetKey !== `user-${socket.id}`) {
-        btnReply.disabled = false;
+      // 1) lastTarget setzen
+      if (targetKey.startsWith("conf-")) {
+        lastTarget = { type: "conference", id: targetKey.slice(5) };
+      } else {
+        lastTarget = { type: "user", id: targetKey.slice(5) };
       }
 
-      // 2) Entferne alle alten last-spoke-Klassen und markiere diesen Eintrag
-      document.querySelectorAll(".last-spoke").forEach(e => e.classList.remove("last-spoke"));
+      // Reply-Button aktivieren oder deaktivieren
+      btnReply.disabled = (lastTarget.type === "user" && lastTarget.id === socket.id);
+
+      // 2) Gelb markieren
+      document.querySelectorAll(".last-spoke")
+          .forEach(elem => elem.classList.remove("last-spoke"));
       el.classList.add("last-spoke");
 
-      // 3) Nach 20 s wieder aufräumen (falls er nicht erneut spricht)
+      // 3) Nach 20s wieder aufräumen
       setTimeout(() => {
         if (!speakingPeers.has(targetKey)) {
           el.classList.remove("last-spoke");
-
-          if (lastSpeaker === targetKey) {
-            lastSpeaker = null;
+          // Reply-Button zurücksetzen, falls das der letzte war
+          if (lastTarget &&
+              (lastTarget.type === "conference"
+                  ? `conf-${lastTarget.id}` === targetKey
+                  : `user-${lastTarget.id}` === targetKey)
+          ) {
+            lastTarget = null;
             btnReply.disabled = true;
           }
         }
@@ -556,25 +574,35 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // ---------- Hilfsfunktion einmal zentral definieren ----------
   function toKey(rawId) {
+    // Roh-ID immer als String behandeln
+    const id = String(rawId);
+
     // Ist es schon ein fertiger Key?
-    if (rawId.startsWith("user-") || rawId.startsWith("conf-")) return rawId;
+    if (id.startsWith("user-") || id.startsWith("conf-")) {
+      return id;
+    }
+
     // Konferenz-IDs sind rein numerisch → alles andere ist Socket-ID
-    return isFinite(rawId) ? `conf-${rawId}` : `user-${rawId}`;
+    return isFinite(id) ? `conf-${id}` : `user-${id}`;
   }
+
 
 // ---------- Toggle mute ----------
   function toggleMute(rawId) {
-    const key     = toKey(rawId);                 // "user-<socket>" oder "conf-<id>"
-    const isMuted = mutedPeers.has(key);
+    // 1) Key berechnen
+    const key = toKey(rawId);
 
-    // Mute-Status umschalten
+    // ─── Debug hier ───────────────────────────────────────────────
+    const consumers = peerConsumers.get(key);
+    console.log("[DEBUG] toggleMute mit key:", key, "Consumers:", consumers);
+
+    // 2) restliche Logik…
+    const isMuted = mutedPeers.has(key);
     if (isMuted) mutedPeers.delete(key);
     else         mutedPeers.add(key);
 
-    // Alle Consumer dieses Keys ansprechen
-    const consumers = peerConsumers.get(key);
     if (consumers) {
-      consumers.forEach((c) => {
+      consumers.forEach(c => {
         if (!c?.pause || !c?.resume) return;
         mutedPeers.has(key) ? c.pause() : c.resume();
       });
@@ -598,48 +626,36 @@ document.addEventListener("DOMContentLoaded", () => {
 // target = { type: "conf", id: "<confId>" }
   async function handleTalk(e, target) {
     e.preventDefault();
-    if (producer) return; // schon sprechender Producer? abbrechen
+    if (producer) return;            // schon sprechender Producer? abbrechen
 
-    isTalking = true;
+    isTalking     = true;
     currentTarget = target;
 
     try {
-      // Mikrofon holen
+      // ◆ Mikrofon holen
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
       const track = stream.getAudioTracks()[0];
 
-      // Producer-Parameter
+      // ◆ Producer-Parameter
       const params = { track };
-      if (target) {
-        // für einen einzelnen User
-        // target = { type: "user", id: userId }
-        // oder für eine Konferenz:
-        // target = { type: "conf", id: confId }
-        params.appData = { type: target.type, id: target.id };
-      }
+      if (target) params.appData = { type: target.type, id: target.id };
 
-      // Produktion starten
+      // ◆ Produktion starten
       const newProducer = await sendTransport.produce(params);
 
-      // Falls Button inzwischen losgelassen wurde
+      // ◆ Falls Button inzwischen losgelassen wurde
       if (!isTalking) {
         newProducer.close();
         track.stop();
         return;
       }
 
-      // Zustand übernehmen & UI aktualisieren
+      // ◆ Zustand übernehmen
       producer = newProducer;
-      btnAll.classList.toggle("active", target === null);
-      btnReply.classList.toggle("active", target !== null);
 
-      // Visuelles Feedback: speaking-to
+      // ◆ Visuelles Feedback: speaking-to am <li>
       if (target) {
         const selector = target.type === "user"
             ? `#user-${target.id}`
@@ -649,25 +665,30 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       console.error("Mikrofon-Fehler:", err);
       alert("Fehler beim Starten des Mikrofons: " + err.message);
-      // UI zurücksetzen
-      isTalking = false;
+      // Falls btnAll aktiv leuchtet, zurücksetzen
       btnAll.classList.remove("active");
-      btnReply.classList.remove("active");
+      isTalking = false;
     }
   }
 
 
-
-  // Event-Handler für die Buttons:
-  btnAll.addEventListener("pointerdown", e => handleTalk(e, { type: "global", id: "broadcast" }));
-  btnAll.addEventListener("pointerup", handleStopTalking);
+// Event-Handler für „All“-Talk
+  btnAll.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    if (producer) return;             // abbrechen, wenn schon im Sprechen
+    btnAll.classList.add("active");   // Button selber lila highlighten
+    handleTalk(e, null);              // null → Broadcast an alle
+  });
+  btnAll.addEventListener("pointerup",   handleStopTalking);
   btnAll.addEventListener("pointerleave", handleStopTalking);
-  btnAll.addEventListener("pointercancel", handleStopTalking);
+  btnAll.addEventListener("pointercancel",handleStopTalking);
+
 
   btnReply.addEventListener("pointerdown", e => {
     e.preventDefault();
-    if (!lastSpeaker) return;
-    handleTalk(e, lastSpeaker);
+    if (!lastTarget) return;
+    btnReply.classList.add("active");
+    handleTalk(e, lastTarget);
   });
 
   btnReply.addEventListener("pointerup", handleStopTalking);
@@ -678,34 +699,30 @@ document.addEventListener("DOMContentLoaded", () => {
     e.preventDefault();
     isTalking = false;
 
-    // 1) UI: Active-Klassen immer entfernen
+    // btnAll zurücksetzen
     btnAll.classList.remove("active");
+    // btnReply nur zurücksetzen, wenn kein Reply im Gange ist
     btnReply.classList.remove("active");
 
-    // 2) Wenn kein Producer existiert, beenden
     if (!producer) return;
 
-    console.log("Stopping audio");
-
-    // 3) Server informieren, damit er den Producer schließt
     socket.emit("producer-close", { producerId: producer.id });
-
-    // 4) Lokal den Producer stoppen
     producer.close();
     producer.track.stop();
     producer = null;
 
-    // 5) UI: „talking-to“ entfernen
+    // lila Highlight am <li> entfernen
     if (currentTarget) {
-      const selector = currentTarget.type === "user"
-          ? `#user-${currentTarget.id}`
-          : `#conf-${currentTarget.id}`;
-      const el = document.querySelector(selector);
-      if (el) el.classList.remove("talking-to");
+      const li = document.querySelector(
+          currentTarget.type === "conference"
+              ? `#conf-${currentTarget.id}`
+              : `#user-${currentTarget.id}`
+      );
+      li?.classList.remove("talking-to");
     }
-
     currentTarget = null;
   }
+
 
   // Initial connection check
   console.log("Socket connected?", socket.connected);

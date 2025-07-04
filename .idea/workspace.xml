@@ -4,10 +4,9 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c99d1509-ef6d-42f4-a111-54d08d98e754" name="Changes" comment="Added conference type. &#10;&#10;Bugs: Conference not mutable, reply not working anymore, button glowup not working properly">
+    <list default="true" id="c99d1509-ef6d-42f4-a111-54d08d98e754" name="Changes" comment="Bug Fixes.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/public/client.js" beforeDir="false" afterPath="$PROJECT_DIR$/public/client.js" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/server.js" beforeDir="false" afterPath="$PROJECT_DIR$/server.js" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -70,7 +69,7 @@
       <updated>1750146838027</updated>
       <workItem from="1750146839123" duration="31668000" />
       <workItem from="1751267571841" duration="115000" />
-      <workItem from="1751271428952" duration="8404000" />
+      <workItem from="1751271428952" duration="15399000" />
     </task>
     <task id="LOCAL-00001" summary="Updated admin logic">
       <option name="closed" value="true" />
@@ -96,7 +95,15 @@
       <option name="project" value="LOCAL" />
       <updated>1751278693837</updated>
     </task>
-    <option name="localTasksCounter" value="4" />
+    <task id="LOCAL-00004" summary="Fixes.&#10;&#10;Bugs: Conference not mutable, reply not working">
+      <option name="closed" value="true" />
+      <created>1751280240686</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1751280240686</updated>
+    </task>
+    <option name="localTasksCounter" value="5" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -105,6 +112,8 @@
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Updated admin logic" />
     <MESSAGE value="Added conference type. &#10;&#10;Bugs: Conference not mutable, reply not working anymore, button glowup not working properly" />
-    <option name="LAST_COMMIT_MESSAGE" value="Added conference type. &#10;&#10;Bugs: Conference not mutable, reply not working anymore, button glowup not working properly" />
+    <MESSAGE value="Fixes.&#10;&#10;Bugs: Conference not mutable, reply not working" />
+    <MESSAGE value="Bug Fixes." />
+    <option name="LAST_COMMIT_MESSAGE" value="Bug Fixes." />
   </component>
 </project>
