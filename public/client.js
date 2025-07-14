@@ -618,21 +618,25 @@ document.addEventListener("DOMContentLoaded", () => {
 // target = { type: "conf", id: "<confId>" }
   async function handleTalk(e, target) {
     e.preventDefault();
-    if (producer) return;            // schon sprechender Producer? abbrechen
+    if (producer) return;
 
     isTalking     = true;
     currentTarget = target;
 
     try {
-      // ◆ Mikrofon holen
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
       const track = stream.getAudioTracks()[0];
 
-      // ◆ Producer-Parameter
-      const params = { track };
-      if (target) params.appData = { type: target.type, id: target.id };
+      // ◆ Producer-Parameter: immer appData mitgeben,
+      //    entweder {type:'all'} oder gezielt {type:'user'|'conf',id:...}
+      const params = {
+        track,
+        appData: target
+            ? { type: target.type, id: target.id }
+            : { type: 'global' }
+      };
 
       // ◆ Produktion starten
       const newProducer = await sendTransport.produce(params);
@@ -644,10 +648,9 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      // ◆ Zustand übernehmen
       producer = newProducer;
 
-      // ◆ Visuelles Feedback: speaking-to am <li>
+      // ◆ Visuelles Feedback nur für gezielte Targets
       if (target) {
         const selector = target.type === "user"
             ? `#user-${target.id}`
@@ -657,11 +660,11 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       console.error("Mikrofon-Fehler:", err);
       alert("Fehler beim Starten des Mikrofons: " + err.message);
-      // Falls btnAll aktiv leuchtet, zurücksetzen
       btnAll.classList.remove("active");
       isTalking = false;
     }
   }
+
 
 
 // Event-Handler für „All“-Talk

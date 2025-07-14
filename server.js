@@ -516,15 +516,20 @@ io.on("connection", (socket) => {
         // 0️⃣  Eingehende Daten validieren
         //------------------------------------------------------------------
         const { type, id: targetId } = appData || {};
-        const validTypes = ["user", "conference", "global"];
+        const validTypes = ["user","conference","global"];
 
-        if (!type || !targetId || !validTypes.includes(type)) {
+// global braucht kein targetId, user/conference aber schon
+        if (
+            !type ||
+            !validTypes.includes(type) ||
+            (type !== "global" && !targetId)
+        ) {
           console.warn("[PRODUCE] Ungültiges appData:", appData);
-          callback({
+          return callback({
             error:
-                "Ungültiges appData: 'type' = 'user' | 'conference' und 'id' müssen gesetzt sein",
+                "Ungültiges appData: Für 'user' und 'conference' muss 'id' gesetzt sein, " +
+                "für 'global' genügt { type: 'global' }",
           });
-          return; // ⬅︎  Abbruch, kein Producer wird angelegt
         }
 
         try {
