@@ -58,6 +58,17 @@
         border-left: 4px solid #2196f3;
       }
 
+      .device-selectors {
+        display: flex;
+        flex-direction: column;
+        gap: 1em;                /* Abstand zwischen den Reihen */
+      }
+
+      .device-selector {
+        display: flex;
+        flex-direction: column;
+      }
+
       /* Base button styles */
       button {
         user-select: none;
@@ -260,7 +271,20 @@
 
       <ul id="targets-list"></ul>
       <div id="audio-streams"></div>
-    </div>
+      <div class="device-selectors">
+        <div class="device-selector">
+          <label for="input-select">Microphone</label>
+          <select id="input-select">
+            <option value="">select device</option>
+          </select>
+        </div>
+        <div class="device-selector">
+          <label for="output-select">Speaker</label>
+          <select id="output-select">
+            <option value="">select device</option>
+          </select>
+        </div>
+      </div>
   </div>
 
   <!-- Scripts -->

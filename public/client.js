@@ -1,5 +1,7 @@
 const socket = io();
 const defaultVolume = 0.85;
+let inputSelect, outputSelect;
+
 
 socket.onAny((event, ...args) => {
   console.log("[socket.onAny] got event", event, args);
@@ -20,10 +22,49 @@ function storeVolume(key, value) {
   sessionStorage.setItem(key, String(value));
 }
 
+async function updateDeviceList() {
+  // Erst Zugriff aufs Mikro fordern (sonst sind labels oft leer)
+  try {
+    await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    console.warn("Kein Mikrofon-Zugriff, Labels evtl. leer", e);
+  }
+
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const inputs  = devices.filter(d => d.kind === "audioinput");
+  const outputs = devices.filter(d => d.kind === "audiooutput");
+
+  // Input-Select befüllen
+  inputSelect.innerHTML = `<option value="">Select device</option>`;
+  inputs.forEach(d => {
+    const opt = document.createElement("option");
+    opt.value       = d.deviceId;
+    opt.textContent = d.label || `Mikrofon ${inputSelect.length}`;
+    inputSelect.append(opt);
+  });
+
+  // Output-Select befüllen
+  outputSelect.innerHTML = `<option value="">Select device</option>`;
+  outputs.forEach(d => {
+    const opt = document.createElement("option");
+    opt.value       = d.deviceId;
+    opt.textContent = d.label || `Lautsprecher ${outputSelect.length}`;
+    outputSelect.append(opt);
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   console.log("DOM loaded, initializing...");
 
-  // Check ob mediasoup-client geladen wurde
+  inputSelect  = document.getElementById("input-select");
+  outputSelect = document.getElementById("output-select");
+  updateDeviceList().catch(err => console.error("updateDeviceList failed:", err));
+  navigator.mediaDevices.addEventListener("devicechange", () =>
+      updateDeviceList().catch(err => console.error(err))
+  );
+
+
+  // Check if mediasoup-client was loaded
   if (typeof mediasoupClient === "undefined") {
     console.error("mediasoup-client not loaded!");
     alert("MediaSoup Client konnte nicht geladen werden!");
@@ -55,7 +96,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let lastTarget = null;
   let isTalking = false;
 
-  // Auto-Login prüfen
+  // Check Auto-Login
   const userId = localStorage.getItem("userId");
   const userName = localStorage.getItem("userName");
 
@@ -458,101 +499,104 @@ document.addEventListener("DOMContentLoaded", () => {
     return `user-${rawId}`;
   }
 
-  socket.on("new-producer", async ({ peerId, producerId, appData }) => {
+  socket.on('new-producer', async ({ peerId, producerId, appData }) => {
     console.log(`New producer ${producerId} from peer ${peerId}`, appData);
 
-    // Key für dieses Target
-    const key = appData?.type === "conference"
+    // determine a unique key for this stream (either a conference or a user)
+    const key = appData?.type === 'conference'
         ? `conf-${appData.id}`
         : `user-${peerId}`;
 
-    // Eigene Streams ignorieren
+    // ignore our own streams
     if (peerId === socket.id) return;
 
-    // Nur konsumieren, wenn für uns gedacht
+    // skip streams not intended for us
     if (appData?.targetPeer && appData.targetPeer !== socket.id) {
-      console.log("Producer not for us, skipping");
+      console.log('Producer not for us, skipping');
       return;
     }
 
     try {
-      // Highlight einschalten
+      // highlight the speaker in the UI
       speakingPeers.add(key);
       updateSpeakerHighlight(key, true);
 
-      // Consumer erstellen
+      // request to consume this producer
       const { error, ...consumeParams } = await new Promise(resolve =>
-          socket.emit(
-              "consume",
-              { producerId, rtpCapabilities: device.rtpCapabilities },
-              resolve
-          )
+          socket.emit('consume', {
+            producerId,
+            rtpCapabilities: device.rtpCapabilities
+          }, resolve)
       );
       if (error) throw new Error(error);
+
+      // actually create the consumer
       const consumer = await recvTransport.consume(consumeParams);
 
-      // Für Mute/Unmute tracken
+      // track this consumer for mute/unmute
       if (!peerConsumers.has(key)) peerConsumers.set(key, new Set());
       peerConsumers.get(key).add(consumer);
       if (mutedPeers.has(key)) consumer.pause();
 
-      // Neuen Stream packen
+      // wrap the track in a MediaStream
       const stream = new MediaStream([consumer.track]);
 
-      // Erstes Mal: Audio-Element anlegen & initiale Lautstärke laden
+      // if this is the first time seeing this peer, create an <audio> element
       if (!audioElements.has(peerId)) {
-        const audio = document.createElement("audio");
+        const audio = document.createElement('audio');
         audio.srcObject = stream;
         audio.autoplay = true;
 
-        // initiale Lautstärke aus sessionStorage holen
-        let initVol;
-        if (appData?.type === "conference") {
-          const confKey = `volume_conf_${appData.id}`;
-          initVol = getStoredVolume(confKey);
-        } else {
-          const userKey = `volume_user_${peerId}`;
-          initVol = getStoredVolume(userKey);
-        }
+        // load the saved volume from sessionStorage
+        const volKey = appData?.type === 'conference'
+            ? `volume_conf_${appData.id}`
+            : `volume_user_${peerId}`;
+        const initVol = getStoredVolume(volKey);
         audio.volume = initVol;
 
+        // set the output device if supported and selected
+        if (typeof audio.setSinkId === 'function' && outputSelect.value) {
+          audio.setSinkId(outputSelect.value)
+              .then(() => console.log('Output device set to', outputSelect.value))
+              .catch(err => console.warn('setSinkId failed:', err));
+        }
+
+        // add the element to the DOM and save it
         audioStreamsDiv.appendChild(audio);
-        // speichern für Folge-Events
         audioElements.set(peerId, { audio, volume: initVol });
 
-        // Bei Conference-Streams zusätzlich in confAudioElements einsammeln
-        if (appData?.type === "conference") {
+        // if this is a conference stream, also track it in confAudioElements
+        if (appData?.type === 'conference') {
           const confId = appData.id;
           if (!confAudioElements.has(confId)) {
             confAudioElements.set(confId, new Set());
           }
           confAudioElements.get(confId).add(audio);
 
-          // Entfernen, wenn Producer schließt
-          consumer.on("producerclose", () => {
+          // remove from the set when the producer closes
+          consumer.on('producerclose', () => {
             confAudioElements.get(confId)?.delete(audio);
           });
         }
-      }
-      // Folge-Streams: nur Track tauschen, Lautstärke belassen
-      else {
+      } else {
+        // for subsequent streams, just swap the stream and preserve volume
         const entry = audioElements.get(peerId);
         entry.audio.srcObject = stream;
-        entry.audio.volume = entry.volume;
+        entry.audio.volume    = entry.volume;
       }
 
-      // Autoplay versuchen
+      // attempt to play
       try {
         await audioElements.get(peerId).audio.play();
       } catch {}
 
-      // Consumer freischalten
+      // tell server to resume the consumer
       await new Promise(res =>
-          socket.emit("resume-consumer", { consumerId: consumer.id }, res)
+          socket.emit('resume-consumer', { consumerId: consumer.id }, res)
       );
 
-      // Aufräumen, wenn der Producer endgültig schließt
-      consumer.on("producerclose", () => {
+      // cleanup when the producer actually closes
+      consumer.on('producerclose', () => {
         console.log(`Producer closed for consumer ${consumer.id}`);
         speakingPeers.delete(key);
         updateSpeakerHighlight(key, false);
@@ -564,8 +608,9 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         peerConsumers.get(key)?.delete(consumer);
       });
+
     } catch (err) {
-      console.error("Error consuming:", err);
+      console.error('Error consuming:', err);
     }
   });
 
@@ -695,9 +740,9 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
 
-// target = null               → broadcast an alle
-// target = { type: "user", id: "<userId>" }
-// target = { type: "conf", id: "<confId>" }
+  // target = null               → broadcast an alle
+  // target = { type: "user", id: "<userId>" }
+  // target = { type: "conf", id: "<confId>" }
   async function handleTalk(e, target) {
     e.preventDefault();
     if (producer) return;
@@ -706,13 +751,25 @@ document.addEventListener("DOMContentLoaded", () => {
     currentTarget = target;
 
     try {
+      // 1️⃣ Ausgewähltes Mikrofon aus dem Select lesen
+      const inputSelect = document.getElementById("input-select");
+      const selectedDeviceId = inputSelect?.value;
+
+      // 2️⃣ Audio-Constraints zusammenbauen
+      const audioConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {})
+      };
+
+      // 3️⃣ getUserMedia mit gezieltem Gerät
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        audio: audioConstraints
       });
       const track = stream.getAudioTracks()[0];
 
-      // ◆ Producer-Parameter: immer appData mitgeben,
-      //    entweder {type:'all'} oder gezielt {type:'user'|'conf',id:...}
+      // ◆ Producer-Parameter: immer appData mitgeben
       const params = {
         track,
         appData: target
