@@ -1,4 +1,5 @@
 const socket = io();
+const defaultVolume = 0.85;
 
 socket.onAny((event, ...args) => {
   console.log("[socket.onAny] got event", event, args);
@@ -10,7 +11,7 @@ async function fetchJSON(url) {
   return res.json();
 }
 
-function getStoredVolume(key, defaultValue = 0.85) {
+function getStoredVolume(key, defaultValue = defaultVolume) {
   const v = sessionStorage.getItem(key);
   return v !== null ? parseFloat(v) : defaultValue;
 }
@@ -228,8 +229,8 @@ document.addEventListener("DOMContentLoaded", () => {
       label.textContent = name;
       li.append(icon, label);
 
-      // Lautstärke-Slider für Conference
-      const confKey = `volume_conf_${id}`;          // z.B. "volume_conf_42"
+      // Volume-Slider for Conference
+      const confKey = `volume_conf_${id}`;
       const confSlider = document.createElement("input");
       confSlider.type  = "range";
       confSlider.min   = "0";
@@ -460,26 +461,26 @@ document.addEventListener("DOMContentLoaded", () => {
   socket.on("new-producer", async ({ peerId, producerId, appData }) => {
     console.log(`New producer ${producerId} from peer ${peerId}`, appData);
 
-    // ─── Key bestimmen ───────────────────────────────────────────
+    // Key für dieses Target
     const key = appData?.type === "conference"
         ? `conf-${appData.id}`
         : `user-${peerId}`;
 
-    // ─── Eigene Streams ignorieren ───────────────────────────────
+    // Eigene Streams ignorieren
     if (peerId === socket.id) return;
 
-    // ─── Streams nur für bestimmte Peers überspringen ────────────
+    // Nur konsumieren, wenn für uns gedacht
     if (appData?.targetPeer && appData.targetPeer !== socket.id) {
       console.log("Producer not for us, skipping");
       return;
     }
 
     try {
-      // ─── Highlight einschalten (grün) ───────────────────────────
+      // Highlight einschalten
       speakingPeers.add(key);
       updateSpeakerHighlight(key, true);
 
-      // ─── Consumer anlegen ───────────────────────────────────────
+      // Consumer erstellen
       const { error, ...consumeParams } = await new Promise(resolve =>
           socket.emit(
               "consume",
@@ -490,36 +491,36 @@ document.addEventListener("DOMContentLoaded", () => {
       if (error) throw new Error(error);
       const consumer = await recvTransport.consume(consumeParams);
 
-      // ─── Für Mute/Unmute tracken ────────────────────────────────
+      // Für Mute/Unmute tracken
       if (!peerConsumers.has(key)) peerConsumers.set(key, new Set());
       peerConsumers.get(key).add(consumer);
       if (mutedPeers.has(key)) consumer.pause();
 
-      // ─── Stream in MediaStream packen ──────────────────────────
+      // Neuen Stream packen
       const stream = new MediaStream([consumer.track]);
 
-      // ─── Erstes Mal: Audio-Element + Slider anlegen ────────────
+      // Erstes Mal: Audio-Element anlegen & initiale Lautstärke laden
       if (!audioElements.has(peerId)) {
         const audio = document.createElement("audio");
         audio.srcObject = stream;
-        audio.autoplay  = true;
-        audio.volume    = mutedPeers.has(key) ? 0 : 1.0;
-        audioStreamsDiv.appendChild(audio);
+        audio.autoplay = true;
 
-        // Slider verknüpfen
-        const slider = document.querySelector(`#user-${peerId} .volume-slider`);
-        if (slider) {
-          slider.value = audio.volume;
-          slider.addEventListener("input", e => {
-            const vol = parseFloat(e.target.value);
-            audio.volume = vol;
-            console.log(`🔊 Set volume for ${peerId} to`, vol);
-          });
+        // initiale Lautstärke aus sessionStorage holen
+        let initVol;
+        if (appData?.type === "conference") {
+          const confKey = `volume_conf_${appData.id}`;
+          initVol = getStoredVolume(confKey);
+        } else {
+          const userKey = `volume_user_${peerId}`;
+          initVol = getStoredVolume(userKey);
         }
+        audio.volume = initVol;
 
-        // Einmalig speichern (inkl. aktuellem Volume)
-        audioElements.set(peerId, { audio, volume: audio.volume });
+        audioStreamsDiv.appendChild(audio);
+        // speichern für Folge-Events
+        audioElements.set(peerId, { audio, volume: initVol });
 
+        // Bei Conference-Streams zusätzlich in confAudioElements einsammeln
         if (appData?.type === "conference") {
           const confId = appData.id;
           if (!confAudioElements.has(confId)) {
@@ -527,52 +528,46 @@ document.addEventListener("DOMContentLoaded", () => {
           }
           confAudioElements.get(confId).add(audio);
 
-          // Cleanup, wenn der Consumer schließt
+          // Entfernen, wenn Producer schließt
           consumer.on("producerclose", () => {
-            const s = confAudioElements.get(confId);
-            if (s) s.delete(audio);
+            confAudioElements.get(confId)?.delete(audio);
           });
         }
-
       }
-      // ─── Wiederkehrend: nur den srcObject tauschen ─────────────
+      // Folge-Streams: nur Track tauschen, Lautstärke belassen
       else {
         const entry = audioElements.get(peerId);
         entry.audio.srcObject = stream;
-        // volume bleibt entry.volume erhalten
+        entry.audio.volume = entry.volume;
       }
 
-      // ─── Autoplay versuchen ────────────────────────────────────
-      try { await audioElements.get(peerId).audio.play(); }
-      catch {}
+      // Autoplay versuchen
+      try {
+        await audioElements.get(peerId).audio.play();
+      } catch {}
 
-      // ─── Resume starten ─────────────────────────────────────────
+      // Consumer freischalten
       await new Promise(res =>
           socket.emit("resume-consumer", { consumerId: consumer.id }, res)
       );
 
-      // ─── Aufräumen, wenn Producer schließt ───────────────────────
+      // Aufräumen, wenn der Producer endgültig schließt
       consumer.on("producerclose", () => {
         console.log(`Producer closed for consumer ${consumer.id}`);
         speakingPeers.delete(key);
         updateSpeakerHighlight(key, false);
 
-        // Audio-Element entfernen
         const stored = audioElements.get(peerId);
         if (stored) {
           stored.audio.remove();
           audioElements.delete(peerId);
         }
-        // Consumer aus Map löschen
-        peerConsumers.get(key).delete(consumer);
+        peerConsumers.get(key)?.delete(consumer);
       });
-
     } catch (err) {
       console.error("Error consuming:", err);
     }
   });
-
-
 
 
   socket.on("producer-closed", ({ peerId, appData }) => {
@@ -598,8 +593,6 @@ document.addEventListener("DOMContentLoaded", () => {
     // 5️⃣ Last-Spoke (Gelb) setzen
     updateSpeakerHighlight(key, false);
   });
-
-
 
 
   // Update speaker highlight
@@ -756,7 +749,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
 
-// Event-Handler für „All“-Talk
+  // Event-Handler für „All“-Talk
   btnAll.addEventListener("pointerdown", e => {
     e.preventDefault();
     if (producer) return;             // abbrechen, wenn schon im Sprechen
