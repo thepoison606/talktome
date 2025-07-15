@@ -179,12 +179,6 @@
         50%      { opacity: 0.8; }
       }
 
-      /* Mute-Icon-Variante */
-      #targets-list li.target-item.muted .user-icon,
-      #targets-list li.target-item.muted .conf-icon {
-        background: #f44336;
-      }
-
       /* Buttons in der Liste */
       #targets-list .mute-btn {
         user-select: none;
@@ -192,7 +186,12 @@
         -moz-user-select: none;
         -ms-user-select: none;
         -webkit-touch-callout: none;
-        padding: 0.75rem 1rem;
+        min-width: 6rem;
+        max-width: 6rem;
+
+        text-align: center;
+        box-sizing: border-box;
+
         margin-left: 0.5rem;
         background: #607d8b;
         color: white;
@@ -201,7 +200,7 @@
         cursor: pointer;
         font-size: 14px;
         transition: all 0.2s ease;
-        padding: 1.5rem;
+        padding: 1.5rem; /* reicht einmal */
       }
 
       #targets-list .mute-btn:hover {
@@ -215,6 +214,11 @@
       #targets-list .mute-btn.muted:hover {
         background: #d32f2f;
       }
+      #targets-list li.target-item.muted .user-icon,
+      #targets-list li.target-item.muted .conf-icon {
+        background: #f44336;
+      }
+
     </style>
   </head>
   <body>

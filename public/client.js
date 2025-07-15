@@ -10,6 +10,15 @@ async function fetchJSON(url) {
   return res.json();
 }
 
+function getStoredVolume(key, defaultValue = 0.85) {
+  const v = sessionStorage.getItem(key);
+  return v !== null ? parseFloat(v) : defaultValue;
+}
+
+function storeVolume(key, value) {
+  sessionStorage.setItem(key, String(value));
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   console.log("DOM loaded, initializing...");
 
@@ -37,6 +46,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // MediaSoup Variablen
   let device, sendTransport, recvTransport, producer;
   const audioElements = new Map();
+  const confAudioElements = new Map();
   const speakingPeers = new Set();
   const lastSpokePeers = new Map();
   const mutedPeers = new Set();
@@ -146,13 +156,33 @@ document.addEventListener("DOMContentLoaded", () => {
       li.id = `user-${socketId}`;
       li.classList.add("target-item", "user-target");
 
-      // Icon & Label …
+      // Icon & Label
       const icon = document.createElement("div");
       icon.className = "user-icon";
       icon.textContent = name ? name.charAt(0).toUpperCase() : socketId.slice(0,2);
       const label = document.createElement("span");
       label.textContent = name || socketId;
       li.append(icon, label);
+
+      // ——— Lautstärke-Slider für User ———
+      const userKey = `volume_user_${socketId}`;
+      const volSlider = document.createElement("input");
+      volSlider.type  = "range";
+      volSlider.min   = "0";
+      volSlider.max   = "1";
+      volSlider.step  = "0.01";
+      // aus sessionStorage laden oder default
+      volSlider.value = getStoredVolume(userKey).toString();
+      volSlider.className = "volume-slider";
+      volSlider.title     = "Source Volume";
+      // bei jeder Änderung in sessionStorage sichern
+      volSlider.addEventListener("input", e => {
+        const vol = parseFloat(e.target.value);
+        const entry = audioElements.get(socketId);
+        if (entry?.audio) entry.audio.volume = vol;
+        storeVolume(userKey, vol);
+      });
+      li.appendChild(volSlider);
 
       // ——— Mute-Button für User ———
       const userMuteBtn = document.createElement("button");
@@ -162,11 +192,8 @@ document.addEventListener("DOMContentLoaded", () => {
       userMuteBtn.addEventListener("pointerdown", e => e.stopPropagation());
       userMuteBtn.addEventListener("click", e => {
         e.stopPropagation();
-        // Debug für User-Mute
-        const rawId = socketId;
-        const key   = `user-${rawId}`;
-        console.log("[DEBUG] User Mute-Button geklickt:", { rawId, key });
-        toggleMute(rawId);
+        const key = `user-${socketId}`;
+        toggleMute(socketId);
         const nowMuted = mutedPeers.has(key);
         userMuteBtn.textContent = nowMuted ? "Unmute" : "Mute";
         userMuteBtn.classList.toggle("muted", nowMuted);
@@ -176,17 +203,16 @@ document.addEventListener("DOMContentLoaded", () => {
       // ——— Push-to-Talk ———
       ["down", "up", "leave", "cancel"].forEach(ev => {
         li.addEventListener(`pointer${ev}`, e => {
-          if (e.target.closest(".mute-btn")) return;
-          if (ev === "down") handleTalk(e, { type: "user", id: socketId });
-          else handleStopTalking(e);
+          if (e.target.closest(".mute-btn") || e.target === volSlider) return;
+          if (ev === "down")   handleTalk(e, { type: "user", id: socketId });
+          else                  handleStopTalking(e);
         });
       });
 
       list.appendChild(li);
     }
 
-    // 2️⃣ Conference-Targets (immer anzeigen)
-    // 2️⃣ Conference-Targets
+// 2️⃣ Conference-Targets
     for (const { targetId: id, name } of confTargets) {
       const key = `conf-${id}`; // unser DOM-Key
 
@@ -194,7 +220,7 @@ document.addEventListener("DOMContentLoaded", () => {
       li.id = key;
       li.classList.add("target-item", "conf-target");
 
-      // Icon & Label …
+      // Icon & Label
       const icon = document.createElement("div");
       icon.className = "conf-icon";
       icon.textContent = "📡";
@@ -202,19 +228,37 @@ document.addEventListener("DOMContentLoaded", () => {
       label.textContent = name;
       li.append(icon, label);
 
-      // ——— Mute-Button für Conference ———
+      // Lautstärke-Slider für Conference
+      const confKey = `volume_conf_${id}`;          // z.B. "volume_conf_42"
+      const confSlider = document.createElement("input");
+      confSlider.type  = "range";
+      confSlider.min   = "0";
+      confSlider.max   = "1";
+      confSlider.step  = "0.01";
+      // initial aus sessionStorage
+      confSlider.value = getStoredVolume(confKey).toString();
+      confSlider.className = "volume-slider";
+      confSlider.title     = "Conference Volume";
+      confSlider.addEventListener("input", e => {
+        const vol = parseFloat(e.target.value);
+        const audios = confAudioElements.get(id);
+        if (audios) {
+          audios.forEach(a => a.volume = vol);
+        }
+        storeVolume(confKey, vol);
+      });
+      li.appendChild(confSlider);
+
+      // Mute-Button für Conference
       const confMuteBtn = document.createElement("button");
       confMuteBtn.className = "mute-btn";
       const initiallyMuted = mutedPeers.has(key);
       confMuteBtn.textContent = initiallyMuted ? "Unmute" : "Mute";
       if (initiallyMuted) confMuteBtn.classList.add("muted");
       confMuteBtn.title = "Stummschalten";
-
       confMuteBtn.addEventListener("pointerdown", e => e.stopPropagation());
       confMuteBtn.addEventListener("click", e => {
         e.stopPropagation();
-        // Debug für Conference-Mute
-        console.log("[DEBUG] Conference Mute-Button geklickt:", { rawId: id, key });
         toggleMute(id);
         const nowMuted = mutedPeers.has(key);
         confMuteBtn.textContent = nowMuted ? "Unmute" : "Mute";
@@ -222,18 +266,25 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       li.appendChild(confMuteBtn);
 
-      // Push-to-Talk
+      // Push-to-Talk für Conference (ignoriert Slider- und Mute-Clicks)
       ["down", "up", "leave", "cancel"].forEach(ev => {
         li.addEventListener(`pointer${ev}`, e => {
-          if (e.target.closest(".mute-btn")) return;
-          if (ev === "down") handleTalk(e, { type: "conference", id });
-          else handleStopTalking(e);
+          if (
+              e.target.closest(".mute-btn") ||
+              e.target.closest(".volume-slider")
+          ) {
+            return;
+          }
+          if (ev === "down") {
+            handleTalk(e, { type: "conference", id });
+          } else {
+            handleStopTalking(e);
+          }
         });
       });
 
       list.appendChild(li);
     }
-
 
     // 3️⃣ Highlights (speaking, last-spoke, muted)
     document.querySelectorAll(".target-item").forEach(li => {
@@ -410,7 +461,6 @@ document.addEventListener("DOMContentLoaded", () => {
     console.log(`New producer ${producerId} from peer ${peerId}`, appData);
 
     // ─── Key bestimmen ───────────────────────────────────────────
-    // Conference-Streams bekommen den Key "conf-<id>", alles andere "user-<socketId>"
     const key = appData?.type === "conference"
         ? `conf-${appData.id}`
         : `user-${peerId}`;
@@ -438,51 +488,90 @@ document.addEventListener("DOMContentLoaded", () => {
           )
       );
       if (error) throw new Error(error);
-
       const consumer = await recvTransport.consume(consumeParams);
 
-      // Damit ihr auch das Muten sauber drüberspielen könnt
+      // ─── Für Mute/Unmute tracken ────────────────────────────────
       if (!peerConsumers.has(key)) peerConsumers.set(key, new Set());
       peerConsumers.get(key).add(consumer);
-
-      // Sofort stummschalten, wenn gewünscht
       if (mutedPeers.has(key)) consumer.pause();
 
-      // ─── Audio-Element bauen & anhängen ─────────────────────────
-      const audio = document.createElement("audio");
-      audio.srcObject = new MediaStream([consumer.track]);
-      audio.autoplay = true;
-      audio.volume   = mutedPeers.has(key) ? 0 : 1.0;
-      audioStreamsDiv.appendChild(audio);
-      audioElements.set(consumer.id, { audio, key });
+      // ─── Stream in MediaStream packen ──────────────────────────
+      const stream = new MediaStream([consumer.track]);
 
-      // Probier Autoplay
-      try { await audio.play(); console.log("✓ Audio playback started"); } catch {}
+      // ─── Erstes Mal: Audio-Element + Slider anlegen ────────────
+      if (!audioElements.has(peerId)) {
+        const audio = document.createElement("audio");
+        audio.srcObject = stream;
+        audio.autoplay  = true;
+        audio.volume    = mutedPeers.has(key) ? 0 : 1.0;
+        audioStreamsDiv.appendChild(audio);
 
-      // ─── Resume starten ──────────────────────────────────────────
+        // Slider verknüpfen
+        const slider = document.querySelector(`#user-${peerId} .volume-slider`);
+        if (slider) {
+          slider.value = audio.volume;
+          slider.addEventListener("input", e => {
+            const vol = parseFloat(e.target.value);
+            audio.volume = vol;
+            console.log(`🔊 Set volume for ${peerId} to`, vol);
+          });
+        }
+
+        // Einmalig speichern (inkl. aktuellem Volume)
+        audioElements.set(peerId, { audio, volume: audio.volume });
+
+        if (appData?.type === "conference") {
+          const confId = appData.id;
+          if (!confAudioElements.has(confId)) {
+            confAudioElements.set(confId, new Set());
+          }
+          confAudioElements.get(confId).add(audio);
+
+          // Cleanup, wenn der Consumer schließt
+          consumer.on("producerclose", () => {
+            const s = confAudioElements.get(confId);
+            if (s) s.delete(audio);
+          });
+        }
+
+      }
+      // ─── Wiederkehrend: nur den srcObject tauschen ─────────────
+      else {
+        const entry = audioElements.get(peerId);
+        entry.audio.srcObject = stream;
+        // volume bleibt entry.volume erhalten
+      }
+
+      // ─── Autoplay versuchen ────────────────────────────────────
+      try { await audioElements.get(peerId).audio.play(); }
+      catch {}
+
+      // ─── Resume starten ─────────────────────────────────────────
       await new Promise(res =>
           socket.emit("resume-consumer", { consumerId: consumer.id }, res)
       );
 
-      // ─── Cleanup, wenn dieser Producer schließt ─────────────────
+      // ─── Aufräumen, wenn Producer schließt ───────────────────────
       consumer.on("producerclose", () => {
         console.log(`Producer closed for consumer ${consumer.id}`);
         speakingPeers.delete(key);
         updateSpeakerHighlight(key, false);
 
         // Audio-Element entfernen
-        const stored = audioElements.get(consumer.id);
+        const stored = audioElements.get(peerId);
         if (stored) {
           stored.audio.remove();
-          audioElements.delete(consumer.id);
+          audioElements.delete(peerId);
         }
         // Consumer aus Map löschen
         peerConsumers.get(key).delete(consumer);
       });
+
     } catch (err) {
       console.error("Error consuming:", err);
     }
   });
+
 
 
 
