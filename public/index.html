@@ -36,6 +36,10 @@
         background-color: #f5f5f5;
       }
 
+      body.cut-camera {
+        background-color: red !important;
+      }
+
       .container {
         max-width: 800px;
         margin: 0 auto;
@@ -71,6 +75,10 @@
 
       /* Base button styles */
       button {
+        -webkit-touch-callout: none; /* iOS Safari */
+        -webkit-user-select: none; /* Safari */
+        -moz-user-select: none; /* Firefox */
+        -ms-user-select: none; /* IE10+/Edge */
         user-select: none;
         touch-action: manipulation;
         border: 2px solid transparent;
@@ -81,6 +89,7 @@
         font-size: 16px;
         padding: 1.5rem;
         margin: 0.25rem;
+        min-width: 2rem;
         background: #2196f3;
       }
       button:disabled {
@@ -92,11 +101,17 @@
       #talk-all:not(.active) {
         background: #4caf50;
       }
+      #talk-lock:not(.active) {
+        background: #ff9800;
+      }
       #reply :not(.active) {
         background: #2196f3;
       }
       #talk-all:not(.active):hover:not(:disabled) {
         background: #45a049;
+      }
+      #talk-lock:not(.active):hover:not(:disabled) {
+        background: #fb8c00;
       }
       #reply :not(.active):hover:not(:disabled) {
         background: #1976d2;
@@ -104,6 +119,7 @@
 
       /* Active state (lila) */
       #talk-all.active,
+      #talk-lock.active,
       #reply.active {
         background: #f3e5f5;
         border-color: #9c27b0;
@@ -229,7 +245,6 @@
       #targets-list li.target-item.muted .conf-icon {
         background: #f44336;
       }
-
     </style>
   </head>
   <body>
@@ -266,6 +281,7 @@
 
       <div class="controls">
         <button id="talk-all" disabled>🔊 ALL</button>
+        <button id="talk-lock" disabled>🔊 HOLD</button>
         <button id="reply" disabled>🔊 REPLY</button>
       </div>
 

@@ -1,4 +1,9 @@
 const socket = io();
+
+socket.on("cut-camera", (value) => {
+  document.body.classList.toggle("cut-camera", value);
+});
+
 const defaultVolume = 0.85;
 let inputSelect, outputSelect;
 
@@ -81,6 +86,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const myIdEl = document.getElementById("my-id");
   const btnAll = document.getElementById("talk-all");
+  const btnHold = document.getElementById("talk-lock");
   const btnReply = document.getElementById("reply");
   const audioStreamsDiv = document.getElementById("audio-streams");
   const peerConsumers = new Map();
@@ -169,6 +175,7 @@ document.addEventListener("DOMContentLoaded", () => {
     console.log("Disconnected from server");
     myIdEl.textContent = "Getrennt";
     btnAll.disabled = true;
+    btnHold.disabled = true;
     // Disable all user buttons
     document
       .querySelectorAll(".talk-user")
@@ -479,6 +486,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // Enable buttons after successful initialization
       btnAll.disabled = false;
+      btnHold.disabled = false;
       // Update all user list items to be clickable
       document.querySelectorAll("#users li:not(.you)").forEach((li) => {
         li.style.cursor = "pointer";
@@ -817,6 +825,15 @@ document.addEventListener("DOMContentLoaded", () => {
   btnAll.addEventListener("pointerleave", handleStopTalking);
   btnAll.addEventListener("pointercancel",handleStopTalking);
 
+  btnHold.addEventListener("click", e => {
+    e.preventDefault();
+    if (producer) {
+      handleStopTalking(e);
+    } else {
+      btnHold.classList.add("active");
+      handleTalk(e, null);
+    }
+  });
 
   btnReply.addEventListener("pointerdown", e => {
     e.preventDefault();
@@ -831,12 +848,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function handleStopTalking(e) {
     e.preventDefault();
+    
+    // Ignorieren, wenn der HOLD-Button aktiv ist und das Ereignis
+    // nicht vom HOLD-Button selbst stammt. So bleibt der Modus
+    // bestehen, auch wenn andere Controls pointerleave auslösen.
+    if (btnHold.classList.contains("active") && e.currentTarget !== btnHold) {
+      return;
+    }
     isTalking = false;
 
     // btnAll zurücksetzen
     btnAll.classList.remove("active");
+    btnHold.classList.remove("active");
     // btnReply nur zurücksetzen, wenn kein Reply im Gange ist
     btnReply.classList.remove("active");
+
 
     if (!producer) return;
 

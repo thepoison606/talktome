@@ -30,6 +30,9 @@ const {
 const app = express();
 app.use(express.json());
 
+// Track the user whose camera is currently "cut"
+let cutCameraUser = null;
+
 // === GET ===
 app.get("/users", (req, res) => {
   res.json(getAllUsers());
@@ -238,6 +241,22 @@ const httpsOptions = {
 const server = https.createServer(httpsOptions, app);
 const io = socketIO(server);
 
+app.post("/cut-camera", (req, res) => {
+  const { user } = req.body;
+  if (typeof user !== "string") {
+    return res.status(400).json({ error: "user must be provided" });
+  }
+
+  // empty string disables all highlights
+  cutCameraUser = user.trim() || null;
+
+  for (const peer of peers.values()) {
+    peer.socket.emit("cut-camera", peer.name === cutCameraUser);
+  }
+
+  res.json({ user: cutCameraUser });
+});
+
 app.use(express.static("public"));
 app.use("/node_modules", express.static("node_modules"));
 
@@ -313,6 +332,8 @@ io.on("connection", (socket) => {
     peer.userId = id;    // die echte DB-ID
     peer.name   = name;  // Anzeigename
     console.log(`[USER] Registered ${name} (${id}) on socket ${socket.id}`);
+
+    socket.emit("cut-camera", name === cutCameraUser);
 
     // Aktualisierte Liste an alle Clients schicken
     io.emit("user-list", getUserList());
