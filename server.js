@@ -51,6 +51,9 @@ const {
 const app = express();
 app.use(express.json());
 
+// HTTPS port (defaults to 443)
+const HTTPS_PORT = parseInt(process.env.PORT || process.env.HTTPS_PORT || "443", 10);
+
 // Track the single user whose camera is currently "cut"
 let cutCameraUser = null;
 
@@ -290,16 +293,26 @@ app.use((req, res, next) => {
   next();
 });
 
-// Redirect HTTP to HTTPS
+// Optional HTTP → HTTPS redirect server
 const http = require("http");
-http
-  .createServer((req, res) => {
-    res.writeHead(301, { Location: `https://${req.headers.host}${req.url}` });
+const HTTP_PORT = process.env.HTTP_PORT;
+if (HTTP_PORT) {
+  const redirectServer = http.createServer((req, res) => {
+    const host = req.headers.host?.replace(/:.*/, "");
+    res.writeHead(301, {
+      Location: `https://${host}:${HTTPS_PORT}${req.url}`,
+    });
     res.end();
-  })
-  .listen(80, () => {
-    console.log("HTTP redirect server running on port 80");
   });
+
+  redirectServer.listen(HTTP_PORT, () => {
+    console.log(`HTTP redirect server running on port ${HTTP_PORT}`);
+  });
+
+  redirectServer.on("error", (err) => {
+    console.warn(`Failed to start HTTP redirect server on ${HTTP_PORT}: ${err.message}`);
+  });
+}
 
 let worker, router;
 const peers = new Map();
@@ -786,11 +799,10 @@ io.on("connection", (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 443;
-server.listen(PORT, () => {
-  console.log(`🔒 HTTPS Server running on port ${PORT}`);
-  console.log(`📍 Access via: https://YOUR-IP:${PORT}`);
-  console.log(`🛠️ Administration via: https://YOUR-IP:${PORT}/admin.html`);
+server.listen(HTTPS_PORT, () => {
+  console.log(`🔒 HTTPS Server running on port ${HTTPS_PORT}`);
+  console.log(`📍 Access via: https://YOUR-IP:${HTTPS_PORT}`);
+  console.log(`🛠️ Administration via: https://YOUR-IP:${HTTPS_PORT}/admin.html`);
   console.log("");
   console.log("⚠️  Browsers will show a certificate warning.");
   console.log('   Click "Advanced" → "Proceed to site" to continue.');
