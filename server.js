@@ -3,9 +3,30 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const socketIO = require("socket.io");
-const mediasoup = require("mediasoup");
-const bodyParser = require("body-parser");
 const bcrypt = require("bcrypt");
+
+// When bundled with `pkg`, the mediasoup worker binary cannot be executed
+// directly from the read-only snapshot. Copy it next to the executable and
+// point MEDIASOUP_WORKER_BIN to that location so spawning succeeds.
+const workerName = process.platform === "win32" ? "mediasoup-worker.exe" : "mediasoup-worker";
+const mediasoupModulePath = path.dirname(require.resolve("mediasoup"));
+let workerBin = path.join(
+  mediasoupModulePath,
+  "..",
+  "worker",
+  "out",
+  "Release",
+  workerName
+);
+if (process.pkg) {
+  const dest = path.join(process.cwd(), "mediasoup-worker");
+  if (!fs.existsSync(dest)) {
+    fs.copyFileSync(workerBin, dest);
+  }
+  workerBin = dest;
+}
+process.env.MEDIASOUP_WORKER_BIN = workerBin;
+const mediasoup = require("mediasoup");
 
 const {
   createUser,
@@ -29,6 +50,9 @@ const {
 
 const app = express();
 app.use(express.json());
+
+// Track the single user whose camera is currently "cut"
+let cutCameraUser = null;
 
 // === GET ===
 app.get("/users", (req, res) => {
@@ -217,9 +241,11 @@ app.delete("/users/:id/targets/:type/:tid", (req, res) => {
 
 
 // Erstelle selbst-signiertes Zertifikat falls nicht vorhanden
-const certDir = path.join(__dirname, "certs");
+// Bei Verwendung von `pkg` ist das gebündelte Verzeichnis schreibgeschützt.
+// Daher legen wir die Zertifikate relativ zum aktuellen Arbeitsverzeichnis ab.
+const certDir = path.join(process.cwd(), "certs");
 if (!fs.existsSync(certDir)) {
-  fs.mkdirSync(certDir);
+  fs.mkdirSync(certDir, { recursive: true });
   console.log("⚠️  Bitte erstellen Sie SSL-Zertifikate:");
   console.log("   cd certs");
   console.log(
@@ -237,6 +263,24 @@ const httpsOptions = {
 
 const server = https.createServer(httpsOptions, app);
 const io = socketIO(server);
+
+app.post("/cut-camera", (req, res) => {
+  const { user } = req.body;
+  if (typeof user !== "string") {
+    return res.status(400).json({ error: "user must be provided" });
+  }
+
+  console.log(`[CUT-CAMERA] Request for user: ${user}`);
+
+  // empty string disables all highlights
+  cutCameraUser = user.trim() || null;
+
+  for (const peer of peers.values()) {
+    peer.socket.emit("cut-camera", peer.name === cutCameraUser);
+  }
+
+  res.json({ user: cutCameraUser });
+});
 
 app.use(express.static("public"));
 app.use("/node_modules", express.static("node_modules"));
@@ -313,6 +357,8 @@ io.on("connection", (socket) => {
     peer.userId = id;    // die echte DB-ID
     peer.name   = name;  // Anzeigename
     console.log(`[USER] Registered ${name} (${id}) on socket ${socket.id}`);
+
+    socket.emit("cut-camera", name === cutCameraUser);
 
     // Aktualisierte Liste an alle Clients schicken
     io.emit("user-list", getUserList());
