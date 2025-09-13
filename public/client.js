@@ -835,6 +835,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+
   btnReply.addEventListener("pointerdown", e => {
     e.preventDefault();
     if (!lastTarget) return;
@@ -848,13 +849,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function handleStopTalking(e) {
     e.preventDefault();
-    
+
     // Ignorieren, wenn der HOLD-Button aktiv ist und das Ereignis
     // nicht vom HOLD-Button selbst stammt. So bleibt der Modus
     // bestehen, auch wenn andere Controls pointerleave auslösen.
     if (btnHold.classList.contains("active") && e.currentTarget !== btnHold) {
       return;
     }
+
     isTalking = false;
 
     // btnAll zurücksetzen

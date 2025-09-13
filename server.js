@@ -3,9 +3,30 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const socketIO = require("socket.io");
-const mediasoup = require("mediasoup");
-const bodyParser = require("body-parser");
 const bcrypt = require("bcrypt");
+
+// When bundled with `pkg`, the mediasoup worker binary cannot be executed
+// directly from the read-only snapshot. Copy it next to the executable and
+// point MEDIASOUP_WORKER_BIN to that location so spawning succeeds.
+const workerName = process.platform === "win32" ? "mediasoup-worker.exe" : "mediasoup-worker";
+const mediasoupModulePath = path.dirname(require.resolve("mediasoup"));
+let workerBin = path.join(
+  mediasoupModulePath,
+  "..",
+  "worker",
+  "out",
+  "Release",
+  workerName
+);
+if (process.pkg) {
+  const dest = path.join(process.cwd(), "mediasoup-worker");
+  if (!fs.existsSync(dest)) {
+    fs.copyFileSync(workerBin, dest);
+  }
+  workerBin = dest;
+}
+process.env.MEDIASOUP_WORKER_BIN = workerBin;
+const mediasoup = require("mediasoup");
 
 const {
   createUser,
@@ -29,6 +50,9 @@ const {
 
 const app = express();
 app.use(express.json());
+
+// HTTPS port (defaults to 443)
+const HTTPS_PORT = parseInt(process.env.PORT || process.env.HTTPS_PORT || "443", 10);
 
 // Track the user whose camera is currently "cut"
 let cutCameraUser = null;
@@ -220,9 +244,11 @@ app.delete("/users/:id/targets/:type/:tid", (req, res) => {
 
 
 // Erstelle selbst-signiertes Zertifikat falls nicht vorhanden
-const certDir = path.join(__dirname, "certs");
+// Bei Verwendung von `pkg` ist das gebündelte Verzeichnis schreibgeschützt.
+// Daher legen wir die Zertifikate relativ zum aktuellen Arbeitsverzeichnis ab.
+const certDir = path.join(process.cwd(), "certs");
 if (!fs.existsSync(certDir)) {
-  fs.mkdirSync(certDir);
+  fs.mkdirSync(certDir, { recursive: true });
   console.log("⚠️  Bitte erstellen Sie SSL-Zertifikate:");
   console.log("   cd certs");
   console.log(
@@ -247,6 +273,7 @@ app.post("/cut-camera", (req, res) => {
     return res.status(400).json({ error: "user must be provided" });
   }
 
+  console.log(`[CUT-CAMERA] Request for user: ${user}`);
   // empty string disables all highlights
   cutCameraUser = user.trim() || null;
 
@@ -265,16 +292,26 @@ app.use((req, res, next) => {
   next();
 });
 
-// Redirect HTTP to HTTPS
+// Optional HTTP → HTTPS redirect server
 const http = require("http");
-http
-  .createServer((req, res) => {
-    res.writeHead(301, { Location: `https://${req.headers.host}${req.url}` });
+const HTTP_PORT = process.env.HTTP_PORT;
+if (HTTP_PORT) {
+  const redirectServer = http.createServer((req, res) => {
+    const host = req.headers.host?.replace(/:.*/, "");
+    res.writeHead(301, {
+      Location: `https://${host}:${HTTPS_PORT}${req.url}`,
+    });
     res.end();
-  })
-  .listen(80, () => {
-    console.log("HTTP redirect server running on port 80");
   });
+
+  redirectServer.listen(HTTP_PORT, () => {
+    console.log(`HTTP redirect server running on port ${HTTP_PORT}`);
+  });
+
+  redirectServer.on("error", (err) => {
+    console.warn(`Failed to start HTTP redirect server on ${HTTP_PORT}: ${err.message}`);
+  });
+}
 
 let worker, router;
 const peers = new Map();
@@ -761,11 +798,10 @@ io.on("connection", (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 443;
-server.listen(PORT, () => {
-  console.log(`🔒 HTTPS Server running on port ${PORT}`);
-  console.log(`📍 Access via: https://YOUR-IP:${PORT}`);
-  console.log(`🛠️ Administration via: https://YOUR-IP:${PORT}/admin.html`);
+server.listen(HTTPS_PORT, () => {
+  console.log(`🔒 HTTPS Server running on port ${HTTPS_PORT}`);
+  console.log(`📍 Access via: https://YOUR-IP:${HTTPS_PORT}`);
+  console.log(`🛠️ Administration via: https://YOUR-IP:${HTTPS_PORT}/admin.html`);
   console.log("");
   console.log("⚠️  Browsers will show a certificate warning.");
   console.log('   Click "Advanced" → "Proceed to site" to continue.');
