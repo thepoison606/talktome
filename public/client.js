@@ -865,6 +865,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // btnReply nur zurücksetzen, wenn kein Reply im Gange ist
     btnReply.classList.remove("active");
 
+
     if (!producer) return;
 
     socket.emit("producer-close", { producerId: producer.id });

@@ -54,7 +54,7 @@ app.use(express.json());
 // HTTPS port (defaults to 443)
 const HTTPS_PORT = parseInt(process.env.PORT || process.env.HTTPS_PORT || "443", 10);
 
-// Track the single user whose camera is currently "cut"
+// Track the user whose camera is currently "cut"
 let cutCameraUser = null;
 
 // === GET ===
@@ -274,7 +274,6 @@ app.post("/cut-camera", (req, res) => {
   }
 
   console.log(`[CUT-CAMERA] Request for user: ${user}`);
-
   // empty string disables all highlights
   cutCameraUser = user.trim() || null;
 
