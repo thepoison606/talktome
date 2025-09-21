@@ -5,7 +5,7 @@ Flexible Intercom-Solution
 - Admin-UI: `https://localhost/admin.html`
 
 ## Use
-- App aufrufen unter: `https://<IP-ADRESS>/`
+- Open App here: `https://<IP-ADRESS>/`
 
 ## Tally-/HTTP-API
 Send Tally-Information per **HTTP POST** to the Endpoint:
