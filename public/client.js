@@ -4,8 +4,9 @@ socket.on("cut-camera", (value) => {
   document.body.classList.toggle("cut-camera", value);
 });
 
+const BASE_REPLY_LABEL = "🔊 REPLY";
 const defaultVolume = 0.85;
-let inputSelect, outputSelect;
+let inputSelect;
 
 
 socket.onAny((event, ...args) => {
@@ -37,32 +38,23 @@ async function updateDeviceList() {
 
   const devices = await navigator.mediaDevices.enumerateDevices();
   const inputs  = devices.filter(d => d.kind === "audioinput");
-  const outputs = devices.filter(d => d.kind === "audiooutput");
 
   // Input-Select befüllen
-  inputSelect.innerHTML = `<option value="">Select device</option>`;
-  inputs.forEach(d => {
-    const opt = document.createElement("option");
-    opt.value       = d.deviceId;
-    opt.textContent = d.label || `Mikrofon ${inputSelect.length}`;
-    inputSelect.append(opt);
-  });
-
-  // Output-Select befüllen
-  outputSelect.innerHTML = `<option value="">Select device</option>`;
-  outputs.forEach(d => {
-    const opt = document.createElement("option");
-    opt.value       = d.deviceId;
-    opt.textContent = d.label || `Lautsprecher ${outputSelect.length}`;
-    outputSelect.append(opt);
-  });
+  if (inputSelect) {
+    inputSelect.innerHTML = `<option value="">Select device</option>`;
+    inputs.forEach(d => {
+      const opt = document.createElement("option");
+      opt.value       = d.deviceId;
+      opt.textContent = d.label || `Mikrofon ${inputSelect.length}`;
+      inputSelect.append(opt);
+    });
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   console.log("DOM loaded, initializing...");
 
   inputSelect  = document.getElementById("input-select");
-  outputSelect = document.getElementById("output-select");
   updateDeviceList().catch(err => console.error("updateDeviceList failed:", err));
   navigator.mediaDevices.addEventListener("devicechange", () =>
       updateDeviceList().catch(err => console.error(err))
@@ -90,6 +82,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnReply = document.getElementById("reply");
   const audioStreamsDiv = document.getElementById("audio-streams");
   const peerConsumers = new Map();
+  const targetLabels = new Map();
 
   // MediaSoup Variablen
   let device, sendTransport, recvTransport, producer;
@@ -101,6 +94,21 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentTargetPeer = null;
   let lastTarget = null;
   let isTalking = false;
+
+  function renderReplyButtonLabel() {
+    const suffix = lastTarget?.label ? ` (${lastTarget.label})` : "";
+    btnReply.setAttribute("data-label", `${BASE_REPLY_LABEL}${suffix}`);
+    const aria = lastTarget?.label ? `Reply to ${lastTarget.label}` : "Reply";
+    btnReply.setAttribute("aria-label", aria);
+  }
+
+  function clearReplyTarget() {
+    lastTarget = null;
+    btnReply.disabled = true;
+    renderReplyButtonLabel();
+  }
+
+  clearReplyTarget();
 
   // Check Auto-Login
   const userId = localStorage.getItem("userId");
@@ -176,6 +184,7 @@ document.addEventListener("DOMContentLoaded", () => {
     myIdEl.textContent = "Getrennt";
     btnAll.disabled = true;
     btnHold.disabled = true;
+    clearReplyTarget();
     // Disable all user buttons
     document
       .querySelectorAll(".talk-user")
@@ -193,6 +202,16 @@ document.addEventListener("DOMContentLoaded", () => {
             .map(t => Number(t.targetId))
     );
     const confTargets = targets.filter(t => t.targetType === "conference");
+
+    targetLabels.clear();
+    users.forEach(({ socketId, name }) => {
+      const key = `user-${socketId}`;
+      targetLabels.set(key, name || socketId);
+    });
+    confTargets.forEach(({ targetId: id, name }) => {
+      const key = `conf-${id}`;
+      targetLabels.set(key, name);
+    });
 
     const list = document.getElementById("targets-list");
     list.innerHTML = ""; // Liste leeren
@@ -360,6 +379,17 @@ document.addEventListener("DOMContentLoaded", () => {
       li.classList.toggle("muted", mutedPeers.has(id));
       if (icon) icon.classList.toggle("muted", mutedPeers.has(id));
     });
+
+    if (lastTarget) {
+      const key = lastTarget.type === "conference"
+          ? `conf-${lastTarget.id}`
+          : `user-${lastTarget.id}`;
+      const updatedLabel = targetLabels.get(key);
+      if (updatedLabel && updatedLabel !== lastTarget.label) {
+        lastTarget = { ...lastTarget, label: updatedLabel };
+        renderReplyButtonLabel();
+      }
+    }
   });
 
 
@@ -572,13 +602,6 @@ document.addEventListener("DOMContentLoaded", () => {
         const initVol = getStoredVolume(volKey);
         audio.volume = initVol;
 
-        // set the output device if supported and selected
-        if (typeof audio.setSinkId === 'function' && outputSelect.value) {
-          audio.setSinkId(outputSelect.value)
-              .then(() => console.log('Output device set to', outputSelect.value))
-              .catch(err => console.warn('setSinkId failed:', err));
-        }
-
         // add the element to the DOM and save it
         audioStreamsDiv.appendChild(audio);
         audioElements.set(peerId, { audio, volume: initVol });
@@ -659,54 +682,71 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
   // Update speaker highlight
+  function getTargetLabel(targetKey) {
+    if (targetLabels.has(targetKey)) {
+      return targetLabels.get(targetKey) ?? "";
+    }
+    const separatorIndex = targetKey.indexOf("-");
+    const fallback = separatorIndex >= 0 ? targetKey.slice(separatorIndex + 1) : targetKey;
+    return fallback || "";
+  }
+
   function updateSpeakerHighlight(targetKey, isSpeaking) {
     const el = document.getElementById(targetKey);
-    if (!el) return;
-
     const iconCls = targetKey.startsWith("conf-") ? ".conf-icon" : ".user-icon";
-    const icon    = el.querySelector(iconCls);
+    const icon    = el?.querySelector(iconCls);
 
     if (isSpeaking) {
-      // Sprecher läuft gerade
-      el.classList.add("speaking");
-      el.classList.remove("last-spoke");
+      el?.classList.add("speaking");
+      el?.classList.remove("last-spoke");
       icon?.classList.add("speaking");
-    } else {
-      // Sprecher hat aufgehört
-      el.classList.remove("speaking");
-      icon?.classList.remove("speaking");
-
-      // 1) lastTarget setzen
-      if (targetKey.startsWith("conf-")) {
-        lastTarget = { type: "conference", id: targetKey.slice(5) };
-      } else {
-        lastTarget = { type: "user", id: targetKey.slice(5) };
-      }
-
-      // Reply-Button aktivieren oder deaktivieren
-      btnReply.disabled = (lastTarget.type === "user" && lastTarget.id === socket.id);
-
-      // 2) Gelb markieren
-      document.querySelectorAll(".last-spoke")
-          .forEach(elem => elem.classList.remove("last-spoke"));
-      el.classList.add("last-spoke");
-
-/*      // 3) Nach 20s wieder aufräumen
-      setTimeout(() => {
-        if (!speakingPeers.has(targetKey)) {
-          el.classList.remove("last-spoke");
-          // Reply-Button zurücksetzen, falls das der letzte war
-          if (lastTarget &&
-              (lastTarget.type === "conference"
-                  ? `conf-${lastTarget.id}` === targetKey
-                  : `user-${lastTarget.id}` === targetKey)
-          ) {
-            lastTarget = null;
-            btnReply.disabled = true;
-          }
-        }
-      }, 20000);*/
+      return;
     }
+
+    el?.classList.remove("speaking");
+    icon?.classList.remove("speaking");
+
+    const labelText = getTargetLabel(targetKey);
+    const separatorIndex = targetKey.indexOf("-");
+    const rawId = separatorIndex >= 0 ? targetKey.slice(separatorIndex + 1) : targetKey;
+    const isConference = targetKey.startsWith("conf-");
+    const isUser = targetKey.startsWith("user-");
+
+    if (!isConference && !isUser) {
+      clearReplyTarget();
+    } else {
+      const targetData = {
+        type: isConference ? "conference" : "user",
+        id: rawId,
+        label: labelText || rawId,
+      };
+
+      if (targetData.type === "user" && targetData.id === socket.id) {
+        lastTarget = null;
+      } else {
+        lastTarget = targetData;
+      }
+    }
+
+    btnReply.disabled = !lastTarget;
+    renderReplyButtonLabel();
+
+    document.querySelectorAll(".last-spoke")
+        .forEach(elem => elem.classList.remove("last-spoke"));
+    el?.classList.add("last-spoke");
+
+/*    setTimeout(() => {
+      if (!speakingPeers.has(targetKey)) {
+        el?.classList.remove("last-spoke");
+        if (lastTarget &&
+            (lastTarget.type === "conference"
+                ? `conf-${lastTarget.id}` === targetKey
+                : `user-${lastTarget.id}` === targetKey)
+        ) {
+          clearReplyTarget();
+        }
+      }
+    }, 20000);*/
   }
 
 // ---------- Hilfsfunktion einmal zentral definieren ----------
@@ -874,7 +914,7 @@ document.addEventListener("DOMContentLoaded", () => {
     e.preventDefault();
     if (!lastTarget) return;
     btnReply.classList.add("active");
-    handleTalk(e, lastTarget);
+    handleTalk(e, { type: lastTarget.type, id: lastTarget.id });
   });
 
   btnReply.addEventListener("pointerup", handleStopTalking);

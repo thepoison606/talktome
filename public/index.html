@@ -54,12 +54,44 @@
         margin-bottom: 1.5rem;
       }
 
-      .status {
-        margin: 1rem 0;
-        padding: 1rem;
+      .session-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        margin: 0 0 1.5rem;
+        padding: 0.75rem 1rem;
         background: #e3f2fd;
         border-radius: 4px;
         border-left: 4px solid #2196f3;
+      }
+
+      .session-info {
+        flex: 1;
+        min-width: 0;
+        color: #333;
+      }
+
+      .session-info span {
+        font-weight: 600;
+        word-break: break-word;
+      }
+
+      .session-bar button {
+        margin: 0;
+        flex-shrink: 0;
+      }
+
+      .logout-btn {
+        padding: 0.5rem 1rem;
+        font-size: 14px;
+        min-width: auto;
+      }
+
+      .controls button {
+        padding: 2rem 1rem;
+        min-height: 4.5rem;
       }
 
       .device-selectors {
@@ -70,7 +102,13 @@
 
       .device-selector {
         display: flex;
-        flex-direction: column;
+        align-items: center;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+      }
+
+      .device-selector select {
+        flex: 1 1 180px;
       }
 
       /* Base button styles */
@@ -90,7 +128,26 @@
         padding: 1.5rem;
         margin: 0.25rem;
         min-width: 2rem;
-        background: #2196f3;
+        background: #589ad0;
+      }
+
+      button[data-label] {
+        position: relative;
+      }
+
+      button[data-label]::after {
+        content: attr(data-label);
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+        color: inherit;
+        font: inherit;
+        white-space: normal;
+        text-align: center;
+        padding: 0 0.5rem;
       }
       button:disabled {
         opacity: 0.5;
@@ -105,7 +162,7 @@
         background: #ff9800;
       }
       #reply :not(.active) {
-        background: #2196f3;
+        background: #589ad0;
       }
       #talk-all:not(.active):hover:not(:disabled) {
         background: #45a049;
@@ -114,7 +171,7 @@
         background: #fb8c00;
       }
       #reply :not(.active):hover:not(:disabled) {
-        background: #1976d2;
+        background: #589ad0;
       }
 
       /* Active state (lila) */
@@ -158,6 +215,12 @@
         touch-action: manipulation;
       }
 
+      #targets-list li.target-item,
+      #targets-list li.target-item * {
+        -webkit-user-select: none;
+        user-select: none;
+      }
+
       /* Hover-Effekt */
       #targets-list li.target-item:hover:not(.you) {
         background: #f0f0f0;
@@ -192,7 +255,7 @@
         height: 48px;
         min-width: 48px;
         border-radius: 50%;
-        background: #2196f3;
+        background: #589ad0;
         color: white;
         display: flex;
         align-items: center;
@@ -309,17 +372,31 @@
 
     <!-- Intercom App (initially hidden until login) -->
     <div id="intercom-app" style="display: none;">
-      <div style="text-align: right; margin-bottom: 1em;">
-        <button id="logout-btn">Logout</button>
+      <h2>Talk to me - Intercom</h2>
+      <div class="session-bar">
+        <div class="session-info">Logged in as <span id="my-id">Connecting...</span></div>
+        <button id="logout-btn" type="button" class="logout-btn">Logout</button>
       </div>
 
-      <h2>Talk to me - Intercom</h2>
-      <div class="status">Logged in as: <span id="my-id">Connecting...</span></div>
-
       <div class="controls">
-        <button id="talk-all" disabled>🔊 ALL</button>
-        <button id="talk-lock" disabled>🔊 HOLD</button>
-        <button id="reply" disabled>🔊 REPLY</button>
+        <button
+          id="talk-all"
+          data-label="🔊 ALL"
+          aria-label="Talk to all"
+          disabled
+        ></button>
+        <button
+          id="talk-lock"
+          data-label="🔊 HOLD"
+          aria-label="Hold to talk"
+          disabled
+        ></button>
+        <button
+          id="reply"
+          data-label="🔊 REPLY"
+          aria-label="Reply"
+          disabled
+        ></button>
       </div>
 
       <ul id="targets-list"></ul>
@@ -331,13 +408,8 @@
             <option value="">select device</option>
           </select>
         </div>
-        <div class="device-selector">
-          <label for="output-select">Speaker</label>
-          <select id="output-select">
-            <option value="">select device</option>
-          </select>
-        </div>
       </div>
+    </div>
   </div>
 
   <!-- Scripts -->
