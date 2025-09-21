@@ -11,7 +11,7 @@ TypeScript utility to process [H264](https://tools.ietf.org/html/rfc6184) `profi
 - [h264_profile_level_id_unittest.cc](https://webrtc.googlesource.com/src/+/refs/heads/main/api/video_codecs/test/h264_profile_level_id_unittest.cc)
 
 ```bash
-$ npm install h264-profile-level-id
+npm install h264-profile-level-id
 ```
 
 ## API

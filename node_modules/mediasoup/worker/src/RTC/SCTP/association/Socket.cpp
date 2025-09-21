@@ -10,8 +10,8 @@ namespace RTC
 	{
 		/* Static. */
 
-		static constexpr size_t FactoryBufferLength{ 65536 };
-		thread_local static uint8_t FactoryBuffer[FactoryBufferLength];
+		// static constexpr size_t FactoryBufferLength{ 65536 };
+		// thread_local static uint8_t FactoryBuffer[FactoryBufferLength];
 
 		/* Instance methods. */
 

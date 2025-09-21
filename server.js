@@ -5,28 +5,55 @@ const path = require("path");
 const socketIO = require("socket.io");
 const bcrypt = require("bcrypt");
 
-// When bundled with `pkg`, the mediasoup worker binary cannot be executed
-// directly from the read-only snapshot. Copy it next to the executable and
-// point MEDIASOUP_WORKER_BIN to that location so spawning succeeds.
 const workerName = process.platform === "win32" ? "mediasoup-worker.exe" : "mediasoup-worker";
-const mediasoupModulePath = path.dirname(require.resolve("mediasoup"));
-let workerBin = path.join(
-  mediasoupModulePath,
-  "..",
-  "worker",
-  "out",
-  "Release",
-  workerName
-);
+
+// 1) Entry-Datei von mediasoup ermitteln (statt package.json)
+const mediasoupEntry = require.resolve("mediasoup");
+
+// 2) Bis zur Paketwurzel hochnavigieren (wo die package.json liegt)
+let mediasoupPkgDir = path.dirname(mediasoupEntry);
+const root = path.parse(mediasoupPkgDir).root;
+while (
+  !fs.existsSync(path.join(mediasoupPkgDir, "package.json")) &&
+  mediasoupPkgDir !== root
+) {
+  mediasoupPkgDir = path.dirname(mediasoupPkgDir);
+}
+
+// 3) Neuer Standardpfad zum Worker (ohne "node")
+let workerBin = path.join(mediasoupPkgDir, "worker", "out", "Release", workerName);
+
+// 4) Legacy-Fallback für alte Struktur mit ".../node/worker/..."
+if (!fs.existsSync(workerBin)) {
+  const legacyBin = path.join(mediasoupPkgDir, "node", "worker", "out", "Release", workerName);
+  if (fs.existsSync(legacyBin)) {
+    workerBin = legacyBin;
+  }
+}
+
+// 5) pkg-Bundle: Binary in beschreibbares Verzeichnis kopieren
 if (process.pkg) {
-  const dest = path.join(process.cwd(), "mediasoup-worker");
+  const dest = path.join(process.cwd(), workerName);
   if (!fs.existsSync(dest)) {
     fs.copyFileSync(workerBin, dest);
+    fs.chmodSync(dest, 0o755);
   }
   workerBin = dest;
 }
+
+// 6) Pfad setzen (muss vor dem ersten mediasoup-Require passieren)
 process.env.MEDIASOUP_WORKER_BIN = workerBin;
+
+// 7) Frühe, klare Fehlermeldung, falls Binary fehlt
+if (!fs.existsSync(process.env.MEDIASOUP_WORKER_BIN)) {
+  throw new Error(
+    `mediasoup worker binary nicht gefunden unter: ${process.env.MEDIASOUP_WORKER_BIN}\n` +
+    `Erwartet: node_modules/mediasoup/worker/out/Release/${workerName}`
+  );
+}
+
 const mediasoup = require("mediasoup");
+
 
 const {
   createUser,
