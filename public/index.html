@@ -142,9 +142,11 @@
 
       /* Einzelne Items (User- und Conference-Targets) */
       #targets-list li.target-item {
-        display: flex;
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        grid-template-areas: "icon info actions";
         align-items: center;
-        justify-content: space-between;
+        gap: 0.75rem;
         padding: 0.75rem 1rem;
         margin: 0.5rem 0;
         background: #f8f9fa;
@@ -153,6 +155,7 @@
         transition: all 0.3s ease;
         cursor: pointer;
         user-select: none;
+        touch-action: manipulation;
       }
 
       /* Hover-Effekt */
@@ -184,16 +187,35 @@
       /* Icon-Container (User vs. Conference) */
       #targets-list .user-icon,
       #targets-list .conf-icon {
-        width: 40px;
-        height: 40px;
+        grid-area: icon;
+        width: 48px;
+        height: 48px;
+        min-width: 48px;
         border-radius: 50%;
         background: #2196f3;
         color: white;
         display: flex;
         align-items: center;
         justify-content: center;
-        margin-right: 1rem;
         font-weight: bold;
+      }
+
+      #targets-list .target-info {
+        grid-area: info;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        min-width: 0;
+      }
+
+      #targets-list .target-label {
+        font-weight: 600;
+        word-break: break-word;
+      }
+
+      #targets-list .volume-slider {
+        width: 100%;
+        display: block;
       }
 
       #targets-list .conf-icon {
@@ -208,18 +230,15 @@
 
       /* Buttons in der Liste */
       #targets-list .mute-btn {
+        grid-area: actions;
         user-select: none;
         -webkit-user-select: none;
         -moz-user-select: none;
         -ms-user-select: none;
         -webkit-touch-callout: none;
         min-width: 6rem;
-        max-width: 6rem;
-
         text-align: center;
         box-sizing: border-box;
-
-        margin-left: 0.5rem;
         background: #607d8b;
         color: white;
         border: none;
@@ -227,7 +246,7 @@
         cursor: pointer;
         font-size: 14px;
         transition: all 0.2s ease;
-        padding: 1.5rem; /* reicht einmal */
+        padding: 0.75rem 1rem;
       }
 
       #targets-list .mute-btn:hover {
@@ -244,6 +263,24 @@
       #targets-list li.target-item.muted .user-icon,
       #targets-list li.target-item.muted .conf-icon {
         background: #f44336;
+      }
+
+      @media (max-width: 600px) {
+        .container {
+          padding: 1.5rem;
+        }
+
+        #targets-list li.target-item {
+          grid-template-columns: auto 1fr;
+          grid-template-areas:
+            "icon info"
+            "actions actions";
+        }
+
+        #targets-list .mute-btn {
+          width: 100%;
+          justify-self: stretch;
+        }
       }
     </style>
   </head>

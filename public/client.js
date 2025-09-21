@@ -209,9 +209,14 @@ document.addEventListener("DOMContentLoaded", () => {
       const icon = document.createElement("div");
       icon.className = "user-icon";
       icon.textContent = name ? name.charAt(0).toUpperCase() : socketId.slice(0,2);
+
+      const info = document.createElement("div");
+      info.className = "target-info";
+
       const label = document.createElement("span");
+      label.className = "target-label";
       label.textContent = name || socketId;
-      li.append(icon, label);
+      info.appendChild(label);
 
       // ——— Lautstärke-Slider für User ———
       const userKey = `volume_user_${socketId}`;
@@ -231,7 +236,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (entry?.audio) entry.audio.volume = vol;
         storeVolume(userKey, vol);
       });
-      li.appendChild(volSlider);
+      info.appendChild(volSlider);
 
       // ——— Mute-Button für User ———
       const userMuteBtn = document.createElement("button");
@@ -247,12 +252,12 @@ document.addEventListener("DOMContentLoaded", () => {
         userMuteBtn.textContent = nowMuted ? "Unmute" : "Mute";
         userMuteBtn.classList.toggle("muted", nowMuted);
       });
-      li.appendChild(userMuteBtn);
+      li.append(icon, info, userMuteBtn);
 
       // ——— Push-to-Talk ———
       ["down", "up", "leave", "cancel"].forEach(ev => {
         li.addEventListener(`pointer${ev}`, e => {
-          if (e.target.closest(".mute-btn") || e.target === volSlider) return;
+          if (e.target.closest(".mute-btn") || e.target.closest(".volume-slider")) return;
           if (ev === "down")   handleTalk(e, { type: "user", id: socketId });
           else                  handleStopTalking(e);
         });
@@ -273,9 +278,14 @@ document.addEventListener("DOMContentLoaded", () => {
       const icon = document.createElement("div");
       icon.className = "conf-icon";
       icon.textContent = "📡";
+
+      const info = document.createElement("div");
+      info.className = "target-info";
+
       const label = document.createElement("span");
+      label.className = "target-label";
       label.textContent = name;
-      li.append(icon, label);
+      info.appendChild(label);
 
       // Volume-Slider for Conference
       const confKey = `volume_conf_${id}`;
@@ -296,7 +306,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         storeVolume(confKey, vol);
       });
-      li.appendChild(confSlider);
+      info.appendChild(confSlider);
 
       // Mute-Button für Conference
       const confMuteBtn = document.createElement("button");
@@ -313,7 +323,7 @@ document.addEventListener("DOMContentLoaded", () => {
         confMuteBtn.textContent = nowMuted ? "Unmute" : "Mute";
         confMuteBtn.classList.toggle("muted", nowMuted);
       });
-      li.appendChild(confMuteBtn);
+      li.append(icon, info, confMuteBtn);
 
       // Push-to-Talk für Conference (ignoriert Slider- und Mute-Clicks)
       ["down", "up", "leave", "cancel"].forEach(ev => {
@@ -825,15 +835,39 @@ document.addEventListener("DOMContentLoaded", () => {
   btnAll.addEventListener("pointerleave", handleStopTalking);
   btnAll.addEventListener("pointercancel",handleStopTalking);
 
-  btnHold.addEventListener("click", e => {
-    e.preventDefault();
-    if (producer) {
+  function stopHoldTalking() {
+    handleStopTalking({
+      preventDefault() {},
+      currentTarget: btnHold,
+    });
+  }
+
+  function startHoldTalking(event) {
+    event?.preventDefault?.();
+    btnHold.classList.add("active");
+    handleTalk(event ?? { preventDefault() {} }, null);
+  }
+
+  btnHold.addEventListener("pointerdown", e => {
+    if (btnHold.classList.contains("active")) {
+      e.preventDefault();
       handleStopTalking(e);
     } else {
-      btnHold.classList.add("active");
-      handleTalk(e, null);
+      startHoldTalking(e);
     }
   });
+
+  btnHold.addEventListener("keydown", e => {
+    if (e.key !== " " && e.key !== "Enter") return;
+    e.preventDefault();
+    if (btnHold.classList.contains("active")) {
+      stopHoldTalking();
+    } else {
+      startHoldTalking({ preventDefault() {} });
+    }
+  });
+
+  btnHold.addEventListener("click", e => e.preventDefault());
 
 
   btnReply.addEventListener("pointerdown", e => {
