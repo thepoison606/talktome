@@ -62,6 +62,7 @@ const {
   removeUserFromConference,
   updateUserName,
   updateConferenceName,
+  updateUserPassword,
   getUsersForConference,
   getConferencesForUser,
   getAllUsers,
@@ -208,6 +209,23 @@ app.put("/users/:id", (req, res) => {
     } else {
       res.status(500).json({ error: "Internal server error" });
     }
+  }
+});
+
+app.put('/users/:id/password', (req, res) => {
+  const { password } = req.body;
+
+  if (typeof password !== 'string' || password.trim().length < 4) {
+    return res.status(400).json({ error: 'Password must be at least 4 characters long' });
+  }
+
+  try {
+    const updated = updateUserPassword(req.params.id, password.trim());
+    if (!updated) return res.status(404).json({ error: 'User not found' });
+    res.sendStatus(204);
+  } catch (err) {
+    console.error('Error updating password:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

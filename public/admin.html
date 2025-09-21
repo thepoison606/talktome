@@ -1,48 +1,390 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>Admin Panel</title>
-  <style>
-    body { font-family: sans-serif; padding: 20px; }
-    form, ul { margin-bottom: 20px; }
-    ul { list-style-type: none; padding-left: 0; }
-    li { margin-bottom: 4px; }
+  <head>
+    <meta charset="UTF-8" />
+    <title>Admin Panel</title>
+    <style>
+      :root {
+        --bg: #f5f7fb;
+        --card-bg: #ffffff;
+        --primary: #3f51b5;
+        --primary-dark: #2c3995;
+        --accent: #ff9800;
+        --text: #1f2a44;
+        --muted: #6b7a99;
+        --border: #e2e6f0;
+        --success: #2e7d32;
+        --danger: #c62828;
+        --radius: 12px;
+      }
 
-    /* alle nested-Container standardmäßig ausblenden */
-    .nested {
-      margin-left: 1.5em;
-      font-size: 0.95em;
-      color: #333;
-      display: none;
-    }
+      * {
+        box-sizing: border-box;
+      }
 
-    button.small { font-size: 0.75em; margin-left: 0.5em; }
-    input[type="text"].inline-edit { width: 120px; margin-right: 4px; }
-  </style>
-</head>
-<body>
-<h1>Admin Panel</h1>
-<div id="message" style="margin-bottom: 1em; color: red; font-weight: bold;"></div>
+      html,
+      body {
+        height: 100%;
+      }
 
-<h2>Users</h2>
-<form id="user-form">
-  <input type="text" id="username" placeholder="Name" required />
-  <input type="password" id="password" placeholder="Password" required />
-  <button type="submit">Add User</button>
-</form>
+      body {
+        margin: 0;
+        font-family: 'Inter', 'Segoe UI', sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.5;
+      }
 
-<ul id="user-list"></ul>
+      header {
+        padding: 2.5rem 2rem 1.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        background: linear-gradient(135deg, rgba(63, 81, 181, 0.08), rgba(63, 81, 181, 0));
+      }
 
-<h2>Conferences</h2>
-<form id="conf-form">
-  <input type="text" id="confname" placeholder="Conference Name" required />
-  <button type="submit">Add Conference</button>
-</form>
+      header h1 {
+        margin: 0;
+        font-size: 2rem;
+        font-weight: 700;
+      }
 
-<ul id="conf-list"></ul>
+      header p {
+        margin: 0;
+        color: var(--muted);
+      }
 
-<!-- Admin functionality script -->
-<script src="admin.js"></script>
-</body>
+      main {
+        padding: 0 2rem 3rem;
+        max-width: 1100px;
+        margin: 0 auto;
+        display: grid;
+        gap: 2rem;
+      }
+
+      .flash-message {
+        display: none;
+        padding: 0.75rem 1rem;
+        border-radius: var(--radius);
+        font-weight: 600;
+      }
+
+      .flash-message.is-visible {
+        display: block;
+      }
+
+      .flash-success {
+        background: rgba(46, 125, 50, 0.1);
+        color: var(--success);
+      }
+
+      .flash-error {
+        background: rgba(198, 40, 40, 0.12);
+        color: var(--danger);
+      }
+
+      .flash-warning {
+        background: rgba(255, 152, 0, 0.15);
+        color: #b26a00;
+      }
+
+      .card {
+        background: var(--card-bg);
+        padding: 2rem;
+        border-radius: var(--radius);
+        box-shadow: 0 12px 32px rgba(31, 42, 68, 0.08);
+        border: 1px solid var(--border);
+      }
+
+      .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 1rem;
+        margin-bottom: 1.5rem;
+      }
+
+      .card-header h2 {
+        margin: 0;
+        font-size: 1.5rem;
+      }
+
+      .form-grid {
+        display: grid;
+        gap: 1rem;
+      }
+
+      form.inline-form {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 0.75rem;
+        align-items: center;
+      }
+
+      label {
+        font-weight: 600;
+        color: var(--muted);
+      }
+
+      input,
+      select,
+      button {
+        font: inherit;
+      }
+
+      input,
+      select {
+        padding: 0.6rem 0.75rem;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        background: #fff;
+      }
+
+      input:focus,
+      select:focus {
+        outline: none;
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px rgba(63, 81, 181, 0.15);
+      }
+
+      button {
+        cursor: pointer;
+        border-radius: 8px;
+        border: none;
+        padding: 0.6rem 1rem;
+        font-weight: 600;
+        color: #fff;
+        background: var(--primary);
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 18px rgba(63, 81, 181, 0.2);
+        background: var(--primary-dark);
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        box-shadow: none;
+        transform: none;
+      }
+
+      button.small {
+        padding: 0.4rem 0.75rem;
+        font-size: 0.8rem;
+        background: rgba(63, 81, 181, 0.1);
+        color: var(--primary-dark);
+        border: 1px solid rgba(63, 81, 181, 0.2);
+      }
+
+      button.small.danger {
+        background: rgba(198, 40, 40, 0.12);
+        border-color: rgba(198, 40, 40, 0.25);
+        color: var(--danger);
+      }
+
+      button.small.warning {
+        background: rgba(255, 152, 0, 0.12);
+        border-color: rgba(255, 152, 0, 0.25);
+        color: var(--accent);
+      }
+
+      .item-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 0.75rem;
+      }
+
+      .list-item {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #fff;
+        padding: 1rem;
+        display: grid;
+        gap: 0.75rem;
+      }
+
+      .list-item-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+      }
+
+      .list-item-title {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        font-weight: 600;
+      }
+
+      .badge {
+        padding: 0.25rem 0.6rem;
+        background: rgba(63, 81, 181, 0.12);
+        color: var(--primary-dark);
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
+
+      details {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(31, 42, 68, 0.03);
+        padding: 0.75rem 1rem;
+      }
+
+      details summary {
+        cursor: pointer;
+        font-weight: 600;
+        color: var(--primary-dark);
+        outline: none;
+        list-style: none;
+      }
+
+      details[open] summary {
+        margin-bottom: 0.75rem;
+      }
+
+      .nested {
+        display: none;
+        margin-top: 1rem;
+        border-top: 1px solid var(--border);
+        padding-top: 1rem;
+        color: var(--text);
+      }
+
+      .nested.is-open {
+        display: block;
+      }
+
+      .nested-block + .nested-block {
+        margin-top: 1.5rem;
+      }
+
+      .nested ul {
+        list-style: none;
+        margin: 0.5rem 0 0;
+        padding: 0;
+        display: grid;
+        gap: 0.5rem;
+      }
+
+      .list-chip {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 0.6rem 0.75rem;
+        background: rgba(31, 42, 68, 0.04);
+        border-radius: 10px;
+      }
+
+      .list-chip .chip-label {
+        flex: 1 1 auto;
+        font-weight: 500;
+      }
+
+      .inline-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-top: 0.75rem;
+      }
+
+      .inline-controls select {
+        min-width: 160px;
+      }
+
+      .inline-controls strong {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .helper-text {
+        font-size: 0.85rem;
+        color: var(--muted);
+      }
+
+      @media (max-width: 768px) {
+        header,
+        main {
+          padding-left: 1.25rem;
+          padding-right: 1.25rem;
+        }
+
+        .card {
+          padding: 1.5rem;
+        }
+
+        .list-item-header {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+
+        button.small {
+          width: fit-content;
+        }
+
+        .inline-controls {
+          flex-direction: column;
+          align-items: stretch;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Talk To Me &mdash; Admin Console</h1>
+      <div id="message" class="flash-message"></div>
+    </header>
+
+    <main>
+      <section class="card" aria-labelledby="users-heading">
+        <div class="card-header">
+          <h2 id="users-heading">Users</h2>
+        </div>
+
+        <div class="form-grid">
+          <form id="user-form" class="inline-form" autocomplete="off">
+            <label for="username">Name</label>
+            <input type="text" id="username" placeholder="e.g. Anna" required />
+
+            <label for="password">Password</label>
+            <input type="password" id="password" placeholder="Minimum 6 characters" required />
+
+            <button type="submit">Add User</button>
+          </form>
+
+          <p class="helper-text">Select a user to reveal assigned conferences, talk targets, and quick actions like rename, delete, or password reset.</p>
+        </div>
+
+        <ul id="user-list" class="item-list" aria-live="polite"></ul>
+      </section>
+
+      <section class="card" aria-labelledby="conferences-heading">
+        <div class="card-header">
+          <h2 id="conferences-heading">Conferences</h2>
+        </div>
+
+        <div class="form-grid">
+          <form id="conf-form" class="inline-form" autocomplete="off">
+            <label for="confname">Conference name</label>
+            <input type="text" id="confname" placeholder="e.g. Floor 3" required />
+            <button type="submit">Add Conference</button>
+          </form>
+
+          <p class="helper-text">Expand a conference entry to rename it, delete it, or review the members currently participating.</p>
+        </div>
+
+        <ul id="conf-list" class="item-list" aria-live="polite"></ul>
+      </section>
+    </main>
+
+    <script src="admin.js"></script>
+  </body>
 </html>

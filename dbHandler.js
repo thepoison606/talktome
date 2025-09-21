@@ -90,6 +90,13 @@ function updateConferenceName(id, name) {
   return result.changes > 0;
 }
 
+function updateUserPassword(id, password) {
+  const hash = bcrypt.hashSync(password, 10);
+  const stmt = db.prepare('UPDATE users SET password = ? WHERE id = ?');
+  const result = stmt.run(hash, id);
+  return result.changes > 0;
+}
+
 function deleteUser(userId) {
   db.prepare('DELETE FROM user_conference WHERE user_id = ?').run(userId);
   db.prepare('DELETE FROM users WHERE id = ?').run(userId);
@@ -180,6 +187,7 @@ module.exports = {
   removeUserFromConference,
   updateUserName,
   updateConferenceName,
+  updateUserPassword,
   deleteUser,
   deleteConference,
   verifyUser,
