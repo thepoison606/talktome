@@ -1,20 +1,20 @@
 # Talk To Me
-Flexible Intercom-Lösung
+Flexible Intercom-Solution
 
-## Konfiguration
+## Config
 - Admin-UI: `https://localhost/admin.html`
 
-## Nutzung
-- App aufrufen unter: `https://<IP-ADRESSE>/`
+## Use
+- App aufrufen unter: `https://<IP-ADRESS>/`
 
 ## Tally-/HTTP-API
-Sende Tally-Informationen per **HTTP POST** an den Endpunkt:
+Send Tally-Information per **HTTP POST** to the Endpoint:
 
-- **URL:** `https://<IP-ADRESSE>/cut-camera`
-- **Methode:** `POST`
+- **URL:** `https://<IP-ADRESS>/cut-camera`
+- **Method:** `POST`
 - **Header:** `Content-Type: application/json`
 - **Body (JSON):**
   ```json
   {
-    "user": "<BENUTZERNAME>"
+    "user": "<USERNAME>"
   }
