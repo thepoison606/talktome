@@ -5,8 +5,59 @@ socket.on("cut-camera", (value) => {
 });
 
 const BASE_REPLY_LABEL = "🔊 REPLY";
+const QUALITY_PROFILES = {
+  "ultra-low": {
+    label: "Ultra low (5 ms, DTX on)",
+    codecLabel: "opus 48k",
+    codecOptions: {
+      opusStereo: 0,
+      opusFec: 0,
+      opusDtx: 1,
+      opusMaxAverageBitrate: 48000,
+      opusPtime: 5,
+    },
+    encodings: [{ dtx: true, maxBitrate: 48000, priority: 'high' }],
+    constraints: { channelCount: 1, sampleRate: 48000 },
+    note: "minimal latency, best on stable networks",
+  },
+  low: {
+    label: "Low (10 ms, DTX on)",
+    codecLabel: "opus 48k",
+    codecOptions: {
+      opusStereo: 0,
+      opusFec: 0,
+      opusDtx: 1,
+      opusMaxAverageBitrate: 64000,
+      opusPtime: 10,
+    },
+    encodings: [{ dtx: true, maxBitrate: 64000, priority: 'high' }],
+    constraints: { channelCount: 1, sampleRate: 48000 },
+    note: "balanced latency vs. robustness",
+  },
+  standard: {
+    label: "Standard (20 ms, DTX off)",
+    codecLabel: "opus 48k",
+    codecOptions: {
+      opusStereo: 0,
+      opusFec: 1,
+      opusDtx: 0,
+      opusMaxAverageBitrate: 64000,
+      opusPtime: 20,
+    },
+    encodings: [{ dtx: false, maxBitrate: 64000, priority: 'high' }],
+    constraints: { channelCount: 1, sampleRate: 48000 },
+    note: "highest resilience, highest latency",
+  },
+};
+
 const defaultVolume = 0.85;
 let inputSelect;
+let qualitySelect;
+
+let micStream = null;
+let micTrack = null;
+let micDeviceId = null;
+let micCleanupTimer = null;
 
 
 socket.onAny((event, ...args) => {
@@ -51,14 +102,118 @@ async function updateDeviceList() {
   }
 }
 
+function cleanupMicTrack() {
+  if (micCleanupTimer) {
+    clearTimeout(micCleanupTimer);
+    micCleanupTimer = null;
+  }
+
+  if (micTrack) {
+    try { micTrack.stop(); } catch {}
+    micTrack.onended = null;
+    micTrack = null;
+  }
+
+  if (micStream) {
+    micStream.getTracks().forEach(track => {
+      try { track.stop(); } catch {}
+    });
+    micStream = null;
+  }
+
+  micDeviceId = null;
+}
+
+function scheduleMicCleanup() {
+  if (micCleanupTimer) {
+    clearTimeout(micCleanupTimer);
+  }
+
+  micCleanupTimer = setTimeout(() => {
+    if (!producer) {
+      cleanupMicTrack();
+    }
+  }, 60000);
+}
+
+async function ensureMicTrack(audioConstraints, selectedDeviceId) {
+  if (micTrack && micTrack.readyState === 'live') {
+    if (!selectedDeviceId || selectedDeviceId === micDeviceId) {
+      if (micCleanupTimer) {
+        clearTimeout(micCleanupTimer);
+        micCleanupTimer = null;
+      }
+      return micTrack;
+    }
+    cleanupMicTrack();
+  }
+
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+  const [track] = stream.getAudioTracks();
+
+  micStream = stream;
+  micTrack = track;
+  micDeviceId = selectedDeviceId || track.getSettings?.().deviceId || null;
+
+  track.onended = () => {
+    micTrack = null;
+    micStream = null;
+    micDeviceId = null;
+  };
+
+  if (micCleanupTimer) {
+    clearTimeout(micCleanupTimer);
+    micCleanupTimer = null;
+  }
+
+  return micTrack;
+}
+
+function currentQualityKey() {
+  const fromSelect = qualitySelect?.value;
+  if (fromSelect && QUALITY_PROFILES[fromSelect]) return fromSelect;
+
+  const stored = localStorage.getItem('audioQualityProfile');
+  if (stored && QUALITY_PROFILES[stored]) return stored;
+
+  return 'ultra-low';
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   console.log("DOM loaded, initializing...");
 
   inputSelect  = document.getElementById("input-select");
+  qualitySelect = document.getElementById("quality-select");
+
+  const storedQuality = localStorage.getItem('audioQualityProfile');
+  if (qualitySelect) {
+    if (storedQuality && QUALITY_PROFILES[storedQuality]) {
+      qualitySelect.value = storedQuality;
+    } else {
+      qualitySelect.value = 'ultra-low';
+      localStorage.setItem('audioQualityProfile', 'ultra-low');
+    }
+
+    qualitySelect.addEventListener('change', () => {
+      const selected = qualitySelect.value;
+      if (!QUALITY_PROFILES[selected]) {
+        qualitySelect.value = 'ultra-low';
+      }
+      localStorage.setItem('audioQualityProfile', qualitySelect.value);
+      cleanupMicTrack();
+    });
+  } else if (!storedQuality || !QUALITY_PROFILES[storedQuality]) {
+    localStorage.setItem('audioQualityProfile', 'ultra-low');
+  }
+
   updateDeviceList().catch(err => console.error("updateDeviceList failed:", err));
   navigator.mediaDevices.addEventListener("devicechange", () =>
       updateDeviceList().catch(err => console.error(err))
   );
+
+  inputSelect?.addEventListener('change', () => {
+    cleanupMicTrack();
+  });
 
 
   // Check if mediasoup-client was loaded
@@ -809,6 +964,9 @@ document.addEventListener("DOMContentLoaded", () => {
     currentTarget = target;
 
     try {
+      const qualityKey = currentQualityKey();
+      const profile = QUALITY_PROFILES[qualityKey] || QUALITY_PROFILES['low-latency'];
+
       // 1️⃣ Ausgewähltes Mikrofon aus dem Select lesen
       const inputSelect = document.getElementById("input-select");
       const selectedDeviceId = inputSelect?.value;
@@ -818,21 +976,23 @@ document.addEventListener("DOMContentLoaded", () => {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
+        ...(profile?.constraints || {}),
         ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {})
       };
 
-      // 3️⃣ getUserMedia mit gezieltem Gerät
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: audioConstraints
-      });
-      const track = stream.getAudioTracks()[0];
+      // 3️⃣ Mikrofon-Stream sicherstellen und aktivieren
+      const track = await ensureMicTrack(audioConstraints, selectedDeviceId);
+      track.enabled = true;
 
       // ◆ Producer-Parameter: immer appData mitgeben
       const params = {
         track,
         appData: target
             ? { type: target.type, id: target.id }
-            : { type: 'global' }
+            : { type: 'global' },
+        codecOptions: profile?.codecOptions ? { ...profile.codecOptions } : undefined,
+        encodings: profile?.encodings ? profile.encodings.map(enc => ({ ...enc })) : undefined,
+        stopTracks: false,
       };
 
       // ◆ Produktion starten
@@ -841,11 +1001,22 @@ document.addEventListener("DOMContentLoaded", () => {
       // ◆ Falls Button inzwischen losgelassen wurde
       if (!isTalking) {
         newProducer.close();
-        track.stop();
+        track.enabled = false;
+        scheduleMicCleanup();
         return;
       }
 
       producer = newProducer;
+
+      newProducer.on('close', () => {
+        if (producer === newProducer) {
+          producer = null;
+        }
+        if (micTrack) {
+          micTrack.enabled = false;
+        }
+        scheduleMicCleanup();
+      });
 
       // ◆ Visuelles Feedback nur für gezielte Targets
       if (target) {
@@ -859,6 +1030,10 @@ document.addEventListener("DOMContentLoaded", () => {
       alert("Fehler beim Starten des Mikrofons: " + err.message);
       btnAll.classList.remove("active");
       isTalking = false;
+      if (micTrack) {
+        micTrack.enabled = false;
+      }
+      scheduleMicCleanup();
     }
   }
 
@@ -944,8 +1119,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
     socket.emit("producer-close", { producerId: producer.id });
     producer.close();
-    producer.track.stop();
     producer = null;
+
+    if (micTrack) {
+      micTrack.enabled = false;
+    }
+
+    scheduleMicCleanup();
 
     // lila Highlight am <li> entfernen
     if (currentTarget) {
