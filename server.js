@@ -73,7 +73,8 @@ const {
   getUserTargets,
   addUserTargetToUser,
   addUserTargetToConference,
-  removeUserTarget
+  removeUserTarget,
+  updateUserTargetOrder
 } = require("./dbHandler");
 
 const app = express();
@@ -189,10 +190,40 @@ app.post('/users/:id/targets', (req, res) => {
     } else {
       addUserTargetToConference(req.params.id, targetId);
     }
+    notifyTargetChange(req.params.id);
     res.sendStatus(204);
   } catch (err) {
     console.error('Fehler in add‐target:', err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/users/:id/targets/order', (req, res) => {
+  const items = Array.isArray(req.body?.items) ? req.body.items : null;
+  if (!items) {
+    return res.status(400).json({ error: 'items array required' });
+  }
+
+  const normalized = items.map(item => ({
+    targetType: item?.targetType,
+    targetId: Number(item?.targetId),
+  }));
+
+  if (normalized.some(item => !['user', 'conference'].includes(item.targetType))) {
+    return res.status(400).json({ error: 'Invalid target type' });
+  }
+
+  if (normalized.some(item => Number.isNaN(item.targetId))) {
+    return res.status(400).json({ error: 'Invalid target id' });
+  }
+
+  try {
+    updateUserTargetOrder(req.params.id, normalized);
+    notifyTargetChange(req.params.id);
+    res.sendStatus(204);
+  } catch (err) {
+    console.error('Failed to update target order:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -281,11 +312,21 @@ app.delete("/conferences/:id", (req, res) => {
 app.delete("/users/:id/targets/:type/:tid", (req, res) => {
   try {
     removeUserTarget(req.params.id, req.params.type, req.params.tid);
+    notifyTargetChange(req.params.id);
     res.sendStatus(204);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+function notifyTargetChange(userId) {
+  const idStr = String(userId);
+  for (const [, peer] of peers) {
+    if (String(peer.userId) === idStr) {
+      peer.socket.emit('user-targets-updated');
+    }
+  }
+}
 
 
 // Erstelle selbst-signiertes Zertifikat falls nicht vorhanden

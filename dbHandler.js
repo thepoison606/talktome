@@ -110,25 +110,39 @@ function deleteConference(confId) {
 // Liefert alle Targets, die ein User sehen darf, inkl. aufgelöstem Namen:
 function getUserTargets(userId) {
   return db.prepare(`
-    -- alle „user → user“ Targets
-    SELECT
-      'user'       AS targetType,
-      u.id         AS targetId,
-      u.name       AS name
-    FROM user_user_targets ut
-    JOIN users             u ON u.id = ut.target_user
-    WHERE ut.user_id = ?
+    SELECT targetType, targetId, name
+    FROM (
+      SELECT
+        'user' AS targetType,
+        ut.target_user AS targetId,
+        u.name AS name,
+        o.position AS position,
+        ut.rowid AS fallback
+      FROM user_user_targets ut
+      JOIN users u ON u.id = ut.target_user
+      LEFT JOIN user_target_order o
+        ON o.user_id = ut.user_id
+       AND o.target_type = 'user'
+       AND o.target_id = ut.target_user
+      WHERE ut.user_id = ?
 
-    UNION ALL
+      UNION ALL
 
-    -- alle „user → conference“ Targets
-    SELECT
-      'conference' AS targetType,
-      c.id         AS targetId,
-      c.name       AS name
-    FROM user_conf_targets ct
-    JOIN conferences       c ON c.id = ct.target_conf
-    WHERE ct.user_id = ?
+      SELECT
+        'conference' AS targetType,
+        ct.target_conf AS targetId,
+        c.name AS name,
+        o.position AS position,
+        ct.rowid AS fallback
+      FROM user_conf_targets ct
+      JOIN conferences c ON c.id = ct.target_conf
+      LEFT JOIN user_target_order o
+        ON o.user_id = ct.user_id
+       AND o.target_type = 'conference'
+       AND o.target_id = ct.target_conf
+      WHERE ct.user_id = ?
+    )
+    ORDER BY COALESCE(position, fallback)
   `).all(userId, userId);
 }
 
@@ -138,6 +152,7 @@ function addUserTargetToUser(userId, targetUserId) {
     INSERT OR IGNORE INTO user_user_targets (user_id, target_user)
     VALUES (?, ?)
   `).run(userId, targetUserId);
+  appendTargetOrder(userId, 'user', targetUserId);
 }
 
 function addUserTargetToConference(userId, targetConfId) {
@@ -145,15 +160,17 @@ function addUserTargetToConference(userId, targetConfId) {
     INSERT OR IGNORE INTO user_conf_targets (user_id, target_conf)
     VALUES (?, ?)
   `).run(userId, targetConfId);
+  appendTargetOrder(userId, 'conference', targetConfId);
 }
 
 
 function removeUserTarget(userId, type, targetId) {
   if (type === "user") {
-    return removeUserUserTarget(userId, targetId);
+    removeUserUserTarget(userId, targetId);
   } else {
-    return removeUserConfTarget(userId, targetId);
+    removeUserConfTarget(userId, targetId);
   }
+  removeTargetOrder(userId, type, targetId);
 }
 
 // Entfernt ein User-Target (User → User)
@@ -175,6 +192,45 @@ function removeUserConfTarget(userId, targetConfId) {
 }
 
 
+function appendTargetOrder(userId, targetType, targetId) {
+  const uid = Number(userId);
+  const max = db.prepare(`
+    SELECT COALESCE(MAX(position), -1) AS maxPos
+    FROM user_target_order
+    WHERE user_id = ?
+  `).get(uid).maxPos;
+
+  db.prepare(`
+    INSERT OR REPLACE INTO user_target_order (user_id, target_type, target_id, position)
+    VALUES (?, ?, ?, ?)
+  `).run(uid, targetType, Number(targetId), max + 1);
+}
+
+function removeTargetOrder(userId, targetType, targetId) {
+  db.prepare(`
+    DELETE FROM user_target_order
+    WHERE user_id = ? AND target_type = ? AND target_id = ?
+  `).run(Number(userId), targetType, Number(targetId));
+}
+
+const updateTargetOrderStmt = db.prepare(`
+  INSERT OR REPLACE INTO user_target_order (user_id, target_type, target_id, position)
+  VALUES (?, ?, ?, ?)
+`);
+
+const clearTargetOrderStmt = db.prepare(`
+  DELETE FROM user_target_order WHERE user_id = ?
+`);
+
+const updateUserTargetOrder = db.transaction((userId, items) => {
+  const uid = Number(userId);
+  clearTargetOrderStmt.run(uid);
+  items.forEach((item, index) => {
+    updateTargetOrderStmt.run(uid, item.targetType, Number(item.targetId), index);
+  });
+});
+
+
 
 module.exports = {
   getAllUsers,
@@ -194,5 +250,6 @@ module.exports = {
   getUserTargets,
   addUserTargetToUser,
   addUserTargetToConference,
-  removeUserTarget
+  removeUserTarget,
+  updateUserTargetOrder
 };

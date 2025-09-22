@@ -277,6 +277,7 @@ document.addEventListener("DOMContentLoaded", () => {
   let currentTargetPeer = null;
   let lastTarget = null;
   let isTalking = false;
+  let cachedUsers = [];
 
   function renderReplyButtonLabel() {
     const suffix = lastTarget?.label ? ` (${lastTarget.label})` : "";
@@ -375,64 +376,81 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   socket.on("user-list", async users => {
-    const dbUserId    = localStorage.getItem("userId");
-    const targets     = await fetchJSON(`/users/${dbUserId}/targets`);
+    cachedUsers = users;
+    await renderTargetList(users);
+  });
 
-    // Erlaubte User-IDs (db-) und Conference-Ziele trennen
-    const userTargetIds = new Set(
-        targets
-            .filter(t => t.targetType === "user")
-            .map(t => Number(t.targetId))
-    );
-    const confTargets = targets.filter(t => t.targetType === "conference");
+  socket.on('user-targets-updated', async () => {
+    if (cachedUsers.length) {
+      await renderTargetList(cachedUsers);
+    }
+  });
+
+  async function renderTargetList(users) {
+    const dbUserId = localStorage.getItem('userId');
+    if (!dbUserId) return;
+
+    let targets;
+    try {
+      targets = await fetchJSON(`/users/${dbUserId}/targets`);
+    } catch (err) {
+      console.error('Failed to fetch targets', err);
+      return;
+    }
+
+    const list = document.getElementById('targets-list');
+    if (!list) return;
+    list.innerHTML = '';
 
     targetLabels.clear();
-    users.forEach(({ socketId, name }) => {
-      const key = `user-${socketId}`;
-      targetLabels.set(key, name || socketId);
-    });
-    confTargets.forEach(({ targetId: id, name }) => {
-      const key = `conf-${id}`;
-      targetLabels.set(key, name);
+
+    const usersById = new Map();
+    users.forEach(u => {
+      usersById.set(Number(u.userId), u);
+      targetLabels.set(`user-${u.socketId}`, u.name || u.socketId);
     });
 
-    const list = document.getElementById("targets-list");
-    list.innerHTML = ""; // Liste leeren
+    const conferenceNames = new Map();
+    targets
+      .filter(t => t.targetType === 'conference')
+      .forEach(t => {
+        conferenceNames.set(Number(t.targetId), t.name);
+        targetLabels.set(`conf-${t.targetId}`, t.name);
+      });
 
-    // 1️⃣ User-Targets
-    for (const { socketId, userId, name } of users) {
-      if (!userTargetIds.has(Number(userId)) || socketId === socket.id) continue;
+    const appendUserTarget = (target) => {
+      const targetIdNum = Number(target.targetId);
+      const user = usersById.get(targetIdNum);
+      if (!user) return;
+      const { socketId, name } = user;
+      if (!socketId || socketId === socket.id) return;
 
-      const li = document.createElement("li");
+      const li = document.createElement('li');
       li.id = `user-${socketId}`;
-      li.classList.add("target-item", "user-target");
+      li.classList.add('target-item', 'user-target');
 
-      // Icon & Label
-      const icon = document.createElement("div");
-      icon.className = "user-icon";
-      icon.textContent = name ? name.charAt(0).toUpperCase() : socketId.slice(0,2);
+      const icon = document.createElement('div');
+      icon.className = 'user-icon';
+      icon.textContent = name ? name.charAt(0).toUpperCase() : socketId.slice(0, 2);
 
-      const info = document.createElement("div");
-      info.className = "target-info";
+      const info = document.createElement('div');
+      info.className = 'target-info';
 
-      const label = document.createElement("span");
-      label.className = "target-label";
+      const label = document.createElement('span');
+      label.className = 'target-label';
       label.textContent = name || socketId;
       info.appendChild(label);
 
-      // ——— Lautstärke-Slider für User ———
       const userKey = `volume_user_${socketId}`;
-      const volSlider = document.createElement("input");
-      volSlider.type  = "range";
-      volSlider.min   = "0";
-      volSlider.max   = "1";
-      volSlider.step  = "0.01";
-      // aus sessionStorage laden oder default
+      const volSlider = document.createElement('input');
+      volSlider.type = 'range';
+      volSlider.min = '0';
+      volSlider.max = '1';
+      volSlider.step = '0.01';
       volSlider.value = getStoredVolume(userKey).toString();
-      volSlider.className = "volume-slider";
-      volSlider.title     = "Source Volume";
-      // bei jeder Änderung in sessionStorage sichern
-      volSlider.addEventListener("input", e => {
+      volSlider.className = 'volume-slider';
+      volSlider.title = 'Source Volume';
+      volSlider.addEventListener('input', e => {
         const vol = parseFloat(e.target.value);
         const entry = audioElements.get(socketId);
         if (entry?.audio) entry.audio.volume = vol;
@@ -440,140 +458,127 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       info.appendChild(volSlider);
 
-      // ——— Mute-Button für User ———
-      const userMuteBtn = document.createElement("button");
-      userMuteBtn.className = "mute-btn";
-      userMuteBtn.textContent = mutedPeers.has(`user-${socketId}`) ? "Unmute" : "Mute";
-      userMuteBtn.title = "Stummschalten";
-      userMuteBtn.addEventListener("pointerdown", e => e.stopPropagation());
-      userMuteBtn.addEventListener("click", e => {
+      const muteBtn = document.createElement('button');
+      muteBtn.className = 'mute-btn';
+      muteBtn.textContent = mutedPeers.has(`user-${socketId}`) ? 'Unmute' : 'Mute';
+      muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
+      muteBtn.addEventListener('click', e => {
         e.stopPropagation();
         const key = `user-${socketId}`;
         toggleMute(socketId);
         const nowMuted = mutedPeers.has(key);
-        userMuteBtn.textContent = nowMuted ? "Unmute" : "Mute";
-        userMuteBtn.classList.toggle("muted", nowMuted);
+        muteBtn.textContent = nowMuted ? 'Unmute' : 'Mute';
+        muteBtn.classList.toggle('muted', nowMuted);
       });
-      li.append(icon, info, userMuteBtn);
+      li.append(icon, info, muteBtn);
 
-      // ——— Push-to-Talk ———
-      ["down", "up", "leave", "cancel"].forEach(ev => {
+      ['down', 'up', 'leave', 'cancel'].forEach(ev => {
         li.addEventListener(`pointer${ev}`, e => {
-          if (e.target.closest(".mute-btn") || e.target.closest(".volume-slider")) return;
-          if (ev === "down")   handleTalk(e, { type: "user", id: socketId });
-          else                  handleStopTalking(e);
+          if (e.target.closest('.mute-btn') || e.target.closest('.volume-slider')) return;
+          if (ev === 'down') handleTalk(e, { type: 'user', id: socketId });
+          else handleStopTalking(e);
         });
       });
 
       list.appendChild(li);
-    }
+    };
 
-// 2️⃣ Conference-Targets
-    for (const { targetId: id, name } of confTargets) {
-      const key = `conf-${id}`; // unser DOM-Key
+    const appendConferenceTarget = (target) => {
+      const id = Number(target.targetId);
+      const name = conferenceNames.get(id) || target.name;
+      const key = `conf-${id}`;
 
-      const li = document.createElement("li");
+      const li = document.createElement('li');
       li.id = key;
-      li.classList.add("target-item", "conf-target");
+      li.classList.add('target-item', 'conf-target');
 
-      // Icon & Label
-      const icon = document.createElement("div");
-      icon.className = "conf-icon";
-      icon.textContent = "📡";
+      const icon = document.createElement('div');
+      icon.className = 'conf-icon';
+      icon.textContent = '📡';
 
-      const info = document.createElement("div");
-      info.className = "target-info";
+      const info = document.createElement('div');
+      info.className = 'target-info';
 
-      const label = document.createElement("span");
-      label.className = "target-label";
+      const label = document.createElement('span');
+      label.className = 'target-label';
       label.textContent = name;
       info.appendChild(label);
 
-      // Volume-Slider for Conference
       const confKey = `volume_conf_${id}`;
-      const confSlider = document.createElement("input");
-      confSlider.type  = "range";
-      confSlider.min   = "0";
-      confSlider.max   = "1";
-      confSlider.step  = "0.01";
-      // initial aus sessionStorage
+      const confSlider = document.createElement('input');
+      confSlider.type = 'range';
+      confSlider.min = '0';
+      confSlider.max = '1';
+      confSlider.step = '0.01';
       confSlider.value = getStoredVolume(confKey).toString();
-      confSlider.className = "volume-slider";
-      confSlider.title     = "Conference Volume";
-      confSlider.addEventListener("input", e => {
+      confSlider.className = 'volume-slider';
+      confSlider.title = 'Conference Volume';
+      confSlider.addEventListener('input', e => {
         const vol = parseFloat(e.target.value);
         const audios = confAudioElements.get(id);
-        if (audios) {
-          audios.forEach(a => a.volume = vol);
-        }
+        if (audios) audios.forEach(a => (a.volume = vol));
         storeVolume(confKey, vol);
       });
       info.appendChild(confSlider);
 
-      // Mute-Button für Conference
-      const confMuteBtn = document.createElement("button");
-      confMuteBtn.className = "mute-btn";
-      const initiallyMuted = mutedPeers.has(key);
-      confMuteBtn.textContent = initiallyMuted ? "Unmute" : "Mute";
-      if (initiallyMuted) confMuteBtn.classList.add("muted");
-      confMuteBtn.title = "Stummschalten";
-      confMuteBtn.addEventListener("pointerdown", e => e.stopPropagation());
-      confMuteBtn.addEventListener("click", e => {
+      const muteBtn = document.createElement('button');
+      muteBtn.className = 'mute-btn';
+      const muted = mutedPeers.has(key);
+      muteBtn.textContent = muted ? 'Unmute' : 'Mute';
+      if (muted) muteBtn.classList.add('muted');
+      muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
+      muteBtn.addEventListener('click', e => {
         e.stopPropagation();
         toggleMute(id);
         const nowMuted = mutedPeers.has(key);
-        confMuteBtn.textContent = nowMuted ? "Unmute" : "Mute";
-        confMuteBtn.classList.toggle("muted", nowMuted);
+        muteBtn.textContent = nowMuted ? 'Unmute' : 'Mute';
+        muteBtn.classList.toggle('muted', nowMuted);
       });
-      li.append(icon, info, confMuteBtn);
+      li.append(icon, info, muteBtn);
 
-      // Push-to-Talk für Conference (ignoriert Slider- und Mute-Clicks)
-      ["down", "up", "leave", "cancel"].forEach(ev => {
+      ['down', 'up', 'leave', 'cancel'].forEach(ev => {
         li.addEventListener(`pointer${ev}`, e => {
-          if (
-              e.target.closest(".mute-btn") ||
-              e.target.closest(".volume-slider")
-          ) {
-            return;
-          }
-          if (ev === "down") {
-            handleTalk(e, { type: "conference", id });
-          } else {
-            handleStopTalking(e);
-          }
+          if (e.target.closest('.mute-btn') || e.target.closest('.volume-slider')) return;
+          if (ev === 'down') handleTalk(e, { type: 'conference', id });
+          else handleStopTalking(e);
         });
       });
 
       list.appendChild(li);
-    }
+    };
 
-    // 3️⃣ Highlights (speaking, last-spoke, muted)
-    document.querySelectorAll(".target-item").forEach(li => {
-      const [type, id] = li.id.split("-");
-      const icon = li.querySelector(
-          type === "user" ? ".user-icon" : ".conf-icon"
-      );
+    targets.forEach(target => {
+      if (target.targetType === 'user') {
+        appendUserTarget(target);
+      } else if (target.targetType === 'conference') {
+        appendConferenceTarget(target);
+      }
+    });
+
+    document.querySelectorAll('.target-item').forEach(li => {
+      const [type, id] = li.id.split('-');
+      const icon = li.querySelector(type === 'user' ? '.user-icon' : '.conf-icon');
 
       const isSpeaking = speakingPeers.has(id);
-      li.classList.toggle("speaking", isSpeaking);
-      if (icon) icon.classList.toggle("speaking", isSpeaking);
+      li.classList.toggle('speaking', isSpeaking);
+      if (icon) icon.classList.toggle('speaking', isSpeaking);
 
-      li.classList.toggle("last-spoke", lastSpokePeers.has(id));
-      li.classList.toggle("muted", mutedPeers.has(id));
-      if (icon) icon.classList.toggle("muted", mutedPeers.has(id));
+      li.classList.toggle('last-spoke', lastSpokePeers.has(id));
+      li.classList.toggle('muted', mutedPeers.has(id));
+      if (icon) icon.classList.toggle('muted', mutedPeers.has(id));
     });
 
     if (lastTarget) {
-      const key = lastTarget.type === "conference"
-          ? `conf-${lastTarget.id}`
-          : `user-${lastTarget.id}`;
+      const key = lastTarget.type === 'conference'
+        ? `conf-${lastTarget.id}`
+        : `user-${lastTarget.id}`;
       const updatedLabel = targetLabels.get(key);
       if (updatedLabel && updatedLabel !== lastTarget.label) {
         lastTarget = { ...lastTarget, label: updatedLabel };
         renderReplyButtonLabel();
       }
     }
-  });
+  }
 
 
 

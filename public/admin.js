@@ -126,7 +126,9 @@ async function loadUserTargets(userId, allUsers, allConfs) {
   const targets = await fetchJSON(`/users/${userId}/targets`);
   const ul = document.getElementById(`user-targets-${userId}`);
   ul.innerHTML = targets.map(t => `
-      <li class="list-chip">
+      <li class="list-chip draggable-target" draggable="true"
+          data-type="${escapeHtml(t.targetType)}" data-id="${escapeHtml(t.targetId)}">
+        <span class="drag-handle" title="Drag to reorder">☰</span>
         <span class="chip-label">${escapeHtml(t.name)}</span>
         <span class="badge">${escapeHtml(t.targetType)}</span>
         <button type="button" class="small danger"
@@ -135,6 +137,8 @@ async function loadUserTargets(userId, allUsers, allConfs) {
         </button>
       </li>
     `).join('');
+
+  initTargetOrdering(userId, ul);
 
   const selType = document.getElementById(`add-target-type-${userId}`);
   const selId   = document.getElementById(`add-target-id-${userId}`);
@@ -147,6 +151,69 @@ async function loadUserTargets(userId, allUsers, allConfs) {
   // Re-load the ID dropdown whenever the type changes
   selType.onchange = () =>
       loadUserTargets(userId, allUsers, allConfs);
+}
+
+function initTargetOrdering(userId, ul) {
+  const items = [...ul.querySelectorAll('.draggable-target')];
+  items.forEach(item => {
+    item.addEventListener('dragstart', () => item.classList.add('dragging'));
+    item.addEventListener('dragend', () => {
+      item.classList.remove('dragging');
+      saveTargetOrder(userId, ul);
+    });
+  });
+
+  const onDragOver = e => {
+    e.preventDefault();
+    const dragging = ul.querySelector('.dragging');
+    if (!dragging) return;
+    const afterElement = getDragAfterElement(ul, e.clientY);
+    if (!afterElement) {
+      ul.appendChild(dragging);
+    } else if (afterElement !== dragging) {
+      ul.insertBefore(dragging, afterElement);
+    }
+  };
+
+  if (ul._dragOverHandler) ul.removeEventListener('dragover', ul._dragOverHandler);
+  ul._dragOverHandler = onDragOver;
+  ul.addEventListener('dragover', onDragOver);
+  ul.addEventListener('drop', e => e.preventDefault());
+}
+
+function getDragAfterElement(container, y) {
+  const elements = [...container.querySelectorAll('.draggable-target:not(.dragging)')];
+  return elements.reduce((closest, child) => {
+    const box = child.getBoundingClientRect();
+    const offset = y - box.top - box.height / 2;
+    if (offset < 0 && offset > closest.offset) {
+      return { offset, element: child };
+    }
+    return closest;
+  }, { offset: Number.NEGATIVE_INFINITY, element: null }).element;
+}
+
+async function saveTargetOrder(userId, ul) {
+  const items = Array.from(ul.children).map(li => ({
+    targetType: li.dataset.type,
+    targetId: li.dataset.id,
+  }));
+
+  try {
+    const res = await fetch(`/users/${userId}/targets/order`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items }),
+    });
+    if (!res.ok) {
+      showMessage('❌ Failed to save order', 'error');
+    } else {
+      showMessage('✅ Order updated', 'success');
+    }
+  } catch (err) {
+    console.error('Failed to save order', err);
+    showMessage('❌ Failed to save order', 'error');
+  }
 }
 
 // Called by the “➕” button
