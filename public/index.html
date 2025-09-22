@@ -94,10 +94,35 @@
         min-height: 4.5rem;
       }
 
-      .device-selectors {
+      .settings-panel {
+        margin-top: 1.5rem;
+        border: 1px solid rgba(31, 42, 68, 0.12);
+        border-radius: 10px;
+        background: rgba(31, 42, 68, 0.03);
+        padding: 0.75rem 1rem;
+      }
+
+      .settings-trigger {
         display: flex;
-        flex-direction: column;
-        gap: 1em;                /* Abstand zwischen den Reihen */
+        align-items: center;
+        gap: 0.5rem;
+        cursor: pointer;
+        font-weight: 600;
+        color: #2c3995;
+      }
+
+      .settings-icon {
+        font-size: 1.1rem;
+      }
+
+      .settings-body {
+        display: grid;
+        gap: 0.75rem;
+        margin-top: 0.75rem;
+      }
+
+      .settings-panel[open] .settings-body {
+        animation: fadeIn 0.15s ease;
       }
 
       .device-selector {
@@ -108,7 +133,31 @@
       }
 
       .device-selector select {
-        flex: 1 1 180px;
+        flex: 1 1 220px;
+      }
+
+      .processing-options {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem 1.5rem;
+        font-size: 0.95rem;
+        color: var(--muted, #6b7a99);
+      }
+
+      .processing-options label {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+
+      .latency-hint {
+        font-size: 0.8rem;
+        color: var(--muted, #6b7a99);
+      }
+
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(-2px); }
+        to   { opacity: 1; transform: translateY(0); }
       }
 
       /* Base button styles */
@@ -401,22 +450,33 @@
 
       <ul id="targets-list"></ul>
       <div id="audio-streams"></div>
-      <div class="device-selectors">
-        <div class="device-selector">
-          <label for="input-select">Microphone</label>
-          <select id="input-select">
-            <option value="">select device</option>
-          </select>
+      <details class="settings-panel">
+        <summary class="settings-trigger" aria-label="Audio settings">
+          <span class="settings-icon">⚙️</span>
+          <span>Audio settings</span>
+        </summary>
+        <div class="settings-body">
+          <div class="device-selector">
+            <label for="input-select">Microphone</label>
+            <select id="input-select">
+              <option value="">select device</option>
+            </select>
+          </div>
+          <div class="device-selector">
+            <label for="quality-select">Audio profile</label>
+            <select id="quality-select">
+              <option value="ultra-low">Ultra low (5 ms frame, DTX on)</option>
+              <option value="low">Low (10 ms frame, DTX on)</option>
+              <option value="standard">Standard (20 ms frame, DTX off)</option>
+            </select>
+          </div>
+          <div class="processing-options">
+            <label><input type="checkbox" id="toggle-echo" /> Echo cancellation <span class="latency-hint">(increases latency ~25 ms)</span></label>
+            <label><input type="checkbox" id="toggle-noise" /> Noise suppression <span class="latency-hint">(increases latency ~20 ms)</span></label>
+            <label><input type="checkbox" id="toggle-agc" checked /> Auto gain control <span class="latency-hint"></span></label>
+          </div>
         </div>
-        <div class="device-selector">
-          <label for="quality-select">Audio profile</label>
-          <select id="quality-select">
-            <option value="ultra-low">Ultra low (5 ms frame, DTX on)</option>
-            <option value="low">Low (10 ms frame, DTX on)</option>
-            <option value="standard">Standard (20 ms frame, DTX off)</option>
-          </select>
-        </div>
-      </div>
+      </details>
     </div>
   </div>
 

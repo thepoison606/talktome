@@ -58,6 +58,11 @@ let micStream = null;
 let micTrack = null;
 let micDeviceId = null;
 let micCleanupTimer = null;
+const audioProcessingOptions = {
+  echoCancellation: false,
+  noiseSuppression: false,
+  autoGainControl: true,
+};
 
 
 socket.onAny((event, ...args) => {
@@ -184,6 +189,29 @@ document.addEventListener("DOMContentLoaded", () => {
 
   inputSelect  = document.getElementById("input-select");
   qualitySelect = document.getElementById("quality-select");
+  const echoToggle = document.getElementById('toggle-echo');
+  const noiseToggle = document.getElementById('toggle-noise');
+  const agcToggle = document.getElementById('toggle-agc');
+
+  const processingToggles = [
+    { element: echoToggle, key: 'audioEchoCancellation', option: 'echoCancellation', defaultValue: false },
+    { element: noiseToggle, key: 'audioNoiseSuppression', option: 'noiseSuppression', defaultValue: false },
+    { element: agcToggle, key: 'audioAutoGainControl', option: 'autoGainControl', defaultValue: true },
+  ];
+
+  processingToggles.forEach(({ element, key, option, defaultValue }) => {
+    if (!element) return;
+    const stored = localStorage.getItem(key);
+    const initial = stored === null ? defaultValue : stored === 'true';
+    audioProcessingOptions[option] = initial;
+    element.checked = initial;
+    element.addEventListener('change', () => {
+      const value = !!element.checked;
+      audioProcessingOptions[option] = value;
+      localStorage.setItem(key, String(value));
+      cleanupMicTrack();
+    });
+  });
 
   const storedQuality = localStorage.getItem('audioQualityProfile');
   if (qualitySelect) {
@@ -973,9 +1001,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // 2️⃣ Audio-Constraints zusammenbauen
       const audioConstraints = {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
+        echoCancellation: audioProcessingOptions.echoCancellation,
+        noiseSuppression: audioProcessingOptions.noiseSuppression,
+        autoGainControl: audioProcessingOptions.autoGainControl,
         ...(profile?.constraints || {}),
         ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {})
       };
