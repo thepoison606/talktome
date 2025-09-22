@@ -36,7 +36,7 @@ You can override the port in three different ways:
 
 ## Camera Tally / HTTP API
 
-You can send tally information to the server using **HTTP POST** requests.
+You can send tally information to the server using **HTTP POST** requests. The Website background of the user will be red if their camera is cut.
 
 - **URL:**  
   `https://<IP-ADDRESS>:<PORT>/cut-camera`

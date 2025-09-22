@@ -115,10 +115,26 @@
       }
 
       form.inline-form {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 0.75rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem 1rem;
         align-items: center;
+        margin-bottom: 1rem;
+      }
+
+      .field-group {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .field-group label {
+        margin: 0;
+        white-space: nowrap;
+      }
+
+      .field-group input {
+        min-width: 180px;
       }
 
       label {
@@ -204,9 +220,9 @@
         border: 1px solid var(--border);
         border-radius: 10px;
         background: #fff;
-        padding: 1rem;
+        padding: 0.75rem 1rem;
         display: grid;
-        gap: 0.75rem;
+        gap: 0.5rem;
       }
 
       .list-item-header {
@@ -296,6 +312,11 @@
         margin-top: 0.75rem;
       }
 
+      .list-item-header .inline-controls {
+        margin-top: 0;
+        align-items: center;
+      }
+
       .inline-controls select {
         min-width: 160px;
       }
@@ -319,6 +340,24 @@
 
         .card {
           padding: 1.5rem;
+        }
+
+        form.inline-form {
+          flex-direction: column;
+          align-items: stretch;
+        }
+
+        .field-group {
+          width: 100%;
+          justify-content: space-between;
+        }
+
+        .field-group input {
+          flex: 1 1 auto;
+        }
+
+        form.inline-form button {
+          align-self: stretch;
         }
 
         .list-item-header {
@@ -351,16 +390,18 @@
 
         <div class="form-grid">
           <form id="user-form" class="inline-form" autocomplete="off">
-            <label for="username">Name</label>
-            <input type="text" id="username" placeholder="e.g. Anna" required />
+            <div class="field-group">
+              <label for="username">Name</label>
+              <input type="text" id="username" placeholder="e.g. Anna" required />
+            </div>
 
-            <label for="password">Password</label>
-            <input type="password" id="password" placeholder="Minimum 6 characters" required />
+            <div class="field-group">
+              <label for="password">Password</label>
+              <input type="password" id="password" placeholder="Minimum 6 characters" required />
+            </div>
 
             <button type="submit">Add User</button>
           </form>
-
-          <p class="helper-text">Select a user to reveal assigned conferences, talk targets, and quick actions like rename, delete, or password reset.</p>
         </div>
 
         <ul id="user-list" class="item-list" aria-live="polite"></ul>
@@ -373,12 +414,12 @@
 
         <div class="form-grid">
           <form id="conf-form" class="inline-form" autocomplete="off">
-            <label for="confname">Conference name</label>
-            <input type="text" id="confname" placeholder="e.g. Floor 3" required />
+            <div class="field-group">
+              <label for="confname">Conference</label>
+              <input type="text" id="confname" placeholder="e.g. Floor 3" required />
+            </div>
             <button type="submit">Add Conference</button>
           </form>
-
-          <p class="helper-text">Expand a conference entry to rename it, delete it, or review the members currently participating.</p>
         </div>
 
         <ul id="conf-list" class="item-list" aria-live="polite"></ul>
