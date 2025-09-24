@@ -386,6 +386,43 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  socket.on('api-talk-command', async ({ action, targetType = 'global', targetId = null, mode = 'list' }) => {
+    const dummyEvent = { preventDefault() {} };
+
+    const resolveUserTarget = () => {
+      const numericId = Number(targetId);
+      const user = cachedUsers.find(u => Number(u.userId) === numericId);
+      if (!user || !user.socketId) {
+        console.warn('Talk command: target user not available', targetId);
+        return null;
+      }
+      return { type: 'user', id: user.socketId };
+    };
+
+    const resolveTarget = () => {
+      if (targetType === 'user') return resolveUserTarget();
+      if (targetType === 'conference') return { type: 'conference', id: Number(targetId) };
+      return null; // global
+    };
+
+    if (action === 'press') {
+      const target = resolveTarget();
+      if (targetType === 'global') {
+        if (mode === 'all') btnAll.classList.add('active');
+        else if (mode === 'hold') btnHold.classList.add('active');
+      }
+      await handleTalk(dummyEvent, target);
+    } else if (action === 'release') {
+      let currentTarget = null;
+      if (mode === 'hold') {
+        currentTarget = btnHold;
+      } else if (mode === 'all') {
+        currentTarget = btnAll;
+      }
+      handleStopTalking({ preventDefault() {}, currentTarget });
+    }
+  });
+
   async function renderTargetList(users) {
     const dbUserId = localStorage.getItem('userId');
     if (!dbUserId) return;

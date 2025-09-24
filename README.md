@@ -56,6 +56,48 @@ You can send tally information to the server using **HTTP POST** requests. The W
 
 ---
 
+## Remote Talk Control API
+
+You can trigger a user's talk buttons via HTTP:
+
+- **URL:** `https://<IP-ADDRESS>:<PORT>/users/<USER_ID>/talk`
+- **Method:** `POST`
+- **Headers:** `Content-Type: application/json`
+
+### Request Body
+```json
+{
+  "action": "press",          // required: "press" or "release"
+  "targetType": "global",     // optional: "global" (default), "user", "conference"
+  "targetId": 12,              // optional: required when targetType is "user" or "conference", otherwise "null"
+  "mode": "all"               // optional for global: "list" (default), "all", "hold"
+}
+```
+
+### Examples
+- Press the `ALL` button for user ID 8:
+  ```bash
+  curl -X POST https://localhost/users/8/talk \
+       -H "Content-Type: application/json" \
+       -d '{"action":"press","targetType":"global","mode":"all"}'
+  ```
+
+- Release (stop talking):
+  ```bash
+  curl -X POST https://localhost/users/8/talk \
+       -H "Content-Type: application/json" \
+       -d '{"action":"release"}'
+  ```
+
+- Talk to conference ID 3:
+  ```bash
+  curl -X POST https://localhost/users/8/talk \
+       -H "Content-Type: application/json" \
+       -d '{"action":"press","targetType":"conference","targetId":3}'
+  ```
+
+---
+
 ## Notes
 - For local development you can choose any high port (e.g. 3000, 8080, 8443).  
 - On Linux/macOS, binding to **port 443** requires elevated privileges (`sudo`) or capabilities (`setcap`).  

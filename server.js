@@ -227,6 +227,31 @@ app.put('/users/:id/targets/order', (req, res) => {
   }
 });
 
+app.post('/users/:id/talk', (req, res) => {
+  const { action, targetType = 'global', targetId = null, mode = 'list' } = req.body || {};
+
+  if (!['press', 'release'].includes(action)) {
+    return res.status(400).json({ error: 'action must be press or release' });
+  }
+
+  const uid = String(req.params.id);
+  const payload = { action, targetType, targetId, mode };
+
+  let delivered = false;
+  for (const [, peer] of peers) {
+    if (String(peer.userId) === uid) {
+      peer.socket.emit('api-talk-command', payload);
+      delivered = true;
+    }
+  }
+
+  if (!delivered) {
+    return res.status(404).json({ error: 'user not connected' });
+  }
+
+  res.sendStatus(202);
+});
+
 // === PUT ===
 app.put("/users/:id", (req, res) => {
   const { name } = req.body;
