@@ -32,6 +32,12 @@ You can override the port in three different ways:
 - Main app: `https://<IP-ADDRESS>:<PORT>/`
 - Admin UI: `https://<IP-ADDRESS>:<PORT>/admin.html`
 
+### Bonjour / mDNS Alias
+- On the local network the server advertises `https://intercom.local:<PORT>` via mDNS.
+- Override the advertised host with `MDNS_HOST=myalias.local node server.js`.
+- Disable advertising entirely with `MDNS_HOST="" node server.js`.
+- When possible the server starts an HTTP→HTTPS redirect listener on port 80 so `http://intercom.local` forwards to TLS. Change the redirect port via `HTTP_PORT=8080` or disable it with `HTTP_PORT=off`.
+
 ---
 
 ## Camera Tally / HTTP API
