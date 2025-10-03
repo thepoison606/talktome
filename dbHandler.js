@@ -107,7 +107,7 @@ function deleteConference(confId) {
   db.prepare('DELETE FROM conferences WHERE id = ?').run(confId);
 }
 
-// Liefert alle Targets, die ein User sehen darf, inkl. aufgelöstem Namen:
+// Returns every target a user is allowed to see, including resolved names
 function getUserTargets(userId) {
   return db.prepare(`
     SELECT targetType, targetId, name
@@ -173,7 +173,7 @@ function removeUserTarget(userId, type, targetId) {
   removeTargetOrder(userId, type, targetId);
 }
 
-// Entfernt ein User-Target (User → User)
+// Remove a user target (user → user)
 function removeUserUserTarget(userId, targetUserId) {
   db.prepare(`
     DELETE FROM user_user_targets
@@ -182,7 +182,7 @@ function removeUserUserTarget(userId, targetUserId) {
   `).run(userId, targetUserId);
 }
 
-// Entfernt ein Conf-Target (User → Conference)
+// Remove a conference target (user → conference)
 function removeUserConfTarget(userId, targetConfId) {
   db.prepare(`
     DELETE FROM user_conf_targets

@@ -2,7 +2,7 @@
 const Database = require("better-sqlite3");
 const db = new Database("app.db");
 
-// Tabellen initialisieren (einmalig)
+// Initialize tables (run once)
 db.exec(`
     CREATE TABLE IF NOT EXISTS users (
                                          id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -15,7 +15,7 @@ db.exec(`
                                                name TEXT NOT NULL UNIQUE
     );
 
-    -- Membership-Tabelle: beibehältst Du, wenn User weiter “Mitglied” von Conferences sein können
+    -- Membership table: keeps track of which users belong to which conferences
     CREATE TABLE IF NOT EXISTS user_conference (
                                                    user_id        INTEGER NOT NULL,
                                                    conference_id  INTEGER NOT NULL,
@@ -24,14 +24,14 @@ db.exec(`
                                                    FOREIGN KEY (conference_id) REFERENCES conferences(id) ON DELETE CASCADE
     );
 
-    -- Sprech-Ziel: User → User
+    -- Talk target: user → user
     CREATE TABLE IF NOT EXISTS user_user_targets (
                                                      user_id     INTEGER NOT NULL REFERENCES users(id)      ON DELETE CASCADE,
                                                      target_user INTEGER NOT NULL REFERENCES users(id)      ON DELETE CASCADE,
                                                      PRIMARY KEY (user_id, target_user)
     );
 
-    -- Sprech-Ziel: User → Conference
+    -- Talk target: user → conference
     CREATE TABLE IF NOT EXISTS user_conf_targets (
                                                      user_id     INTEGER NOT NULL REFERENCES users(id)      ON DELETE CASCADE,
                                                      target_conf INTEGER NOT NULL REFERENCES conferences(id) ON DELETE CASCADE,

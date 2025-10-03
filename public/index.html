@@ -246,7 +246,7 @@
         padding: 0;
       }
 
-      /* Einzelne Items (User- und Conference-Targets) */
+      /* Individual items (user and conference targets) */
       #targets-list li.target-item {
         display: grid;
         grid-template-columns: auto 1fr auto;
@@ -270,12 +270,12 @@
         user-select: none;
       }
 
-      /* Hover-Effekt */
+      /* Hover effect */
       #targets-list li.target-item:hover:not(.you) {
         background: #f0f0f0;
       }
 
-      /* Wenn gerade jemand spricht */
+      /* When someone is speaking */
       #targets-list li.target-item.speaking {
         border-color: #4caf50;
         background: #e8f5e9;
@@ -283,20 +283,20 @@
         animation: speakingPulse 1s ease-in-out infinite;
       }
 
-      /* Letzte Stimme */
+      /* Last speaker */
       #targets-list li.target-item.last-spoke {
         border-color: #ffc107;
         background: #fff8e1;
       }
 
-      /* Aktives Gesprächs-Target */
+      /* Active conversation target */
       #targets-list li.target-item.talking-to {
         border-color: #9c27b0;
         background: #f3e5f5;
         box-shadow: 0 0 10px rgba(156, 39, 176, 0.3);
       }
 
-      /* Icon-Container (User vs. Conference) */
+      /* Icon container (user vs. conference) */
       #targets-list .user-icon,
       #targets-list .conf-icon {
         grid-area: icon;
@@ -334,13 +334,13 @@
         background: #607d8b;
       }
 
-      /* Sprecheffekt-Puls */
+      /* Speaking pulse animation */
       @keyframes speakingPulse {
         0%, 100% { opacity: 1; }
         50%      { opacity: 0.8; }
       }
 
-      /* Buttons in der Liste */
+      /* Buttons inside the list */
       #targets-list .mute-btn {
         grid-area: actions;
         user-select: none;

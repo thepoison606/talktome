@@ -85,7 +85,7 @@ function storeVolume(key, value) {
 }
 
 async function updateDeviceList() {
-  // Erst Zugriff aufs Mikro fordern (sonst sind labels oft leer)
+  // Request microphone access first (labels are often empty otherwise)
   try {
     await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
@@ -95,7 +95,7 @@ async function updateDeviceList() {
   const devices = await navigator.mediaDevices.enumerateDevices();
   const inputs  = devices.filter(d => d.kind === "audioinput");
 
-  // Input-Select befüllen
+  // Populate the input dropdown
   if (inputSelect) {
     inputSelect.innerHTML = `<option value="">Select device</option>`;
     inputs.forEach(d => {
@@ -252,7 +252,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   console.log("mediasoup-client version:", mediasoupClient.version);
 
-  // DOM Elemente
+  // DOM elements
   const loginForm = document.getElementById("login-form");
   const loginContainer = document.getElementById("login-container");
   const intercomApp = document.getElementById("intercom-app");
@@ -267,7 +267,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const peerConsumers = new Map();
   const targetLabels = new Map();
 
-  // MediaSoup Variablen
+  // mediasoup variables
   let device, sendTransport, recvTransport, producer;
   const audioElements = new Map();
   const confAudioElements = new Map();
@@ -327,7 +327,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const user = await res.json();
       console.log("Logged in as:", user);
 
-      // Speichern für Auto-Login
+      // Persist auto-login state
       localStorage.setItem("userId", user.id);
       localStorage.setItem("userName", user.name);
 
@@ -685,17 +685,17 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       );
 
-      // currentTargetPeer → Socket-ID des Users, wenn du P2P reden willst.
+      // currentTargetPeer → socket ID of the peer for direct conversations
       sendTransport.on(
           "produce",
           async ({ kind, rtpParameters, appData }, callback, errback) => {
             try {
-              // App-Daten aus handleTalk() beibehalten und ggf. targetPeer ergänzen
+              // Keep the appData from handleTalk() and optionally add targetPeer
               const mergedAppData = {
                 ...appData,                     // { type: "user"/"conference", id: … }
                 ...(currentTargetPeer
                     ? { targetPeer: currentTargetPeer }
-                    : {})                         // nur anhängen, wenn definiert
+                    : {})                         // append only when defined
               };
 
               const response = await new Promise((resolve) => {
@@ -765,7 +765,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Handle new producers
-// Hilfsfunktion (falls noch nicht global definiert)
+// Helper function (if not already defined globally)
   function toKey(rawId, appData) {
     if (appData?.type === "conference") return `conf-${appData.id}`;
     if (rawId.startsWith?.("user-") || rawId.startsWith?.("conf-")) return rawId;
@@ -882,26 +882,26 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
   socket.on("producer-closed", ({ peerId, appData }) => {
-    // 1️⃣ Key berechnen wie immer
+    // 1️⃣ Compute the key like always
     const key = appData?.type === "conference"
         ? `conf-${appData.id}`
         : `user-${peerId}`;
 
-    // 2️⃣ Nur weiter, wenn wir für diesen Key wirklich konsumiert hatten
+    // 2️⃣ Continue only if we were actually consuming this key
     const consumersSet = peerConsumers.get(key);
     if (!consumersSet || consumersSet.size === 0) {
-      // wir hören diesen Stream gar nicht – kein Gelb
+      // We are not listening to this stream, so skip the highlight
       return;
     }
 
-    // 3️⃣ Bereinigung aller verbliebenen Consumer
+    // 3️⃣ Clean up any remaining consumers
     consumersSet.forEach(c => { try { c.close(); } catch {} });
     peerConsumers.delete(key);
 
-    // 4️⃣ speakingPeers aufräumen
+    // 4️⃣ Remove from speakingPeers
     speakingPeers.delete(key);
 
-    // 5️⃣ Last-Spoke (Gelb) setzen
+    // 5️⃣ Update the last-spoke indicator
     updateSpeakerHighlight(key, false);
   });
 
@@ -974,31 +974,31 @@ document.addEventListener("DOMContentLoaded", () => {
     }, 20000);*/
   }
 
-// ---------- Hilfsfunktion einmal zentral definieren ----------
+// ---------- Helper defined once centrally ----------
   function toKey(rawId) {
-    // Roh-ID immer als String behandeln
+    // Always treat the raw ID as a string
     const id = String(rawId);
 
-    // Ist es schon ein fertiger Key?
+    // Already a fully qualified key?
     if (id.startsWith("user-") || id.startsWith("conf-")) {
       return id;
     }
 
-    // Konferenz-IDs sind rein numerisch → alles andere ist Socket-ID
+    // Conference IDs are numeric; everything else is a socket ID
     return isFinite(id) ? `conf-${id}` : `user-${id}`;
   }
 
 
 // ---------- Toggle mute ----------
   function toggleMute(rawId) {
-    // 1) Key berechnen
+    // 1) Derive the key
     const key = toKey(rawId);
 
-    // ─── Debug hier ───────────────────────────────────────────────
+    // ─── Debug helper ──────────────────────────────────────────────
     const consumers = peerConsumers.get(key);
     console.log("[DEBUG] toggleMute mit key:", key, "Consumers:", consumers);
 
-    // 2) restliche Logik…
+    // 2) Remaining logic
     const isMuted = mutedPeers.has(key);
     if (isMuted) mutedPeers.delete(key);
     else         mutedPeers.add(key);
@@ -1012,7 +1012,7 @@ document.addEventListener("DOMContentLoaded", () => {
       console.warn(`Kein aktiver Consumer für ${key}, mute wird vorgemerkt.`);
     }
 
-    // Icon & Listeneintrag updaten
+    // Update icon and list entry
     const elSelector   = `#${key}`;
     const iconSelector = key.startsWith("conf-")
         ? `${elSelector} .conf-icon`
@@ -1023,7 +1023,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
 
-  // target = null               → broadcast an alle
+  // target = null               → broadcast to everyone
   // target = { type: "user", id: "<userId>" }
   // target = { type: "conf", id: "<confId>" }
   async function handleTalk(e, target) {
@@ -1037,11 +1037,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const qualityKey = currentQualityKey();
       const profile = QUALITY_PROFILES[qualityKey] || QUALITY_PROFILES['low-latency'];
 
-      // 1️⃣ Ausgewähltes Mikrofon aus dem Select lesen
+      // 1️⃣ Read the selected microphone from the dropdown
       const inputSelect = document.getElementById("input-select");
       const selectedDeviceId = inputSelect?.value;
 
-      // 2️⃣ Audio-Constraints zusammenbauen
+      // 2️⃣ Assemble the audio constraints
       const audioConstraints = {
         echoCancellation: audioProcessingOptions.echoCancellation,
         noiseSuppression: audioProcessingOptions.noiseSuppression,
@@ -1050,11 +1050,11 @@ document.addEventListener("DOMContentLoaded", () => {
         ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {})
       };
 
-      // 3️⃣ Mikrofon-Stream sicherstellen und aktivieren
+      // 3️⃣ Ensure the microphone stream is ready and enabled
       const track = await ensureMicTrack(audioConstraints, selectedDeviceId);
       track.enabled = true;
 
-      // ◆ Producer-Parameter: immer appData mitgeben
+      // ◆ Producer parameters: always include appData
       const params = {
         track,
         appData: target
@@ -1065,10 +1065,10 @@ document.addEventListener("DOMContentLoaded", () => {
         stopTracks: false,
       };
 
-      // ◆ Produktion starten
+      // ◆ Start producing
       const newProducer = await sendTransport.produce(params);
 
-      // ◆ Falls Button inzwischen losgelassen wurde
+      // ◆ If the button was released in the meantime
       if (!isTalking) {
         newProducer.close();
         track.enabled = false;
@@ -1088,7 +1088,7 @@ document.addEventListener("DOMContentLoaded", () => {
         scheduleMicCleanup();
       });
 
-      // ◆ Visuelles Feedback nur für gezielte Targets
+      // ◆ Visual feedback only for targeted recipients
       if (target) {
         const selector = target.type === "user"
             ? `#user-${target.id}`
@@ -1109,12 +1109,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
 
-  // Event-Handler für „All“-Talk
+  // Event handler for the "All" button
   btnAll.addEventListener("pointerdown", e => {
     e.preventDefault();
-    if (producer) return;             // abbrechen, wenn schon im Sprechen
-    btnAll.classList.add("active");   // Button selber lila highlighten
-    handleTalk(e, null);              // null → Broadcast an alle
+    if (producer) return;             // cancel if already talking
+    btnAll.classList.add("active");   // highlight the button itself
+    handleTalk(e, null);              // null → broadcast to everyone
   });
   btnAll.addEventListener("pointerup",   handleStopTalking);
   btnAll.addEventListener("pointerleave", handleStopTalking);
@@ -1169,19 +1169,18 @@ document.addEventListener("DOMContentLoaded", () => {
   function handleStopTalking(e) {
     e.preventDefault();
 
-    // Ignorieren, wenn der HOLD-Button aktiv ist und das Ereignis
-    // nicht vom HOLD-Button selbst stammt. So bleibt der Modus
-    // bestehen, auch wenn andere Controls pointerleave auslösen.
+    // Ignore events while HOLD is active unless the HOLD button fired them
+    // to keep the mode engaged even if other controls emit pointerleave
     if (btnHold.classList.contains("active") && e.currentTarget !== btnHold) {
       return;
     }
 
     isTalking = false;
 
-    // btnAll zurücksetzen
+    // Reset button states
     btnAll.classList.remove("active");
     btnHold.classList.remove("active");
-    // btnReply nur zurücksetzen, wenn kein Reply im Gange ist
+    // Reply button only needs clearing if no reply is active
     btnReply.classList.remove("active");
 
 
@@ -1197,7 +1196,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     scheduleMicCleanup();
 
-    // lila Highlight am <li> entfernen
+    // Remove the purple highlight from the <li>
     if (currentTarget) {
       const li = document.querySelector(
           currentTarget.type === "conference"

@@ -9,10 +9,10 @@ const dgram = require("dgram");
 
 const workerName = process.platform === "win32" ? "mediasoup-worker.exe" : "mediasoup-worker";
 
-// 1) Entry-Datei von mediasoup ermitteln (statt package.json)
+// 1) Find the mediasoup entry file (instead of package.json)
 const mediasoupEntry = require.resolve("mediasoup");
 
-// 2) Bis zur Paketwurzel hochnavigieren (wo die package.json liegt)
+// 2) Walk up to the package root (where package.json lives)
 let mediasoupPkgDir = path.dirname(mediasoupEntry);
 const root = path.parse(mediasoupPkgDir).root;
 while (
@@ -22,10 +22,10 @@ while (
   mediasoupPkgDir = path.dirname(mediasoupPkgDir);
 }
 
-// 3) Neuer Standardpfad zum Worker (ohne "node")
+// 3) Build the default worker path (without "node")
 let workerBin = path.join(mediasoupPkgDir, "worker", "out", "Release", workerName);
 
-// 4) Legacy-Fallback für alte Struktur mit ".../node/worker/..."
+// 4) Legacy fallback for the old ".../node/worker/..." layout
 if (!fs.existsSync(workerBin)) {
   const legacyBin = path.join(mediasoupPkgDir, "node", "worker", "out", "Release", workerName);
   if (fs.existsSync(legacyBin)) {
@@ -33,7 +33,7 @@ if (!fs.existsSync(workerBin)) {
   }
 }
 
-// 5) pkg-Bundle: Binary in beschreibbares Verzeichnis kopieren
+// 5) pkg bundle: copy the binary into a writable folder
 if (process.pkg) {
   const dest = path.join(process.cwd(), workerName);
   if (!fs.existsSync(dest)) {
@@ -43,10 +43,10 @@ if (process.pkg) {
   workerBin = dest;
 }
 
-// 6) Pfad setzen (muss vor dem ersten mediasoup-Require passieren)
+// 6) Set the path (must happen before the first mediasoup require)
 process.env.MEDIASOUP_WORKER_BIN = workerBin;
 
-// 7) Frühe, klare Fehlermeldung, falls Binary fehlt
+// 7) Fail fast with a clear error if the binary is missing
 if (!fs.existsSync(process.env.MEDIASOUP_WORKER_BIN)) {
   throw new Error(
     `mediasoup worker binary nicht gefunden unter: ${process.env.MEDIASOUP_WORKER_BIN}\n` +
@@ -376,9 +376,9 @@ function notifyTargetChange(userId) {
 }
 
 
-// Erstelle selbst-signiertes Zertifikat falls nicht vorhanden
-// Bei Verwendung von `pkg` ist das gebündelte Verzeichnis schreibgeschützt.
-// Daher legen wir die Zertifikate relativ zum aktuellen Arbeitsverzeichnis ab.
+// Create a self-signed certificate if none exists yet
+// When running inside `pkg` the bundled directory is read-only
+// so we keep the certificates relative to the current working directory
 const certDir = path.join(process.cwd(), "certs");
 if (!fs.existsSync(certDir)) {
   fs.mkdirSync(certDir, { recursive: true });
@@ -722,7 +722,7 @@ const peers = new Map();
 function getUserList() {
   return Array.from(peers.entries()).map(([socketId, peer]) => ({
     socketId,
-    userId: peer.userId || null,    // <-- hier speichern wir die DB-ID
+    userId: peer.userId || null,    // store the database ID here
     name: peer.name || null
   }));
 }
@@ -745,13 +745,13 @@ io.on("connection", (socket) => {
     const peer = peers.get(socket.id);
     if (!peer) return;
 
-    peer.userId = id;    // die echte DB-ID
-    peer.name   = name;  // Anzeigename
+    peer.userId = id;    // the actual database ID
+    peer.name   = name;  // display name
     console.log(`[USER] Registered ${name} (${id}) on socket ${socket.id}`);
 
     socket.emit("cut-camera", name === cutCameraUser);
 
-    // Aktualisierte Liste an alle Clients schicken
+    // Broadcast the refreshed list to every client
     io.emit("user-list", getUserList());
   });
 
@@ -767,14 +767,14 @@ io.on("connection", (socket) => {
       return;
     }
 
-    // AppData mitlesen, damit der Client weiß, welche Kachel es war
+    // Read the appData so the client knows which tile it was
     const { appData } = producer;
 
-    // 2. Producer schließen und internen Zustand aufräumen
+    // 2. Close the producer and clean up internal state
     producer.close();
     peer.producers.delete(producerId);
 
-    // 3. Broadcast sofort an alle anderen Clients, inkl. appData
+    // 3. Broadcast to all other clients immediately, including appData
     socket.broadcast.emit("producer-closed", {
       peerId:     socket.id,
       producerId,
@@ -791,7 +791,7 @@ io.on("connection", (socket) => {
       peer.name = name;
       console.log(`[USER] Registered name for ${socket.id}: ${name}`);
 
-      // Danach aktualisierte Liste senden
+      // Send the updated list afterwards
       io.emit("user-list", getUserList());
     }
   });
@@ -950,12 +950,12 @@ io.on("connection", (socket) => {
         );
 
         //------------------------------------------------------------------
-        // 0️⃣  Eingehende Daten validieren
+        // 0️⃣  Validate incoming data
         //------------------------------------------------------------------
         const { type, id: targetId } = appData || {};
         const validTypes = ["user","conference","global"];
 
-// global braucht kein targetId, user/conference aber schon
+// global does not need a targetId, user/conference entries do
         if (
             !type ||
             !validTypes.includes(type) ||
@@ -971,7 +971,7 @@ io.on("connection", (socket) => {
 
         try {
           //----------------------------------------------------------------
-          // 1️⃣  Producer anlegen
+          // 1️⃣  Create the producer
           //----------------------------------------------------------------
           const peer = peers.get(socket.id);
           const transport = peer.sendTransport;
@@ -988,7 +988,7 @@ io.on("connection", (socket) => {
           );
 
           //----------------------------------------------------------------
-          // 2️⃣  ID an den Client zurück
+          // 2️⃣  Send the ID back to the client
           //----------------------------------------------------------------
           callback({ id: producer.id });
 
@@ -996,7 +996,7 @@ io.on("connection", (socket) => {
           // 3️⃣  Routing
           //----------------------------------------------------------------
           if (type === "user") {
-            // 🎯 Direktziel (Socket-ID)
+            // 🎯 Direct target (socket ID)
             const targetPeer = peers.get(targetId);
             if (targetPeer) {
               targetPeer.socket.emit("new-producer", {
@@ -1009,7 +1009,7 @@ io.on("connection", (socket) => {
               console.warn(`[ROUTE] User ${targetId} not connected`);
             }
           } else if (type === "conference") {
-            // 👥 Konferenz: alle Teilnehmer benachrichtigen
+            // 👥 Conference: notify every participant
             const members = getUsersForConference(targetId); // [{ id, name }, …]
 
             for (const member of members) {
@@ -1040,16 +1040,16 @@ io.on("connection", (socket) => {
 
 
           //----------------------------------------------------------------
-          // 4️⃣  Cleanup-Listener
+          // 4️⃣  Cleanup listener
           //----------------------------------------------------------------
-          producer.appData = appData;  // einmalig speichern
+          producer.appData = appData;  // store once
 
           producer.on("close", () => {
             peer.producers.delete(producer.id);
             socket.broadcast.emit("producer-closed", {
               peerId:     socket.id,
               producerId: producer.id,
-              appData     // jetzt mit
+              appData     // included now
             });
           });
 
