@@ -755,6 +755,64 @@ io.on("connection", (socket) => {
     io.emit("user-list", getUserList());
   });
 
+  socket.on("request-active-producers", (callback = () => {}) => {
+    const peer = peers.get(socket.id);
+    if (!peer || !peer.userId) {
+      return callback([]);
+    }
+
+    const response = [];
+    let conferenceIds = null;
+
+    const loadConferenceIds = () => {
+      if (conferenceIds !== null) {
+        return conferenceIds;
+      }
+      if (!peer.userId) {
+        conferenceIds = new Set();
+        return conferenceIds;
+      }
+      const memberships = getConferencesForUser(peer.userId) || [];
+      conferenceIds = new Set(
+        memberships.map((conf) => String(conf.id))
+      );
+      return conferenceIds;
+    };
+
+    for (const [otherSocketId, otherPeer] of peers) {
+      if (otherSocketId === socket.id) continue;
+
+      for (const [producerId, producer] of otherPeer.producers) {
+        const appData = producer?.appData;
+        if (!appData || typeof appData !== "object") continue;
+
+        if (appData.type === "global") {
+          response.push({ peerId: otherSocketId, producerId, appData });
+          continue;
+        }
+
+        if (appData.type === "conference") {
+          const confId = appData.id;
+          if (confId == null) continue;
+          const membership = loadConferenceIds();
+          if (membership.has(String(confId))) {
+            response.push({ peerId: otherSocketId, producerId, appData });
+          }
+          continue;
+        }
+
+        if (appData.type === "user") {
+          const targetPeerId = appData.targetPeer || appData.id;
+          if (targetPeerId && targetPeerId === socket.id) {
+            response.push({ peerId: otherSocketId, producerId, appData });
+          }
+        }
+      }
+    }
+
+    callback(response);
+  });
+
   socket.on("producer-close", ({ producerId }) => {
     console.log(
         `[SIGNAL] producer-close von Client ${socket.id} erhalten für Producer ${producerId}`
@@ -998,7 +1056,7 @@ io.on("connection", (socket) => {
           if (type === "user") {
             // 🎯 Direct target (socket ID)
             const targetPeer = peers.get(targetId);
-            if (targetPeer) {
+            if (targetPeer?.userId) {
               targetPeer.socket.emit("new-producer", {
                 peerId: socket.id,
                 producerId: producer.id,
@@ -1027,7 +1085,7 @@ io.on("connection", (socket) => {
           }
           else if (type === "global") {
             for (const [sid, p] of peers) {
-              if (sid !== socket.id) {
+              if (sid !== socket.id && p.userId) {
                 p.socket.emit("new-producer", {
                   peerId: socket.id,
                   producerId: producer.id,

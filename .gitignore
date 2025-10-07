@@ -1,4 +1,4 @@
-# SQLite-Datenbanken
+# SQLite-Database files
 *.db
 *.db-journal
 *.sqlite

@@ -274,10 +274,14 @@ document.addEventListener("DOMContentLoaded", () => {
   const speakingPeers = new Set();
   const lastSpokePeers = new Map();
   const mutedPeers = new Set();
+  const pendingProducerQueue = [];
   let currentTargetPeer = null;
   let lastTarget = null;
   let isTalking = false;
   let cachedUsers = [];
+  let mediaInitialized = false;
+  let initializingMediaPromise = null;
+  let shouldInitializeAfterConnect = false;
 
   function renderReplyButtonLabel() {
     const suffix = lastTarget?.label ? ` (${lastTarget.label})` : "";
@@ -294,6 +298,36 @@ document.addEventListener("DOMContentLoaded", () => {
 
   clearReplyTarget();
 
+  async function ensureMediaInitialized() {
+    if (mediaInitialized) return;
+    if (initializingMediaPromise) {
+      return initializingMediaPromise;
+    }
+
+    initializingMediaPromise = (async () => {
+      await initializeMediaSoup();
+      mediaInitialized = true;
+    })();
+
+    try {
+      await initializingMediaPromise;
+    } catch (err) {
+      mediaInitialized = false;
+      throw err;
+    } finally {
+      initializingMediaPromise = null;
+    }
+  }
+
+  function initializeMediaIfPossible() {
+    shouldInitializeAfterConnect = true;
+    if (socket.connected) {
+      ensureMediaInitialized().catch(err => {
+        console.error('Media initialization failed:', err);
+      });
+    }
+  }
+
   // Check Auto-Login
   const userId = localStorage.getItem("userId");
   const userName = localStorage.getItem("userName");
@@ -304,6 +338,7 @@ document.addEventListener("DOMContentLoaded", () => {
     intercomApp.style.display = "block";
     myIdEl.textContent = userName;
     socket.emit("register-user", { id: userId, name: userName });
+    initializeMediaIfPossible();
   }
 
   // Login Handler
@@ -336,6 +371,7 @@ document.addEventListener("DOMContentLoaded", () => {
       loginContainer.style.display = "none";
       intercomApp.style.display = "block";
       myIdEl.textContent = user.name;
+      initializeMediaIfPossible();
     } catch (err) {
       loginError.textContent = "Error logging in";
       console.error("Login failed:", err);
@@ -360,7 +396,17 @@ document.addEventListener("DOMContentLoaded", () => {
       socket.emit("register-user", { id: dbUserId, name: dbUserName });
       myIdEl.textContent = dbUserName;
     }
-    await initializeMediaSoup();
+    if (!shouldInitializeAfterConnect && dbUserId && dbUserName) {
+      shouldInitializeAfterConnect = true;
+    }
+
+    if (shouldInitializeAfterConnect) {
+      try {
+        await ensureMediaInitialized();
+      } catch (err) {
+        console.error('Media initialization on connect failed:', err);
+      }
+    }
   });
 
   socket.on("disconnect", () => {
@@ -373,6 +419,14 @@ document.addEventListener("DOMContentLoaded", () => {
     document
       .querySelectorAll(".talk-user")
       .forEach((btn) => (btn.disabled = true));
+
+    mediaInitialized = false;
+    initializingMediaPromise = null;
+    device = null;
+    sendTransport = null;
+    recvTransport = null;
+    producer = null;
+    pendingProducerQueue.length = 0;
   });
 
   socket.on("user-list", async users => {
@@ -620,6 +674,164 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
 
+  async function handleIncomingProducer(payload) {
+    if (!payload || typeof payload !== 'object') return;
+
+    if (!device || !recvTransport) {
+      pendingProducerQueue.push(payload);
+      return;
+    }
+
+    await consumeProducerPayload(payload);
+  }
+
+  async function consumeProducerPayload({ peerId, producerId, appData }) {
+    const normalizedAppData = appData && typeof appData === 'object' ? appData : {};
+
+    // determine a unique key for this stream (either a conference or a user)
+    const key = normalizedAppData.type === 'conference'
+      ? `conf-${normalizedAppData.id}`
+      : `user-${peerId}`;
+
+    // ignore our own streams
+    if (peerId === socket.id) return;
+
+    // skip streams not intended for us
+    if (normalizedAppData.targetPeer && normalizedAppData.targetPeer !== socket.id) {
+      console.log('Producer not for us, skipping');
+      return;
+    }
+
+    try {
+      speakingPeers.add(key);
+      updateSpeakerHighlight(key, true);
+
+      // request to consume this producer
+      const { error, ...consumeParams } = await new Promise((resolve) =>
+        socket.emit('consume', {
+          producerId,
+          rtpCapabilities: device.rtpCapabilities,
+        }, resolve)
+      );
+      if (error) throw new Error(error);
+
+      // actually create the consumer
+      const consumer = await recvTransport.consume(consumeParams);
+
+      // track this consumer for mute/unmute
+      if (!peerConsumers.has(key)) peerConsumers.set(key, new Set());
+      peerConsumers.get(key).add(consumer);
+      if (mutedPeers.has(key)) consumer.pause();
+
+      // wrap the track in a MediaStream
+      const stream = new MediaStream([consumer.track]);
+
+      // if this is the first time seeing this peer, create an <audio> element
+      if (!audioElements.has(peerId)) {
+        const audio = document.createElement('audio');
+        audio.srcObject = stream;
+        audio.autoplay = true;
+
+        // load the saved volume from sessionStorage
+        const volKey = normalizedAppData.type === 'conference'
+          ? `volume_conf_${normalizedAppData.id}`
+          : `volume_user_${peerId}`;
+        const initVol = getStoredVolume(volKey);
+        audio.volume = initVol;
+
+        // add the element to the DOM and save it
+        audioStreamsDiv.appendChild(audio);
+        audioElements.set(peerId, { audio, volume: initVol });
+
+        // if this is a conference stream, also track it in confAudioElements
+        if (normalizedAppData.type === 'conference') {
+          const confId = normalizedAppData.id;
+          if (!confAudioElements.has(confId)) {
+            confAudioElements.set(confId, new Set());
+          }
+          confAudioElements.get(confId).add(audio);
+
+          // remove from the set when the producer closes
+          consumer.on('producerclose', () => {
+            confAudioElements.get(confId)?.delete(audio);
+          });
+        }
+      } else {
+        // for subsequent streams, just swap the stream and preserve volume
+        const entry = audioElements.get(peerId);
+        entry.audio.srcObject = stream;
+        entry.audio.volume = entry.volume;
+      }
+
+      // attempt to play
+      try {
+        await audioElements.get(peerId).audio.play();
+      } catch {}
+
+      // tell server to resume the consumer
+      await new Promise((res) =>
+        socket.emit('resume-consumer', { consumerId: consumer.id }, res)
+      );
+
+      // cleanup when the producer actually closes
+      consumer.on('producerclose', () => {
+        console.log(`Producer closed for consumer ${consumer.id}`);
+        speakingPeers.delete(key);
+        updateSpeakerHighlight(key, false);
+
+        const stored = audioElements.get(peerId);
+        if (stored) {
+          stored.audio.remove();
+          audioElements.delete(peerId);
+        }
+        peerConsumers.get(key)?.delete(consumer);
+      });
+    } catch (err) {
+      console.error('Error consuming:', err);
+    }
+  }
+
+  async function processPendingProducers() {
+    if (!device || !recvTransport) return;
+
+    while (pendingProducerQueue.length) {
+      const payload = pendingProducerQueue.shift();
+      try {
+        await consumeProducerPayload(payload);
+      } catch (err) {
+        console.error('Failed to consume queued producer', err);
+      }
+    }
+  }
+
+  async function requestActiveProducers() {
+    try {
+      const payloads = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error('Timeout requesting active producers')),
+          5000
+        );
+
+        socket.emit('request-active-producers', (list) => {
+          clearTimeout(timeout);
+          if (!Array.isArray(list)) {
+            resolve([]);
+          } else {
+            resolve(list);
+          }
+        });
+      });
+
+      for (const payload of payloads) {
+        await handleIncomingProducer(payload);
+      }
+    } catch (err) {
+      console.error('Failed to request active producers', err);
+    }
+  }
+
+
+
   // Initialize MediaSoup
   async function initializeMediaSoup() {
     try {
@@ -756,6 +968,9 @@ document.addEventListener("DOMContentLoaded", () => {
       document.querySelectorAll("#users li:not(.you)").forEach((li) => {
         li.style.cursor = "pointer";
       });
+
+      await processPendingProducers();
+      await requestActiveProducers();
       console.log("=== ✓ MediaSoup initialization complete! ===");
     } catch (err) {
       console.error("=== ✗ MediaSoup initialization failed ===");
@@ -772,112 +987,11 @@ document.addEventListener("DOMContentLoaded", () => {
     return `user-${rawId}`;
   }
 
-  socket.on('new-producer', async ({ peerId, producerId, appData }) => {
-    console.log(`New producer ${producerId} from peer ${peerId}`, appData);
-
-    // determine a unique key for this stream (either a conference or a user)
-    const key = appData?.type === 'conference'
-        ? `conf-${appData.id}`
-        : `user-${peerId}`;
-
-    // ignore our own streams
-    if (peerId === socket.id) return;
-
-    // skip streams not intended for us
-    if (appData?.targetPeer && appData.targetPeer !== socket.id) {
-      console.log('Producer not for us, skipping');
-      return;
+  socket.on('new-producer', (payload) => {
+    if (payload && typeof payload === 'object') {
+      console.log(`New producer ${payload.producerId} from peer ${payload.peerId}`, payload.appData);
     }
-
-    try {
-      // highlight the speaker in the UI
-      speakingPeers.add(key);
-      updateSpeakerHighlight(key, true);
-
-      // request to consume this producer
-      const { error, ...consumeParams } = await new Promise(resolve =>
-          socket.emit('consume', {
-            producerId,
-            rtpCapabilities: device.rtpCapabilities
-          }, resolve)
-      );
-      if (error) throw new Error(error);
-
-      // actually create the consumer
-      const consumer = await recvTransport.consume(consumeParams);
-
-      // track this consumer for mute/unmute
-      if (!peerConsumers.has(key)) peerConsumers.set(key, new Set());
-      peerConsumers.get(key).add(consumer);
-      if (mutedPeers.has(key)) consumer.pause();
-
-      // wrap the track in a MediaStream
-      const stream = new MediaStream([consumer.track]);
-
-      // if this is the first time seeing this peer, create an <audio> element
-      if (!audioElements.has(peerId)) {
-        const audio = document.createElement('audio');
-        audio.srcObject = stream;
-        audio.autoplay = true;
-
-        // load the saved volume from sessionStorage
-        const volKey = appData?.type === 'conference'
-            ? `volume_conf_${appData.id}`
-            : `volume_user_${peerId}`;
-        const initVol = getStoredVolume(volKey);
-        audio.volume = initVol;
-
-        // add the element to the DOM and save it
-        audioStreamsDiv.appendChild(audio);
-        audioElements.set(peerId, { audio, volume: initVol });
-
-        // if this is a conference stream, also track it in confAudioElements
-        if (appData?.type === 'conference') {
-          const confId = appData.id;
-          if (!confAudioElements.has(confId)) {
-            confAudioElements.set(confId, new Set());
-          }
-          confAudioElements.get(confId).add(audio);
-
-          // remove from the set when the producer closes
-          consumer.on('producerclose', () => {
-            confAudioElements.get(confId)?.delete(audio);
-          });
-        }
-      } else {
-        // for subsequent streams, just swap the stream and preserve volume
-        const entry = audioElements.get(peerId);
-        entry.audio.srcObject = stream;
-        entry.audio.volume    = entry.volume;
-      }
-
-      // attempt to play
-      try {
-        await audioElements.get(peerId).audio.play();
-      } catch {}
-
-      // tell server to resume the consumer
-      await new Promise(res =>
-          socket.emit('resume-consumer', { consumerId: consumer.id }, res)
-      );
-
-      // cleanup when the producer actually closes
-      consumer.on('producerclose', () => {
-        console.log(`Producer closed for consumer ${consumer.id}`);
-        speakingPeers.delete(key);
-        updateSpeakerHighlight(key, false);
-
-        const stored = audioElements.get(peerId);
-        if (stored) {
-          stored.audio.remove();
-          audioElements.delete(peerId);
-        }
-        peerConsumers.get(key)?.delete(consumer);
-      });
-
-    } catch (err) {
-      console.error('Error consuming:', err);
-    }
+    handleIncomingProducer(payload).catch(err => console.error('Failed to handle producer', err));
   });
 
 
