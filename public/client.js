@@ -50,7 +50,7 @@ const QUALITY_PROFILES = {
   },
 };
 
-const defaultVolume = 0.85;
+const defaultVolume = 0.9;
 let inputSelect;
 let qualitySelect;
 
