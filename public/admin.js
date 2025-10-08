@@ -1,5 +1,11 @@
-function showMessage(text, tone = 'error') {
-  const el = document.getElementById('message');
+function showMessage(text, tone = 'error', scope = 'global') {
+  const targetId = scope === 'user'
+    ? 'user-message'
+    : scope === 'conf'
+      ? 'conf-message'
+      : 'message';
+
+  const el = document.getElementById(targetId);
   if (!el) return;
 
   const toneClass = tone === 'success' || tone === 'green'
@@ -12,8 +18,9 @@ function showMessage(text, tone = 'error') {
   el.classList.remove('flash-success', 'flash-error', 'flash-warning');
   el.classList.add('is-visible', toneClass);
 
-  clearTimeout(showMessage._timer);
-  showMessage._timer = setTimeout(() => {
+  showMessage._timers = showMessage._timers || {};
+  clearTimeout(showMessage._timers[targetId]);
+  showMessage._timers[targetId] = setTimeout(() => {
     el.classList.remove('is-visible', toneClass);
     el.textContent = '';
   }, 5000);
@@ -84,9 +91,10 @@ async function loadData() {
             <select id="add-target-type-${user.id}">
               <option value="user">User</option>
               <option value="conference">Conference</option>
+              <option value="global">All (broadcast)</option>
             </select>
             <select id="add-target-id-${user.id}"></select>
-            <button type="button" class="small" onclick="addTarget(${user.id})">Add target</button>
+            <button type="button" id="add-target-btn-${user.id}" class="small" onclick="addTarget(${user.id})">Add target</button>
           </div>
         </div>
       </div>
@@ -142,15 +150,41 @@ async function loadUserTargets(userId, allUsers, allConfs) {
 
   const selType = document.getElementById(`add-target-type-${userId}`);
   const selId   = document.getElementById(`add-target-id-${userId}`);
-  const list    = selType.value === 'user' ? allUsers : allConfs;
+  const addBtn  = document.getElementById(`add-target-btn-${userId}`);
+  const hasGlobal = targets.some(t => t.targetType === 'global');
 
-  selId.innerHTML = list.map(item =>
-      `<option value="${item.id}">${escapeHtml(item.name)}</option>`
-  ).join('');
+  const globalOption = selType.querySelector('option[value="global"]');
+  if (globalOption) {
+    globalOption.disabled = hasGlobal;
+    if (hasGlobal && selType.value === 'global') {
+      selType.value = 'user';
+    }
+  }
 
-  // Re-load the ID dropdown whenever the type changes
-  selType.onchange = () =>
-      loadUserTargets(userId, allUsers, allConfs);
+  const refreshTargetSelectors = () => {
+    const type = selType.value;
+    if (type === 'user') {
+      selId.disabled = false;
+      selId.innerHTML = allUsers
+        .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`)
+        .join('');
+    } else if (type === 'conference') {
+      selId.disabled = false;
+      selId.innerHTML = allConfs
+        .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`)
+        .join('');
+    } else {
+      selId.disabled = true;
+      selId.innerHTML = '<option value="0">All participants</option>';
+    }
+
+    if (addBtn) {
+      addBtn.disabled = type === 'global' && hasGlobal;
+    }
+  };
+
+  refreshTargetSelectors();
+  selType.onchange = refreshTargetSelectors;
 }
 
 function initTargetOrdering(userId, ul) {
@@ -206,27 +240,28 @@ async function saveTargetOrder(userId, ul) {
       body: JSON.stringify({ items }),
     });
     if (!res.ok) {
-      showMessage('❌ Failed to save order', 'error');
+      showMessage('❌ Failed to save order', 'error', 'user');
     } else {
-      showMessage('✅ Order updated', 'success');
+      showMessage('✅ Order updated', 'success', 'user');
     }
   } catch (err) {
     console.error('Failed to save order', err);
-    showMessage('❌ Failed to save order', 'error');
+    showMessage('❌ Failed to save order', 'error', 'user');
   }
 }
 
 // Called by the “➕” button
 window.addTarget = async function(userId) {
   const type = document.getElementById(`add-target-type-${userId}`).value;
-  const id   = document.getElementById(`add-target-id-${userId}`).value;
+  const rawId = document.getElementById(`add-target-id-${userId}`).value;
+  const id   = type === 'global' ? 0 : rawId;
   const res = await fetch(`/users/${userId}/targets`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ targetType: type, targetId: id })
   });
   if (!res.ok) {
-    showMessage('❌ Failed to add target', 'error');
+    showMessage('❌ Failed to add target', 'error', 'user');
   } else {
     // Refresh only that user’s target list
     const users = await fetchJSON('/users');
@@ -241,7 +276,7 @@ window.removeTarget = async function(userId, type, tid) {
       `/users/${userId}/targets/${type}/${tid}`, { method: 'DELETE' }
   );
   if (!res.ok) {
-    showMessage('❌ Failed to remove target', 'error');
+    showMessage('❌ Failed to remove target', 'error', 'user');
   } else {
     const users = await fetchJSON('/users');
     const confs = await fetchJSON('/conferences');
@@ -261,10 +296,10 @@ window.editUser = async function (userId, currentName) {
   });
 
   if (res.ok) {
-    showMessage('✅ User updated', 'success');
+    showMessage('✅ User updated', 'success', 'user');
     loadData();
   } else {
-    showMessage('❌ Failed to update user', 'error');
+    showMessage('❌ Failed to update user', 'error', 'user');
   }
 };
 
@@ -310,16 +345,16 @@ window.editConference = async function(confId, currentName) {
     });
 
     if (res.status === 409) {
-      showMessage('⚠️ Conference name already exists!');
+      showMessage('⚠️ Conference name already exists!', 'warning', 'conf');
     } else if (res.ok) {
-      showMessage('✅ Conference updated', 'success');
+      showMessage('✅ Conference updated', 'success', 'conf');
       loadData();
     } else {
-      showMessage('❌ Failed to update conference', 'error');
+      showMessage('❌ Failed to update conference', 'error', 'conf');
     }
   } catch (err) {
     console.error('Error updating conference:', err);
-    showMessage('❌ Error updating conference: ' + err.message, 'error');
+    showMessage('❌ Error updating conference: ' + err.message, 'error', 'conf');
   }
 };
 
@@ -365,15 +400,15 @@ window.unassignUser = async function (userId, confId) {
       method: 'DELETE'
     });
     if (res.ok) {
-      showMessage('✅ User removed from conference', 'success');
+      showMessage('✅ User removed from conference', 'success', 'user');
       loadData();
     } else if (res.status === 404) {
-      showMessage('⚠️ Relationship not found', 'warning');
+      showMessage('⚠️ Relationship not found', 'warning', 'user');
     } else {
-      showMessage('❌ Failed to remove user', 'error');
+      showMessage('❌ Failed to remove user', 'error', 'user');
     }
   } catch (err) {
-    showMessage('❌ Unexpected error: ' + err.message, 'error');
+    showMessage('❌ Unexpected error: ' + err.message, 'error', 'user');
     console.error(err);
   }
 };
@@ -384,13 +419,13 @@ window.deleteUser = async function (userId) {
       method: 'DELETE'
     });
     if (res.ok) {
-      showMessage('✅ User deleted', 'success');
+      showMessage('✅ User deleted', 'success', 'user');
       loadData();
     } else {
-      showMessage('❌ Failed to delete user', 'error');
+      showMessage('❌ Failed to delete user', 'error', 'user');
     }
   } catch (err) {
-    showMessage('❌ Error deleting user: ' + err.message, 'error');
+    showMessage('❌ Error deleting user: ' + err.message, 'error', 'user');
     console.error(err);
   }
 };
@@ -402,13 +437,13 @@ window.deleteConference = async function (confId) {
       method: 'DELETE'
     });
     if (res.ok) {
-      showMessage('✅ Conference deleted', 'success');
+      showMessage('✅ Conference deleted', 'success', 'conf');
       loadData();
     } else {
-      showMessage('❌ Failed to delete conference', 'error');
+      showMessage('❌ Failed to delete conference', 'error', 'conf');
     }
   } catch (err) {
-    showMessage('❌ Error deleting conference: ' + err.message, 'error');
+    showMessage('❌ Error deleting conference: ' + err.message, 'error', 'conf');
     console.error(err);
   }
 };
@@ -426,12 +461,12 @@ document.getElementById('user-form').addEventListener('submit', async (e) => {
   });
 
   if (res.status === 409) {
-    showMessage('⚠️ Username already exists!', 'warning');
+    showMessage('⚠️ Username already exists!', 'warning', 'user');
   } else if (res.ok) {
-    showMessage('✅ User created', 'success');
+    showMessage('✅ User created', 'success', 'user');
     loadData();
   } else {
-    showMessage('❌ Failed to create user', 'error');
+    showMessage('❌ Failed to create user', 'error', 'user');
   }
 });
 
@@ -446,12 +481,12 @@ document.getElementById('conf-form').addEventListener('submit', async (e) => {
   });
 
   if (res.status === 409) {
-    showMessage('⚠️ Conference already exists!', 'warning');
+    showMessage('⚠️ Conference already exists!', 'warning', 'conf');
   } else if (res.ok) {
-    showMessage('✅ Conference created', 'success');
+    showMessage('✅ Conference created', 'success', 'conf');
     loadData();
   } else {
-    showMessage('❌ Failed to create conference', 'error');
+    showMessage('❌ Failed to create conference', 'error', 'conf');
   }
 });
 
@@ -464,14 +499,14 @@ window.assignUserToConference = async function(userId) {
     method: 'POST'
   });
   if (res.ok) {
-    showMessage('✅ User assigned to conference', 'success');
+    showMessage('✅ User assigned to conference', 'success', 'user');
     const container = document.getElementById(`user-nested-${userId}`);
     if (container?.classList.contains('is-open')) {
       await toggleUserConfs(userId);
       await toggleUserConfs(userId);
     }
   } else {
-    showMessage('❌ Failed to assign user to conference', 'error');
+    showMessage('❌ Failed to assign user to conference', 'error', 'user');
   }
 };
 
@@ -480,7 +515,7 @@ window.resetPassword = async function(userId, userName) {
   const newPassword = prompt(`Enter a new password for ${label}:`);
   if (!newPassword) return;
   if (newPassword.length < 4) {
-    showMessage('⚠️ Password should be at least 4 characters', 'warning');
+    showMessage('⚠️ Password should be at least 4 characters', 'warning', 'user');
     return;
   }
 
@@ -492,13 +527,13 @@ window.resetPassword = async function(userId, userName) {
     });
 
     if (res.ok) {
-      showMessage(`✅ Password updated for ${label}`, 'success');
+      showMessage(`✅ Password updated for ${label}`, 'success', 'user');
     } else {
       const payload = await res.json().catch(() => ({}));
-      showMessage(payload.error ? `❌ ${payload.error}` : '❌ Failed to reset password', 'error');
+      showMessage(payload.error ? `❌ ${payload.error}` : '❌ Failed to reset password', 'error', 'user');
     }
   } catch (err) {
-    showMessage('❌ Error resetting password: ' + err.message, 'error');
+    showMessage('❌ Error resetting password: ' + err.message, 'error', 'user');
   }
 };
 

@@ -38,6 +38,10 @@ db.exec(`
                                                      PRIMARY KEY (user_id, target_conf)
     );
 
+    CREATE TABLE IF NOT EXISTS user_global_targets (
+                                                       user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS user_target_order (
                                                       user_id     INTEGER NOT NULL,
                                                       target_type TEXT    NOT NULL,

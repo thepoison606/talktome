@@ -141,9 +141,24 @@ function getUserTargets(userId) {
        AND o.target_type = 'conference'
        AND o.target_id = ct.target_conf
       WHERE ct.user_id = ?
+
+      UNION ALL
+
+      SELECT
+        'global' AS targetType,
+        0        AS targetId,
+        'All'    AS name,
+        o.position AS position,
+        gt.rowid  AS fallback
+      FROM user_global_targets gt
+      LEFT JOIN user_target_order o
+        ON o.user_id = gt.user_id
+       AND o.target_type = 'global'
+       AND o.target_id = 0
+      WHERE gt.user_id = ?
     )
     ORDER BY COALESCE(position, fallback)
-  `).all(userId, userId);
+  `).all(userId, userId, userId);
 }
 
 
@@ -163,12 +178,24 @@ function addUserTargetToConference(userId, targetConfId) {
   appendTargetOrder(userId, 'conference', targetConfId);
 }
 
+function addUserTargetToGlobal(userId) {
+  db.prepare(`
+    INSERT OR IGNORE INTO user_global_targets (user_id)
+    VALUES (?)
+  `).run(userId);
+  appendTargetOrder(userId, 'global', 0);
+}
+
 
 function removeUserTarget(userId, type, targetId) {
   if (type === "user") {
     removeUserUserTarget(userId, targetId);
-  } else {
+  } else if (type === "conference") {
     removeUserConfTarget(userId, targetId);
+  } else if (type === "global") {
+    removeUserGlobalTarget(userId);
+    removeTargetOrder(userId, type, 0);
+    return;
   }
   removeTargetOrder(userId, type, targetId);
 }
@@ -189,6 +216,13 @@ function removeUserConfTarget(userId, targetConfId) {
     WHERE user_id     = ?
       AND target_conf = ?
   `).run(userId, targetConfId);
+}
+
+function removeUserGlobalTarget(userId) {
+  db.prepare(`
+    DELETE FROM user_global_targets
+    WHERE user_id = ?
+  `).run(userId);
 }
 
 
@@ -250,6 +284,7 @@ module.exports = {
   getUserTargets,
   addUserTargetToUser,
   addUserTargetToConference,
+  addUserTargetToGlobal,
   removeUserTarget,
   updateUserTargetOrder
 };

@@ -5,16 +5,18 @@
     <title>Admin Panel</title>
     <style>
       :root {
-        --bg: #f5f7fb;
-        --card-bg: #ffffff;
-        --primary: #3f51b5;
-        --primary-dark: #2c3995;
-        --accent: #ff9800;
-        --text: #1f2a44;
-        --muted: #6b7a99;
-        --border: #e2e6f0;
-        --success: #2e7d32;
-        --danger: #c62828;
+        --bg: #0b1120;
+        --card-bg: #131a2a;
+        --primary: #2563eb;
+        --primary-dark: #1d4ed8;
+        --accent: #f59e0b;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --border: rgba(148, 163, 184, 0.2);
+        --surface: #1f2937;
+        --chip: rgba(148, 163, 184, 0.12);
+        --success: #22c55e;
+        --danger: #ef4444;
         --radius: 12px;
       }
 
@@ -35,27 +37,8 @@
         line-height: 1.5;
       }
 
-      header {
-        padding: 2.5rem 2rem 1.5rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.5rem;
-        background: linear-gradient(135deg, rgba(63, 81, 181, 0.08), rgba(63, 81, 181, 0));
-      }
-
-      header h1 {
-        margin: 0;
-        font-size: 2rem;
-        font-weight: 700;
-      }
-
-      header p {
-        margin: 0;
-        color: var(--muted);
-      }
-
       main {
-        padding: 0 2rem 3rem;
+        padding: 1.5rem 2rem 3rem;
         max-width: 1100px;
         margin: 0 auto;
         display: grid;
@@ -64,9 +47,20 @@
 
       .flash-message {
         display: none;
-        padding: 0.75rem 1rem;
-        border-radius: var(--radius);
+        padding: 0.4rem 0.75rem;
+        border-radius: 999px;
         font-weight: 600;
+        font-size: 0.9rem;
+        margin-left: auto;
+      }
+
+      .card-header .flash-message {
+        margin: 0 0 0 auto;
+        align-self: center;
+      }
+
+      main > .flash-message {
+        margin: 0 0 1.5rem 0;
       }
 
       .flash-message.is-visible {
@@ -74,25 +68,25 @@
       }
 
       .flash-success {
-        background: rgba(46, 125, 50, 0.1);
+        background: rgba(34, 197, 94, 0.12);
         color: var(--success);
       }
 
       .flash-error {
-        background: rgba(198, 40, 40, 0.12);
+        background: rgba(239, 68, 68, 0.15);
         color: var(--danger);
       }
 
       .flash-warning {
-        background: rgba(255, 152, 0, 0.15);
-        color: #b26a00;
+        background: rgba(245, 158, 11, 0.18);
+        color: var(--accent);
       }
 
       .card {
         background: var(--card-bg);
         padding: 2rem;
         border-radius: var(--radius);
-        box-shadow: 0 12px 32px rgba(31, 42, 68, 0.08);
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.35);
         border: 1px solid var(--border);
       }
 
@@ -153,15 +147,20 @@
         padding: 0.6rem 0.75rem;
         border-radius: 8px;
         border: 1px solid var(--border);
-        transition: border-color 0.2s ease, box-shadow 0.2s ease;
-        background: #fff;
+        transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+        background: #111827;
+        color: var(--text);
+      }
+
+      input::placeholder {
+        color: var(--muted);
       }
 
       input:focus,
       select:focus {
         outline: none;
         border-color: var(--primary);
-        box-shadow: 0 0 0 3px rgba(63, 81, 181, 0.15);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
       }
 
       button {
@@ -172,40 +171,41 @@
         font-weight: 600;
         color: #fff;
         background: var(--primary);
-        transition: transform 0.15s ease, box-shadow 0.15s ease;
+        transition: transform 0.15s ease, background 0.15s ease;
+        box-shadow: none;
       }
 
       button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 6px 18px rgba(63, 81, 181, 0.2);
         background: var(--primary-dark);
       }
 
       button:disabled {
         opacity: 0.6;
         cursor: not-allowed;
-        box-shadow: none;
         transform: none;
       }
 
       button.small {
         padding: 0.4rem 0.75rem;
         font-size: 0.8rem;
-        background: rgba(63, 81, 181, 0.1);
-        color: var(--primary-dark);
-        border: 1px solid rgba(63, 81, 181, 0.2);
+        background: rgba(37, 99, 235, 0.18);
+        color: var(--text);
+        border: 1px solid rgba(37, 99, 235, 0.35);
+        box-shadow: none;
       }
 
       button.small.danger {
-        background: rgba(198, 40, 40, 0.12);
-        border-color: rgba(198, 40, 40, 0.25);
+        background: rgba(239, 68, 68, 0.16);
+        border-color: rgba(239, 68, 68, 0.35);
         color: var(--danger);
+        box-shadow: none;
       }
 
       button.small.warning {
-        background: rgba(255, 152, 0, 0.12);
-        border-color: rgba(255, 152, 0, 0.25);
+        background: rgba(245, 158, 11, 0.18);
+        border-color: rgba(245, 158, 11, 0.35);
         color: var(--accent);
+        box-shadow: none;
       }
 
       .item-list {
@@ -219,10 +219,11 @@
       .list-item {
         border: 1px solid var(--border);
         border-radius: 10px;
-        background: #fff;
+        background: var(--surface);
         padding: 0.75rem 1rem;
         display: grid;
         gap: 0.5rem;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.25);
       }
 
       .list-item-header {
@@ -241,8 +242,8 @@
 
       .badge {
         padding: 0.25rem 0.6rem;
-        background: rgba(63, 81, 181, 0.12);
-        color: var(--primary-dark);
+        background: rgba(37, 99, 235, 0.2);
+        color: var(--text);
         border-radius: 999px;
         font-size: 0.75rem;
         font-weight: 600;
@@ -251,14 +252,14 @@
       details {
         border: 1px solid var(--border);
         border-radius: 10px;
-        background: rgba(31, 42, 68, 0.03);
+        background: rgba(15, 23, 42, 0.6);
         padding: 0.75rem 1rem;
       }
 
       details summary {
         cursor: pointer;
         font-weight: 600;
-        color: var(--primary-dark);
+        color: var(--text);
         outline: none;
         list-style: none;
       }
@@ -296,7 +297,7 @@
         align-items: center;
         gap: 0.75rem;
         padding: 0.6rem 0.75rem;
-        background: rgba(31, 42, 68, 0.04);
+        background: var(--chip);
         border-radius: 10px;
       }
 
@@ -344,10 +345,8 @@
       }
 
       @media (max-width: 768px) {
-        header,
         main {
-          padding-left: 1.25rem;
-          padding-right: 1.25rem;
+          padding: 1.25rem 1.25rem 3rem;
         }
 
         .card {
@@ -389,15 +388,13 @@
     </style>
   </head>
   <body>
-    <header>
-      <h1>Talk to me &mdash; Admin Console</h1>
-      <div id="message" class="flash-message"></div>
-    </header>
-
     <main>
+      <div id="message" class="flash-message"></div>
+
       <section class="card" aria-labelledby="users-heading">
         <div class="card-header">
           <h2 id="users-heading">Users</h2>
+          <div id="user-message" class="flash-message"></div>
         </div>
 
         <div class="form-grid">
@@ -409,7 +406,7 @@
 
             <div class="field-group">
               <label for="password">Password</label>
-              <input type="password" id="password" placeholder="Minimum 6 characters" required />
+              <input type="password" id="password" placeholder="Password" required />
             </div>
 
             <button type="submit">Add User</button>
@@ -422,6 +419,7 @@
       <section class="card" aria-labelledby="conferences-heading">
         <div class="card-header">
           <h2 id="conferences-heading">Conferences</h2>
+          <div id="conf-message" class="flash-message"></div>
         </div>
 
         <div class="form-grid">

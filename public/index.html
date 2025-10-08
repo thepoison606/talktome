@@ -14,15 +14,6 @@
         touch-action: manipulation;
       }
 
-      .controls {
-        display: flex;
-        gap: 0.5rem;
-        margin-bottom: 1rem;
-      }
-      .controls button {
-        flex: 1;
-      }
-
       /* Global */
       *,
       *::before,
@@ -32,8 +23,10 @@
 
       body {
         font-family: sans-serif;
-        padding: 1rem;
-        background-color: #f5f5f5;
+        padding: 0.75rem;
+        padding-bottom: 5.5rem;
+        background-color: #0b1120;
+        color: #e2e8f0;
       }
 
       body.cut-camera {
@@ -43,14 +36,40 @@
       .container {
         max-width: 800px;
         margin: 0 auto;
-        background: white;
-        padding: 2rem;
+        background: #131a2a;
+        padding: 1.5rem;
         border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 2px 24px rgba(15, 23, 42, 0.4);
+      }
+
+      #login-container {
+        max-width: 360px;
+        margin: 0 auto 2rem;
+        text-align: center;
+        background: #1f2937;
+        padding: 1.5rem;
+        border-radius: 8px;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.35);
+      }
+
+      #login-container h2 {
+        margin-top: 0;
+        margin-bottom: 1rem;
+        color: #e2e8f0;
+      }
+
+      #login-form {
+        display: grid;
+        gap: 0.75rem;
+      }
+
+      #login-container input,
+      #login-container button {
+        width: 100%;
       }
 
       h2 {
-        color: #333;
+        color: #e2e8f0;
         margin-bottom: 1.5rem;
       }
 
@@ -60,17 +79,18 @@
         justify-content: space-between;
         gap: 0.75rem;
         flex-wrap: wrap;
-        margin: 0 0 1.5rem;
-        padding: 0.75rem 1rem;
-        background: #e3f2fd;
+        margin: 0 0 1.25rem;
+        padding: 0.5rem 0.75rem;
+        background: rgba(59, 130, 246, 0.12);
         border-radius: 4px;
-        border-left: 4px solid #2196f3;
+        border-left: 4px solid rgba(59, 130, 246, 0.6);
       }
 
       .session-info {
         flex: 1;
         min-width: 0;
-        color: #333;
+        color: #cbd5f5;
+        font-size: 0.95rem;
       }
 
       .session-info span {
@@ -84,45 +104,95 @@
       }
 
       .logout-btn {
-        padding: 0.5rem 1rem;
-        font-size: 14px;
+        padding: 0.4rem 0.85rem;
+        font-size: 0.85rem;
         min-width: auto;
       }
 
-      .controls button {
-        padding: 2rem 1rem;
-        min-height: 4.5rem;
+      .reply-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding: 0.75rem 1rem;
+        background: rgba(19, 26, 42, 0.9);
+        display: flex;
+        justify-content: center;
+        gap: 1rem;
+        backdrop-filter: blur(6px);
+        border-top: 1px solid rgba(148, 163, 184, 0.2);
+        z-index: 1000;
+      }
+
+      .reply-bar button {
+        min-width: 10rem;
+        width: min(60vw, 240px);
       }
 
       .settings-panel {
-        margin-top: 1.5rem;
-        border: 1px solid rgba(31, 42, 68, 0.12);
-        border-radius: 10px;
-        background: rgba(31, 42, 68, 0.03);
-        padding: 0.75rem 1rem;
+        position: relative;
+        margin: 0;
+        margin-left: auto;
+        padding: 0;
+        border: none;
+        background: transparent;
       }
 
       .settings-trigger {
         display: flex;
         align-items: center;
-        gap: 0.5rem;
+        justify-content: center;
         cursor: pointer;
         font-weight: 600;
-        color: #2c3995;
+        color: #cbd5f5;
+        width: 2.5rem;
+        height: 2.5rem;
+        border-radius: 50%;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        background: rgba(30, 41, 59, 0.7);
+        transition: background 0.2s ease, border-color 0.2s ease;
+      }
+
+      .settings-trigger:focus-visible {
+        outline: 2px solid #2c3995;
+        outline-offset: 2px;
+      }
+
+      .settings-trigger:hover {
+        background: rgba(30, 41, 59, 0.9);
       }
 
       .settings-icon {
         font-size: 1.1rem;
+        color: #cbd5f5;
       }
 
       .settings-body {
-        display: grid;
+        position: absolute;
+        right: 0;
+        top: calc(100% + 0.5rem);
+        display: none;
         gap: 0.75rem;
-        margin-top: 0.75rem;
+        padding: 0.75rem 1rem;
+        min-width: 260px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 10px;
+        background: #1f2937;
+        color: #e2e8f0;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.45);
+        z-index: 10;
       }
 
-      .settings-panel[open] .settings-body {
+      .settings-panel.is-open .settings-body {
+        display: grid;
         animation: fadeIn 0.15s ease;
+      }
+
+      .settings-actions {
+        display: flex;
+        justify-content: flex-end;
+        padding-top: 0.5rem;
+        border-top: 1px solid rgba(148, 163, 184, 0.2);
       }
 
       .device-selector {
@@ -134,6 +204,33 @@
 
       .device-selector select {
         flex: 1 1 220px;
+        background: #111827;
+        color: #e2e8f0;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+      }
+
+      input,
+      select {
+        background: #111827;
+        color: #e2e8f0;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        border-radius: 4px;
+        padding: 0.6rem 0.75rem;
+      }
+
+      input[type="range"] {
+        padding: 0;
+        background: transparent;
+      }
+
+      input:focus,
+      select:focus {
+        outline: 2px solid rgba(59, 130, 246, 0.6);
+        outline-offset: 1px;
+      }
+
+      input::placeholder {
+        color: #94a3b8;
       }
 
       .processing-options {
@@ -141,7 +238,7 @@
         flex-wrap: wrap;
         gap: 0.75rem 1.5rem;
         font-size: 0.95rem;
-        color: var(--muted, #6b7a99);
+        color: #94a3b8;
       }
 
       .processing-options label {
@@ -152,7 +249,7 @@
 
       .latency-hint {
         font-size: 0.8rem;
-        color: var(--muted, #6b7a99);
+        color: #64748b;
       }
 
       @keyframes fadeIn {
@@ -177,7 +274,7 @@
         padding: 1.5rem;
         margin: 0.25rem;
         min-width: 2rem;
-        background: #589ad0;
+        background: #2563eb;
       }
 
       button[data-label] {
@@ -203,34 +300,21 @@
         cursor: not-allowed;
       }
 
-      /* Non-active normal state */
-      #talk-all:not(.active) {
-        background: #4caf50;
+      /* Reply button state */
+      #reply:not(.active) {
+        background: #2563eb;
       }
-      #talk-lock:not(.active) {
-        background: #ff9800;
-      }
-      #reply :not(.active) {
-        background: #589ad0;
-      }
-      #talk-all:not(.active):hover:not(:disabled) {
-        background: #45a049;
-      }
-      #talk-lock:not(.active):hover:not(:disabled) {
-        background: #fb8c00;
-      }
-      #reply :not(.active):hover:not(:disabled) {
-        background: #589ad0;
+
+      #reply:not(.active):hover:not(:disabled) {
+        background: #1d4ed8;
       }
 
       /* Active state (lila) */
-      #talk-all.active,
-      #talk-lock.active,
       #reply.active {
-        background: #f3e5f5;
-        border-color: #9c27b0;
-        box-shadow: 0 0 10px rgba(156, 39, 176, 0.3);
-        color: #000;
+        background: rgba(139, 92, 246, 0.25);
+        border-color: rgba(139, 92, 246, 0.7);
+        box-shadow: 0 0 14px rgba(139, 92, 246, 0.4);
+        color: #ede9fe;
       }
 
       /* Hidden audio container */
@@ -255,7 +339,7 @@
         gap: 0.75rem;
         padding: 0.75rem 1rem;
         margin: 0.5rem 0;
-        background: #f8f9fa;
+        background: #1f2937;
         border-radius: 4px;
         border: 2px solid transparent;
         transition: all 0.3s ease;
@@ -272,28 +356,28 @@
 
       /* Hover effect */
       #targets-list li.target-item:hover:not(.you) {
-        background: #f0f0f0;
+        background: #273549;
       }
 
       /* When someone is speaking */
       #targets-list li.target-item.speaking {
-        border-color: #4caf50;
-        background: #e8f5e9;
-        box-shadow: 0 0 10px rgba(76, 175, 80, 0.3);
+        border-color: rgba(34, 197, 94, 0.8);
+        background: rgba(34, 197, 94, 0.12);
+        box-shadow: 0 0 12px rgba(34, 197, 94, 0.4);
         animation: speakingPulse 1s ease-in-out infinite;
       }
 
       /* Last speaker */
       #targets-list li.target-item.last-spoke {
-        border-color: #ffc107;
-        background: #fff8e1;
+        border-color: rgba(250, 204, 21, 0.8);
+        background: rgba(250, 204, 21, 0.12);
       }
 
       /* Active conversation target */
       #targets-list li.target-item.talking-to {
-        border-color: #9c27b0;
-        background: #f3e5f5;
-        box-shadow: 0 0 10px rgba(156, 39, 176, 0.3);
+        border-color: rgba(139, 92, 246, 0.8);
+        background: rgba(139, 92, 246, 0.12);
+        box-shadow: 0 0 12px rgba(139, 92, 246, 0.35);
       }
 
       /* Icon container (user vs. conference) */
@@ -304,7 +388,7 @@
         height: 48px;
         min-width: 48px;
         border-radius: 50%;
-        background: #589ad0;
+        background: #2563eb;
         color: white;
         display: flex;
         align-items: center;
@@ -328,10 +412,84 @@
       #targets-list .volume-slider {
         width: 100%;
         display: block;
+        -webkit-appearance: none;
+        appearance: none;
+        background: transparent;
+        margin: 0;
+        height: 4px;
+      }
+
+      #targets-list .volume-slider::-webkit-slider-runnable-track {
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.35);
+      }
+
+      #targets-list .volume-slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: #e2e8f0;
+        border: 1px solid rgba(148, 163, 184, 0.7);
+        margin-top: -5px;
+      }
+
+      #targets-list .volume-slider::-moz-range-track {
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.35);
+      }
+
+      #targets-list .volume-slider::-moz-range-thumb {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: #e2e8f0;
+        border: 1px solid rgba(148, 163, 184, 0.7);
+      }
+
+      #targets-list .target-actions {
+        grid-area: actions;
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        justify-content: flex-end;
+      }
+
+      #targets-list .target-actions button {
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        -webkit-touch-callout: none;
+        min-width: 5.5rem;
+        text-align: center;
+        box-sizing: border-box;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: all 0.2s ease;
+        padding: 0.75rem 1rem;
       }
 
       #targets-list .conf-icon {
-        background: #607d8b;
+        background: #475569;
+      }
+
+      #targets-list .global-icon {
+        grid-area: icon;
+        width: 48px;
+        height: 48px;
+        min-width: 48px;
+        border-radius: 50%;
+        background: #7c3aed;
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+        font-size: 1.4rem;
       }
 
       /* Speaking pulse animation */
@@ -341,40 +499,42 @@
       }
 
       /* Buttons inside the list */
+      #targets-list .lock-btn {
+        background: rgba(59, 130, 246, 0.3);
+        color: #e2e8f0;
+        border: 1px solid rgba(59, 130, 246, 0.5);
+      }
+
+      #targets-list .lock-btn:hover {
+        background: rgba(59, 130, 246, 0.5);
+      }
+
+      #targets-list .lock-btn.active {
+        background: rgba(139, 92, 246, 0.35);
+        border-color: rgba(139, 92, 246, 0.6);
+        color: #ede9fe;
+      }
+
       #targets-list .mute-btn {
-        grid-area: actions;
-        user-select: none;
-        -webkit-user-select: none;
-        -moz-user-select: none;
-        -ms-user-select: none;
-        -webkit-touch-callout: none;
-        min-width: 6rem;
-        text-align: center;
-        box-sizing: border-box;
-        background: #607d8b;
-        color: white;
+        background: #334155;
+        color: #e2e8f0;
         border: none;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 14px;
-        transition: all 0.2s ease;
-        padding: 0.75rem 1rem;
       }
 
       #targets-list .mute-btn:hover {
-        background: #455a64;
+        background: #1f2937;
       }
 
       #targets-list .mute-btn.muted {
-        background: #f44336;
+        background: #f87171;
       }
 
       #targets-list .mute-btn.muted:hover {
-        background: #d32f2f;
+        background: #ef4444;
       }
       #targets-list li.target-item.muted .user-icon,
       #targets-list li.target-item.muted .conf-icon {
-        background: #f44336;
+        background: #ef4444;
       }
 
       @media (max-width: 600px) {
@@ -389,9 +549,18 @@
             "actions actions";
         }
 
-        #targets-list .mute-btn {
+        #targets-list .target-actions {
           width: 100%;
-          justify-self: stretch;
+          justify-content: stretch;
+        }
+
+        #targets-list .target-actions button {
+          flex: 1 1 0;
+        }
+
+        .reply-bar button {
+          width: 100%;
+          min-width: 0;
         }
       }
     </style>
@@ -421,25 +590,48 @@
 
     <!-- Intercom App (initially hidden until login) -->
     <div id="intercom-app" style="display: none;">
-      <h2>Talk to me - Intercom</h2>
       <div class="session-bar">
         <div class="session-info">Logged in as <span id="my-id">Connecting...</span></div>
-        <button id="logout-btn" type="button" class="logout-btn">Logout</button>
+        <div class="settings-panel">
+          <button
+            type="button"
+            class="settings-trigger"
+            aria-label="Application menu"
+            aria-expanded="false"
+            aria-haspopup="true"
+            aria-controls="settings-menu"
+          >
+            <span class="settings-icon" aria-hidden="true">&#8942;</span>
+          </button>
+          <div class="settings-body" id="settings-menu" hidden>
+            <div class="device-selector">
+              <label for="input-select">Microphone</label>
+              <select id="input-select">
+                <option value="">select device</option>
+              </select>
+            </div>
+            <div class="device-selector">
+              <label for="quality-select">Audio profile</label>
+              <select id="quality-select">
+                <option value="ultra-low">Ultra low (5 ms frame, DTX on)</option>
+                <option value="low">Low (10 ms frame, DTX on)</option>
+                <option value="standard">Standard (20 ms frame, DTX off)</option>
+              </select>
+            </div>
+            <div class="processing-options">
+              <label><input type="checkbox" id="toggle-echo" /> Echo cancellation <span class="latency-hint">(increases latency ~25 ms)</span></label>
+              <label><input type="checkbox" id="toggle-noise" /> Noise suppression <span class="latency-hint">(increases latency ~20 ms)</span></label>
+              <label><input type="checkbox" id="toggle-agc" checked /> Auto gain control <span class="latency-hint"></span></label>
+            </div>
+            <div class="settings-actions">
+              <button id="logout-btn" type="button" class="logout-btn">Logout</button>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div class="controls">
-        <button
-          id="talk-all"
-          data-label="🔊 ALL"
-          aria-label="Talk to all"
-          disabled
-        ></button>
-        <button
-          id="talk-lock"
-          data-label="🔊 HOLD"
-          aria-label="Hold to talk"
-          disabled
-        ></button>
+      <ul id="targets-list"></ul>
+      <div class="reply-bar">
         <button
           id="reply"
           data-label="🔊 REPLY"
@@ -447,36 +639,7 @@
           disabled
         ></button>
       </div>
-
-      <ul id="targets-list"></ul>
       <div id="audio-streams"></div>
-      <details class="settings-panel">
-        <summary class="settings-trigger" aria-label="Audio settings">
-          <span class="settings-icon">⚙️</span>
-          <span>Audio settings</span>
-        </summary>
-        <div class="settings-body">
-          <div class="device-selector">
-            <label for="input-select">Microphone</label>
-            <select id="input-select">
-              <option value="">select device</option>
-            </select>
-          </div>
-          <div class="device-selector">
-            <label for="quality-select">Audio profile</label>
-            <select id="quality-select">
-              <option value="ultra-low">Ultra low (5 ms frame, DTX on)</option>
-              <option value="low">Low (10 ms frame, DTX on)</option>
-              <option value="standard">Standard (20 ms frame, DTX off)</option>
-            </select>
-          </div>
-          <div class="processing-options">
-            <label><input type="checkbox" id="toggle-echo" /> Echo cancellation <span class="latency-hint">(increases latency ~25 ms)</span></label>
-            <label><input type="checkbox" id="toggle-noise" /> Noise suppression <span class="latency-hint">(increases latency ~20 ms)</span></label>
-            <label><input type="checkbox" id="toggle-agc" checked /> Auto gain control <span class="latency-hint"></span></label>
-          </div>
-        </div>
-      </details>
     </div>
   </div>
 
@@ -484,9 +647,54 @@
   <script src="/socket.io/socket.io.js"></script>
   <script>
     document.addEventListener("DOMContentLoaded", () => {
-      document.querySelectorAll(".mute-btn").forEach((btn) => {
+      document.querySelectorAll(".mute-btn, .lock-btn").forEach((btn) => {
         btn.addEventListener("pointerdown", (e) => e.stopPropagation());
       });
+
+      const settingsPanel = document.querySelector(".settings-panel");
+      const settingsTrigger = settingsPanel?.querySelector(".settings-trigger");
+      const settingsBody = settingsPanel?.querySelector(".settings-body");
+
+      if (settingsPanel && settingsTrigger && settingsBody) {
+        const openSettings = () => {
+          settingsPanel.classList.add("is-open");
+          settingsBody.hidden = false;
+          settingsTrigger.setAttribute("aria-expanded", "true");
+        };
+
+        const closeSettings = () => {
+          settingsPanel.classList.remove("is-open");
+          settingsBody.hidden = true;
+          settingsTrigger.setAttribute("aria-expanded", "false");
+        };
+
+        settingsTrigger.addEventListener("click", (event) => {
+          event.preventDefault();
+          const isOpen = settingsPanel.classList.contains("is-open");
+          if (isOpen) {
+            closeSettings();
+          } else {
+            openSettings();
+          }
+        });
+
+        document.addEventListener(
+          "click",
+          (event) => {
+            if (!settingsPanel.contains(event.target)) {
+              closeSettings();
+            }
+          },
+          true
+        );
+
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape" && settingsPanel.classList.contains("is-open")) {
+            closeSettings();
+            settingsTrigger.focus();
+          }
+        });
+      }
     });
   </script>
   <script src="/mediasoup-client.js"></script>
