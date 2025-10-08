@@ -89,7 +89,7 @@ async function updateDeviceList() {
   try {
     await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
-    console.warn("Kein Mikrofon-Zugriff, Labels evtl. leer", e);
+    console.warn("No microphone access; device labels may be empty", e);
   }
 
   const devices = await navigator.mediaDevices.enumerateDevices();
@@ -101,7 +101,7 @@ async function updateDeviceList() {
     inputs.forEach(d => {
       const opt = document.createElement("option");
       opt.value       = d.deviceId;
-      opt.textContent = d.label || `Mikrofon ${inputSelect.length}`;
+      opt.textContent = d.label || `Microphone ${inputSelect.length}`;
       inputSelect.append(opt);
     });
   }
@@ -247,7 +247,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Check if mediasoup-client was loaded
   if (typeof mediasoupClient === "undefined") {
     console.error("mediasoup-client not loaded!");
-    alert("MediaSoup Client konnte nicht geladen werden!");
+    alert("Failed to load the mediasoup client library!");
     return;
   }
   console.log("mediasoup-client version:", mediasoupClient.version);
@@ -975,7 +975,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       console.error("=== ✗ MediaSoup initialization failed ===");
       console.error("Error:", err);
-      alert("Fehler bei der Initialisierung: " + err.message);
+      alert("Initialization failed: " + err.message);
     }
   }
 
@@ -1110,7 +1110,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // ─── Debug helper ──────────────────────────────────────────────
     const consumers = peerConsumers.get(key);
-    console.log("[DEBUG] toggleMute mit key:", key, "Consumers:", consumers);
+    console.log("[DEBUG] toggleMute with key:", key, "Consumers:", consumers);
 
     // 2) Remaining logic
     const isMuted = mutedPeers.has(key);
@@ -1123,7 +1123,7 @@ document.addEventListener("DOMContentLoaded", () => {
         mutedPeers.has(key) ? c.pause() : c.resume();
       });
     } else {
-      console.warn(`Kein aktiver Consumer für ${key}, mute wird vorgemerkt.`);
+      console.warn(`No active consumer for ${key}; deferring mute toggle.`);
     }
 
     // Update icon and list entry
@@ -1210,8 +1210,8 @@ document.addEventListener("DOMContentLoaded", () => {
         document.querySelector(selector)?.classList.add("talking-to");
       }
     } catch (err) {
-      console.error("Mikrofon-Fehler:", err);
-      alert("Fehler beim Starten des Mikrofons: " + err.message);
+      console.error("Microphone error:", err);
+      alert("Failed to start the microphone: " + err.message);
       btnAll.classList.remove("active");
       isTalking = false;
       if (micTrack) {

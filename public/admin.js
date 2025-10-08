@@ -297,7 +297,7 @@ window.toggleUserConfs = async function (userId, toggleBtn) {
 };
 
 
-// === Konferenzen umbenennen ===
+// === Rename conferences ===
 window.editConference = async function(confId, currentName) {
   const newName = prompt('New conference name:', currentName);
   if (!newName || newName === currentName) return;

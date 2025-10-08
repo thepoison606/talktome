@@ -49,8 +49,8 @@ process.env.MEDIASOUP_WORKER_BIN = workerBin;
 // 7) Fail fast with a clear error if the binary is missing
 if (!fs.existsSync(process.env.MEDIASOUP_WORKER_BIN)) {
   throw new Error(
-    `mediasoup worker binary nicht gefunden unter: ${process.env.MEDIASOUP_WORKER_BIN}\n` +
-    `Erwartet: node_modules/mediasoup/worker/out/Release/${workerName}`
+    `mediasoup worker binary not found at: ${process.env.MEDIASOUP_WORKER_BIN}\n` +
+    `Expected: node_modules/mediasoup/worker/out/Release/${workerName}`
   );
 }
 
@@ -215,7 +215,7 @@ app.post('/users/:id/targets', (req, res) => {
     notifyTargetChange(req.params.id);
     res.sendStatus(204);
   } catch (err) {
-    console.error('Fehler in add‐target:', err);
+    console.error('Error in add-target:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -815,13 +815,13 @@ io.on("connection", (socket) => {
 
   socket.on("producer-close", ({ producerId }) => {
     console.log(
-        `[SIGNAL] producer-close von Client ${socket.id} erhalten für Producer ${producerId}`
+        `[SIGNAL] producer-close received from client ${socket.id} for producer ${producerId}`
     );
 
     const peer     = peers.get(socket.id);
     const producer = peer?.producers.get(producerId);
     if (!producer) {
-      console.warn(`[SIGNAL] Kein Producer mit ID ${producerId} gefunden.`);
+      console.warn(`[SIGNAL] No producer found with ID ${producerId}.`);
       return;
     }
 
@@ -1019,11 +1019,11 @@ io.on("connection", (socket) => {
             !validTypes.includes(type) ||
             (type !== "global" && !targetId)
         ) {
-          console.warn("[PRODUCE] Ungültiges appData:", appData);
+          console.warn("[PRODUCE] Invalid appData:", appData);
           return callback({
             error:
-                "Ungültiges appData: Für 'user' und 'conference' muss 'id' gesetzt sein, " +
-                "für 'global' genügt { type: 'global' }",
+                "Invalid appData: For 'user' and 'conference', 'id' must be provided. " +
+                "For 'global', send { type: 'global' }.",
           });
         }
 

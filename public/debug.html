@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -14,19 +14,19 @@
     
     // Test 1: Check if server is running
     fetch('/').then(r => {
-      debug.innerHTML += '<p>✓ Server läuft</p>';
+      debug.innerHTML += '<p>✓ Server is running</p>';
     }).catch(e => {
-      debug.innerHTML += '<p>✗ Server nicht erreichbar</p>';
+      debug.innerHTML += '<p>✗ Server unreachable</p>';
     });
     
     // Test 2: Check Socket.IO
     const script1 = document.createElement('script');
     script1.src = '/socket.io/socket.io.js';
     script1.onload = () => {
-      debug.innerHTML += '<p>✓ Socket.IO geladen</p>';
+      debug.innerHTML += '<p>✓ Socket.IO loaded</p>';
     };
     script1.onerror = () => {
-      debug.innerHTML += '<p>✗ Socket.IO nicht gefunden</p>';
+      debug.innerHTML += '<p>✗ Socket.IO not found</p>';
     };
     document.head.appendChild(script1);
     
@@ -41,20 +41,20 @@
     paths.forEach(path => {
       fetch(path).then(r => {
         if (r.ok) {
-          debug.innerHTML += `<p style="color:green">✓ Gefunden: ${path}</p>`;
+          debug.innerHTML += `<p style="color:green">✓ Found: ${path}</p>`;
         } else {
-          debug.innerHTML += `<p style="color:red">✗ Nicht gefunden: ${path} (${r.status})</p>`;
+          debug.innerHTML += `<p style="color:red">✗ Not found: ${path} (${r.status})</p>`;
         }
       }).catch(e => {
-        debug.innerHTML += `<p style="color:red">✗ Fehler: ${path}</p>`;
+        debug.innerHTML += `<p style="color:red">✗ Error: ${path}</p>`;
       });
     });
     
     // Test 4: List node_modules content
     setTimeout(() => {
-      debug.innerHTML += '<h3>Empfehlung:</h3>';
+      debug.innerHTML += '<h3>Recommendation:</h3>';
       debug.innerHTML += '<pre>npm list mediasoup-client</pre>';
-      debug.innerHTML += '<p>Führen Sie diesen Befehl aus um zu prüfen ob mediasoup-client installiert ist.</p>';
+      debug.innerHTML += '<p>Run this command to verify that mediasoup-client is installed.</p>';
     }, 1000);
   </script>
 </body>
