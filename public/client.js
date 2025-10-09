@@ -4,7 +4,7 @@ socket.on("cut-camera", (value) => {
   document.body.classList.toggle("cut-camera", value);
 });
 
-const BASE_REPLY_LABEL = "🔊 REPLY";
+const BASE_REPLY_LABEL = "REPLY";
 const QUALITY_PROFILES = {
   "ultra-low": {
     label: "Ultra low (5 ms, DTX on)",
@@ -260,8 +260,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const logoutBtn = document.getElementById("logout-btn");
 
   const myIdEl = document.getElementById("my-id");
-  const btnAll = document.getElementById("talk-all");
-  const btnHold = document.getElementById("talk-lock");
   const btnReply = document.getElementById("reply");
   const audioStreamsDiv = document.getElementById("audio-streams");
   const peerConsumers = new Map();
@@ -270,6 +268,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // mediasoup variables
   let device, sendTransport, recvTransport, producer;
   const audioElements = new Map();
+  const audioEntryMap = new WeakMap();
   const confAudioElements = new Map();
   const speakingPeers = new Set();
   const lastSpokePeers = new Map();
@@ -415,8 +414,6 @@ document.addEventListener("DOMContentLoaded", () => {
   socket.on("disconnect", () => {
     console.log("Disconnected from server");
     myIdEl.textContent = "Getrennt";
-    if (btnAll) btnAll.disabled = true;
-    if (btnHold) btnHold.disabled = true;
     clearReplyTarget();
     // Disable all user buttons
     document
@@ -443,7 +440,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  socket.on('api-talk-command', async ({ action, targetType = 'global', targetId = null, mode = 'list' }) => {
+  socket.on('api-talk-command', async ({ action, targetType = 'conference', targetId = null }) => {
     const dummyEvent = { preventDefault() {} };
 
     const resolveUserTarget = () => {
@@ -459,25 +456,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const resolveTarget = () => {
       if (targetType === 'user') return resolveUserTarget();
       if (targetType === 'conference') return { type: 'conference', id: Number(targetId) };
-      if (targetType === 'global') return { type: 'global', id: 'global' };
       return null; // fallback
     };
 
     if (action === 'press') {
       const target = resolveTarget();
-      if (targetType === 'global') {
-        if (mode === 'all') btnAll?.classList.add('active');
-        else if (mode === 'hold') btnHold?.classList.add('active');
-      }
       await handleTalk(dummyEvent, target);
     } else if (action === 'release') {
-      let releaseSource = null;
-      if (mode === 'hold') {
-        releaseSource = btnHold || null;
-      } else if (mode === 'all') {
-        releaseSource = btnAll || null;
-      }
-      handleStopTalking({ preventDefault() {}, currentTarget: releaseSource });
+      handleStopTalking({ preventDefault() {}, currentTarget: null });
     }
   });
 
@@ -512,11 +498,6 @@ document.addEventListener("DOMContentLoaded", () => {
         conferenceNames.set(Number(t.targetId), t.name);
         targetLabels.set(`conf-${t.targetId}`, t.name);
       });
-
-    const hasGlobalTarget = targets.some(t => t.targetType === 'global');
-    if (hasGlobalTarget) {
-      targetLabels.set('global-0', 'All');
-    }
 
     const appendUserTarget = (target) => {
       const targetIdNum = Number(target.targetId);
@@ -553,7 +534,10 @@ document.addEventListener("DOMContentLoaded", () => {
       volSlider.addEventListener('input', e => {
         const vol = parseFloat(e.target.value);
         const entry = audioElements.get(socketId);
-        if (entry?.audio) entry.audio.volume = vol;
+        if (entry?.audio) {
+          entry.audio.volume = vol;
+          entry.volume = vol;
+        }
         storeVolume(userKey, vol);
       });
       info.appendChild(volSlider);
@@ -614,65 +598,6 @@ document.addEventListener("DOMContentLoaded", () => {
       list.appendChild(li);
     };
 
-    const appendGlobalTarget = () => {
-      const li = document.createElement('li');
-      li.id = 'global-0';
-      li.classList.add('target-item', 'global-target');
-      li.dataset.type = 'global';
-      li.dataset.id = '0';
-
-      const icon = document.createElement('div');
-      icon.className = 'global-icon';
-      icon.textContent = '🌐';
-
-      const info = document.createElement('div');
-      info.className = 'target-info';
-
-      const label = document.createElement('span');
-      label.className = 'target-label';
-      label.textContent = 'All';
-      info.appendChild(label);
-
-      const lockBtn = document.createElement('button');
-      lockBtn.className = 'lock-btn';
-      lockBtn.type = 'button';
-      lockBtn.textContent = 'Talk Lock';
-      lockBtn.setAttribute('aria-pressed', 'false');
-      lockBtn.setAttribute('aria-label', 'Toggle talk lock for everyone');
-      lockBtn.addEventListener('pointerdown', e => e.stopPropagation());
-      lockBtn.addEventListener('click', e => {
-        e.stopPropagation();
-        toggleTargetLock({ type: 'global', id: 'global' }, lockBtn);
-      });
-
-      const actions = document.createElement('div');
-      actions.className = 'target-actions';
-      actions.append(lockBtn);
-
-      if (isSameTarget(activeLockTarget, { type: 'global', id: 'global' })) {
-        activeLockButton = lockBtn;
-        lockBtn.classList.add('active');
-        lockBtn.textContent = 'Unlock';
-        lockBtn.setAttribute('aria-pressed', 'true');
-      }
-
-      li.append(icon, info, actions);
-
-      ['down', 'up', 'leave', 'cancel'].forEach(ev => {
-        li.addEventListener(`pointer${ev}`, e => {
-          if (
-            e.target.closest('.lock-btn') ||
-            e.target.closest('.mute-btn') ||
-            e.target.closest('.volume-slider')
-          ) return;
-          if (ev === 'down') handleTalk(e, { type: 'global', id: 'global' });
-          else handleStopTalking(e);
-        });
-      });
-
-      list.appendChild(li);
-    };
-
     const appendConferenceTarget = (target) => {
       const id = Number(target.targetId);
       const name = conferenceNames.get(id) || target.name;
@@ -706,7 +631,13 @@ document.addEventListener("DOMContentLoaded", () => {
       confSlider.addEventListener('input', e => {
         const vol = parseFloat(e.target.value);
         const audios = confAudioElements.get(id);
-        if (audios) audios.forEach(a => (a.volume = vol));
+        if (audios) {
+          audios.forEach(a => {
+            a.volume = vol;
+            const entry = audioEntryMap.get(a);
+            if (entry) entry.volume = vol;
+          });
+        }
         storeVolume(confKey, vol);
       });
       info.appendChild(confSlider);
@@ -770,8 +701,6 @@ document.addEventListener("DOMContentLoaded", () => {
         appendUserTarget(target);
       } else if (target.targetType === 'conference') {
         appendConferenceTarget(target);
-      } else if (target.targetType === 'global') {
-        appendGlobalTarget();
       }
     });
 
@@ -781,12 +710,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     document.querySelectorAll('.target-item').forEach(li => {
       const [type, id] = li.id.split('-');
-      const key = type === 'global' ? 'global-0' : `${type}-${id}`;
+      const key = `${type}-${id}`;
       const icon = type === 'user'
         ? li.querySelector('.user-icon')
-        : type === 'conference'
-          ? li.querySelector('.conf-icon')
-          : li.querySelector('.global-icon');
+        : li.querySelector('.conf-icon');
 
       const isSpeaking = speakingPeers.has(key);
       li.classList.toggle('speaking', isSpeaking);
@@ -880,7 +807,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // add the element to the DOM and save it
         audioStreamsDiv.appendChild(audio);
-        audioElements.set(peerId, { audio, volume: initVol });
+        const entry = { audio, volume: initVol };
+        audioElements.set(peerId, entry);
+        audioEntryMap.set(audio, entry);
 
         // if this is a conference stream, also track it in confAudioElements
         if (normalizedAppData.type === 'conference') {
@@ -920,7 +849,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const stored = audioElements.get(peerId);
         if (stored) {
-          stored.audio.remove();
+          const audioEl = stored.audio;
+          audioEl.remove();
+          audioEntryMap.delete(audioEl);
           audioElements.delete(peerId);
         }
         peerConsumers.get(key)?.delete(consumer);
@@ -1100,9 +1031,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       );
 
-      // Enable buttons after successful initialization
-      if (btnAll) btnAll.disabled = false;
-      if (btnHold) btnHold.disabled = false;
       // Update all user list items to be clickable
       document.querySelectorAll("#users li:not(.you)").forEach((li) => {
         li.style.cursor = "pointer";
@@ -1119,13 +1047,6 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Handle new producers
-// Helper function (if not already defined globally)
-  function toKey(rawId, appData) {
-    if (appData?.type === "conference") return `conf-${appData.id}`;
-    if (rawId.startsWith?.("user-") || rawId.startsWith?.("conf-")) return rawId;
-    return `user-${rawId}`;
-  }
-
   socket.on('new-producer', (payload) => {
     if (payload && typeof payload === 'object') {
       console.log(`New producer ${payload.producerId} from peer ${payload.peerId}`, payload.appData);
@@ -1297,16 +1218,12 @@ document.addEventListener("DOMContentLoaded", () => {
   function toggleTargetLock(target, button) {
     const normalizedTarget = {
       type: target.type,
-      id: target.type === 'global' ? 'global' : target.id
+      id: target.id
     };
 
     if (activeLockButton === button) {
       handleStopTalking({ preventDefault() {}, currentTarget: button });
       return;
-    }
-
-    if (btnHold?.classList.contains("active")) {
-      stopHoldTalking();
     }
 
     if (activeLockButton && activeLockButton !== button) {
@@ -1326,11 +1243,10 @@ document.addEventListener("DOMContentLoaded", () => {
   async function handleTalk(e, target) {
     e.preventDefault();
     if (producer) return;
-
-    const isGlobalTarget = !target || target.type === 'global';
+    if (!target) return;
 
     isTalking     = true;
-    currentTarget = target ?? null;
+    currentTarget = target;
 
     try {
       const qualityKey = currentQualityKey();
@@ -1356,9 +1272,7 @@ document.addEventListener("DOMContentLoaded", () => {
       // ◆ Producer parameters: always include appData
       const params = {
         track,
-        appData: isGlobalTarget
-            ? { type: 'global' }
-            : { type: target.type, id: target.id },
+        appData: { type: target.type, id: target.id },
         codecOptions: profile?.codecOptions ? { ...profile.codecOptions } : undefined,
         encodings: profile?.encodings ? profile.encodings.map(enc => ({ ...enc })) : undefined,
         stopTracks: false,
@@ -1388,17 +1302,13 @@ document.addEventListener("DOMContentLoaded", () => {
       });
 
       // ◆ Visual feedback only for targeted recipients
-      if (!isGlobalTarget && target) {
-        const selector = target.type === "user"
-            ? `#user-${target.id}`
-            : `#conf-${target.id}`;
-        document.querySelector(selector)?.classList.add("talking-to");
-      }
+      const selector = target.type === "user"
+          ? `#user-${target.id}`
+          : `#conf-${target.id}`;
+      document.querySelector(selector)?.classList.add("talking-to");
     } catch (err) {
       console.error("Microphone error:", err);
       alert("Failed to start the microphone: " + err.message);
-      btnAll?.classList.remove("active");
-      btnHold?.classList.remove("active");
       btnReply.classList.remove("active");
       clearLockState();
       isTalking = false;
@@ -1407,7 +1317,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       scheduleMicCleanup();
 
-      if (currentTarget && currentTarget.type !== "global") {
+      if (currentTarget) {
         const selector = currentTarget.type === "conference"
             ? `#conf-${currentTarget.id}`
             : `#user-${currentTarget.id}`;
@@ -1418,57 +1328,6 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
 
-
-  // Event handler for the "All" button (legacy)
-  if (btnAll) {
-    btnAll.addEventListener("pointerdown", e => {
-      e.preventDefault();
-      if (producer) return;             // cancel if already talking
-      btnAll.classList.add("active");   // highlight the button itself
-      handleTalk(e, { type: 'global', id: 'global' });
-    });
-    btnAll.addEventListener("pointerup",   handleStopTalking);
-    btnAll.addEventListener("pointerleave", handleStopTalking);
-    btnAll.addEventListener("pointercancel",handleStopTalking);
-  }
-
-  function stopHoldTalking() {
-    if (!btnHold) return;
-    handleStopTalking({
-      preventDefault() {},
-      currentTarget: btnHold,
-    });
-  }
-
-  function startHoldTalking(event) {
-    if (!btnHold) return;
-    event?.preventDefault?.();
-    btnHold.classList.add("active");
-    handleTalk(event ?? { preventDefault() {} }, { type: 'global', id: 'global' });
-  }
-
-  if (btnHold) {
-    btnHold.addEventListener("pointerdown", e => {
-      if (btnHold.classList.contains("active")) {
-        e.preventDefault();
-        handleStopTalking(e);
-      } else {
-        startHoldTalking(e);
-      }
-    });
-
-    btnHold.addEventListener("keydown", e => {
-      if (e.key !== " " && e.key !== "Enter") return;
-      e.preventDefault();
-      if (btnHold.classList.contains("active")) {
-        stopHoldTalking();
-      } else {
-        startHoldTalking({ preventDefault() {} });
-      }
-    });
-
-    btnHold.addEventListener("click", e => e.preventDefault());
-  }
 
 
   btnReply.addEventListener("pointerdown", e => {
@@ -1489,18 +1348,9 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // Ignore events while the broadcast lock button is active unless it fired them
-    // to keep the mode engaged even if other controls emit pointerleave
-    if (btnHold?.classList.contains("active") && e.currentTarget && e.currentTarget !== btnHold) {
-      return;
-    }
-
     isTalking = false;
 
     // Reset button states
-    btnAll?.classList.remove("active");
-    btnHold?.classList.remove("active");
-    // Reply button only needs clearing if no reply is active
     btnReply.classList.remove("active");
     clearLockState();
 
@@ -1517,7 +1367,7 @@ document.addEventListener("DOMContentLoaded", () => {
     scheduleMicCleanup();
 
     // Remove the purple highlight from the <li>
-    if (currentTarget && currentTarget.type !== "global") {
+    if (currentTarget) {
       const li = document.querySelector(
           currentTarget.type === "conference"
               ? `#conf-${currentTarget.id}`

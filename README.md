@@ -1,5 +1,5 @@
 # Talk To Me
-A flexible intercom solution.
+A flexible intercom solution built with node.js and mediasoup.
 
 ## Configuration
 - Admin UI: `https://localhost:<PORT>/admin.html`
@@ -8,7 +8,14 @@ A flexible intercom solution.
 
 ### Starting the Server
 By default, the server listens on **port 443**.  
-You can override the port in three different ways:
+
+**No port specified**
+   ```bash
+   node server.js
+   ```
+   → Server available at `https://localhost:443/`
+
+You can override the port in two different ways:
 
 1. **Environment variable (recommended)**
    ```bash
@@ -22,11 +29,6 @@ You can override the port in three different ways:
    ```
    → Server available at `https://localhost:8080/`
 
-3. **No port specified**
-   ```bash
-   node server.js
-   ```
-   → Server available at `https://localhost:443/`
 
 ### Accessing the Application
 - Main app: `https://<IP-ADDRESS>:<PORT>/`
@@ -74,9 +76,9 @@ You can trigger a user's talk buttons via HTTP:
 ```json
 {
   "action": "press",          // required: "press" or "release"
-  "targetType": "global",     // optional: "global" (default), "user", "conference"
-  "targetId": 12,              // optional: required when targetType is "user" or "conference", otherwise "null"
-  "mode": "all"               // optional for global: "list" (default), "all", "hold"
+  "targetType": "conference",  // optional: "conference" (default) or "user"
+  "targetId": 12,               // required when targetType is "conference" or "user"
+  "mode": "list"               // reserved for future use
 }
 ```
 
@@ -85,7 +87,7 @@ You can trigger a user's talk buttons via HTTP:
   ```bash
   curl -X POST https://localhost/users/8/talk \
        -H "Content-Type: application/json" \
-       -d '{"action":"press","targetType":"global","mode":"all"}'
+       -d '{"action":"press","targetType":"conference","targetId":12}'
   ```
 
 - Release (stop talking):
@@ -101,6 +103,8 @@ You can trigger a user's talk buttons via HTTP:
        -H "Content-Type: application/json" \
        -d '{"action":"press","targetType":"conference","targetId":3}'
   ```
+
+> Tip: the default broadcast group is the conference named **All**. Use its conference ID when you want to speak to everyone.
 
 ---
 

@@ -91,7 +91,6 @@ async function loadData() {
             <select id="add-target-type-${user.id}">
               <option value="user">User</option>
               <option value="conference">Conference</option>
-              <option value="global">All (broadcast)</option>
             </select>
             <select id="add-target-id-${user.id}"></select>
             <button type="button" id="add-target-btn-${user.id}" class="small" onclick="addTarget(${user.id})">Add target</button>
@@ -106,8 +105,11 @@ async function loadData() {
 
   for (const conf of conferences) {
     const safeName = escapeHtml(conf.name);
+    const isAllConference = safeName.toLowerCase() === 'all';
     const li = document.createElement('li');
     li.className = 'list-item';
+    li.dataset.confId = String(conf.id);
+    li.dataset.isAll = String(isAllConference);
     li.innerHTML = `
       <div class="list-item-header">
         <div class="list-item-title">
@@ -115,10 +117,11 @@ async function loadData() {
           <span>${safeName}</span>
           <span class="badge">ID ${conf.id}</span>
         </div>
+        ${isAllConference ? '' : `
         <div class="inline-controls">
           <button type="button" class="small warning" onclick='editConference(${conf.id}, ${JSON.stringify(conf.name)})'>Rename</button>
           <button type="button" class="small danger" onclick="deleteConference(${conf.id})">Delete</button>
-        </div>
+        </div>`}
       </div>
       <div class="nested" id="conf-controls-${conf.id}">
         <strong>Participants</strong>
@@ -133,34 +136,23 @@ async function loadData() {
 async function loadUserTargets(userId, allUsers, allConfs) {
   const targets = await fetchJSON(`/users/${userId}/targets`);
   const ul = document.getElementById(`user-targets-${userId}`);
-  ul.innerHTML = targets.map(t => `
+  ul.innerHTML = targets.map(t => {
+    const isAllTarget = t.targetType === 'conference' && (t.name || '').toLowerCase() === 'all';
+    return `
       <li class="list-chip draggable-target" draggable="true"
           data-type="${escapeHtml(t.targetType)}" data-id="${escapeHtml(t.targetId)}">
         <span class="drag-handle" title="Drag to reorder">☰</span>
         <span class="chip-label">${escapeHtml(t.name)}</span>
         <span class="badge">${escapeHtml(t.targetType)}</span>
-        <button type="button" class="small danger"
-                onclick="removeTarget(${userId}, '${t.targetType}', '${t.targetId}')">
-          Remove
-        </button>
+        ${isAllTarget ? '' : `<button type="button" class="small danger" onclick="removeTarget(${userId}, '${t.targetType}', '${t.targetId}')">Remove</button>`}
       </li>
-    `).join('');
+    `;
+  }).join('');
 
   initTargetOrdering(userId, ul);
 
   const selType = document.getElementById(`add-target-type-${userId}`);
   const selId   = document.getElementById(`add-target-id-${userId}`);
-  const addBtn  = document.getElementById(`add-target-btn-${userId}`);
-  const hasGlobal = targets.some(t => t.targetType === 'global');
-
-  const globalOption = selType.querySelector('option[value="global"]');
-  if (globalOption) {
-    globalOption.disabled = hasGlobal;
-    if (hasGlobal && selType.value === 'global') {
-      selType.value = 'user';
-    }
-  }
-
   const refreshTargetSelectors = () => {
     const type = selType.value;
     if (type === 'user') {
@@ -173,13 +165,6 @@ async function loadUserTargets(userId, allUsers, allConfs) {
       selId.innerHTML = allConfs
         .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`)
         .join('');
-    } else {
-      selId.disabled = true;
-      selId.innerHTML = '<option value="0">All participants</option>';
-    }
-
-    if (addBtn) {
-      addBtn.disabled = type === 'global' && hasGlobal;
     }
   };
 
@@ -253,8 +238,7 @@ async function saveTargetOrder(userId, ul) {
 // Called by the “➕” button
 window.addTarget = async function(userId) {
   const type = document.getElementById(`add-target-type-${userId}`).value;
-  const rawId = document.getElementById(`add-target-id-${userId}`).value;
-  const id   = type === 'global' ? 0 : rawId;
+  const id   = document.getElementById(`add-target-id-${userId}`).value;
   const res = await fetch(`/users/${userId}/targets`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -315,7 +299,9 @@ window.toggleUserConfs = async function (userId, toggleBtn) {
       ? confs.map(c => `
           <li class="list-chip">
             <span class="chip-label">${escapeHtml(c.name)}</span>
-            <button type="button" class="small danger" onclick="confirmUnassign(${userId}, ${c.id})">Remove</button>
+            ${c.name && c.name.toLowerCase() === 'all'
+                ? ''
+                : `<button type="button" class="small danger" onclick="confirmUnassign(${userId}, ${c.id})">Remove</button>`}
           </li>
         `).join('')
       : '<li class="list-chip"><span class="chip-label">No conferences assigned yet</span></li>';
@@ -364,6 +350,8 @@ window.toggleConfUsers = async function (confId, toggleBtn) {
   const usersUl  = document.getElementById(`conf-users-${confId}`);
   const button   = toggleBtn || document.getElementById(`conf-toggle-${confId}`);
   const willOpen = !nested.classList.contains('is-open');
+  const parentCard = button?.closest('.list-item');
+  const isAllConference = parentCard?.dataset?.isAll === 'true';
 
   if (willOpen) {
     const users = await fetchJSON(`/conferences/${confId}/users`);
@@ -371,7 +359,7 @@ window.toggleConfUsers = async function (confId, toggleBtn) {
       ? users.map(u => `
           <li class="list-chip">
             <span class="chip-label">${escapeHtml(u.name)}</span>
-            <button type="button" class="small danger" onclick="confirmUnassign(${u.id},${confId})">Remove</button>
+            ${isAllConference ? '' : `<button type="button" class="small danger" onclick="confirmUnassign(${u.id},${confId})">Remove</button>`}
           </li>
         `).join('')
       : '<li class="list-chip"><span class="chip-label">No participants yet</span></li>';

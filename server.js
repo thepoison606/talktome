@@ -75,9 +75,9 @@ const {
   getUserTargets,
   addUserTargetToUser,
   addUserTargetToConference,
-  addUserTargetToGlobal,
   removeUserTarget,
-  updateUserTargetOrder
+  updateUserTargetOrder,
+  getAllConferenceId
 } = require("./dbHandler");
 
 const app = express();
@@ -212,8 +212,6 @@ app.post('/users/:id/targets', (req, res) => {
       addUserTargetToUser(req.params.id, targetId);
     } else if (targetType === 'conference') {
       addUserTargetToConference(req.params.id, targetId);
-    } else if (targetType === 'global') {
-      addUserTargetToGlobal(req.params.id);
     } else {
       return res.status(400).json({ error: 'Unsupported target type' });
     }
@@ -231,23 +229,17 @@ app.put('/users/:id/targets/order', (req, res) => {
     return res.status(400).json({ error: 'items array required' });
   }
 
-  const normalized = items.map(item => {
-    const type = item?.targetType;
-    if (type === 'global') {
-      return { targetType: 'global', targetId: 0 };
-    }
-    return {
-      targetType: type,
-      targetId: Number(item?.targetId),
-    };
-  });
+  const normalized = items.map(item => ({
+    targetType: item?.targetType,
+    targetId: Number(item?.targetId),
+  }));
 
-  const validTypes = ['user', 'conference', 'global'];
+  const validTypes = ['user', 'conference'];
   if (normalized.some(item => !validTypes.includes(item.targetType))) {
     return res.status(400).json({ error: 'Invalid target type' });
   }
 
-  if (normalized.some(item => item.targetType !== 'global' && Number.isNaN(item.targetId))) {
+  if (normalized.some(item => Number.isNaN(item.targetId))) {
     return res.status(400).json({ error: 'Invalid target id' });
   }
 
@@ -262,10 +254,32 @@ app.put('/users/:id/targets/order', (req, res) => {
 });
 
 app.post('/users/:id/talk', (req, res) => {
-  const { action, targetType = 'global', targetId = null, mode = 'list' } = req.body || {};
+  let { action, targetType = 'conference', targetId = null, mode = 'list' } = req.body || {};
 
   if (!['press', 'release'].includes(action)) {
     return res.status(400).json({ error: 'action must be press or release' });
+  }
+
+  const allConferenceId = getAllConferenceId();
+
+  if (targetType === 'global' || targetType === 'all') {
+    targetType = 'conference';
+    targetId = allConferenceId;
+  }
+
+  if (targetType === 'conference' && (targetId === null || targetId === undefined)) {
+    targetId = allConferenceId;
+  }
+
+  if (targetType === 'conference' && (targetId === null || targetId === undefined)) {
+    return res.status(500).json({ error: 'All conference not configured' });
+  }
+
+  if (targetType === 'conference' && targetId != null) {
+    targetId = Number(targetId);
+    if (!Number.isFinite(targetId)) {
+      return res.status(400).json({ error: 'Invalid conference id' });
+    }
   }
 
   const uid = String(req.params.id);
@@ -322,6 +336,10 @@ app.put('/users/:id/password', (req, res) => {
 // Rename conference
 app.put('/conferences/:id', (req, res) => {
   const { name } = req.body;
+  const allId = getAllConferenceId();
+  if (allId !== null && Number(req.params.id) === Number(allId)) {
+    return res.status(400).json({ error: "Cannot rename the All conference" });
+  }
   try {
     const success = updateConferenceName(req.params.id, name);
     if (!success) return res.status(404).json({ error: 'Conference not found' });
@@ -339,6 +357,10 @@ app.put('/conferences/:id', (req, res) => {
 
 // === DELETE (specific routes FIRST) ===
 app.delete("/conferences/:conferenceId/users/:userId", (req, res) => {
+  const allId = getAllConferenceId();
+  if (allId !== null && Number(req.params.conferenceId) === Number(allId)) {
+    return res.status(400).json({ error: "Cannot remove users from the All conference" });
+  }
   try {
     removeUserFromConference(req.params.userId, req.params.conferenceId);
     res.sendStatus(204);
@@ -360,6 +382,10 @@ app.delete("/users/:id", (req, res) => {
 
 // Delete conference (generic)
 app.delete("/conferences/:id", (req, res) => {
+  const allId = getAllConferenceId();
+  if (allId !== null && Number(req.params.id) === Number(allId)) {
+    return res.status(400).json({ error: "Cannot delete the All conference" });
+  }
   try {
     deleteConference(req.params.id);
     res.sendStatus(204);
@@ -369,6 +395,10 @@ app.delete("/conferences/:id", (req, res) => {
 });
 
 app.delete("/users/:id/targets/:type/:tid", (req, res) => {
+  const allId = getAllConferenceId();
+  if (req.params.type === 'conference' && allId !== null && Number(req.params.tid) === Number(allId)) {
+    return res.status(400).json({ error: "Cannot remove the All conference from targets" });
+  }
   try {
     removeUserTarget(req.params.id, req.params.type, req.params.tid);
     notifyTargetChange(req.params.id);
@@ -798,11 +828,6 @@ io.on("connection", (socket) => {
         const appData = producer?.appData;
         if (!appData || typeof appData !== "object") continue;
 
-        if (appData.type === "global") {
-          response.push({ peerId: otherSocketId, producerId, appData });
-          continue;
-        }
-
         if (appData.type === "conference") {
           const confId = appData.id;
           if (confId == null) continue;
@@ -1023,19 +1048,17 @@ io.on("connection", (socket) => {
         // 0️⃣  Validate incoming data
         //------------------------------------------------------------------
         const { type, id: targetId } = appData || {};
-        const validTypes = ["user","conference","global"];
+        const validTypes = ["user","conference"];
 
-// global does not need a targetId, user/conference entries do
         if (
             !type ||
             !validTypes.includes(type) ||
-            (type !== "global" && !targetId)
+            !targetId
         ) {
           console.warn("[PRODUCE] Invalid appData:", appData);
           return callback({
             error:
-                "Invalid appData: For 'user' and 'conference', 'id' must be provided. " +
-                "For 'global', send { type: 'global' }.",
+                "Invalid appData: For 'user' and 'conference', 'id' must be provided.",
           });
         }
 
@@ -1095,20 +1118,6 @@ io.on("connection", (socket) => {
             }
             console.log(`[ROUTE] Sent to conference ${targetId}`);
           }
-          else if (type === "global") {
-            for (const [sid, p] of peers) {
-              if (sid !== socket.id && p.userId) {
-                p.socket.emit("new-producer", {
-                  peerId: socket.id,
-                  producerId: producer.id,
-                  appData
-                });
-              }
-            }
-            console.log("[ROUTE] Sent to ALL via global broadcast");
-          }
-
-
           //----------------------------------------------------------------
           // 4️⃣  Cleanup listener
           //----------------------------------------------------------------

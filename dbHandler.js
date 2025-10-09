@@ -1,6 +1,8 @@
 const db = require('./db');
 const bcrypt = require('bcrypt');
 
+const ALL_CONFERENCE_NAME = 'All';
+
 function getAllUsers() {
   return db.prepare('SELECT id, name FROM users').all();
 }
@@ -14,7 +16,13 @@ function createUser(name, password) {
     const hash = bcrypt.hashSync(password, 10);
     const stmt = db.prepare('INSERT INTO users (name, password) VALUES (?, ?)');
     const result = stmt.run(name, hash);
-    return result.lastInsertRowid;
+    const userId = result.lastInsertRowid;
+    const allConference = db.prepare('SELECT id FROM conferences WHERE name = ?').get(ALL_CONFERENCE_NAME);
+    if (allConference) {
+      addUserToConference(userId, allConference.id);
+      addUserTargetToConference(userId, allConference.id);
+    }
+    return userId;
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
       throw new Error('Username already exists');
@@ -142,23 +150,9 @@ function getUserTargets(userId) {
        AND o.target_id = ct.target_conf
       WHERE ct.user_id = ?
 
-      UNION ALL
-
-      SELECT
-        'global' AS targetType,
-        0        AS targetId,
-        'All'    AS name,
-        o.position AS position,
-        gt.rowid  AS fallback
-      FROM user_global_targets gt
-      LEFT JOIN user_target_order o
-        ON o.user_id = gt.user_id
-       AND o.target_type = 'global'
-       AND o.target_id = 0
-      WHERE gt.user_id = ?
     )
     ORDER BY COALESCE(position, fallback)
-  `).all(userId, userId, userId);
+  `).all(userId, userId);
 }
 
 
@@ -178,24 +172,12 @@ function addUserTargetToConference(userId, targetConfId) {
   appendTargetOrder(userId, 'conference', targetConfId);
 }
 
-function addUserTargetToGlobal(userId) {
-  db.prepare(`
-    INSERT OR IGNORE INTO user_global_targets (user_id)
-    VALUES (?)
-  `).run(userId);
-  appendTargetOrder(userId, 'global', 0);
-}
-
 
 function removeUserTarget(userId, type, targetId) {
   if (type === "user") {
     removeUserUserTarget(userId, targetId);
-  } else if (type === "conference") {
+  } else {
     removeUserConfTarget(userId, targetId);
-  } else if (type === "global") {
-    removeUserGlobalTarget(userId);
-    removeTargetOrder(userId, type, 0);
-    return;
   }
   removeTargetOrder(userId, type, targetId);
 }
@@ -216,13 +198,6 @@ function removeUserConfTarget(userId, targetConfId) {
     WHERE user_id     = ?
       AND target_conf = ?
   `).run(userId, targetConfId);
-}
-
-function removeUserGlobalTarget(userId) {
-  db.prepare(`
-    DELETE FROM user_global_targets
-    WHERE user_id = ?
-  `).run(userId);
 }
 
 
@@ -264,6 +239,27 @@ const updateUserTargetOrder = db.transaction((userId, items) => {
   });
 });
 
+function ensureAllConference() {
+  let row = db.prepare('SELECT id FROM conferences WHERE name = ?').get(ALL_CONFERENCE_NAME);
+  if (!row) {
+    const insert = db.prepare('INSERT INTO conferences (name) VALUES (?)');
+    const result = insert.run(ALL_CONFERENCE_NAME);
+    row = { id: result.lastInsertRowid };
+  }
+
+  const allId = row.id;
+  db.prepare('INSERT OR IGNORE INTO user_conference (user_id, conference_id) SELECT id, ? FROM users').run(allId);
+  db.prepare('INSERT OR IGNORE INTO user_conf_targets (user_id, target_conf) SELECT id, ? FROM users').run(allId);
+  db.prepare("DELETE FROM user_target_order WHERE target_type = 'global'").run();
+}
+
+function getAllConferenceId() {
+  const row = db.prepare('SELECT id FROM conferences WHERE name = ?').get(ALL_CONFERENCE_NAME);
+  return row?.id ?? null;
+}
+
+ensureAllConference();
+
 
 
 module.exports = {
@@ -284,7 +280,7 @@ module.exports = {
   getUserTargets,
   addUserTargetToUser,
   addUserTargetToConference,
-  addUserTargetToGlobal,
   removeUserTarget,
-  updateUserTargetOrder
+  updateUserTargetOrder,
+  getAllConferenceId
 };
