@@ -47,6 +47,7 @@ You can override the port in two different ways:
 
 - Admin UI: `https://<IP-ADDRESS>:<PORT>/admin.html`
 - Main app: `https://<IP-ADDRESS>:<PORT>/`
+- On first visit, acknowledge the browser warning about the self-signed connection so the page can load.
 
 ### Bonjour / mDNS Alias
 - On the local network the server advertises `https://intercom.local:<PORT>` via mDNS.

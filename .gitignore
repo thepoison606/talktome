@@ -4,8 +4,22 @@
 *.sqlite
 *.sqlite3
 
+# TLS certificates & secrets
+certs/
+*.pem
+fernet.key
+
 # Dependency directories
 node_modules/
 
 # Build artifacts
 talktome_arm64
+mediasoup-worker
+worker/
+
+# IDE / editor metadata
+.idea/
+.vscode/
+
+# macOS Finder noise
+.DS_Store
