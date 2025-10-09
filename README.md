@@ -1,8 +1,22 @@
 # Talk To Me
 A flexible intercom solution built with node.js and mediasoup.
 
-## Configuration
-- Admin UI: `https://localhost:<PORT>/admin.html`
+## Installation
+
+### Prerequisites
+- **Node.js 18+** (with `npm`) – mediasoup uses native addons that are built during install.
+- **Build toolchain** for mediasoup (`python3`, `make`, `gcc/g++`, etc.).  
+  - macOS: `xcode-select --install`
+  - Debian/Ubuntu: `sudo apt install build-essential python3 make`
+
+### Setup
+```bash
+git clone https://github.com/<your-org>/talktome.git
+cd talktome
+npm install
+```
+
+Once dependencies are installed, start the server as described below.
 
 ## Usage
 
@@ -30,8 +44,9 @@ You can override the port in two different ways:
 
 
 ### Accessing the Application
-- Main app: `https://<IP-ADDRESS>:<PORT>/`
+
 - Admin UI: `https://<IP-ADDRESS>:<PORT>/admin.html`
+- Main app: `https://<IP-ADDRESS>:<PORT>/`
 
 ### Bonjour / mDNS Alias
 - On the local network the server advertises `https://intercom.local:<PORT>` via mDNS.
