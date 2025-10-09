@@ -1,6 +1,0 @@
-aiohttp
-aiohttp_session
-cryptography
-aiortc
-av
-numpy
