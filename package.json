@@ -1,33 +1,45 @@
 {
+  "bin": "server.js",
   "name": "intercom",
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
-    "build:mac_arm64": "pkg server.js --targets node18-macos-arm64 --output talktome_arm64"
+    "prebuild:pkg": "npm rebuild better-sqlite3 --target=16.20.2 --runtime=node --dist-url=https://nodejs.org/dist",
+    "build:mac_arm64": "npm run prebuild:pkg && pkg server.js --targets node16-macos-arm64 --output talktome_arm64 --assets node_modules/mediasoup/worker/out/Release/mediasoup-worker* --assets node_modules/better-sqlite3/build/Release/better_sqlite3.node && npm run postbuild:pkg",
+    "postbuild:pkg": "npm rebuild better-sqlite3 --target=$(node -p \"process.version\") --runtime=node --dist-url=https://nodejs.org/dist"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
+  "engines": {
+    "node": ">=16.0.0"
+  },
   "dependencies": {
-    "bcrypt": "^6.0.0",
+    "bcryptjs": "^3.0.2",
     "better-sqlite3": "^11.10.0",
     "express": "^4.18.2",
     "mediasoup": "^3.19.2",
     "mediasoup-client": "^3.11.0",
+    "selfsigned": "^2.4.1",
     "socket.io": "^4.5.1"
   },
   "devDependencies": {
+    "@yao-pkg/pkg": "^6.8.0",
     "esbuild": "^0.25.5",
-    "pkg": "^5.8.1",
+    "pkg": "@yao-pkg/pkg",
     "webpack": "^5.99.9",
     "webpack-cli": "^6.0.1"
   },
   "pkg": {
     "assets": [
-      "node_modules/mediasoup/worker/out/Release/*"
+      "node_modules/mediasoup/worker/out/Release/*",
+      "node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+    ],
+    "dependencies": [
+      "node_modules/selfsigned/**/*"
     ]
   }
 }

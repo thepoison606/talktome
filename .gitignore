@@ -3,3 +3,9 @@
 *.db-journal
 *.sqlite
 *.sqlite3
+
+# Dependency directories
+node_modules/
+
+# Build artifacts
+talktome_arm64

@@ -3,9 +3,10 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const socketIO = require("socket.io");
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const os = require("os");
 const dgram = require("dgram");
+const selfsigned = require("selfsigned");
 
 const workerName = process.platform === "win32" ? "mediasoup-worker.exe" : "mediasoup-worker";
 
@@ -35,9 +36,24 @@ if (!fs.existsSync(workerBin)) {
 
 // 5) pkg bundle: copy the binary into a writable folder
 if (process.pkg) {
+  const execDir = path.dirname(process.execPath);
+  const sources = [
+    workerBin,
+    path.join(execDir, "worker", "out", "Release", workerName),
+    path.join(execDir, workerName)
+  ];
+  const sourceBin = sources.find((candidate) => fs.existsSync(candidate));
+
+  if (!sourceBin) {
+    throw new Error(
+      `mediasoup worker binary missing from pkg bundle.\n` +
+      `Checked: ${sources.join(", ")}`
+    );
+  }
+
   const dest = path.join(process.cwd(), workerName);
   if (!fs.existsSync(dest)) {
-    fs.copyFileSync(workerBin, dest);
+    fs.copyFileSync(sourceBin, dest);
     fs.chmodSync(dest, 0o755);
   }
   workerBin = dest;
@@ -422,21 +438,25 @@ function notifyTargetChange(userId) {
 // When running inside `pkg` the bundled directory is read-only
 // so we keep the certificates relative to the current working directory
 const certDir = path.join(process.cwd(), "certs");
+const keyPath = path.join(certDir, "key.pem");
+const certPath = path.join(certDir, "cert.pem");
+
 if (!fs.existsSync(certDir)) {
   fs.mkdirSync(certDir, { recursive: true });
-  console.log("⚠️  Bitte erstellen Sie SSL-Zertifikate:");
-  console.log("   cd certs");
-  console.log(
-    "   openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes"
-  );
-  console.log("   cd ..");
-  process.exit(1);
+}
+
+if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
+  const attrs = [{ name: "commonName", value: mdnsHostname || os.hostname() }];
+  const pems = selfsigned.generate(attrs, { keySize: 4096, days: 365 });
+  fs.writeFileSync(keyPath, pems.private, { mode: 0o600 });
+  fs.writeFileSync(certPath, pems.cert, { mode: 0o600 });
+  console.log("ℹ️  Generated self-signed TLS certificate in ./certs");
 }
 
 // HTTPS Server Setup
 const httpsOptions = {
-  key: fs.readFileSync(path.join(certDir, "key.pem")),
-  cert: fs.readFileSync(path.join(certDir, "cert.pem")),
+  key: fs.readFileSync(keyPath),
+  cert: fs.readFileSync(certPath),
 };
 
 const server = https.createServer(httpsOptions, app);

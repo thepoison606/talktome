@@ -53,6 +53,7 @@ const QUALITY_PROFILES = {
 const defaultVolume = 0.9;
 let inputSelect;
 let qualitySelect;
+const MIC_DEVICE_STORAGE_KEY = 'preferredAudioInputDeviceId';
 
 let micStream = null;
 let micTrack = null;
@@ -104,6 +105,31 @@ async function updateDeviceList() {
       opt.textContent = d.label || `Microphone ${inputSelect.length}`;
       inputSelect.append(opt);
     });
+
+    const storedDeviceId = localStorage.getItem(MIC_DEVICE_STORAGE_KEY);
+    const availableIds = new Set(inputs.map(d => d.deviceId));
+    let desiredDeviceId = null;
+
+    if (micDeviceId && availableIds.has(micDeviceId)) {
+      desiredDeviceId = micDeviceId;
+    } else if (storedDeviceId && availableIds.has(storedDeviceId)) {
+      desiredDeviceId = storedDeviceId;
+    } else if (inputs[0]) {
+      desiredDeviceId = inputs[0].deviceId;
+    }
+
+    if (desiredDeviceId) {
+      inputSelect.value = desiredDeviceId;
+      if (inputSelect.value !== desiredDeviceId) {
+        const match = Array.from(inputSelect.options).find(opt => opt.value === desiredDeviceId);
+        if (match) {
+          match.selected = true;
+        }
+      }
+      localStorage.setItem(MIC_DEVICE_STORAGE_KEY, desiredDeviceId);
+    } else {
+      inputSelect.value = '';
+    }
   }
 }
 
@@ -159,6 +185,16 @@ async function ensureMicTrack(audioConstraints, selectedDeviceId) {
   micStream = stream;
   micTrack = track;
   micDeviceId = selectedDeviceId || track.getSettings?.().deviceId || null;
+
+  if (micDeviceId) {
+    localStorage.setItem(MIC_DEVICE_STORAGE_KEY, micDeviceId);
+    if (inputSelect && inputSelect.value !== micDeviceId) {
+      const match = Array.from(inputSelect.options || []).find(opt => opt.value === micDeviceId);
+      if (match) {
+        match.selected = true;
+      }
+    }
+  }
 
   track.onended = () => {
     micTrack = null;
@@ -240,6 +276,12 @@ document.addEventListener("DOMContentLoaded", () => {
   );
 
   inputSelect?.addEventListener('change', () => {
+    const selected = inputSelect.value;
+    if (selected) {
+      localStorage.setItem(MIC_DEVICE_STORAGE_KEY, selected);
+    } else {
+      localStorage.removeItem(MIC_DEVICE_STORAGE_KEY);
+    }
     cleanupMicTrack();
   });
 
