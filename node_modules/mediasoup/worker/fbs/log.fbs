@@ -1,6 +1,0 @@
-namespace FBS.Log;
-
-table Log {
-    data: string (required);
-}
-
