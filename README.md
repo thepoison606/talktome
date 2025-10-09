@@ -7,9 +7,8 @@ A flexible intercom solution built with node.js and mediasoup.
 ## Usage
 
 ### Starting the Server
-By default, the server listens on **port 443**.  
+By default, the server listens on **port 443**. Start it with: 
 
-**No port specified**
    ```bash
    node server.js
    ```
@@ -17,7 +16,7 @@ By default, the server listens on **port 443**.
 
 You can override the port in two different ways:
 
-1. **Environment variable (recommended)**
+1. **Environment variable**
    ```bash
    PORT=8443 node server.js
    ```
@@ -42,7 +41,7 @@ You can override the port in two different ways:
 
 ---
 
-## Camera Tally / HTTP API
+## Camera Tally
 
 You can send tally information to the server using **HTTP POST** requests. The Website background of the user will be red if their camera is cut.
 
@@ -66,7 +65,7 @@ You can send tally information to the server using **HTTP POST** requests. The W
 
 ## Remote Talk Control API
 
-You can trigger a user's talk buttons via HTTP:
+Trigger a user’s talk buttons over HTTP for example to use control panels such as Elgato Stream Deck or Bitfocus Companion.
 
 - **URL:** `https://<IP-ADDRESS>:<PORT>/users/<USER_ID>/talk`
 - **Method:** `POST`
@@ -103,8 +102,6 @@ You can trigger a user's talk buttons via HTTP:
        -H "Content-Type: application/json" \
        -d '{"action":"press","targetType":"conference","targetId":3}'
   ```
-
-> Tip: the default broadcast group is the conference named **All**. Use its conference ID when you want to speak to everyone.
 
 ---
 
