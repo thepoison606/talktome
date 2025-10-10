@@ -366,6 +366,12 @@
         background: #273549;
       }
 
+      @media (max-width: 600px) {
+        #targets-list li.target-item:hover:not(.you) {
+          background: #1f2937;
+        }
+      }
+
       /* When someone is speaking */
       #targets-list li.target-item.speaking {
         border-color: rgba(34, 197, 94, 0.8);
@@ -389,7 +395,8 @@
 
       /* Icon container (user vs. conference) */
       #targets-list .user-icon,
-      #targets-list .conf-icon {
+      #targets-list .conf-icon,
+      #targets-list .feed-icon {
         grid-area: icon;
         width: 40px;
         height: 40px;
@@ -403,6 +410,32 @@
         font-weight: bold;
       }
 
+      #targets-list .conf-icon {
+        background: #475569;
+      }
+
+      #targets-list .feed-icon {
+        background: #0ea5e9;
+      }
+
+      #targets-list li.feed-target {
+        cursor: default;
+      }
+
+      #targets-list li.feed-target.feed-dimmed {
+        opacity: 0.65;
+      }
+
+      #targets-list li.feed-target.feed-speaking {
+        background: rgba(34, 197, 94, 0.12);
+        border-color: transparent;
+        box-shadow: none;
+      }
+
+      #targets-list li.feed-target.feed-speaking .feed-icon {
+        border: none;
+      }
+
       #targets-list .target-info {
         grid-area: info;
         display: flex;
@@ -414,6 +447,12 @@
       #targets-list .target-label {
         font-weight: 600;
         word-break: break-word;
+      }
+
+      .target-label-row {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
       }
 
       #targets-list .volume-slider {
@@ -470,27 +509,37 @@
         -moz-user-select: none;
         -ms-user-select: none;
         -webkit-touch-callout: none;
-        min-width: 5.5rem;
         text-align: center;
         box-sizing: border-box;
         border-radius: 4px;
         cursor: pointer;
         font-size: 14px;
-        transition: all 0.2s ease;
-        padding: 0.75rem 1rem;
+        transition: none;
+        padding: 0.7rem 1rem;
+        min-width: 6.4rem;
+        width: 6.4rem;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
       }
 
-      #targets-list .conf-icon {
-        background: #475569;
+      .dim-btn {
+        background: rgba(148, 163, 184, 0.18);
+        color: #cbd5f5;
+        border: 1px solid rgba(148, 163, 184, 0.35);
       }
 
-      /* Speaking pulse animation */
-      @keyframes speakingPulse {
-        0%, 100% { opacity: 1; }
-        50%      { opacity: 0.8; }
+      .dim-btn:hover {
+        background: rgba(148, 163, 184, 0.18);
       }
 
-      /* Buttons inside the list */
+      .dim-btn.dim-off {
+        color: rgba(148, 163, 184, 0.55);
+        text-decoration: line-through;
+        background: rgba(71, 85, 105, 0.2);
+        border-color: rgba(71, 85, 105, 0.4);
+      }
+
       #targets-list .lock-btn {
         background: rgba(59, 130, 246, 0.3);
         color: #e2e8f0;
@@ -498,7 +547,7 @@
       }
 
       #targets-list .lock-btn:hover {
-        background: rgba(59, 130, 246, 0.5);
+        background: rgba(59, 130, 246, 0.3);
       }
 
       #targets-list .lock-btn.active {
@@ -514,18 +563,20 @@
       }
 
       #targets-list .mute-btn:hover {
-        background: #1f2937;
+        background: #334155;
       }
 
       #targets-list .mute-btn.muted {
         background: #f87171;
+        color: #0f172a;
       }
 
       #targets-list .mute-btn.muted:hover {
-        background: #ef4444;
+        background: #f87171;
       }
       #targets-list li.target-item.muted .user-icon,
-      #targets-list li.target-item.muted .conf-icon {
+      #targets-list li.target-item.muted .conf-icon,
+      #targets-list li.target-item.muted .feed-icon {
         background: #ef4444;
       }
 
@@ -549,12 +600,57 @@
         #targets-list .target-actions button {
           flex: 1 1 0;
           padding: 0.6rem 0.75rem;
+          width: auto;
+          min-width: 0;
         }
 
         .reply-bar button {
           width: 100%;
           min-width: 0;
         }
+      }
+
+      #feed-banner {
+        display: none;
+        margin-bottom: 1rem;
+        padding: 0.75rem 1rem;
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(14, 165, 233, 0.1);
+        color: #bae6fd;
+      }
+
+      #feed-banner.is-streaming {
+        border-color: rgba(34, 197, 94, 0.35);
+        background: rgba(34, 197, 94, 0.12);
+        color: #bbf7d0;
+      }
+
+      .feed-banner__row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-bottom: 0.5rem;
+      }
+
+      .feed-banner__hint {
+        margin: 0;
+        font-size: 0.85rem;
+        color: #94a3b8;
+      }
+
+      body.feed-mode #targets-list,
+      body.feed-mode .reply-bar {
+        display: none;
+      }
+
+      body.feed-mode .feed-optional {
+        display: none !important;
+      }
+
+      body.feed-mode #feed-banner {
+        display: block;
       }
     </style>
   </head>
@@ -603,7 +699,7 @@
                 <option value="">select device</option>
               </select>
             </div>
-            <div class="device-selector">
+            <div class="device-selector feed-optional">
               <label for="quality-select">Audio profile</label>
               <select id="quality-select">
                 <option value="ultra-low">Ultra low (5 ms frame, DTX on)</option>
@@ -611,7 +707,7 @@
                 <option value="standard">Standard (20 ms frame, DTX off)</option>
               </select>
             </div>
-            <div class="processing-options">
+            <div class="processing-options feed-optional">
               <label><input type="checkbox" id="toggle-echo" /> Echo cancellation <span class="latency-hint">(increases latency ~25 ms)</span></label>
               <label><input type="checkbox" id="toggle-noise" /> Noise suppression <span class="latency-hint">(increases latency ~20 ms)</span></label>
               <label><input type="checkbox" id="toggle-agc" checked /> Auto gain control <span class="latency-hint"></span></label>
@@ -621,6 +717,14 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <div id="feed-banner" class="feed-banner" hidden>
+        <div class="feed-banner__row">
+          <span id="feed-stream-status">Feed ready</span>
+          <button type="button" id="feed-stream-toggle">Start Feed</button>
+        </div>
+        <p class="feed-banner__hint">Select your audio input above.</p>
       </div>
 
       <ul id="targets-list"></ul>

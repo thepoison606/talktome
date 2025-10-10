@@ -416,6 +416,29 @@
         <ul id="user-list" class="item-list" aria-live="polite"></ul>
       </section>
 
+      <section class="card" aria-labelledby="feeds-heading">
+        <div class="card-header">
+          <h2 id="feeds-heading">Feeds</h2>
+          <div id="feed-message" class="flash-message"></div>
+        </div>
+
+        <div class="form-grid">
+          <form id="feed-form" class="inline-form" autocomplete="off">
+            <div class="field-group">
+              <label for="feedname">Feed name</label>
+              <input type="text" id="feedname" placeholder="e.g. Music Bus" required />
+            </div>
+            <div class="field-group">
+              <label for="feedpassword">Password</label>
+              <input type="password" id="feedpassword" placeholder="Password" required />
+            </div>
+            <button type="submit">Add Feed</button>
+          </form>
+        </div>
+
+        <ul id="feed-list" class="item-list" aria-live="polite"></ul>
+      </section>
+
       <section class="card" aria-labelledby="conferences-heading">
         <div class="card-header">
           <h2 id="conferences-heading">Conferences</h2>

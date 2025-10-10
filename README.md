@@ -49,6 +49,11 @@ You can override the port in two different ways:
 - Main app: `https://<IP-ADDRESS>:<PORT>/`
 - On first visit, acknowledge the browser warning about the self-signed connection so the page can load.
 
+### Feeds
+- Manage feeds via the **Feeds** card in the admin panel; they can be assigned to users as targets just like conferences or users.
+- A feed account logs in through the same page as operators but only sees the audio-input selector and a start/stop button. No audio processing (AGC, noise suppression, echo cancel) is applied to feed streams.
+- Operators see feeds as a third target category with volume sliders and mute controls. Feed tiles automatically dim when other sources speak, but cannot be used as talk targets.
+
 ### Bonjour / mDNS Alias
 - On the local network the server advertises `https://intercom.local:<PORT>` via mDNS.
 - Override the advertised host with `MDNS_HOST=myalias.local node server.js`.

@@ -3,6 +3,8 @@ function showMessage(text, tone = 'error', scope = 'global') {
     ? 'user-message'
     : scope === 'conf'
       ? 'conf-message'
+      : scope === 'feed'
+        ? 'feed-message'
       : 'message';
 
   const el = document.getElementById(targetId);
@@ -45,12 +47,15 @@ async function loadData() {
   // 1) Daten holen
   const users       = await fetchJSON('/users');
   const conferences = await fetchJSON('/conferences');
+  const feeds       = await fetchJSON('/feeds');
 
   // 2) Container referenzieren und leeren
   const userList   = document.getElementById('user-list');
   const confList   = document.getElementById('conf-list');
+  const feedList   = document.getElementById('feed-list');
   userList.innerHTML   = '';
   confList.innerHTML   = '';
+  feedList.innerHTML   = '';
 
 
   for (const user of users) {
@@ -91,6 +96,7 @@ async function loadData() {
             <select id="add-target-type-${user.id}">
               <option value="user">User</option>
               <option value="conference">Conference</option>
+              <option value="feed">Feed</option>
             </select>
             <select id="add-target-id-${user.id}"></select>
             <button type="button" id="add-target-btn-${user.id}" class="small" onclick="addTarget(${user.id})">Add target</button>
@@ -100,7 +106,27 @@ async function loadData() {
     `;
 
     userList.appendChild(li);
-    await loadUserTargets(user.id, users, conferences);
+    await loadUserTargets(user.id, users, conferences, feeds);
+  }
+
+  for (const feed of feeds) {
+    const safeName = escapeHtml(feed.name);
+    const li = document.createElement('li');
+    li.className = 'list-item';
+    li.innerHTML = `
+      <div class="list-item-header">
+        <div class="list-item-title">
+          <span>${safeName}</span>
+          <span class="badge">ID ${feed.id}</span>
+        </div>
+        <div class="inline-controls">
+          <button type="button" class="small warning" onclick='editFeed(${feed.id}, ${JSON.stringify(feed.name)})'>Rename</button>
+          <button type="button" class="small warning" onclick='resetFeedPassword(${feed.id}, ${JSON.stringify(feed.name)})'>Reset Password</button>
+          <button type="button" class="small danger" onclick="deleteFeed(${feed.id})">Delete</button>
+        </div>
+      </div>
+    `;
+    feedList.appendChild(li);
   }
 
   for (const conf of conferences) {
@@ -133,7 +159,7 @@ async function loadData() {
 }
 
 // Fetch and render targets + rebuild the “type → id” dropdown
-async function loadUserTargets(userId, allUsers, allConfs) {
+async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
   const targets = await fetchJSON(`/users/${userId}/targets`);
   const ul = document.getElementById(`user-targets-${userId}`);
   ul.innerHTML = targets.map(t => {
@@ -153,19 +179,27 @@ async function loadUserTargets(userId, allUsers, allConfs) {
 
   const selType = document.getElementById(`add-target-type-${userId}`);
   const selId   = document.getElementById(`add-target-id-${userId}`);
+  const addBtn  = document.getElementById(`add-target-btn-${userId}`);
   const refreshTargetSelectors = () => {
     const type = selType.value;
+    let options = [];
     if (type === 'user') {
-      selId.disabled = false;
-      selId.innerHTML = allUsers
-        .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`)
-        .join('');
+      options = allUsers.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
     } else if (type === 'conference') {
-      selId.disabled = false;
-      selId.innerHTML = allConfs
-        .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`)
-        .join('');
+      options = allConfs.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
+    } else if (type === 'feed') {
+      options = allFeeds.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
     }
+
+    if (options.length === 0) {
+      selId.disabled = true;
+      selId.innerHTML = '<option value="" disabled selected>No entries available</option>';
+    } else {
+      selId.disabled = false;
+      selId.innerHTML = options.join('');
+    }
+
+    if (addBtn) addBtn.disabled = selId.disabled;
   };
 
   refreshTargetSelectors();
@@ -250,7 +284,8 @@ window.addTarget = async function(userId) {
     // Refresh only that user’s target list
     const users = await fetchJSON('/users');
     const confs = await fetchJSON('/conferences');
-    await loadUserTargets(userId, users, confs);
+    const feeds = await fetchJSON('/feeds');
+    await loadUserTargets(userId, users, confs, feeds);
   }
 };
 
@@ -264,7 +299,78 @@ window.removeTarget = async function(userId, type, tid) {
   } else {
     const users = await fetchJSON('/users');
     const confs = await fetchJSON('/conferences');
-    await loadUserTargets(userId, users, confs);
+    const feeds = await fetchJSON('/feeds');
+    await loadUserTargets(userId, users, confs, feeds);
+  }
+};
+
+
+window.editFeed = async function(feedId, currentName) {
+  const newName = prompt('New feed name:', currentName);
+  if (!newName || newName === currentName) return;
+
+  try {
+    const res = await fetch(`/feeds/${feedId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName })
+    });
+
+    if (res.status === 409) {
+      showMessage('⚠️ Feed name already exists!', 'warning', 'feed');
+    } else if (res.ok) {
+      showMessage('✅ Feed updated', 'success', 'feed');
+      loadData();
+    } else {
+      showMessage('❌ Failed to update feed', 'error', 'feed');
+    }
+  } catch (err) {
+    console.error('Error updating feed:', err);
+    showMessage('❌ Error updating feed: ' + err.message, 'error', 'feed');
+  }
+};
+
+window.resetFeedPassword = async function(feedId, feedName) {
+  const label = feedName ?? 'this feed';
+  const newPassword = prompt(`Enter a new password for ${label}:`);
+  if (!newPassword) return;
+  if (newPassword.length < 4) {
+    showMessage('⚠️ Password should be at least 4 characters', 'warning', 'feed');
+    return;
+  }
+
+  try {
+    const res = await fetch(`/feeds/${feedId}/password`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: newPassword })
+    });
+
+    if (res.ok) {
+      showMessage(`✅ Password updated for ${label}`, 'success', 'feed');
+    } else {
+      const payload = await res.json().catch(() => ({}));
+      showMessage(payload.error ? `❌ ${payload.error}` : '❌ Failed to reset password', 'error', 'feed');
+    }
+  } catch (err) {
+    console.error('Error resetting feed password:', err);
+    showMessage('❌ Error resetting password: ' + err.message, 'error', 'feed');
+  }
+};
+
+window.deleteFeed = async function(feedId) {
+  if (!confirm('Are you sure you want to delete this feed?')) return;
+  try {
+    const res = await fetch(`/feeds/${feedId}`, { method: 'DELETE' });
+    if (res.ok) {
+      showMessage('✅ Feed deleted', 'success', 'feed');
+      loadData();
+    } else {
+      showMessage('❌ Failed to delete feed', 'error', 'feed');
+    }
+  } catch (err) {
+    console.error('Error deleting feed:', err);
+    showMessage('❌ Error deleting feed: ' + err.message, 'error', 'feed');
   }
 };
 
@@ -475,6 +581,27 @@ document.getElementById('conf-form').addEventListener('submit', async (e) => {
     loadData();
   } else {
     showMessage('❌ Failed to create conference', 'error', 'conf');
+  }
+});
+
+document.getElementById('feed-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const name = document.getElementById('feedname').value;
+  const password = document.getElementById('feedpassword').value;
+
+  const res = await fetch('/feeds', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, password })
+  });
+
+  if (res.status === 409) {
+    showMessage('⚠️ Feed already exists!', 'warning', 'feed');
+  } else if (res.ok) {
+    showMessage('✅ Feed created', 'success', 'feed');
+    loadData();
+  } else {
+    showMessage('❌ Failed to create feed', 'error', 'feed');
   }
 });
 

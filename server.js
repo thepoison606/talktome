@@ -76,6 +76,7 @@ const mediasoup = require("mediasoup");
 const {
   createUser,
   createConference,
+  createFeed,
   addUserToConference,
   removeUserFromConference,
   updateUserName,
@@ -85,15 +86,21 @@ const {
   getConferencesForUser,
   getAllUsers,
   getAllConferences,
+  getAllFeeds,
   deleteUser,
   deleteConference,
+  deleteFeed,
   verifyUser,
+  verifyFeed,
   getUserTargets,
   addUserTargetToUser,
   addUserTargetToConference,
+  addUserTargetToFeed,
   removeUserTarget,
   updateUserTargetOrder,
-  getAllConferenceId
+  getAllConferenceId,
+  getFeedIdsForUser,
+  getUsersForFeed
 } = require("./dbHandler");
 
 const app = express();
@@ -132,6 +139,10 @@ app.get("/users", (req, res) => {
 
 app.get("/conferences", (req, res) => {
   res.json(getAllConferences());
+});
+
+app.get("/feeds", (req, res) => {
+  res.json(getAllFeeds());
 });
 
 app.get("/users/:id/conferences", (req, res) => {
@@ -174,13 +185,19 @@ app.post("/login", (req, res) => {
 
   try {
     const user = verifyUser(name, password);
-    if (!user) {
-      console.warn("Login failed for:", name);
-      return res.status(401).json({ error: "Invalid credentials" });
+    if (user) {
+      console.log("Login successful for user:", user.name);
+      return res.json({ id: user.id, name: user.name, kind: "user" });
     }
 
-    console.log("Login successful for:", user.name);
-    res.json({ id: user.id, name: user.name });
+    const feed = verifyFeed(name, password);
+    if (feed) {
+      console.log("Login successful for feed:", feed.name);
+      return res.json({ id: feed.id, name: feed.name, kind: "feed" });
+    }
+
+    console.warn("Login failed for:", name);
+    return res.status(401).json({ error: "Invalid credentials" });
   } catch (err) {
     console.error("Login error:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -215,6 +232,24 @@ app.post("/conferences", (req, res) => {
   }
 });
 
+app.post("/feeds", (req, res) => {
+  const { name, password } = req.body || {};
+  if (!name || !password) {
+    return res.status(400).json({ error: "Name and password are required" });
+  }
+  try {
+    const id = createFeed(name, password);
+    res.json({ id });
+  } catch (err) {
+    if (err.message.includes("exists")) {
+      res.status(409).json({ error: err.message });
+    } else {
+      console.error("Error creating feed:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  }
+});
+
 app.post('/conferences/:conferenceId/users/:userId', (req, res) => {
   addUserToConference(req.params.userId, req.params.conferenceId);
   res.sendStatus(204);
@@ -228,6 +263,8 @@ app.post('/users/:id/targets', (req, res) => {
       addUserTargetToUser(req.params.id, targetId);
     } else if (targetType === 'conference') {
       addUserTargetToConference(req.params.id, targetId);
+    } else if (targetType === 'feed') {
+      addUserTargetToFeed(req.params.id, targetId);
     } else {
       return res.status(400).json({ error: 'Unsupported target type' });
     }
@@ -250,7 +287,7 @@ app.put('/users/:id/targets/order', (req, res) => {
     targetId: Number(item?.targetId),
   }));
 
-  const validTypes = ['user', 'conference'];
+  const validTypes = ['user', 'conference', 'feed'];
   if (normalized.some(item => !validTypes.includes(item.targetType))) {
     return res.status(400).json({ error: 'Invalid target type' });
   }
@@ -370,6 +407,44 @@ app.put('/conferences/:id', (req, res) => {
   }
 });
 
+app.put('/feeds/:id', (req, res) => {
+  const { name } = req.body || {};
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'Name is required' });
+  }
+
+  try {
+    const listeners = getUsersForFeed(req.params.id) || [];
+    const updated = updateFeedName(req.params.id, name.trim());
+    if (!updated) return res.status(404).json({ error: 'Feed not found' });
+    listeners.forEach(({ user_id }) => notifyTargetChange(user_id));
+    res.sendStatus(204);
+  } catch (err) {
+    if (err.message.includes('UNIQUE')) {
+      res.status(409).json({ error: 'Feed name already exists' });
+    } else {
+      console.error('Error renaming feed:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+});
+
+app.put('/feeds/:id/password', (req, res) => {
+  const { password } = req.body || {};
+  if (typeof password !== 'string' || password.trim().length < 4) {
+    return res.status(400).json({ error: 'Password must be at least 4 characters long' });
+  }
+
+  try {
+    const updated = updateFeedPassword(req.params.id, password.trim());
+    if (!updated) return res.status(404).json({ error: 'Feed not found' });
+    res.sendStatus(204);
+  } catch (err) {
+    console.error('Error updating feed password:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 
 // === DELETE (specific routes FIRST) ===
 app.delete("/conferences/:conferenceId/users/:userId", (req, res) => {
@@ -393,6 +468,17 @@ app.delete("/users/:id", (req, res) => {
     res.sendStatus(204);
   } catch (err) {
     res.status(500).json({ error: "Failed to delete user" });
+  }
+});
+
+app.delete("/feeds/:id", (req, res) => {
+  try {
+    const listeners = getUsersForFeed(req.params.id) || [];
+    deleteFeed(req.params.id);
+    listeners.forEach(({ user_id }) => notifyTargetChange(user_id));
+    res.sendStatus(204);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete feed" });
   }
 });
 
@@ -427,7 +513,7 @@ app.delete("/users/:id/targets/:type/:tid", (req, res) => {
 function notifyTargetChange(userId) {
   const idStr = String(userId);
   for (const [, peer] of peers) {
-    if (String(peer.userId) === idStr) {
+    if (peer.kind === "user" && String(peer.userId) === idStr) {
       peer.socket.emit('user-targets-updated');
     }
   }
@@ -784,7 +870,9 @@ const peers = new Map();
 function getUserList() {
   return Array.from(peers.entries()).map(([socketId, peer]) => ({
     socketId,
-    userId: peer.userId || null,    // store the database ID here
+    userId: peer.userId ?? null,
+    feedId: peer.feedId ?? null,
+    kind: peer.kind ?? (peer.userId ? "user" : peer.feedId ? "feed" : "guest"),
     name: peer.name || null
   }));
 }
@@ -794,7 +882,9 @@ io.on("connection", (socket) => {
   peers.set(socket.id, {
     socket,
     userId:   null,
+    feedId:   null,
     name:     null,
+    kind:     "guest",
     consumers: new Map(),
     producers: new Map(),
   });
@@ -803,28 +893,44 @@ io.on("connection", (socket) => {
   io.emit("user-list", getUserList());
   socket.emit("conference-list", getAllConferences());
 
-  socket.on("register-user", ({ id, name }) => {
+  socket.on("register-user", ({ id, name, kind = "user" }) => {
     const peer = peers.get(socket.id);
     if (!peer) return;
 
-    peer.userId = id;    // the actual database ID
-    peer.name   = name;  // display name
-    console.log(`[USER] Registered ${name} (${id}) on socket ${socket.id}`);
+    const normalizedKind = kind === "feed" ? "feed" : "user";
+    const numericId = Number(id);
+    const effectiveId = Number.isFinite(numericId) ? numericId : id;
 
-    socket.emit("cut-camera", name === cutCameraUser);
+    peer.name = name;
+    peer.kind = normalizedKind;
 
-    // Broadcast the refreshed list to every client
+    if (normalizedKind === "user") {
+      peer.userId = effectiveId;
+      peer.feedId = null;
+      console.log(`[USER] Registered operator ${name} (${effectiveId}) on socket ${socket.id}`);
+      socket.emit("cut-camera", name === cutCameraUser);
+    } else {
+      peer.feedId = effectiveId;
+      peer.userId = null;
+      console.log(`[USER] Registered feed ${name} (${effectiveId}) on socket ${socket.id}`);
+    }
+
     io.emit("user-list", getUserList());
+
+    if (normalizedKind === "feed") {
+      socket.emit("conference-list", []);
+    }
   });
 
   socket.on("request-active-producers", (callback = () => {}) => {
     const peer = peers.get(socket.id);
-    if (!peer || !peer.userId) {
+    if (!peer || peer.kind !== "user" || !peer.userId) {
       return callback([]);
     }
 
     const response = [];
     let conferenceIds = null;
+    let feedIds = null;
 
     const loadConferenceIds = () => {
       if (conferenceIds !== null) {
@@ -841,6 +947,19 @@ io.on("connection", (socket) => {
       return conferenceIds;
     };
 
+    const loadFeedIds = () => {
+      if (feedIds !== null) {
+        return feedIds;
+      }
+      if (!peer.userId) {
+        feedIds = new Set();
+        return feedIds;
+      }
+      const rows = getFeedIdsForUser(peer.userId) || [];
+      feedIds = new Set(rows.map((id) => String(id)));
+      return feedIds;
+    };
+
     for (const [otherSocketId, otherPeer] of peers) {
       if (otherSocketId === socket.id) continue;
 
@@ -853,6 +972,16 @@ io.on("connection", (socket) => {
           if (confId == null) continue;
           const membership = loadConferenceIds();
           if (membership.has(String(confId))) {
+            response.push({ peerId: otherSocketId, producerId, appData });
+          }
+          continue;
+        }
+
+        if (appData.type === "feed") {
+          const feedId = appData.id;
+          if (feedId == null) continue;
+          const membership = loadFeedIds();
+          if (membership.has(String(feedId))) {
             response.push({ peerId: otherSocketId, producerId, appData });
           }
           continue;
@@ -1068,7 +1197,7 @@ io.on("connection", (socket) => {
         // 0️⃣  Validate incoming data
         //------------------------------------------------------------------
         const { type, id: targetId } = appData || {};
-        const validTypes = ["user","conference"];
+        const validTypes = ["user","conference","feed"];
 
         if (
             !type ||
@@ -1078,7 +1207,7 @@ io.on("connection", (socket) => {
           console.warn("[PRODUCE] Invalid appData:", appData);
           return callback({
             error:
-                "Invalid appData: For 'user' and 'conference', 'id' must be provided.",
+                "Invalid appData: For 'user', 'conference', or 'feed', 'id' must be provided.",
           });
         }
 
@@ -1087,7 +1216,29 @@ io.on("connection", (socket) => {
           // 1️⃣  Create the producer
           //----------------------------------------------------------------
           const peer = peers.get(socket.id);
+          if (!peer) {
+            return callback({ error: "Peer not registered" });
+          }
+
+          if (type === "feed") {
+            if (
+              peer.kind !== "feed" ||
+              peer.feedId === null ||
+              String(peer.feedId) !== String(targetId)
+            ) {
+              console.warn(`[PRODUCE] Peer ${socket.id} is not authorized to produce for feed ${targetId}`);
+              return callback({ error: "Not authorized to produce for this feed" });
+            }
+          } else if (peer.kind === "feed") {
+            console.warn(`[PRODUCE] Feed peer ${socket.id} tried to produce for type ${type}`);
+            return callback({ error: "Feeds can only produce their assigned feed" });
+          }
+
           const transport = peer.sendTransport;
+          if (!transport) {
+            console.warn(`[PRODUCE] No send transport for peer ${socket.id}`);
+            return callback({ error: "Send transport not ready" });
+          }
 
           const producer = await transport.produce({
             kind,
@@ -1137,6 +1288,22 @@ io.on("connection", (socket) => {
               }
             }
             console.log(`[ROUTE] Sent to conference ${targetId}`);
+          } else if (type === "feed") {
+            const listeners = getUsersForFeed(targetId) || [];
+            const listenerIds = new Set(listeners.map((row) => String(row.user_id)));
+
+            for (const [sid, p] of peers) {
+              if (sid === socket.id) continue;
+              if (p.kind !== "user" || p.userId === null) continue;
+              if (!listenerIds.has(String(p.userId))) continue;
+
+              p.socket.emit("new-producer", {
+                peerId: socket.id,
+                producerId: producer.id,
+                appData,
+              });
+            }
+            console.log(`[ROUTE] Sent to feed listeners of ${targetId}`);
           }
           //----------------------------------------------------------------
           // 4️⃣  Cleanup listener

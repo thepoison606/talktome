@@ -46,6 +46,18 @@ db.exec(`
                                                       PRIMARY KEY (user_id, target_type, target_id)
     );
 
+    CREATE TABLE IF NOT EXISTS feeds (
+                                          id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                          name TEXT NOT NULL UNIQUE,
+                                          password TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_feed_targets (
+                                                      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                                                      feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+                                                      PRIMARY KEY (user_id, feed_id)
+    );
+
     DROP TABLE IF EXISTS user_global_targets;
 `);
 
