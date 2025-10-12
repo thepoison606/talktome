@@ -688,6 +688,93 @@
         color: #94a3b8;
       }
 
+      .feed-level-controls {
+        margin-top: 0.75rem;
+        display: grid;
+        gap: 0.6rem;
+      }
+
+      .feed-level-controls label {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 0.75rem;
+        font-size: 0.85rem;
+        color: #e2e8f0;
+      }
+
+      .feed-level-controls output {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        color: #f8fafc;
+      }
+
+      .feed-level-controls input[type="range"] {
+        width: 100%;
+        accent-color: #38bdf8;
+      }
+
+      .feed-meter {
+        display: grid;
+        gap: 0.25rem;
+        color: #cbd5f5;
+      }
+
+      .feed-meter__bar-wrapper {
+        position: relative;
+        height: 10px;
+        border-radius: 999px;
+        background: rgba(30, 41, 59, 0.75);
+        overflow: hidden;
+      }
+
+      .feed-meter__bar {
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 0%;
+        background: linear-gradient(
+          90deg,
+          #38bdf8 0%,
+          #22d3ee 50%,
+          #f97316 80%,
+          #f87171 100%
+        );
+        transition: width 60ms linear;
+      }
+
+      .feed-meter__clip {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        border-radius: 999px;
+        background: rgba(248, 113, 113, 0.9);
+        opacity: 0;
+        transform: translateX(-50%);
+        transition: opacity 120ms ease;
+      }
+
+      .feed-meter__ticks {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.7rem;
+        color: rgba(148, 163, 184, 0.8);
+      }
+
+      .feed-meter__readout {
+        font-size: 0.8rem;
+        color: #e2e8f0;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .feed-meter__readout span {
+        font-weight: 600;
+      }
+
+      .feed-meter__readout span.is-clipping {
+        color: #f87171;
+      }
+
       body.feed-mode #targets-list,
       body.feed-mode .reply-bar {
         display: none;
@@ -765,20 +852,22 @@
             <div class="device-selector feed-optional">
               <label for="dim-amount-select">Dim amount</label>
               <select id="dim-amount-select">
-                <option value="-6">-6 dB (light)</option>
-                <option value="-12">-12 dB (medium)</option>
-                <option value="-14" selected>-14 dB (default)</option>
-                <option value="-18">-18 dB (heavy)</option>
-                <option value="-24">-24 dB (max)</option>
+                <option value="-6">-6 dB</option>
+                <option value="-12">-12 dB</option>
+                <option value="-14" selected>-14 dB</option>
+                <option value="-18">-18 dB</option>
+                <option value="-24">-24 dB</option>
               </select>
             </div>
             <div class="processing-options feed-optional">
               <label><input type="checkbox" id="toggle-self-dim" /> Dim while speaking</label>
             </div>
             <div class="processing-options feed-optional">
-              <label><input type="checkbox" id="toggle-echo" /> Echo cancellation <span class="latency-hint">(increases latency ~25 ms)</span></label>
-              <label><input type="checkbox" id="toggle-noise" /> Noise suppression <span class="latency-hint">(increases latency ~20 ms)</span></label>
-              <label><input type="checkbox" id="toggle-agc" checked /> Auto gain control <span class="latency-hint"></span></label>
+              <label>
+                <input type="checkbox" id="toggle-processing" checked />
+                Audio processing
+                <span class="latency-hint">(increased latency)</span>
+              </label>
             </div>
             <div class="settings-actions">
               <button id="logout-btn" type="button" class="logout-btn">Logout</button>
@@ -791,6 +880,36 @@
         <div class="feed-banner__row">
           <span id="feed-stream-status">Feed ready</span>
           <button type="button" id="feed-stream-toggle">Start Feed</button>
+        </div>
+        <div class="feed-level-controls">
+          <label for="feed-input-gain">
+            Input gain
+            <output id="feed-input-gain-value" for="feed-input-gain">+0.0 dB</output>
+          </label>
+          <input
+            type="range"
+            id="feed-input-gain"
+            min="-30"
+            max="12"
+            step="0.5"
+            value="0"
+          />
+          <div class="feed-meter">
+            <div class="feed-meter__bar-wrapper">
+              <div class="feed-meter__bar" id="feed-meter-bar"></div>
+              <div class="feed-meter__clip" id="feed-meter-clip"></div>
+            </div>
+            <div class="feed-meter__ticks">
+              <span>-30</span>
+              <span>-12</span>
+              <span>-6</span>
+              <span>-3</span>
+              <span>0</span>
+            </div>
+          </div>
+          <div class="feed-meter__readout">
+            Peak: <span id="feed-meter-value">-inf dB</span>
+          </div>
         </div>
         <p class="feed-banner__hint">Select your audio input above.</p>
       </div>

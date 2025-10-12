@@ -58,10 +58,24 @@ const DEFAULT_FEED_DUCKING_DB = -14;
 const FEED_DUCKING_DB_MIN = -60;
 const FEED_DUCKING_DB_MAX = -6;
 const FEED_DIM_SELF_STORAGE_KEY = 'feedDimSelf';
+const AUDIO_PROCESSING_STORAGE_KEY = 'audioProcessingEnabled';
+const FEED_INPUT_GAIN_DB_STORAGE_KEY = 'feedInputGainDb';
+const FEED_INPUT_GAIN_DB_MIN = -30;
+const FEED_INPUT_GAIN_DB_MAX = 12;
+const FEED_METER_MIN_DB = -60;
+const FEED_CLIP_THRESHOLD_DB = -0.5;
 
 let feedDuckingDb = DEFAULT_FEED_DUCKING_DB;
 let feedDuckingFactor = dbToLinear(feedDuckingDb);
 let feedDimSelf = false;
+let audioProcessingEnabled = true;
+const audioProcessingOptions = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+};
+let feedInputGainDb = 0;
+let feedInputGainLinear = dbToLinear(feedInputGainDb);
 
 if (typeof window !== 'undefined') {
   try {
@@ -77,10 +91,23 @@ if (typeof window !== 'undefined') {
     if (storedSelfDim !== null) {
       feedDimSelf = storedSelfDim === 'true';
     }
+    const storedProcessing = window.localStorage?.getItem(AUDIO_PROCESSING_STORAGE_KEY);
+    if (storedProcessing !== null) {
+      audioProcessingEnabled = storedProcessing === 'true';
+    }
+    const storedInputGainDb = window.localStorage?.getItem(FEED_INPUT_GAIN_DB_STORAGE_KEY);
+    if (storedInputGainDb !== null) {
+      const parsedGainDb = parseFloat(storedInputGainDb);
+      if (!Number.isNaN(parsedGainDb)) {
+        feedInputGainDb = clampFeedInputGainDb(parsedGainDb);
+        feedInputGainLinear = dbToLinear(feedInputGainDb);
+      }
+    }
   } catch (err) {
     console.warn('Unable to restore feed dim level from storage:', err);
   }
 }
+syncAudioProcessingOptions();
 const isiOS = typeof navigator !== 'undefined'
   ? /iPad|iPhone|iPod/.test(navigator.userAgent || '') ||
     (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent || ''))
@@ -105,6 +132,12 @@ let inputSelect;
 let qualitySelect;
 let dimAmountSelect;
 let dimWhileSpeakingToggle;
+let audioProcessingToggle;
+let feedInputGainSlider;
+let feedInputGainValueDisplay;
+let feedMeterBarEl;
+let feedMeterClipEl;
+let feedMeterValueEl;
 const MIC_DEVICE_STORAGE_KEY = 'preferredAudioInputDeviceId';
 
 let micStream = null;
@@ -113,11 +146,6 @@ let micDeviceId = null;
 let micCleanupTimer = null;
 let micPrimed = false;
 let micPrimingPromise = null;
-const audioProcessingOptions = {
-  echoCancellation: false,
-  noiseSuppression: false,
-  autoGainControl: true,
-};
 
 let feedStreaming = false;
 let feedManualStop = false;
@@ -129,10 +157,16 @@ let onAudioContextRunning = null;
 let requestAudioUnlockOverlay = () => {};
 let dismissAudioUnlockOverlay = () => {};
 let audioUnlockAwaiting = false;
+let feedProcessingChain = null;
 
 function clampFeedDuckingDb(value) {
   if (!Number.isFinite(value)) return DEFAULT_FEED_DUCKING_DB;
   return Math.min(FEED_DUCKING_DB_MAX, Math.max(FEED_DUCKING_DB_MIN, value));
+}
+
+function clampFeedInputGainDb(value) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(FEED_INPUT_GAIN_DB_MAX, Math.max(FEED_INPUT_GAIN_DB_MIN, value));
 }
 
 function dbToLinear(dbValue) {
@@ -143,6 +177,14 @@ function formatFeedDimDbOptionText(dbValue) {
   const rounded = Math.round(dbValue * 10) / 10;
   if (rounded === 0) return 'No dim (0 dB)';
   return `Custom (${rounded} dB)`;
+}
+
+function formatDbDisplay(dbValue) {
+  if (!Number.isFinite(dbValue)) return '-inf dB';
+  const rounded = Math.round(dbValue * 10) / 10;
+  const normalized = Object.is(rounded, -0) ? 0 : rounded;
+  const sign = normalized >= 0 ? '+' : '';
+  return `${sign}${normalized.toFixed(1)} dB`;
 }
 
 function syncDimAmountSelect(value) {
@@ -179,6 +221,279 @@ function ensureAudioContext() {
     }
   }
   return sharedAudioContext;
+}
+
+function syncAudioProcessingOptions() {
+  const enabled = !!audioProcessingEnabled;
+  audioProcessingOptions.echoCancellation = enabled;
+  audioProcessingOptions.noiseSuppression = enabled;
+  audioProcessingOptions.autoGainControl = enabled;
+  return enabled;
+}
+
+function setAudioProcessingEnabled(enabled, { persist = true, updateUI = true, reinitialize = true } = {}) {
+  audioProcessingEnabled = !!enabled;
+  const applied = syncAudioProcessingOptions();
+
+  if (updateUI && audioProcessingToggle) {
+    audioProcessingToggle.checked = applied;
+  }
+
+  if (persist && typeof window !== 'undefined') {
+    try {
+      window.localStorage?.setItem(AUDIO_PROCESSING_STORAGE_KEY, String(applied));
+    } catch (err) {
+      console.warn('Unable to persist audio processing preference:', err);
+    }
+  }
+
+  if (reinitialize) {
+    cleanupMicTrack();
+  }
+}
+
+function updateFeedGainUI() {
+  if (feedInputGainSlider) {
+    const valueStr = String(feedInputGainDb);
+    if (feedInputGainSlider.value !== valueStr) {
+      feedInputGainSlider.value = valueStr;
+    }
+  }
+  if (feedInputGainValueDisplay) {
+    feedInputGainValueDisplay.textContent = formatDbDisplay(feedInputGainDb);
+  }
+}
+
+function setFeedInputGainDb(dbValue, { persist = true, apply = true } = {}) {
+  if (Number.isNaN(dbValue) || !Number.isFinite(dbValue)) return;
+  const clamped = clampFeedInputGainDb(dbValue);
+  feedInputGainDb = clamped;
+  feedInputGainLinear = dbToLinear(clamped);
+  updateFeedGainUI();
+
+  if (persist && typeof window !== 'undefined') {
+    try {
+      window.localStorage?.setItem(FEED_INPUT_GAIN_DB_STORAGE_KEY, String(clamped));
+    } catch (err) {
+      console.warn('Unable to persist feed input gain:', err);
+    }
+  }
+
+  if (apply && feedProcessingChain?.gainNode) {
+    feedProcessingChain.gainNode.gain.value = feedInputGainLinear;
+  }
+}
+
+function setFeedMeterDisplay(fraction, text, showClip, clipFraction = null) {
+  const clampedFraction = Math.max(0, Math.min(1, Number.isFinite(fraction) ? fraction : 0));
+  if (feedMeterBarEl) {
+    feedMeterBarEl.style.width = `${(clampedFraction * 100).toFixed(1)}%`;
+  }
+  if (feedMeterValueEl) {
+    feedMeterValueEl.textContent = text;
+    feedMeterValueEl.classList.toggle('is-clipping', !!showClip);
+  }
+  if (feedMeterClipEl) {
+    if (showClip) {
+      const raw = clipFraction == null ? 1 : Number(clipFraction);
+      const clampedClip = Math.max(0, Math.min(1, Number.isFinite(raw) ? raw : 1));
+      feedMeterClipEl.style.left = `${(clampedClip * 100).toFixed(1)}%`;
+      feedMeterClipEl.style.opacity = '1';
+    } else {
+      feedMeterClipEl.style.opacity = '0';
+    }
+  }
+}
+
+function destroyFeedProcessing({ resetUI = true } = {}) {
+  if (!feedProcessingChain) return;
+  if (feedProcessingChain.rafId) {
+    cancelAnimationFrame(feedProcessingChain.rafId);
+  }
+  try { feedProcessingChain.sourceNode?.disconnect(); } catch {}
+  try { feedProcessingChain.gainNode?.disconnect(); } catch {}
+  try { feedProcessingChain.analyser?.disconnect(); } catch {}
+
+  try {
+    const tracks = feedProcessingChain.destination?.stream?.getAudioTracks?.();
+    if (tracks && typeof tracks.forEach === 'function') {
+      tracks.forEach(track => {
+        if (track && track.readyState !== 'ended') {
+          try { track.stop(); } catch {}
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('Error stopping feed destination tracks:', err);
+  }
+
+  try {
+    feedProcessingChain.outputTrack?.stop?.();
+  } catch {}
+
+  feedProcessingChain = null;
+
+  if (resetUI) {
+    setFeedMeterDisplay(0, '-inf dB', false);
+  }
+}
+
+function scheduleFeedMeterUpdate() {
+  if (!feedProcessingChain) return;
+  if (feedProcessingChain.rafId) return;
+  const tick = () => {
+    if (!feedProcessingChain) return;
+    feedProcessingChain.rafId = null;
+    updateFeedMeterFromAnalyser();
+    if (feedProcessingChain) {
+      feedProcessingChain.rafId = requestAnimationFrame(tick);
+    }
+  };
+  feedProcessingChain.rafId = requestAnimationFrame(tick);
+}
+
+function updateFeedMeterFromAnalyser() {
+  const chain = feedProcessingChain;
+  if (!chain || !chain.analyser || !chain.meterData) return;
+  chain.analyser.getFloatTimeDomainData(chain.meterData);
+
+  let peak = 0;
+  for (let i = 0; i < chain.meterData.length; i += 1) {
+    const sample = chain.meterData[i];
+    if (!Number.isFinite(sample)) continue;
+    const abs = Math.abs(sample);
+    if (abs > peak) peak = abs;
+  }
+
+  let peakDb = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
+  if (!Number.isFinite(peakDb)) {
+    peakDb = -Infinity;
+  }
+
+  const normalizedDb = Number.isFinite(peakDb)
+    ? Math.max(FEED_METER_MIN_DB, Math.min(0, peakDb))
+    : FEED_METER_MIN_DB;
+
+  const fraction = normalizedDb <= FEED_METER_MIN_DB
+    ? 0
+    : (normalizedDb - FEED_METER_MIN_DB) / (0 - FEED_METER_MIN_DB);
+
+  const clipDetected = Number.isFinite(peakDb) && peakDb >= FEED_CLIP_THRESHOLD_DB;
+  if (clipDetected) {
+    chain.clipHoldFrames = 24;
+  } else if (chain.clipHoldFrames > 0) {
+    chain.clipHoldFrames -= 1;
+  }
+  const showClip = (chain.clipHoldFrames || 0) > 0;
+
+  const displayText = Number.isFinite(peakDb)
+    ? formatDbDisplay(peakDb)
+    : '-inf dB';
+
+  setFeedMeterDisplay(fraction, displayText, showClip, fraction);
+}
+
+// Builds an AudioContext processing graph for the feed to apply gain and drive the meter.
+function ensureFeedProcessingChain(track) {
+  const ctx = ensureAudioContext();
+  if (!ctx) {
+    console.warn('AudioContext unavailable; feed input gain disabled.');
+    return null;
+  }
+
+  if (feedProcessingChain && feedProcessingChain.originalTrack === track) {
+    if (!feedProcessingChain.rafId) {
+      scheduleFeedMeterUpdate();
+    }
+    feedProcessingChain.gainNode.gain.value = feedInputGainLinear;
+    return feedProcessingChain;
+  }
+
+  destroyFeedProcessing({ resetUI: false });
+
+  let sourceStream;
+  try {
+    sourceStream = new MediaStream([track]);
+  } catch (err) {
+    console.warn('Unable to create feed source stream:', err);
+    return null;
+  }
+
+  let sourceNode;
+  let gainNode;
+  let analyser;
+  let destination;
+  let outputTrack;
+
+  try {
+    sourceNode = ctx.createMediaStreamSource(sourceStream);
+    gainNode = ctx.createGain();
+    gainNode.gain.value = feedInputGainLinear;
+
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.85;
+
+    destination = ctx.createMediaStreamDestination();
+
+    sourceNode.connect(gainNode);
+    gainNode.connect(analyser);
+    analyser.connect(destination);
+
+    [outputTrack] = destination.stream.getAudioTracks();
+  } catch (err) {
+    console.error('Failed to set up feed processing chain:', err);
+    try { sourceNode?.disconnect(); } catch {}
+    try { gainNode?.disconnect(); } catch {}
+    try { analyser?.disconnect(); } catch {}
+    return null;
+  }
+
+  if (!outputTrack) {
+    console.warn('Feed processing destination produced no audio track.');
+    try { sourceNode?.disconnect(); } catch {}
+    try { gainNode?.disconnect(); } catch {}
+    try { analyser?.disconnect(); } catch {}
+    return null;
+  }
+
+  outputTrack.enabled = track.enabled;
+  outputTrack.contentHint = track.contentHint || 'speech';
+
+  const meterData = new Float32Array(analyser.fftSize);
+
+  feedProcessingChain = {
+    ctx,
+    originalTrack: track,
+    sourceStream,
+    sourceNode,
+    gainNode,
+    analyser,
+    destination,
+    outputTrack,
+    meterData,
+    rafId: null,
+    clipHoldFrames: 0,
+  };
+
+  setFeedMeterDisplay(0, '-inf dB', false);
+  scheduleFeedMeterUpdate();
+
+  if (typeof outputTrack.addEventListener === 'function') {
+    outputTrack.addEventListener('ended', () => {
+      if (feedProcessingChain && feedProcessingChain.outputTrack === outputTrack) {
+        destroyFeedProcessing();
+      }
+    });
+  } else {
+    outputTrack.onended = () => {
+      if (feedProcessingChain && feedProcessingChain.outputTrack === outputTrack) {
+        destroyFeedProcessing();
+      }
+    };
+  }
+
+  return feedProcessingChain;
 }
 
 function attemptPendingAutoplay() {
@@ -293,6 +608,8 @@ function cleanupMicTrack() {
     clearTimeout(micCleanupTimer);
     micCleanupTimer = null;
   }
+
+  destroyFeedProcessing();
 
   if (micTrack) {
     try { micTrack.stop(); } catch {}
@@ -447,29 +764,37 @@ document.addEventListener("DOMContentLoaded", () => {
   qualitySelect = document.getElementById("quality-select");
   dimAmountSelect = document.getElementById('dim-amount-select');
   dimWhileSpeakingToggle = document.getElementById('toggle-self-dim');
-  const echoToggle = document.getElementById('toggle-echo');
-  const noiseToggle = document.getElementById('toggle-noise');
-  const agcToggle = document.getElementById('toggle-agc');
+  audioProcessingToggle = document.getElementById('toggle-processing');
+  feedInputGainSlider = document.getElementById('feed-input-gain');
+  feedInputGainValueDisplay = document.getElementById('feed-input-gain-value');
+  feedMeterBarEl = document.getElementById('feed-meter-bar');
+  feedMeterClipEl = document.getElementById('feed-meter-clip');
+  feedMeterValueEl = document.getElementById('feed-meter-value');
 
-  const processingToggles = [
-    { element: echoToggle, key: 'audioEchoCancellation', option: 'echoCancellation', defaultValue: false },
-    { element: noiseToggle, key: 'audioNoiseSuppression', option: 'noiseSuppression', defaultValue: false },
-    { element: agcToggle, key: 'audioAutoGainControl', option: 'autoGainControl', defaultValue: true },
-  ];
+  updateFeedGainUI();
+  setFeedMeterDisplay(0, formatDbDisplay(-Infinity), false);
 
-  processingToggles.forEach(({ element, key, option, defaultValue }) => {
-    if (!element) return;
-    const stored = localStorage.getItem(key);
-    const initial = stored === null ? defaultValue : stored === 'true';
-    audioProcessingOptions[option] = initial;
-    element.checked = initial;
-    element.addEventListener('change', () => {
-      const value = !!element.checked;
-      audioProcessingOptions[option] = value;
-      localStorage.setItem(key, String(value));
-      cleanupMicTrack();
+  if (feedInputGainSlider) {
+    feedInputGainSlider.addEventListener('input', () => {
+      const value = parseFloat(feedInputGainSlider.value);
+      if (!Number.isNaN(value)) {
+        setFeedInputGainDb(value, { persist: false });
+      }
     });
-  });
+    feedInputGainSlider.addEventListener('change', () => {
+      const value = parseFloat(feedInputGainSlider.value);
+      if (!Number.isNaN(value)) {
+        setFeedInputGainDb(value);
+      }
+    });
+  }
+
+  if (audioProcessingToggle) {
+    audioProcessingToggle.checked = audioProcessingEnabled;
+    audioProcessingToggle.addEventListener('change', () => {
+      setAudioProcessingEnabled(audioProcessingToggle.checked);
+    });
+  }
 
   const storedQuality = localStorage.getItem('audioQualityProfile');
   if (qualitySelect) {
@@ -771,20 +1096,22 @@ document.addEventListener("DOMContentLoaded", () => {
       feedBanner.hidden = !isFeed;
     }
 
-    processingToggles.forEach(({ element, key, option, defaultValue }) => {
-      if (!element) return;
+    if (audioProcessingToggle) {
+      audioProcessingToggle.disabled = isFeed;
       if (isFeed) {
-        element.checked = false;
-        element.disabled = true;
-        audioProcessingOptions[option] = false;
+        audioProcessingToggle.checked = false;
+        audioProcessingOptions.echoCancellation = false;
+        audioProcessingOptions.noiseSuppression = false;
+        audioProcessingOptions.autoGainControl = false;
       } else {
-        element.disabled = false;
-        const stored = localStorage.getItem(key);
-        const value = stored === null ? defaultValue : stored === 'true';
-        element.checked = value;
-        audioProcessingOptions[option] = value;
+        audioProcessingToggle.checked = audioProcessingEnabled;
+        syncAudioProcessingOptions();
       }
-    });
+    } else {
+      if (!isFeed) {
+        syncAudioProcessingOptions();
+      }
+    }
 
     if (qualitySelect) {
       if (isFeed) {
@@ -815,6 +1142,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!feedBanner) return;
     const isFeed = session.kind === 'feed';
     feedBanner.hidden = !isFeed;
+    feedBanner.classList.toggle('is-streaming', feedStreaming);
     if (!isFeed) return;
 
     const transportReady = !!sendTransport && !sendTransport.closed;
@@ -955,8 +1283,12 @@ document.addEventListener("DOMContentLoaded", () => {
       const track = await ensureMicTrack(audioConstraints, selectedDeviceId);
       track.enabled = true;
 
+      const processing = ensureFeedProcessingChain(track);
+      const processedTrack = processing?.outputTrack || track;
+      processedTrack.enabled = true;
+
       const newProducer = await sendTransport.produce({
-        track,
+        track: processedTrack,
         appData: { type: 'feed', id: session.feedId },
         codecOptions: FEED_PROFILE.codecOptions ? { ...FEED_PROFILE.codecOptions } : undefined,
         encodings: FEED_PROFILE.encodings ? FEED_PROFILE.encodings.map(enc => ({ ...enc })) : undefined,
@@ -983,6 +1315,9 @@ document.addEventListener("DOMContentLoaded", () => {
           scheduleMicCleanup();
           shouldStartFeedWhenReady = true;
         }
+        if (processedTrack && processedTrack !== track) {
+          processedTrack.enabled = false;
+        }
       });
 
       newProducer.on('transportclose', () => {
@@ -993,6 +1328,9 @@ document.addEventListener("DOMContentLoaded", () => {
         updateFeedControls();
         if (!feedManualStop) {
           shouldStartFeedWhenReady = true;
+        }
+        if (processedTrack && processedTrack !== track) {
+          processedTrack.enabled = false;
         }
       });
 
