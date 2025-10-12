@@ -53,7 +53,38 @@ const QUALITY_PROFILES = {
 const defaultVolume = 0.9;
 const IDENTITY_KIND_KEY = 'identityKind';
 const FEED_ID_STORAGE_KEY = 'feedId';
-const FEED_DUCKING_FACTOR = 0.35;
+const FEED_DUCKING_DB_STORAGE_KEY = 'feedDimDb';
+const DEFAULT_FEED_DUCKING_DB = -14;
+const FEED_DUCKING_DB_MIN = -60;
+const FEED_DUCKING_DB_MAX = -6;
+const FEED_DIM_SELF_STORAGE_KEY = 'feedDimSelf';
+
+let feedDuckingDb = DEFAULT_FEED_DUCKING_DB;
+let feedDuckingFactor = dbToLinear(feedDuckingDb);
+let feedDimSelf = false;
+
+if (typeof window !== 'undefined') {
+  try {
+    const storedDb = window.localStorage?.getItem(FEED_DUCKING_DB_STORAGE_KEY);
+    if (storedDb !== null) {
+      const parsed = parseFloat(storedDb);
+      if (!Number.isNaN(parsed)) {
+        feedDuckingDb = clampFeedDuckingDb(parsed);
+        feedDuckingFactor = dbToLinear(feedDuckingDb);
+      }
+    }
+    const storedSelfDim = window.localStorage?.getItem(FEED_DIM_SELF_STORAGE_KEY);
+    if (storedSelfDim !== null) {
+      feedDimSelf = storedSelfDim === 'true';
+    }
+  } catch (err) {
+    console.warn('Unable to restore feed dim level from storage:', err);
+  }
+}
+const isiOS = typeof navigator !== 'undefined'
+  ? /iPad|iPhone|iPod/.test(navigator.userAgent || '') ||
+    (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent || ''))
+  : false;
 
 const FEED_PROFILE = {
   label: 'Feed (raw stream)',
@@ -72,12 +103,16 @@ const FEED_PROFILE = {
 let session = { kind: 'guest', userId: null, feedId: null, name: null };
 let inputSelect;
 let qualitySelect;
+let dimAmountSelect;
+let dimWhileSpeakingToggle;
 const MIC_DEVICE_STORAGE_KEY = 'preferredAudioInputDeviceId';
 
 let micStream = null;
 let micTrack = null;
 let micDeviceId = null;
 let micCleanupTimer = null;
+let micPrimed = false;
+let micPrimingPromise = null;
 const audioProcessingOptions = {
   echoCancellation: false,
   noiseSuppression: false,
@@ -87,6 +122,103 @@ const audioProcessingOptions = {
 let feedStreaming = false;
 let feedManualStop = false;
 let shouldStartFeedWhenReady = false;
+const USER_ACTIVATION_EVENTS = ['pointerdown', 'touchstart', 'keydown'];
+const pendingAutoplayAudios = new Set();
+let sharedAudioContext = null;
+let onAudioContextRunning = null;
+let requestAudioUnlockOverlay = () => {};
+let dismissAudioUnlockOverlay = () => {};
+let audioUnlockAwaiting = false;
+
+function clampFeedDuckingDb(value) {
+  if (!Number.isFinite(value)) return DEFAULT_FEED_DUCKING_DB;
+  return Math.min(FEED_DUCKING_DB_MAX, Math.max(FEED_DUCKING_DB_MIN, value));
+}
+
+function dbToLinear(dbValue) {
+  return Math.pow(10, dbValue / 20);
+}
+
+function formatFeedDimDbOptionText(dbValue) {
+  const rounded = Math.round(dbValue * 10) / 10;
+  if (rounded === 0) return 'No dim (0 dB)';
+  return `Custom (${rounded} dB)`;
+}
+
+function syncDimAmountSelect(value) {
+  if (!dimAmountSelect) return;
+  const valueStr = String(value);
+  const options = Array.from(dimAmountSelect.options);
+  if (!options.some(opt => opt.value === valueStr)) {
+    const opt = document.createElement('option');
+    opt.value = valueStr;
+    opt.textContent = formatFeedDimDbOptionText(value);
+    dimAmountSelect.appendChild(opt);
+  }
+  if (dimAmountSelect.value !== valueStr) {
+    dimAmountSelect.value = valueStr;
+  }
+}
+
+function ensureAudioContext() {
+  if (typeof window === 'undefined') return null;
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtx) return null;
+  if (!sharedAudioContext) {
+    try {
+      sharedAudioContext = new AudioCtx({ latencyHint: 'interactive', sampleRate: 48000 });
+      sharedAudioContext.addEventListener('statechange', () => {
+        if (sharedAudioContext.state === 'running' && typeof onAudioContextRunning === 'function') {
+          onAudioContextRunning();
+        }
+      });
+    } catch (err) {
+      console.warn('Failed to create AudioContext:', err);
+      sharedAudioContext = null;
+      return null;
+    }
+  }
+  return sharedAudioContext;
+}
+
+function attemptPendingAutoplay() {
+  pendingAutoplayAudios.forEach(audio => {
+    const playPromise = audio.play?.();
+    if (!playPromise || typeof playPromise.then !== 'function') {
+      if (!audio.paused) {
+        pendingAutoplayAudios.delete(audio);
+      }
+      return;
+    }
+    playPromise
+      .then(() => pendingAutoplayAudios.delete(audio))
+      .catch(err => console.warn('Autoplay retry failed:', err));
+  });
+}
+
+function handleUserActivation() {
+  attemptPendingAutoplay();
+  primeVoiceProcessingMode().catch(() => {});
+  const ctx = ensureAudioContext();
+  if (!ctx) return;
+  if (ctx.state === 'running') {
+    if (audioUnlockAwaiting && typeof dismissAudioUnlockOverlay === 'function') {
+      dismissAudioUnlockOverlay();
+      audioUnlockAwaiting = false;
+    }
+    if (typeof onAudioContextRunning === 'function') {
+      onAudioContextRunning();
+    }
+  } else if (ctx.state === 'suspended') {
+    if (typeof requestAudioUnlockOverlay === 'function') {
+      requestAudioUnlockOverlay();
+    }
+  }
+}
+
+USER_ACTIVATION_EVENTS.forEach(event => {
+  window.addEventListener(event, handleUserActivation, { capture: true });
+});
 
 
 socket.onAny((event, ...args) => {
@@ -208,6 +340,7 @@ async function ensureMicTrack(audioConstraints, selectedDeviceId) {
   micStream = stream;
   micTrack = track;
   micDeviceId = selectedDeviceId || track.getSettings?.().deviceId || null;
+  micPrimed = true;
 
   if (micDeviceId) {
     localStorage.setItem(MIC_DEVICE_STORAGE_KEY, micDeviceId);
@@ -233,6 +366,70 @@ async function ensureMicTrack(audioConstraints, selectedDeviceId) {
   return micTrack;
 }
 
+async function primeVoiceProcessingMode() {
+  if (!isiOS) return;
+  if (micPrimed) return;
+  if (micPrimingPromise) return micPrimingPromise;
+
+  micPrimingPromise = (async () => {
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+      const [track] = stream.getAudioTracks();
+      if (!track) {
+        console.warn('Voice processing priming: no audio track returned');
+        return;
+      }
+      micPrimed = true;
+      const ctx = ensureAudioContext();
+      if (ctx) {
+        try {
+          const source = ctx.createMediaStreamSource(stream);
+          const gain = ctx.createGain();
+          gain.gain.value = 0;
+          source.connect(gain).connect(ctx.destination);
+          await new Promise(res => setTimeout(res, 200));
+          source.disconnect();
+          gain.disconnect();
+        } catch (err) {
+          console.warn('Voice processing priming via AudioContext failed:', err);
+        }
+      } else {
+        const tempAudio = document.createElement('audio');
+        tempAudio.srcObject = stream;
+        tempAudio.muted = true;
+        try {
+          await tempAudio.play();
+          await new Promise(res => setTimeout(res, 200));
+        } catch (err) {
+          console.warn('Voice processing priming playback failed:', err);
+        } finally {
+          tempAudio.pause();
+          tempAudio.srcObject = null;
+        }
+      }
+    } catch (err) {
+      console.warn('Voice processing priming failed:', err);
+    } finally {
+      if (stream) {
+        stream.getTracks().forEach(track => {
+          try { track.stop(); } catch {}
+        });
+      }
+      micPrimingPromise = null;
+    }
+  })();
+
+  return micPrimingPromise;
+}
+
 function currentQualityKey() {
   const fromSelect = qualitySelect?.value;
   if (fromSelect && QUALITY_PROFILES[fromSelect]) return fromSelect;
@@ -248,6 +445,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   inputSelect  = document.getElementById("input-select");
   qualitySelect = document.getElementById("quality-select");
+  dimAmountSelect = document.getElementById('dim-amount-select');
+  dimWhileSpeakingToggle = document.getElementById('toggle-self-dim');
   const echoToggle = document.getElementById('toggle-echo');
   const noiseToggle = document.getElementById('toggle-noise');
   const agcToggle = document.getElementById('toggle-agc');
@@ -291,6 +490,61 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   } else if (!storedQuality || !QUALITY_PROFILES[storedQuality]) {
     localStorage.setItem('audioQualityProfile', 'ultra-low');
+  }
+
+  function setFeedDuckingDb(dbValue, { persist = true, apply = true } = {}) {
+    if (Number.isNaN(dbValue) || !Number.isFinite(dbValue)) return;
+    const clamped = clampFeedDuckingDb(dbValue);
+    feedDuckingDb = clamped;
+    feedDuckingFactor = dbToLinear(clamped);
+
+    syncDimAmountSelect(clamped);
+
+    if (persist && typeof window !== 'undefined') {
+      try {
+        window.localStorage?.setItem(FEED_DUCKING_DB_STORAGE_KEY, String(clamped));
+      } catch (err) {
+        console.warn('Unable to persist feed dim level:', err);
+      }
+    }
+
+    if (apply) {
+      applyFeedDucking();
+    }
+  }
+
+  if (dimAmountSelect) {
+    syncDimAmountSelect(feedDuckingDb);
+    dimAmountSelect.addEventListener('change', () => {
+      const selectedDb = parseFloat(dimAmountSelect.value);
+      if (Number.isNaN(selectedDb)) return;
+      setFeedDuckingDb(selectedDb);
+    });
+  }
+
+  function setFeedDimSelf(value, { persist = true, apply = true } = {}) {
+    const enabled = !!value;
+    feedDimSelf = enabled;
+    if (dimWhileSpeakingToggle && dimWhileSpeakingToggle.checked !== enabled) {
+      dimWhileSpeakingToggle.checked = enabled;
+    }
+    if (persist && typeof window !== 'undefined') {
+      try {
+        window.localStorage?.setItem(FEED_DIM_SELF_STORAGE_KEY, String(enabled));
+      } catch (err) {
+        console.warn('Unable to persist self dim preference:', err);
+      }
+    }
+    if (apply) {
+      applyFeedDucking();
+    }
+  }
+
+  if (dimWhileSpeakingToggle) {
+    dimWhileSpeakingToggle.checked = feedDimSelf;
+    dimWhileSpeakingToggle.addEventListener('change', () => {
+      setFeedDimSelf(dimWhileSpeakingToggle.checked);
+    });
   }
 
   updateDeviceList().catch(err => console.error("updateDeviceList failed:", err));
@@ -352,6 +606,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const confAudioElements = new Map();
   const feedAudioElements = new Map();
   const feedDimmingDisabled = new Set();
+  const activeTalkersForMe = new Set();
+  const talkerConsumersForMe = new Map();
   const speakingPeers = new Set();
   const lastSpokePeers = new Map();
   const mutedPeers = new Set();
@@ -366,6 +622,131 @@ document.addEventListener("DOMContentLoaded", () => {
   let shouldInitializeAfterConnect = false;
   let activeLockButton = null;
   let activeLockTarget = null;
+  const audioUnlockOverlayEl = document.getElementById('audio-unlock-overlay');
+  const audioUnlockButtonEl = document.getElementById('audio-unlock-btn');
+
+  requestAudioUnlockOverlay = () => {
+    if (!isiOS || !audioUnlockOverlayEl) return;
+    audioUnlockOverlayEl.hidden = false;
+    audioUnlockAwaiting = true;
+  };
+
+  dismissAudioUnlockOverlay = () => {
+    if (!audioUnlockOverlayEl) return;
+    audioUnlockOverlayEl.hidden = true;
+    audioUnlockAwaiting = false;
+  };
+
+  onAudioContextRunning = () => {
+    primeVoiceProcessingMode().catch(() => {});
+    if (audioUnlockAwaiting) {
+      dismissAudioUnlockOverlay();
+    }
+    attemptPendingAutoplay();
+    if (session.kind === 'user') {
+      applyFeedDucking();
+    } else {
+      feedAudioElements.forEach(set => {
+        set.forEach(audioEl => {
+          const entry = audioEntryMap.get(audioEl);
+          if (!entry) return;
+          if (mutedPeers.has(entry.key)) {
+            muteFeedEntry(entry);
+          } else {
+            setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
+            enforcePitchLock(entry.audio);
+            attemptPlayAudio(entry.audio).catch(() => {});
+          }
+        });
+      });
+    }
+  };
+
+  audioUnlockButtonEl?.addEventListener('click', async () => {
+    const ctx = ensureAudioContext();
+    if (!ctx) {
+      dismissAudioUnlockOverlay();
+      return;
+    }
+    try {
+      await ctx.resume();
+      await primeVoiceProcessingMode();
+      dismissAudioUnlockOverlay();
+      attemptPendingAutoplay();
+      if (session.kind === 'user') {
+        applyFeedDucking();
+      }
+    } catch (err) {
+      console.warn('Audio unlock resume failed:', err);
+    }
+  });
+
+  function setFeedEntryLevel(entry, value) {
+    if (!entry || !entry.audio) return;
+    const applied = Math.max(0, Math.min(1, value));
+    if (entry.gainNode) {
+      entry.audio.muted = true;
+      entry.audio.volume = 0;
+      entry.gainNode.gain.value = applied;
+    } else {
+      entry.audio.muted = applied === 0;
+      entry.audio.volume = applied;
+    }
+    entry.lastAppliedLevel = applied;
+  }
+
+  function muteFeedEntry(entry) {
+    if (!entry || !entry.audio) return;
+    if (entry.gainNode) {
+      entry.audio.muted = true;
+      entry.audio.volume = 0;
+      entry.gainNode.gain.value = 0;
+    } else {
+      entry.audio.muted = true;
+      entry.audio.volume = 0;
+    }
+    entry.lastAppliedLevel = 0;
+  }
+  let feedDuckingActive = false;
+
+  function isFeedKey(key) {
+    return typeof key === 'string' && key.startsWith('feed-');
+  }
+
+  function enforcePitchLock(audioEl) {
+    if (!audioEl) return;
+    audioEl.defaultPlaybackRate = 1;
+    audioEl.playbackRate = 1;
+    ['preservesPitch', 'mozPreservesPitch', 'webkitPreservesPitch'].forEach(prop => {
+      if (prop in audioEl) {
+        try { audioEl[prop] = true; } catch {}
+      }
+    });
+  }
+
+  function attemptPlayAudio(audioEl) {
+    if (!audioEl || typeof audioEl.play !== 'function') return Promise.resolve();
+    try {
+      const maybePromise = audioEl.play();
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        return maybePromise
+          .then(() => {
+            pendingAutoplayAudios.delete(audioEl);
+          })
+          .catch(err => {
+            pendingAutoplayAudios.add(audioEl);
+            console.warn('Autoplay blocked, queued for retry:', err);
+            throw err;
+          });
+      }
+      pendingAutoplayAudios.delete(audioEl);
+      return Promise.resolve();
+    } catch (err) {
+      pendingAutoplayAudios.add(audioEl);
+      console.warn('Autoplay attempt failed, queued for retry:', err);
+      return Promise.reject(err);
+    }
+  }
 
   function renderReplyButtonLabel() {
     const suffix = lastTarget?.label ? ` (${lastTarget.label})` : "";
@@ -418,6 +799,13 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
+    if (dimWhileSpeakingToggle) {
+      dimWhileSpeakingToggle.disabled = isFeed;
+      if (!isFeed) {
+        dimWhileSpeakingToggle.checked = feedDimSelf;
+      }
+    }
+
     updateFeedControls();
   }
 
@@ -451,21 +839,79 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function applyFeedDucking() {
     if (session.kind !== 'user') return;
-    const shouldDuck = Array.from(speakingPeers).some((key) => !key.startsWith('feed-'));
+    const shouldDimSelf = feedDimSelf && isTalking;
+    const shouldDuck = activeTalkersForMe.size > 0 || shouldDimSelf;
+    const stateChanged = shouldDuck !== feedDuckingActive;
+    feedDuckingActive = shouldDuck;
 
     for (const [feedId, audios] of feedAudioElements) {
       const key = `feed-${feedId}`;
       const tile = document.getElementById(key);
-      const dimDisabled = feedDimmingDisabled.has(feedId);
-      tile?.classList.toggle('feed-dimmed', shouldDuck && !dimDisabled);
+      const dimDisabled = feedDimmingDisabled.has(String(feedId));
+      const shouldDim = shouldDuck && !dimDisabled && feedDuckingFactor < 0.999;
+      tile?.classList.toggle('feed-dimmed', shouldDim);
 
       for (const audioEl of audios) {
         const entry = audioEntryMap.get(audioEl);
         if (!entry) continue;
+        if (mutedPeers.has(key)) {
+          muteFeedEntry(entry);
+          continue;
+        }
+
         const base = Math.max(0, Math.min(1, entry.volume ?? defaultVolume));
-        const targetVol = shouldDuck ? Math.max(0, Math.min(1, base * FEED_DUCKING_FACTOR)) : base;
-        audioEl.volume = targetVol;
+        const targetVol = shouldDim
+          ? Math.max(0, Math.min(1, base * feedDuckingFactor))
+          : base;
+
+        setFeedEntryLevel(entry, targetVol);
+        enforcePitchLock(entry.audio);
+        attemptPlayAudio(entry.audio).catch(() => {});
       }
+    }
+
+    if (stateChanged) {
+      attemptPendingAutoplay();
+    }
+  }
+
+  function trackTalkerForMe(key, consumerId) {
+    let set = talkerConsumersForMe.get(key);
+    if (!set) {
+      set = new Set();
+      talkerConsumersForMe.set(key, set);
+    }
+
+    const hadEntries = set.size > 0;
+    set.add(consumerId);
+    if (!hadEntries) {
+      activeTalkersForMe.add(key);
+      if (session.kind === 'user') {
+        applyFeedDucking();
+      }
+    }
+  }
+
+  function untrackTalkerForMe(key, consumerId) {
+    const set = talkerConsumersForMe.get(key);
+    if (!set) return;
+
+    if (!set.delete(consumerId)) {
+      return;
+    }
+
+    if (set.size === 0) {
+      talkerConsumersForMe.delete(key);
+      if (activeTalkersForMe.delete(key) && session.kind === 'user') {
+        applyFeedDucking();
+      }
+    }
+  }
+
+  function clearTalkersForKey(key) {
+    talkerConsumersForMe.delete(key);
+    if (activeTalkersForMe.delete(key) && session.kind === 'user') {
+      applyFeedDucking();
     }
   }
 
@@ -788,6 +1234,10 @@ document.addEventListener("DOMContentLoaded", () => {
     recvTransport = null;
     producer = null;
     pendingProducerQueue.length = 0;
+    speakingPeers.clear();
+    activeTalkersForMe.clear();
+    talkerConsumersForMe.clear();
+    feedAudioElements.clear();
 
     if (session.kind === 'feed') {
       feedStreaming = false;
@@ -1109,7 +1559,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const dimBtn = document.createElement('button');
         dimBtn.className = 'lock-btn dim-btn';
-        const dimDisabled = feedDimmingDisabled.has(id);
+        const feedKeyId = String(id);
+        const dimDisabled = feedDimmingDisabled.has(feedKeyId);
         dimBtn.textContent = 'Dim';
         dimBtn.type = 'button';
         dimBtn.setAttribute('aria-pressed', dimDisabled ? 'true' : 'false');
@@ -1117,12 +1568,12 @@ document.addEventListener("DOMContentLoaded", () => {
         dimBtn.addEventListener('pointerdown', e => e.stopPropagation());
         dimBtn.addEventListener('click', e => {
           e.stopPropagation();
-          if (feedDimmingDisabled.has(id)) {
-            feedDimmingDisabled.delete(id);
+          if (feedDimmingDisabled.has(feedKeyId)) {
+            feedDimmingDisabled.delete(feedKeyId);
             dimBtn.setAttribute('aria-pressed', 'false');
             dimBtn.classList.remove('dim-off');
           } else {
-            feedDimmingDisabled.add(id);
+            feedDimmingDisabled.add(feedKeyId);
             dimBtn.setAttribute('aria-pressed', 'true');
             dimBtn.classList.add('dim-off');
           }
@@ -1142,12 +1593,19 @@ document.addEventListener("DOMContentLoaded", () => {
         feedSlider.className = 'volume-slider';
         feedSlider.title = 'Feed Volume';
         feedSlider.addEventListener('input', e => {
-          const vol = parseFloat(e.target.value);
+          const vol = Math.max(0, Math.min(1, parseFloat(e.target.value)));
           const audios = feedAudioElements.get(id);
           if (audios) {
             audios.forEach(a => {
               const entry = audioEntryMap.get(a);
-              if (entry) entry.volume = vol;
+              if (entry?.audio) {
+                entry.volume = vol;
+                if (!mutedPeers.has(key)) {
+                  setFeedEntryLevel(entry, vol);
+                  enforcePitchLock(entry.audio);
+                  attemptPlayAudio(entry.audio).catch(() => {});
+                }
+              }
             });
           }
           storeVolume(feedKey, vol);
@@ -1203,6 +1661,15 @@ document.addEventListener("DOMContentLoaded", () => {
       speakingPeers.delete(feedKey);
       mutedPeers.delete(feedKey);
       updateSpeakerHighlight(feedKey, false);
+      pendingAutoplayAudios.delete(entry.audio);
+      if (entry.mediaSource) {
+        try { entry.mediaSource.disconnect(); } catch {}
+        entry.mediaSource = null;
+      }
+      if (entry.gainNode) {
+        try { entry.gainNode.disconnect(); } catch {}
+        entry.gainNode = null;
+      }
       entry.audio.remove();
       audioEntryMap.delete(entry.audio);
       audioElements.delete(mapKey);
@@ -1288,6 +1755,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     try {
+      const shouldTrackForMe = normalizedAppData.type !== 'feed';
       speakingPeers.add(key);
       updateSpeakerHighlight(key, true);
 
@@ -1302,72 +1770,174 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // actually create the consumer
       const consumer = await recvTransport.consume(consumeParams);
+      const receiver = consumer?.rtpReceiver;
+      if (receiver && 'playoutDelayHint' in receiver) {
+        try { receiver.playoutDelayHint = 0.02; } catch (err) { console.debug('playoutDelayHint set failed', err); }
+      }
 
       // track this consumer for mute/unmute
       if (!peerConsumers.has(key)) peerConsumers.set(key, new Set());
       peerConsumers.get(key).add(consumer);
-      if (mutedPeers.has(key)) consumer.pause();
+      if (mutedPeers.has(key) && !isFeedKey(key)) consumer.pause();
+      if (shouldTrackForMe) {
+        trackTalkerForMe(key, consumer.id);
+      }
 
       // wrap the track in a MediaStream
       const stream = new MediaStream([consumer.track]);
+      const ctxForFeed = normalizedAppData.type === 'feed' ? ensureAudioContext() : null;
 
-      // if this is the first time seeing this peer, create an <audio> element
       if (!audioElements.has(key)) {
         const audio = document.createElement('audio');
         audio.srcObject = stream;
         audio.autoplay = true;
+        audio.playsInline = true;
+        audio.setAttribute('playsinline', 'true');
+        audio.setAttribute('autoplay', 'true');
+        enforcePitchLock(audio);
 
-        const initVol = getStoredVolume(volumeStorageKey);
-        audio.volume = initVol;
+        const initVolRaw = getStoredVolume(volumeStorageKey);
+        const initVol = Math.max(0, Math.min(1, initVolRaw));
+        let gainNode = null;
+        let mediaSource = null;
 
-        // add the element to the DOM and save it
+        if (normalizedAppData.type === 'feed' && ctxForFeed) {
+          try {
+            mediaSource = ctxForFeed.createMediaStreamSource(stream);
+            gainNode = ctxForFeed.createGain();
+            gainNode.gain.value = 0;
+            mediaSource.connect(gainNode);
+            gainNode.connect(ctxForFeed.destination);
+            audio.muted = true;
+            audio.volume = 0;
+            if (ctxForFeed.state !== 'running') {
+              requestAudioUnlockOverlay();
+            }
+          } catch (err) {
+            console.warn('Failed to initialize feed gain path:', err);
+            gainNode = null;
+            mediaSource = null;
+          }
+        }
+
+        if (!gainNode) {
+          const applied = Math.max(0, Math.min(1, initVol));
+          if (mutedPeers.has(key)) {
+            audio.muted = true;
+            audio.volume = 0;
+          } else {
+            audio.muted = false;
+            audio.volume = applied;
+          }
+        }
+
         audioStreamsDiv.appendChild(audio);
-        const entry = { audio, volume: initVol, key, type: normalizedAppData.type || 'user' };
+        const entry = {
+          audio,
+          volume: initVol,
+          key,
+          type: normalizedAppData.type || 'user',
+          gainNode,
+          mediaSource,
+          lastAppliedLevel: null,
+        };
         audioElements.set(key, entry);
         audioEntryMap.set(audio, entry);
 
-        // if this is a conference stream, also track it in confAudioElements
-        if (normalizedAppData.type === 'conference') {
-          const confId = normalizedAppData.id;
-          if (!confAudioElements.has(confId)) {
-            confAudioElements.set(confId, new Set());
-          }
-          confAudioElements.get(confId).add(audio);
-
-          // remove from the set when the producer closes
-          consumer.on('producerclose', () => {
-            confAudioElements.get(confId)?.delete(audio);
-          });
-        }
-
         if (normalizedAppData.type === 'feed') {
-          const feedId = normalizedAppData.id;
+          if (mutedPeers.has(key)) {
+            muteFeedEntry(entry);
+          } else if (session.kind === 'user') {
+            setFeedEntryLevel(entry, entry.volume);
+            applyFeedDucking();
+          } else {
+            setFeedEntryLevel(entry, entry.volume);
+          }
+
+          const feedId = Number(normalizedAppData.id);
           if (!feedAudioElements.has(feedId)) {
             feedAudioElements.set(feedId, new Set());
           }
           feedAudioElements.get(feedId).add(audio);
 
           consumer.on('producerclose', () => {
-            feedAudioElements.get(feedId)?.delete(audio);
-            applyFeedDucking();
+            const set = feedAudioElements.get(feedId);
+            set?.delete(audio);
+            if (session.kind === 'user') {
+              applyFeedDucking();
+            }
           });
-          applyFeedDucking();
+        } else {
+          const applied = Math.max(0, Math.min(1, entry.volume));
+          if (mutedPeers.has(key)) {
+            entry.audio.muted = true;
+            entry.audio.volume = 0;
+          } else {
+            entry.audio.muted = false;
+            entry.audio.volume = applied;
+          }
+
+          if (normalizedAppData.type === 'conference') {
+            const confId = normalizedAppData.id;
+            if (!confAudioElements.has(confId)) {
+              confAudioElements.set(confId, new Set());
+            }
+            confAudioElements.get(confId).add(audio);
+
+            consumer.on('producerclose', () => {
+              confAudioElements.get(confId)?.delete(audio);
+            });
+          }
         }
       } else {
-        // for subsequent streams, just swap the stream and preserve volume
         const entry = audioElements.get(key);
         entry.audio.srcObject = stream;
-        entry.audio.volume = entry.volume;
-        audioEntryMap.set(entry.audio, entry);
+        enforcePitchLock(entry.audio);
+
         if (entry.type === 'feed') {
+          const ctx = ensureAudioContext();
+          if (entry.gainNode && ctx) {
+            try {
+              entry.mediaSource?.disconnect();
+              entry.mediaSource = ctx.createMediaStreamSource(stream);
+              entry.mediaSource.connect(entry.gainNode);
+              entry.audio.muted = true;
+              entry.audio.volume = 0;
+              if (ctx.state !== 'running') {
+                requestAudioUnlockOverlay();
+              }
+            } catch (err) {
+              console.warn('Failed to refresh feed gain path:', err);
+              entry.mediaSource = null;
+              try { entry.gainNode.disconnect(); } catch {}
+              entry.gainNode = null;
+              entry.audio.muted = false;
+              entry.audio.volume = Math.max(0, Math.min(1, entry.volume ?? defaultVolume));
+            }
+          }
+
+          if (mutedPeers.has(key)) {
+            muteFeedEntry(entry);
+          } else if (session.kind === 'user') {
+            setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
+            applyFeedDucking();
+          } else {
+            setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
+          }
+        } else {
+          const applied = Math.max(0, Math.min(1, entry.volume ?? defaultVolume));
+          entry.audio.muted = mutedPeers.has(key);
+          entry.audio.volume = mutedPeers.has(key) ? 0 : applied;
+        }
+
+        audioEntryMap.set(entry.audio, entry);
+        if (entry.type === 'feed' && session.kind === 'user') {
           applyFeedDucking();
         }
       }
 
       // attempt to play
-      try {
-        await audioElements.get(key).audio.play();
-      } catch {}
+      await attemptPlayAudio(audioElements.get(key)?.audio).catch(() => {});
 
       // tell server to resume the consumer
       await new Promise((res) =>
@@ -1377,22 +1947,51 @@ document.addEventListener("DOMContentLoaded", () => {
       // cleanup when the producer actually closes
       consumer.on('producerclose', () => {
         console.log(`Producer closed for consumer ${consumer.id}`);
+
+        if (shouldTrackForMe) {
+          untrackTalkerForMe(key, consumer.id);
+        }
+
+        const consumersSet = peerConsumers.get(key);
+        let remaining = 0;
+        if (consumersSet) {
+          consumersSet.delete(consumer);
+          remaining = consumersSet.size;
+          if (remaining === 0) {
+            peerConsumers.delete(key);
+          }
+        }
+
+        if (remaining > 0) {
+          return;
+        }
+
         speakingPeers.delete(key);
         updateSpeakerHighlight(key, false);
 
         const stored = audioElements.get(key);
         if (stored) {
           const audioEl = stored.audio;
+          pendingAutoplayAudios.delete(audioEl);
+          if (stored.mediaSource) {
+            try { stored.mediaSource.disconnect(); } catch {}
+            stored.mediaSource = null;
+          }
+          if (stored.gainNode) {
+            try { stored.gainNode.disconnect(); } catch {}
+            stored.gainNode = null;
+          }
           audioEl.remove();
           audioEntryMap.delete(audioEl);
           audioElements.delete(key);
           if (stored.type === 'feed') {
-            const feedId = normalizedAppData.id;
+            const feedId = Number(normalizedAppData.id);
             feedAudioElements.get(feedId)?.delete(audioEl);
-            applyFeedDucking();
+            if (session.kind === 'user') {
+              applyFeedDucking();
+            }
           }
         }
-        peerConsumers.get(key)?.delete(consumer);
       });
     } catch (err) {
       console.error('Error consuming:', err);
@@ -1402,13 +2001,26 @@ document.addEventListener("DOMContentLoaded", () => {
   async function processPendingProducers() {
     if (!device || !recvTransport) return;
 
+    const seenDuringFlush = new Set();
     while (pendingProducerQueue.length) {
       const payload = pendingProducerQueue.shift();
+      if (payload?.appData?.type === 'conference' && payload.appData.id != null) {
+        seenDuringFlush.add(Number(payload.appData.id));
+      }
       try {
         await consumeProducerPayload(payload);
       } catch (err) {
         console.error('Failed to consume queued producer', err);
       }
+    }
+    if (seenDuringFlush.size) {
+      document.querySelectorAll('.target-item.conference-target').forEach(li => {
+        const confId = Number(li.dataset.id);
+        if (!seenDuringFlush.has(confId)) {
+          li.classList.remove('speaking', 'last-spoke');
+          li.querySelector('.conf-icon')?.classList.remove('speaking');
+        }
+      });
     }
   }
 
@@ -1607,8 +2219,6 @@ document.addEventListener("DOMContentLoaded", () => {
       key = `conf-${appData.id}`;
     } else if (appData?.type === "feed") {
       key = `feed-${appData.id}`;
-    } else if (appData?.type === "user" && appData?.id) {
-      key = `user-${appData.id}`;
     } else {
       key = `user-${peerId}`;
     }
@@ -1616,21 +2226,37 @@ document.addEventListener("DOMContentLoaded", () => {
     // 2️⃣ Continue only if we were actually consuming this key
     const consumersSet = peerConsumers.get(key);
     if (!consumersSet || consumersSet.size === 0) {
-      // We are not listening to this stream, so skip the highlight
+      clearTalkersForKey(key);
+      speakingPeers.delete(key);
+      updateSpeakerHighlight(key, false);
       return;
     }
 
-    // 3️⃣ Clean up any remaining consumers
-    consumersSet.forEach(c => { try { c.close(); } catch {} });
+    consumersSet.forEach(c => {
+      if (appData?.type !== 'feed') {
+        untrackTalkerForMe(key, c.id);
+      }
+      try { c.close(); } catch {}
+    });
     peerConsumers.delete(key);
 
-    // 4️⃣ Remove from speakingPeers
     speakingPeers.delete(key);
-
-    // 5️⃣ Update the last-spoke indicator
     updateSpeakerHighlight(key, false);
-    if (key.startsWith('feed-')) {
-      applyFeedDucking();
+
+    const stored = audioElements.get(key);
+    if (stored) {
+      const audioEl = stored.audio;
+      pendingAutoplayAudios.delete(audioEl);
+      audioEl.remove();
+      audioEntryMap.delete(audioEl);
+      audioElements.delete(key);
+      if (stored.type === 'feed') {
+        const feedId = Number(appData?.id);
+        feedAudioElements.get(feedId)?.delete(audioEl);
+        if (session.kind === 'user') {
+          applyFeedDucking();
+        }
+      }
     }
   });
 
@@ -1647,17 +2273,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function updateSpeakerHighlight(targetKey, isSpeaking) {
     const el = document.getElementById(targetKey);
-    if (targetKey.startsWith('feed-')) {
-      const tile = document.getElementById(targetKey);
-      if (isSpeaking) {
-        tile?.classList.add('feed-speaking');
-      } else {
-        tile?.classList.remove('feed-speaking');
-      }
-      return;
-    }
-
-    const iconCls = targetKey.startsWith("conf-") ? ".conf-icon" : ".user-icon";
+    const iconCls = targetKey.startsWith("conf-") ? ".conf-icon" : targetKey.startsWith("feed-") ? ".feed-icon" : ".user-icon";
     const icon    = el?.querySelector(iconCls);
 
     if (isSpeaking) {
@@ -1746,17 +2362,49 @@ document.addEventListener("DOMContentLoaded", () => {
     console.log("[DEBUG] toggleMute with key:", key, "Consumers:", consumers);
 
     // 2) Remaining logic
-    const isMuted = mutedPeers.has(key);
-    if (isMuted) mutedPeers.delete(key);
-    else         mutedPeers.add(key);
+    const wasMuted = mutedPeers.has(key);
+    if (wasMuted) mutedPeers.delete(key);
+    else          mutedPeers.add(key);
 
-    if (consumers) {
+    const nowMuted = mutedPeers.has(key);
+
+    if (isFeedKey(key)) {
+      const entry = audioElements.get(key);
+      if (entry?.audio) {
+        if (nowMuted) {
+          muteFeedEntry(entry);
+        } else {
+          setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
+          enforcePitchLock(entry.audio);
+          attemptPlayAudio(entry.audio).catch(() => {});
+        }
+      }
+      if (session.kind === 'user') {
+        applyFeedDucking();
+      }
+    } else if (consumers) {
       consumers.forEach(c => {
         if (!c?.pause || !c?.resume) return;
-        mutedPeers.has(key) ? c.pause() : c.resume();
+        nowMuted ? c.pause() : c.resume();
       });
     } else {
       console.warn(`No active consumer for ${key}; deferring mute toggle.`);
+    }
+
+    if (!isFeedKey(key)) {
+      const entry = audioElements.get(key);
+      if (entry?.audio) {
+        if (nowMuted) {
+          entry.audio.muted = true;
+          entry.audio.volume = 0;
+        } else {
+          const base = Math.max(0, Math.min(1, entry.volume ?? defaultVolume));
+          const applied = Math.max(0, Math.min(1, base));
+          entry.audio.muted = false;
+          entry.audio.volume = applied;
+          enforcePitchLock(entry.audio);
+        }
+      }
     }
 
     // Update icon and list entry
@@ -1767,8 +2415,8 @@ document.addEventListener("DOMContentLoaded", () => {
           ? `${elSelector} .feed-icon`
           : `${elSelector} .user-icon`;
 
-    document.querySelector(elSelector)?.classList.toggle("muted", mutedPeers.has(key));
-    document.querySelector(iconSelector)?.classList.toggle("muted", mutedPeers.has(key));
+    document.querySelector(elSelector)?.classList.toggle("muted", nowMuted);
+    document.querySelector(iconSelector)?.classList.toggle("muted", nowMuted);
   }
 
 
@@ -1824,6 +2472,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     isTalking     = true;
     currentTarget = target;
+    currentTargetPeer = target.type === 'user' ? target.id : null;
+    if (feedDimSelf) {
+      applyFeedDucking();
+    }
 
     try {
       const qualityKey = currentQualityKey();
@@ -1893,6 +2545,7 @@ document.addEventListener("DOMContentLoaded", () => {
         micTrack.enabled = false;
       }
       scheduleMicCleanup();
+      applyFeedDucking();
 
       if (currentTarget) {
         const selector = currentTarget.type === "conference"
@@ -1955,6 +2608,9 @@ document.addEventListener("DOMContentLoaded", () => {
       li?.classList.remove("talking-to");
     }
     currentTarget = null;
+    currentTargetPeer = null;
+    applyFeedDucking();
+    attemptPendingAutoplay();
   }
 
 

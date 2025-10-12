@@ -34,6 +34,51 @@
         background-color: red !important;
       }
 
+      #audio-unlock-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(11, 17, 32, 0.92);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5rem;
+        z-index: 2000;
+      }
+
+      #audio-unlock-overlay[hidden] {
+        display: none;
+      }
+
+      .audio-unlock-card {
+        background: rgba(19, 26, 42, 0.95);
+        border-radius: 16px;
+        padding: 2rem 1.75rem;
+        max-width: 320px;
+        width: 100%;
+        text-align: center;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.55);
+        border: 1px solid rgba(148, 163, 184, 0.35);
+      }
+
+      .audio-unlock-card h2 {
+        margin: 0 0 0.5rem;
+        font-size: 1.4rem;
+        color: #e2e8f0;
+      }
+
+      .audio-unlock-card p {
+        margin: 0 0 1.25rem;
+        font-size: 0.95rem;
+        color: #cbd5f5;
+      }
+
+      .audio-unlock-card button {
+        padding: 0.65rem 1.3rem;
+        font-size: 1rem;
+        font-weight: 600;
+        border-radius: 999px;
+      }
+
       .container {
         max-width: 800px;
         margin: 0 auto;
@@ -123,7 +168,6 @@
         justify-content: center;
         gap: 1rem;
         backdrop-filter: blur(6px);
-        border-top: 1px solid rgba(148, 163, 184, 0.2);
         z-index: 1000;
       }
 
@@ -361,14 +405,10 @@
         user-select: none;
       }
 
-      /* Hover effect */
-      #targets-list li.target-item:hover:not(.you) {
-        background: #273549;
-      }
-
-      @media (max-width: 600px) {
+      /* Hover effect (desktop pointers only) */
+      @media (hover: hover) and (pointer: fine) {
         #targets-list li.target-item:hover:not(.you) {
-          background: #1f2937;
+          background: #273549;
         }
       }
 
@@ -415,7 +455,7 @@
       }
 
       #targets-list .feed-icon {
-        background: #0ea5e9;
+        background: #2563eb;
       }
 
       #targets-list li.feed-target {
@@ -424,16 +464,6 @@
 
       #targets-list li.feed-target.feed-dimmed {
         opacity: 0.65;
-      }
-
-      #targets-list li.feed-target.feed-speaking {
-        background: rgba(34, 197, 94, 0.12);
-        border-color: transparent;
-        box-shadow: none;
-      }
-
-      #targets-list li.feed-target.feed-speaking .feed-icon {
-        border: none;
       }
 
       #targets-list .target-info {
@@ -462,37 +492,48 @@
         appearance: none;
         background: transparent;
         margin: 0;
-        height: 4px;
+        height: 6px;
+      }
+
+      #targets-list .volume-slider:focus-visible {
+        outline: none;
       }
 
       #targets-list .volume-slider::-webkit-slider-runnable-track {
-        height: 4px;
+        height: 6px;
         border-radius: 999px;
-        background: rgba(148, 163, 184, 0.35);
+        background: rgba(148, 163, 184, 0.45);
       }
 
       #targets-list .volume-slider::-webkit-slider-thumb {
         -webkit-appearance: none;
-        width: 14px;
-        height: 14px;
+        width: 26px;
+        height: 26px;
         border-radius: 50%;
         background: #e2e8f0;
-        border: 1px solid rgba(148, 163, 184, 0.7);
-        margin-top: -5px;
+        border: 2px solid rgba(59, 130, 246, 0.6);
+        box-shadow: 0 2px 6px rgba(15, 23, 42, 0.35);
+        margin-top: -10px;
+        touch-action: pan-x;
+      }
+
+      #targets-list .volume-slider:active::-webkit-slider-thumb {
+        transform: scale(1.08);
       }
 
       #targets-list .volume-slider::-moz-range-track {
-        height: 4px;
+        height: 6px;
         border-radius: 999px;
-        background: rgba(148, 163, 184, 0.35);
+        background: rgba(148, 163, 184, 0.45);
       }
 
       #targets-list .volume-slider::-moz-range-thumb {
-        width: 14px;
-        height: 14px;
+        width: 26px;
+        height: 26px;
         border-radius: 50%;
         background: #e2e8f0;
-        border: 1px solid rgba(148, 163, 184, 0.7);
+        border: 2px solid rgba(59, 130, 246, 0.6);
+        box-shadow: 0 2px 6px rgba(15, 23, 42, 0.35);
       }
 
       #targets-list .target-actions {
@@ -531,6 +572,13 @@
 
       .dim-btn:hover {
         background: rgba(148, 163, 184, 0.18);
+      }
+
+      .dim-btn.dim-off {
+        color: rgba(148, 163, 184, 0.55);
+        text-decoration: line-through;
+        background: rgba(71, 85, 105, 0.2);
+        border-color: rgba(71, 85, 105, 0.4);
       }
 
       .dim-btn.dim-off {
@@ -655,7 +703,14 @@
     </style>
   </head>
   <body>
-  <div class="container">
+    <div id="audio-unlock-overlay" hidden>
+      <div class="audio-unlock-card">
+        <h2>Enable Audio</h2>
+        <p>Tap once to allow live audio playback.</p>
+        <button id="audio-unlock-btn" class="primary">Enable Audio</button>
+      </div>
+    </div>
+    <div class="container">
     <!-- Login Section -->
     <div id="login-container">
       <h2>Login</h2>
@@ -706,6 +761,19 @@
                 <option value="low">Low (10 ms frame, DTX on)</option>
                 <option value="standard">Standard (20 ms frame, DTX off)</option>
               </select>
+            </div>
+            <div class="device-selector feed-optional">
+              <label for="dim-amount-select">Dim amount</label>
+              <select id="dim-amount-select">
+                <option value="-6">-6 dB (light)</option>
+                <option value="-12">-12 dB (medium)</option>
+                <option value="-14" selected>-14 dB (default)</option>
+                <option value="-18">-18 dB (heavy)</option>
+                <option value="-24">-24 dB (max)</option>
+              </select>
+            </div>
+            <div class="processing-options feed-optional">
+              <label><input type="checkbox" id="toggle-self-dim" /> Dim while speaking</label>
             </div>
             <div class="processing-options feed-optional">
               <label><input type="checkbox" id="toggle-echo" /> Echo cancellation <span class="latency-hint">(increases latency ~25 ms)</span></label>
