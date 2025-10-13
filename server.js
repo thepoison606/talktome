@@ -307,10 +307,10 @@ app.put('/users/:id/targets/order', (req, res) => {
 });
 
 app.post('/users/:id/talk', (req, res) => {
-  let { action, targetType = 'conference', targetId = null, mode = 'list' } = req.body || {};
+  let { action, targetType = 'conference', targetId = null } = req.body || {};
 
-  if (!['press', 'release'].includes(action)) {
-    return res.status(400).json({ error: 'action must be press or release' });
+  if (!['press', 'release', 'lock-toggle'].includes(action)) {
+    return res.status(400).json({ error: 'action must be press, release, or lock-toggle' });
   }
 
   const allConferenceId = getAllConferenceId();
@@ -336,7 +336,7 @@ app.post('/users/:id/talk', (req, res) => {
   }
 
   const uid = String(req.params.id);
-  const payload = { action, targetType, targetId, mode };
+  const payload = { action, targetType, targetId };
 
   let delivered = false;
   for (const [, peer] of peers) {

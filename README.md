@@ -86,7 +86,7 @@ You can send tally information to the server using **HTTP POST** requests. The W
 
 ## Remote Talk Control API
 
-Trigger a user’s talk buttons over HTTP for example to use control panels such as Elgato Stream Deck or Bitfocus Companion.
+Trigger a user’s talk buttons over HTTP for example to use control panels such as Elgato Stream Deck (via Bitfocus Companion).
 
 - **URL:** `https://<IP-ADDRESS>:<PORT>/users/<USER_ID>/talk`
 - **Method:** `POST`
@@ -95,10 +95,9 @@ Trigger a user’s talk buttons over HTTP for example to use control panels such
 ### Request Body
 ```json
 {
-  "action": "press",          // required: "press" or "release"
+  "action": "press",          // required: "press", "release", or "lock-toggle"
   "targetType": "conference",  // optional: "conference" (default) or "user"
-  "targetId": 12,               // required when targetType is "conference" or "user"
-  "mode": "list"               // reserved for future use
+  "targetId": 12               // required when targetType is "conference" or "user"
 }
 ```
 
@@ -122,6 +121,13 @@ Trigger a user’s talk buttons over HTTP for example to use control panels such
   curl -X POST https://localhost/users/8/talk \
        -H "Content-Type: application/json" \
        -d '{"action":"press","targetType":"conference","targetId":3}'
+  ```
+
+- Toggle talk lock for conference ID 3 (behaves like clicking Talk Lock in the UI):
+  ```bash
+  curl -X POST https://localhost/users/8/talk \
+       -H "Content-Type: application/json" \
+       -d '{"action":"lock-toggle","targetType":"conference","targetId":3}'
   ```
 
 ---
