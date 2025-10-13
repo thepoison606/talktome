@@ -190,7 +190,7 @@
         align-items: center;
         justify-content: center;
         cursor: pointer;
-        font-weight: 600;
+        font-weight: 700;
         color: #cbd5f5;
         width: 2.5rem;
         height: 2.5rem;
@@ -210,8 +210,11 @@
       }
 
       .settings-icon {
-        font-size: 1.1rem;
+        font-size: 1.2rem;
         color: #cbd5f5;
+        display: inline-block;
+        transform: rotate(90deg);
+        font-weight: 700;
       }
 
       .settings-body {
@@ -219,14 +222,14 @@
         right: 0;
         top: calc(100% + 0.5rem);
         display: none;
-        gap: 0.75rem;
-        padding: 0.75rem 1rem;
-        min-width: 260px;
+        gap: 0.9rem;
+        padding: 1rem 1.25rem;
+        min-width: 320px;
         border: 1px solid rgba(148, 163, 184, 0.2);
         border-radius: 10px;
         background: #1f2937;
         color: #e2e8f0;
-        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.45);
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.5);
         z-index: 10;
       }
 
@@ -615,12 +618,12 @@
       }
 
       #targets-list .mute-btn.muted {
-        background: #f87171;
+        background: #ef4444;
         color: #0f172a;
       }
 
       #targets-list .mute-btn.muted:hover {
-        background: #f87171;
+        background: #ef4444;
       }
       #targets-list li.target-item.muted .user-icon,
       #targets-list li.target-item.muted .conf-icon,
@@ -688,13 +691,15 @@
         color: #94a3b8;
       }
 
-      .feed-level-controls {
+      .feed-level-controls,
+      .user-level-controls {
         margin-top: 0.75rem;
         display: grid;
         gap: 0.6rem;
       }
 
-      .feed-level-controls label {
+      .feed-level-controls label,
+      .user-level-controls label {
         display: flex;
         justify-content: space-between;
         align-items: baseline;
@@ -703,24 +708,49 @@
         color: #e2e8f0;
       }
 
-      .feed-level-controls output {
+      .feed-level-controls output,
+      .user-level-controls output {
         font-variant-numeric: tabular-nums;
         font-weight: 600;
         color: #f8fafc;
       }
 
-      .feed-level-controls input[type="range"] {
+      .feed-level-controls input[type="range"],
+      .user-level-controls input[type="range"] {
         width: 100%;
         accent-color: #38bdf8;
+        height: 6px;
+        border-radius: 999px;
       }
 
-      .feed-meter {
+      .user-level-controls input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #38bdf8;
+        border: 2px solid #0f172a;
+        box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
+      }
+
+      .user-level-controls input[type="range"]::-moz-range-thumb {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: #38bdf8;
+        border: 2px solid #0f172a;
+        box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
+      }
+
+      .feed-meter,
+      .user-meter {
         display: grid;
         gap: 0.25rem;
         color: #cbd5f5;
       }
 
-      .feed-meter__bar-wrapper {
+      .feed-meter__bar-wrapper,
+      .user-meter__bar-wrapper {
         position: relative;
         height: 10px;
         border-radius: 999px;
@@ -728,7 +758,8 @@
         overflow: hidden;
       }
 
-      .feed-meter__bar {
+      .feed-meter__bar,
+      .user-meter__bar {
         position: absolute;
         inset: 0 auto 0 0;
         width: 0%;
@@ -742,7 +773,8 @@
         transition: width 60ms linear;
       }
 
-      .feed-meter__clip {
+      .feed-meter__clip,
+      .user-meter__clip {
         position: absolute;
         top: 0;
         bottom: 0;
@@ -754,25 +786,70 @@
         transition: opacity 120ms ease;
       }
 
-      .feed-meter__ticks {
+      .feed-meter__ticks,
+      .user-meter__ticks {
         display: flex;
         justify-content: space-between;
         font-size: 0.7rem;
         color: rgba(148, 163, 184, 0.8);
       }
 
-      .feed-meter__readout {
+      .feed-meter__readout,
+      .user-meter__readout {
         font-size: 0.8rem;
         color: #e2e8f0;
         font-variant-numeric: tabular-nums;
       }
 
-      .feed-meter__readout span {
+      .feed-meter__readout span,
+      .user-meter__readout span {
         font-weight: 600;
       }
 
-      .feed-meter__readout span.is-clipping {
+      .feed-meter__readout span.is-clipping,
+      .user-meter__readout span.is-clipping {
         color: #f87171;
+      }
+
+      .processing-options label {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+        align-items: flex-start;
+      }
+
+      .processing-options .processing-inline {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .processing-options .processing-inline input[type="checkbox"] {
+        margin: 0;
+      }
+
+      .processing-options label .processing-desc {
+        display: block;
+        font-size: 0.75rem;
+        color: #94a3b8;
+        margin-left: 1.8rem;
+      }
+
+      .user-level-controls.is-disabled input[type="range"] {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+
+      .user-level-controls.is-disabled .user-meter__bar {
+        opacity: 0.35;
+      }
+
+      .user-level-controls.is-disabled .user-meter__clip {
+        opacity: 0 !important;
+      }
+
+      .user-level-controls.is-disabled .user-meter__readout span {
+        color: rgba(148, 163, 184, 0.85);
       }
 
       body.feed-mode #targets-list,
@@ -860,14 +937,51 @@
               </select>
             </div>
             <div class="processing-options feed-optional">
-              <label><input type="checkbox" id="toggle-self-dim" /> Dim while speaking</label>
+              <label>
+                <span class="processing-inline">
+                  <input type="checkbox" id="toggle-self-dim" />
+                  Dim feeds while speaking
+                </span>
+              </label>
             </div>
             <div class="processing-options feed-optional">
               <label>
-                <input type="checkbox" id="toggle-processing" checked />
-                Audio processing
-                <span class="latency-hint">(increased latency)</span>
+                <span class="processing-inline">
+                  <input type="checkbox" id="toggle-processing" />
+                  Audio auto processing
+                </span>
+                <span class="processing-desc">(auto gain, noise cancellation, echo suppression — adds ~50 ms latency)</span>
               </label>
+            </div>
+            <div class="user-level-controls feed-optional" id="user-level-controls">
+              <label for="user-input-gain">
+                Manual mic gain
+                <output id="user-input-gain-value" for="user-input-gain">+18.0 dB</output>
+              </label>
+              <input
+                type="range"
+                id="user-input-gain"
+                min="-30"
+                max="40"
+                step="0.5"
+                value="18"
+              />
+              <div class="user-meter">
+                <div class="user-meter__bar-wrapper">
+                  <div class="user-meter__bar" id="user-meter-bar"></div>
+                  <div class="user-meter__clip" id="user-meter-clip"></div>
+                </div>
+                <div class="user-meter__ticks">
+                  <span>-30</span>
+                  <span>-12</span>
+                  <span>-6</span>
+                  <span>-3</span>
+                  <span>0</span>
+                </div>
+              </div>
+              <div class="user-meter__readout">
+                Peak: <span id="user-meter-value">-inf dB</span>
+              </div>
             </div>
             <div class="settings-actions">
               <button id="logout-btn" type="button" class="logout-btn">Logout</button>
@@ -884,15 +998,15 @@
         <div class="feed-level-controls">
           <label for="feed-input-gain">
             Input gain
-            <output id="feed-input-gain-value" for="feed-input-gain">+0.0 dB</output>
+            <output id="feed-input-gain-value" for="feed-input-gain">+18.0 dB</output>
           </label>
           <input
             type="range"
             id="feed-input-gain"
             min="-30"
-            max="12"
+            max="40"
             step="0.5"
-            value="0"
+            value="18"
           />
           <div class="feed-meter">
             <div class="feed-meter__bar-wrapper">
@@ -944,12 +1058,14 @@
           settingsPanel.classList.add("is-open");
           settingsBody.hidden = false;
           settingsTrigger.setAttribute("aria-expanded", "true");
+          window.__talktomeOpenSettings?.();
         };
 
         const closeSettings = () => {
           settingsPanel.classList.remove("is-open");
           settingsBody.hidden = true;
           settingsTrigger.setAttribute("aria-expanded", "false");
+          window.__talktomeCloseSettings?.();
         };
 
         settingsTrigger.addEventListener("click", (event) => {
