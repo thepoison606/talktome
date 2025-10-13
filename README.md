@@ -88,6 +88,8 @@ You can send tally information to the server using **HTTP POST** requests. The W
 
 Trigger a user’s talk buttons over HTTP for example to use control panels such as Elgato Stream Deck (via Bitfocus Companion).
 
+> Note: Simultaneous talk into multiple destinations is not supported yet.
+
 - **URL:** `https://<IP-ADDRESS>:<PORT>/users/<USER_ID>/talk`
 - **Method:** `POST`
 - **Headers:** `Content-Type: application/json`
@@ -97,12 +99,12 @@ Trigger a user’s talk buttons over HTTP for example to use control panels such
 {
   "action": "press",          // required: "press", "release", or "lock-toggle"
   "targetType": "conference",  // optional: "conference" (default) or "user"
-  "targetId": 12               // required when targetType is "conference" or "user"
+  "targetId": 12               // required
 }
 ```
 
 ### Examples
-- Press the `ALL` button for user ID 8:
+- Talk to user with ID 8:
   ```bash
   curl -X POST https://localhost/users/8/talk \
        -H "Content-Type: application/json" \
