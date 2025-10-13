@@ -2138,6 +2138,23 @@ document.addEventListener("DOMContentLoaded", () => {
       return null; // fallback
     };
 
+    if (action === 'lock-toggle') {
+      const target = resolveTarget();
+      if (!target) return;
+      const lockBtn = findLockButtonForTarget(target);
+      if (!lockBtn) {
+        console.warn('Talk command: lock button not found for target', target);
+        return;
+      }
+
+      if (isSameTarget(activeLockTarget, target) && activeLockButton) {
+        handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
+      } else {
+        toggleTargetLock(target, lockBtn);
+      }
+      return;
+    }
+
     if (action === 'press') {
       const target = resolveTarget();
       await handleTalk(dummyEvent, target);
@@ -3318,6 +3335,17 @@ document.addEventListener("DOMContentLoaded", () => {
     button.textContent = "Unlock";
     button.setAttribute("aria-pressed", "true");
     handleTalk({ preventDefault() {} }, normalizedTarget);
+  }
+
+  function findLockButtonForTarget(target) {
+    if (!target) return null;
+    if (target.type === 'user') {
+      return document.querySelector(`#user-${target.id} .lock-btn`);
+    }
+    if (target.type === 'conference') {
+      return document.querySelector(`#conf-${target.id} .lock-btn`);
+    }
+    return null;
   }
 
   async function handleTalk(e, target) {
