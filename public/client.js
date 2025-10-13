@@ -2854,6 +2854,9 @@ document.addEventListener("DOMContentLoaded", () => {
             try { stored.gainNode.disconnect(); } catch {}
             stored.gainNode = null;
           }
+          // Release element playback and underlying stream reference.
+          try { audioEl.pause?.(); } catch {}
+          try { audioEl.srcObject = null; } catch {}
           audioEl.remove();
           audioEntryMap.delete(audioEl);
           audioElements.delete(key);
@@ -3120,6 +3123,18 @@ document.addEventListener("DOMContentLoaded", () => {
     if (stored) {
       const audioEl = stored.audio;
       pendingAutoplayAudios.delete(audioEl);
+      // Disconnect any WebAudio nodes first to avoid stale graph artifacts.
+      if (stored.mediaSource) {
+        try { stored.mediaSource.disconnect(); } catch {}
+        stored.mediaSource = null;
+      }
+      if (stored.gainNode) {
+        try { stored.gainNode.disconnect(); } catch {}
+        stored.gainNode = null;
+      }
+      // Release element playback and stream reference before removing.
+      try { audioEl.pause?.(); } catch {}
+      try { audioEl.srcObject = null; } catch {}
       audioEl.remove();
       audioEntryMap.delete(audioEl);
       audioElements.delete(key);
