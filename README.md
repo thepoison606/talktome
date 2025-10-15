@@ -11,7 +11,7 @@ A flexible intercom solution built with node.js and mediasoup.
 
 ### Setup
 ```bash
-git clone https://github.com/<your-org>/talktome.git
+git clone https://github.com/thepoison606/talktome.git
 cd talktome
 npm install
 ```
