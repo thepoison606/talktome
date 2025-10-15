@@ -2723,7 +2723,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const consumer = await recvTransport.consume(consumeParams);
       const receiver = consumer?.rtpReceiver;
       if (receiver && 'playoutDelayHint' in receiver) {
-        try { receiver.playoutDelayHint = 0.02; } catch (err) { console.debug('playoutDelayHint set failed', err); }
+        try { receiver.playoutDelayHint = 0.3; } catch (err) { console.debug('playoutDelayHint set failed', err); }
       }
 
       // track this consumer for mute/unmute
