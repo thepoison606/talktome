@@ -1494,6 +1494,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const myIdEl = document.getElementById("my-id");
   const btnReply = document.getElementById("reply");
+  if (btnReply) {
+    btnReply.setAttribute("aria-pressed", "false");
+  }
   const audioStreamsDiv = document.getElementById("audio-streams");
   const feedBanner = document.getElementById("feed-banner");
   const feedStreamToggle = document.getElementById("feed-stream-toggle");
@@ -3531,7 +3534,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } catch (err) {
       console.error("Microphone error:", err);
       alert("Failed to start the microphone: " + err.message);
-      btnReply.classList.remove("active");
+      setReplyButtonActive(false);
       clearLockState();
       isTalking = false;
       if (micTrack) {
@@ -3556,11 +3559,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
 
 
+  function setReplyButtonActive(isActive) {
+    if (!btnReply) return;
+    btnReply.classList.toggle("active", isActive);
+    btnReply.setAttribute("aria-pressed", isActive ? "true" : "false");
+  }
+
   btnReply.addEventListener("pointerdown", e => {
     e.preventDefault();
     if (session.kind !== 'user') return;
     if (!lastTarget) return;
-    btnReply.classList.add("active");
+    setReplyButtonActive(true);
     handleTalk(e, { type: lastTarget.type, id: lastTarget.id });
   });
 
@@ -3579,7 +3588,7 @@ document.addEventListener("DOMContentLoaded", () => {
     isTalking = false;
 
     // Reset button states
-    btnReply.classList.remove("active");
+    setReplyButtonActive(false);
     clearLockState();
 
     if (producer) {
@@ -3631,7 +3640,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
     spaceKeyHeld = true;
     e.preventDefault();
-    btnReply.classList.add('active');
+    // Reply-Button highlighten und als gedrückt markieren
+    if (btnReply) {
+      btnReply.classList.add('active');
+      btnReply.setAttribute('aria-pressed', 'true');
+    }
+    setReplyButtonActive(true);
     handleTalk(e, { type: lastTarget.type, id: lastTarget.id });
   });
 
@@ -3641,6 +3655,12 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!isSpace) return;
     spaceKeyHeld = false;
     if (activeLockButton) return; // ignore when locked
+    // Reply-Button Highlight entfernen
+    if (btnReply) {
+      btnReply.classList.remove('active');
+      btnReply.setAttribute('aria-pressed', 'false');
+    }
+    setReplyButtonActive(false);
     handleStopTalking({ preventDefault() {}, currentTarget: null });
   });
 
