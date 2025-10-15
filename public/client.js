@@ -82,7 +82,7 @@ const audioProcessingOptions = {
   noiseSuppression: true,
   autoGainControl: true,
 };
-let feedInputGainDb = 18;
+let feedInputGainDb = 0;
 let feedInputGainLinear = dbToLinear(feedInputGainDb);
 let userInputGainDb = 18;
 let userInputGainLinear = dbToLinear(userInputGainDb);
@@ -135,14 +135,14 @@ const FEED_PROFILE = {
   label: 'Feed (raw stream)',
   codecLabel: 'opus 48k',
   codecOptions: {
-    opusStereo: 0,
+    opusStereo: 1,
     opusFec: 0,
     opusDtx: 0,
     opusMaxAverageBitrate: 128000,
     opusPtime: 20,
   },
   encodings: [{ dtx: false, maxBitrate: 128000, priority: 'high' }],
-  constraints: { channelCount: 1, sampleRate: 48000 },
+  constraints: { channelCount: 2, sampleRate: 48000 },
 };
 
 let session = { kind: 'guest', userId: null, feedId: null, name: null };
@@ -159,12 +159,15 @@ let userMeterClipEl;
 let userMeterValueEl;
 let feedInputGainSlider;
 let feedInputGainValueDisplay;
-let feedMeterBarEl;
-let feedMeterClipEl;
-let feedMeterValueEl;
-let feedMeterLastText = '-inf dB';
-let feedMeterLastTextTime = 0;
-let feedMeterLastDb = -Infinity;
+// Feed meters: stereo (L/R)
+let feedMeterBarLEl;
+let feedMeterClipLEl;
+let feedMeterValueLEl;
+let feedMeterBarREl;
+let feedMeterClipREl;
+let feedMeterValueREl;
+const feedMeterStateL = { lastText: '-inf dB', lastTextTime: 0, lastDb: -Infinity };
+const feedMeterStateR = { lastText: '-inf dB', lastTextTime: 0, lastDb: -Infinity };
 let userMeterLastText = '-inf dB';
 let userMeterLastTextTime = 0;
 let userMeterLastDb = -Infinity;
@@ -357,35 +360,35 @@ function hasSignificantDbChange(lastDb, nextDb) {
   return Math.abs(nextDb - lastDb) >= METER_TEXT_DB_THRESHOLD;
 }
 
-function setFeedMeterDisplay(fraction, text, showClip, clipFraction = null, { forceText = false } = {}) {
+function setFeedMeterDisplayFor(barEl, valueEl, clipEl, state, fraction, text, showClip, clipFraction = null, { forceText = false } = {}) {
   const clampedFraction = Math.max(0, Math.min(1, Number.isFinite(fraction) ? fraction : 0));
-  if (feedMeterBarEl) {
-    feedMeterBarEl.style.width = `${(clampedFraction * 100).toFixed(1)}%`;
+  if (barEl) {
+    barEl.style.width = `${(clampedFraction * 100).toFixed(1)}%`;
   }
-  if (feedMeterValueEl) {
+  if (valueEl && state) {
     const now = nowMs();
-    const elapsed = now - feedMeterLastTextTime;
+    const elapsed = now - state.lastTextTime;
     const nextDb = textToDbValue(text);
-    const dbChanged = hasSignificantDbChange(feedMeterLastDb, nextDb);
+    const dbChanged = hasSignificantDbChange(state.lastDb, nextDb);
     const allowUpdate = forceText
       || elapsed >= FEED_METER_TEXT_UPDATE_INTERVAL_MS
       || dbChanged;
     if (allowUpdate) {
-      feedMeterValueEl.textContent = text;
-      feedMeterLastText = text;
-      feedMeterLastTextTime = now;
-      feedMeterLastDb = nextDb;
+      valueEl.textContent = text;
+      state.lastText = text;
+      state.lastTextTime = now;
+      state.lastDb = nextDb;
     }
-    feedMeterValueEl.classList.toggle('is-clipping', !!showClip);
+    valueEl.classList.toggle('is-clipping', !!showClip);
   }
-  if (feedMeterClipEl) {
+  if (clipEl) {
     if (showClip) {
       const raw = clipFraction == null ? 1 : Number(clipFraction);
       const clampedClip = Math.max(0, Math.min(1, Number.isFinite(raw) ? raw : 1));
-      feedMeterClipEl.style.left = `${(clampedClip * 100).toFixed(1)}%`;
-      feedMeterClipEl.style.opacity = '1';
+      clipEl.style.left = `${(clampedClip * 100).toFixed(1)}%`;
+      clipEl.style.opacity = '1';
     } else {
-      feedMeterClipEl.style.opacity = '0';
+      clipEl.style.opacity = '0';
     }
   }
 }
@@ -398,6 +401,9 @@ function destroyFeedProcessing({ resetUI = true } = {}) {
   try { feedProcessingChain.sourceNode?.disconnect(); } catch {}
   try { feedProcessingChain.gainNode?.disconnect(); } catch {}
   try { feedProcessingChain.analyser?.disconnect(); } catch {}
+  try { feedProcessingChain.splitter?.disconnect(); } catch {}
+  try { feedProcessingChain.analyserL?.disconnect(); } catch {}
+  try { feedProcessingChain.analyserR?.disconnect(); } catch {}
 
   try {
     const tracks = feedProcessingChain.destination?.stream?.getAudioTracks?.();
@@ -419,7 +425,8 @@ function destroyFeedProcessing({ resetUI = true } = {}) {
   feedProcessingChain = null;
 
   if (resetUI) {
-    setFeedMeterDisplay(0, formatDbDisplay(-Infinity), false, null, { forceText: true });
+    setFeedMeterDisplayFor(feedMeterBarLEl, feedMeterValueLEl, feedMeterClipLEl, feedMeterStateL, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
+    setFeedMeterDisplayFor(feedMeterBarREl, feedMeterValueREl, feedMeterClipREl, feedMeterStateR, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
   }
 }
 
@@ -439,43 +446,64 @@ function scheduleFeedMeterUpdate() {
 
 function updateFeedMeterFromAnalyser() {
   const chain = feedProcessingChain;
-  if (!chain || !chain.analyser || !chain.meterData) return;
-  chain.analyser.getFloatTimeDomainData(chain.meterData);
+  if (!chain) return;
 
-  let peak = 0;
-  for (let i = 0; i < chain.meterData.length; i += 1) {
-    const sample = chain.meterData[i];
-    if (!Number.isFinite(sample)) continue;
-    const abs = Math.abs(sample);
-    if (abs > peak) peak = abs;
-  }
+  const compute = (analyser, meterData) => {
+    if (!analyser || !meterData) return { peakDb: -Infinity, fraction: 0, showClip: false };
+    analyser.getFloatTimeDomainData(meterData);
+    let peak = 0;
+    for (let i = 0; i < meterData.length; i += 1) {
+      const sample = meterData[i];
+      if (!Number.isFinite(sample)) continue;
+      const abs = Math.abs(sample);
+      if (abs > peak) peak = abs;
+    }
+    let peakDb = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
+    if (!Number.isFinite(peakDb)) peakDb = -Infinity;
+    const normalizedDb = Number.isFinite(peakDb)
+      ? Math.max(FEED_METER_MIN_DB, Math.min(0, peakDb))
+      : FEED_METER_MIN_DB;
+    const fraction = normalizedDb <= FEED_METER_MIN_DB
+      ? 0
+      : (normalizedDb - FEED_METER_MIN_DB) / (0 - FEED_METER_MIN_DB);
+    return { peakDb, fraction };
+  };
 
-  let peakDb = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
-  if (!Number.isFinite(peakDb)) {
-    peakDb = -Infinity;
-  }
+  const left = compute(chain.analyserL || chain.analyser, chain.meterDataL || chain.meterData);
+  const right = compute(chain.analyserR || chain.analyser, chain.meterDataR || chain.meterData);
 
-  const normalizedDb = Number.isFinite(peakDb)
-    ? Math.max(FEED_METER_MIN_DB, Math.min(0, peakDb))
-    : FEED_METER_MIN_DB;
+  // Clip hold per channel
+  const clipL = Number.isFinite(left.peakDb) && left.peakDb >= FEED_CLIP_THRESHOLD_DB;
+  if (clipL) chain.clipHoldFramesL = 24; else if (chain.clipHoldFramesL > 0) chain.clipHoldFramesL -= 1;
+  const clipR = Number.isFinite(right.peakDb) && right.peakDb >= FEED_CLIP_THRESHOLD_DB;
+  if (clipR) chain.clipHoldFramesR = 24; else if (chain.clipHoldFramesR > 0) chain.clipHoldFramesR -= 1;
 
-  const fraction = normalizedDb <= FEED_METER_MIN_DB
-    ? 0
-    : (normalizedDb - FEED_METER_MIN_DB) / (0 - FEED_METER_MIN_DB);
+  const showClipL = (chain.clipHoldFramesL || 0) > 0;
+  const showClipR = (chain.clipHoldFramesR || 0) > 0;
 
-  const clipDetected = Number.isFinite(peakDb) && peakDb >= FEED_CLIP_THRESHOLD_DB;
-  if (clipDetected) {
-    chain.clipHoldFrames = 24;
-  } else if (chain.clipHoldFrames > 0) {
-    chain.clipHoldFrames -= 1;
-  }
-  const showClip = (chain.clipHoldFrames || 0) > 0;
+  const textL = Number.isFinite(left.peakDb) ? formatDbDisplay(left.peakDb) : '-inf dB';
+  const textR = Number.isFinite(right.peakDb) ? formatDbDisplay(right.peakDb) : '-inf dB';
 
-  const displayText = Number.isFinite(peakDb)
-    ? formatDbDisplay(peakDb)
-    : '-inf dB';
-
-  setFeedMeterDisplay(fraction, displayText, showClip, fraction);
+  setFeedMeterDisplayFor(
+    feedMeterBarLEl,
+    feedMeterValueLEl,
+    feedMeterClipLEl,
+    feedMeterStateL,
+    left.fraction,
+    textL,
+    showClipL,
+    left.fraction
+  );
+  setFeedMeterDisplayFor(
+    feedMeterBarREl,
+    feedMeterValueREl,
+    feedMeterClipREl,
+    feedMeterStateR,
+    right.fraction,
+    textR,
+    showClipR,
+    right.fraction
+  );
 }
 
 // Builds an AudioContext processing graph for the feed to apply gain and drive the meter.
@@ -506,7 +534,10 @@ function ensureFeedProcessingChain(track) {
 
   let sourceNode;
   let gainNode;
-  let analyser;
+  let analyser; // overall (fallback)
+  let splitter;
+  let analyserL;
+  let analyserR;
   let destination;
   let outputTrack;
 
@@ -519,11 +550,23 @@ function ensureFeedProcessingChain(track) {
     analyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0.98;
 
+    splitter = ctx.createChannelSplitter(2);
+    analyserL = ctx.createAnalyser();
+    analyserR = ctx.createAnalyser();
+    analyserL.fftSize = 2048;
+    analyserR.fftSize = 2048;
+    analyserL.smoothingTimeConstant = 0.98;
+    analyserR.smoothingTimeConstant = 0.98;
+
     destination = ctx.createMediaStreamDestination();
 
     sourceNode.connect(gainNode);
     gainNode.connect(analyser);
     analyser.connect(destination);
+    // Branch for per-channel analysis
+    gainNode.connect(splitter);
+    splitter.connect(analyserL, 0);
+    splitter.connect(analyserR, 1);
 
     [outputTrack] = destination.stream.getAudioTracks();
   } catch (err) {
@@ -543,9 +586,14 @@ function ensureFeedProcessingChain(track) {
   }
 
   outputTrack.enabled = track.enabled;
-  outputTrack.contentHint = track.contentHint || 'speech';
+  // For program feeds we want full-bandwidth stereo, not speech processing
+  try { outputTrack.contentHint = 'music'; } catch {}
+  // Make a best effort to keep stereo through the WebAudio pipe
+  try { outputTrack.applyConstraints?.({ channelCount: 2 }); } catch {}
 
   const meterData = new Float32Array(analyser.fftSize);
+  const meterDataL = new Float32Array(analyserL.fftSize);
+  const meterDataR = new Float32Array(analyserR.fftSize);
 
   feedProcessingChain = {
     ctx,
@@ -554,14 +602,22 @@ function ensureFeedProcessingChain(track) {
     sourceNode,
     gainNode,
     analyser,
+    splitter,
+    analyserL,
+    analyserR,
     destination,
     outputTrack,
     meterData,
+    meterDataL,
+    meterDataR,
     rafId: null,
-    clipHoldFrames: 0,
+    clipHoldFrames: 0, // legacy overall
+    clipHoldFramesL: 0,
+    clipHoldFramesR: 0,
   };
 
-  setFeedMeterDisplay(0, formatDbDisplay(-Infinity), false, null, { forceText: true });
+  setFeedMeterDisplayFor(feedMeterBarLEl, feedMeterValueLEl, feedMeterClipLEl, feedMeterStateL, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
+  setFeedMeterDisplayFor(feedMeterBarREl, feedMeterValueREl, feedMeterClipREl, feedMeterStateR, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
   scheduleFeedMeterUpdate();
 
   if (typeof outputTrack.addEventListener === 'function') {
@@ -1266,14 +1322,18 @@ document.addEventListener("DOMContentLoaded", () => {
   userMeterValueEl = document.getElementById('user-meter-value');
   feedInputGainSlider = document.getElementById('feed-input-gain');
   feedInputGainValueDisplay = document.getElementById('feed-input-gain-value');
-  feedMeterBarEl = document.getElementById('feed-meter-bar');
-  feedMeterClipEl = document.getElementById('feed-meter-clip');
-  feedMeterValueEl = document.getElementById('feed-meter-value');
+  feedMeterBarLEl = document.getElementById('feed-meter-bar-L');
+  feedMeterClipLEl = document.getElementById('feed-meter-clip-L');
+  feedMeterValueLEl = document.getElementById('feed-meter-value-L');
+  feedMeterBarREl = document.getElementById('feed-meter-bar-R');
+  feedMeterClipREl = document.getElementById('feed-meter-clip-R');
+  feedMeterValueREl = document.getElementById('feed-meter-value-R');
 
   updateUserGainUI();
   setUserMeterDisplay(0, formatDbDisplay(-Infinity), false, null, { forceText: true });
   updateFeedGainUI();
-  setFeedMeterDisplay(0, formatDbDisplay(-Infinity), false, null, { forceText: true });
+  setFeedMeterDisplayFor(feedMeterBarLEl, feedMeterValueLEl, feedMeterClipLEl, feedMeterStateL, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
+  setFeedMeterDisplayFor(feedMeterBarREl, feedMeterValueREl, feedMeterClipREl, feedMeterStateR, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
   applyUserGainControlState();
 
   if (feedInputGainSlider) {
@@ -1799,10 +1859,15 @@ document.addEventListener("DOMContentLoaded", () => {
       };
 
       const track = await ensureMicTrack(audioConstraints, selectedDeviceId);
+      // Hint the browser that this is program audio, not speech
+      try { track.contentHint = 'music'; } catch {}
+      try { await track.applyConstraints?.({ channelCount: 2 }); } catch {}
       track.enabled = true;
 
       const processing = ensureFeedProcessingChain(track);
       const processedTrack = processing?.outputTrack || track;
+      try { processedTrack.contentHint = 'music'; } catch {}
+      try { await processedTrack.applyConstraints?.({ channelCount: 2 }); } catch {}
       processedTrack.enabled = true;
 
       const newProducer = await sendTransport.produce({
@@ -2134,6 +2199,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const resolveTarget = () => {
       if (targetType === 'user') return resolveUserTarget();
+      if (targetType === 'reply') {
+        if (!lastTarget) {
+          console.warn('Talk command: no last target for reply');
+          return null;
+        }
+        return { type: lastTarget.type, id: lastTarget.id };
+      }
       if (targetType === 'conference') return { type: 'conference', id: Number(targetId) };
       return null; // fallback
     };
@@ -2157,8 +2229,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (action === 'press') {
       const target = resolveTarget();
+      if (targetType === 'reply' && target) {
+        btnReply.classList.add('active');
+      }
       await handleTalk(dummyEvent, target);
     } else if (action === 'release') {
+      if (targetType === 'reply') {
+        btnReply.classList.remove('active');
+      }
       handleStopTalking({ preventDefault() {}, currentTarget: null });
     }
   });
@@ -3533,6 +3611,38 @@ document.addEventListener("DOMContentLoaded", () => {
     applyFeedDucking();
     attemptPendingAutoplay();
   }
+
+  // Keyboard Push-to-Talk: hold Space to talk
+  let spaceKeyHeld = false;
+  function isTextInput(el) {
+    const tag = (el?.tagName || '').toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select' || el?.isContentEditable;
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat) return;
+    const isSpace = e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar';
+    if (!isSpace) return;
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (session.kind !== 'user') return;
+    if (!lastTarget) return;
+    if (activeLockButton) return; // don't interfere with lock mode
+    if (isTextInput(e.target)) return;
+
+    spaceKeyHeld = true;
+    e.preventDefault();
+    btnReply.classList.add('active');
+    handleTalk(e, { type: lastTarget.type, id: lastTarget.id });
+  });
+
+  window.addEventListener('keyup', (e) => {
+    if (!spaceKeyHeld) return;
+    const isSpace = e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar';
+    if (!isSpace) return;
+    spaceKeyHeld = false;
+    if (activeLockButton) return; // ignore when locked
+    handleStopTalking({ preventDefault() {}, currentTarget: null });
+  });
 
 
   // Initial connection check

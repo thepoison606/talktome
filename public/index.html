@@ -81,7 +81,7 @@
 
       .container {
         max-width: 800px;
-        margin: 0 auto;
+        margin: 1rem auto; /* center horizontally */
         background: #131a2a;
         border-radius: 0;
         box-shadow: none;
@@ -91,14 +91,13 @@
         max-width: 360px;
         margin: 0 auto 2rem;
         text-align: center;
-        background: #1f2937;
+        background: #1f293700;
         padding: 1.5rem;
         border-radius: 8px;
         box-shadow: 0 10px 24px rgba(15, 23, 42, 0.35);
       }
 
       #login-container h2 {
-        margin-top: 0;
         margin-bottom: 1rem;
         color: #e2e8f0;
       }
@@ -657,6 +656,7 @@
       #feed-banner {
         display: none;
         margin-bottom: 1rem;
+        margin-top: 1rem;
         padding: 0.75rem 1rem;
         border-radius: 8px;
         border: 1px solid rgba(148, 163, 184, 0.2);
@@ -740,6 +740,24 @@
         display: grid;
         gap: 0.25rem;
         color: #cbd5f5;
+      }
+
+      .feed-meters {
+        display: grid;
+        gap: 0.5rem;
+      }
+
+      .feed-meter-row {
+        display: grid;
+        grid-template-columns: 1.2rem 1fr;
+        gap: 0.5rem;
+        align-items: center;
+      }
+
+      .feed-meter__label {
+        font-size: 0.75rem;
+        color: rgba(148, 163, 184, 0.9);
+        text-align: right;
       }
 
       .feed-meter__bar-wrapper,
@@ -986,12 +1004,13 @@
       <div id="feed-banner" class="feed-banner" hidden>
         <div class="feed-banner__row">
           <span id="feed-stream-status">Feed ready</span>
+          <p class="feed-banner__hint">Select your audio input in the menu.</p>
           <button type="button" id="feed-stream-toggle">Start Feed</button>
         </div>
         <div class="feed-level-controls">
           <label for="feed-input-gain">
             Input gain
-            <output id="feed-input-gain-value" for="feed-input-gain">+18.0 dB</output>
+            <output id="feed-input-gain-value" for="feed-input-gain">+0.0 dB</output>
           </label>
           <input
             type="range"
@@ -999,26 +1018,40 @@
             min="-30"
             max="40"
             step="0.5"
-            value="18"
+            value="0"
           />
-          <div class="feed-meter">
-            <div class="feed-meter__bar-wrapper">
-              <div class="feed-meter__bar" id="feed-meter-bar"></div>
-              <div class="feed-meter__clip" id="feed-meter-clip"></div>
+          <div class="feed-meters">
+            <div class="feed-meter-row">
+              <div class="feed-meter__label">L</div>
+              <div class="feed-meter">
+                <div class="feed-meter__bar-wrapper">
+                  <div class="feed-meter__bar" id="feed-meter-bar-L"></div>
+                  <div class="feed-meter__clip" id="feed-meter-clip-L"></div>
+                </div>
+              </div>
             </div>
-            <div class="feed-meter__ticks">
-              <span>-30</span>
-              <span>-12</span>
-              <span>-6</span>
-              <span>-3</span>
-              <span>0</span>
+            <div class="feed-meter-row">
+              <div class="feed-meter__label">R</div>
+              <div class="feed-meter">
+                <div class="feed-meter__bar-wrapper">
+                  <div class="feed-meter__bar" id="feed-meter-bar-R"></div>
+                  <div class="feed-meter__clip" id="feed-meter-clip-R"></div>
+                </div>
+                <div class="feed-meter__ticks">
+                  <span>-30</span>
+                  <span>-12</span>
+                  <span>-6</span>
+                  <span>-3</span>
+                  <span>0</span>
+                </div>
+                <div class="feed-meter__readout">
+                  Peak L: <span id="feed-meter-value-L">-inf dB</span>
+                  R: <span id="feed-meter-value-R">-inf dB</span>
+                </div>
+              </div>
             </div>
-          </div>
-          <div class="feed-meter__readout">
-            Peak: <span id="feed-meter-value">-inf dB</span>
           </div>
         </div>
-        <p class="feed-banner__hint">Select your audio input above.</p>
       </div>
 
       <ul id="targets-list"></ul>

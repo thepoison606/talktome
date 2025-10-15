@@ -49,6 +49,11 @@ You can override the port in two different ways:
 - Main app: `https://<IP-ADDRESS>:<PORT>/`
 - On first visit, acknowledge the browser warning about the self-signed connection so the page can load.
 
+### Push‑to‑Talk (PTT)
+- Hold the Space bar to talk to the currently selected target (the Reply button becomes active while Space is held).
+- Release the Space bar to stop talking.
+- The keyboard shortcut is ignored while typing in input fields and when a Talk‑Lock is active.
+
 ### Feeds
 - Manage feeds via the **Feeds** card in the admin panel; they can be assigned to users as targets just like conferences or users.
 - A feed account logs in through the same page as operators but only sees the audio-input selector and a start/stop button. No audio processing (AGC, noise suppression, echo cancel) is applied to feed streams.
@@ -98,7 +103,7 @@ Trigger a user’s talk buttons over HTTP for example to use control panels such
 ```json
 {
   "action": "press",          // required: "press", "release", or "lock-toggle"
-  "targetType": "conference",  // optional: "conference" (default) or "user"
+  "targetType": "conference",  // optional: "conference" (default), "user", or "reply"
   "targetId": 12               // required
 }
 ```
@@ -131,6 +136,34 @@ Trigger a user’s talk buttons over HTTP for example to use control panels such
        -H "Content-Type: application/json" \
        -d '{"action":"lock-toggle","targetType":"conference","targetId":3}'
   ```
+
+#### Using the Reply target
+`targetType: "reply"` talks to the user’s current Reply target (the same target the big Reply button uses). This does not require a `targetId`.
+
+- Hold-to-talk on Reply:
+  ```bash
+  curl -X POST https://localhost/users/8/talk \
+       -H "Content-Type: application/json" \
+       -d '{"action":"press","targetType":"reply"}'
+  ```
+
+- Release (stop talking):
+  ```bash
+  curl -X POST https://localhost/users/8/talk \
+       -H "Content-Type: application/json" \
+       -d '{"action":"release","targetType":"reply"}'
+  ```
+
+- Toggle talk lock on the current Reply target:
+  ```bash
+  curl -X POST https://localhost/users/8/talk \
+       -H "Content-Type: application/json" \
+       -d '{"action":"lock-toggle","targetType":"reply"}'
+  ```
+
+Notes:
+- If the user has no Reply target selected in the UI, a `reply` command is ignored on the client.
+- Existing `user` and `conference` targets continue to work unchanged.
 
 ---
 
