@@ -109,6 +109,13 @@ Trigger a user’s talk buttons over HTTP for example to use control panels such
 ```
 
 ### Examples
+- Hold-to-talk on current Reply target (no targetId required):
+  ```bash
+  curl -X POST https://localhost/users/8/talk \
+       -H "Content-Type: application/json" \
+       -d '{"action":"press","targetType":"reply"}'
+  ```
+
 - Talk to user with ID 8:
   ```bash
   curl -X POST https://localhost/users/8/talk \
@@ -136,34 +143,6 @@ Trigger a user’s talk buttons over HTTP for example to use control panels such
        -H "Content-Type: application/json" \
        -d '{"action":"lock-toggle","targetType":"conference","targetId":3}'
   ```
-
-#### Using the Reply target
-`targetType: "reply"` talks to the user’s current Reply target (the same target the big Reply button uses). This does not require a `targetId`.
-
-- Hold-to-talk on Reply:
-  ```bash
-  curl -X POST https://localhost/users/8/talk \
-       -H "Content-Type: application/json" \
-       -d '{"action":"press","targetType":"reply"}'
-  ```
-
-- Release (stop talking):
-  ```bash
-  curl -X POST https://localhost/users/8/talk \
-       -H "Content-Type: application/json" \
-       -d '{"action":"release","targetType":"reply"}'
-  ```
-
-- Toggle talk lock on the current Reply target:
-  ```bash
-  curl -X POST https://localhost/users/8/talk \
-       -H "Content-Type: application/json" \
-       -d '{"action":"lock-toggle","targetType":"reply"}'
-  ```
-
-Notes:
-- If the user has no Reply target selected in the UI, a `reply` command is ignored on the client.
-- Existing `user` and `conference` targets continue to work unchanged.
 
 ---
 

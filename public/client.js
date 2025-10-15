@@ -69,6 +69,7 @@ const USER_INPUT_GAIN_DB_MIN = -30;
 const USER_INPUT_GAIN_DB_MAX = 40;
 const USER_METER_MIN_DB = -60;
 const USER_CLIP_THRESHOLD_DB = -0.5;
+const WAKE_LOCK_STORAGE_KEY = 'keepScreenAwake';
 const FEED_METER_TEXT_UPDATE_INTERVAL_MS = 160;
 const USER_METER_TEXT_UPDATE_INTERVAL_MS = 160;
 const METER_TEXT_DB_THRESHOLD = 0.5;
@@ -187,6 +188,7 @@ const USER_ACTIVATION_EVENTS = ['pointerdown', 'touchstart', 'keydown'];
 const pendingAutoplayAudios = new Set();
 let sharedAudioContext = null;
 let onAudioContextRunning = null;
+let wakeLockSentinel = null;
 let requestAudioUnlockOverlay = () => {};
 let dismissAudioUnlockOverlay = () => {};
 let audioUnlockAwaiting = false;
@@ -195,6 +197,7 @@ let userProcessingChain = null;
 let settingsMonitorActive = false;
 let settingsMonitorPromise = null;
 let settingsMenuOpen = false;
+// wakeLockSentinel declared above
 
 function clampFeedDuckingDb(value) {
   if (!Number.isFinite(value)) return DEFAULT_FEED_DUCKING_DB;
@@ -1059,10 +1062,43 @@ function handleUserActivation() {
       requestAudioUnlockOverlay();
     }
   }
+  tryEnableWakeLock().catch(() => {});
 }
 
 USER_ACTIVATION_EVENTS.forEach(event => {
   window.addEventListener(event, handleUserActivation, { capture: true });
+});
+
+// Wake Lock helpers
+async function tryEnableWakeLock() {
+  const toggle = document.getElementById('toggle-wakelock');
+  const want = !!toggle?.checked || localStorage.getItem(WAKE_LOCK_STORAGE_KEY) === 'true';
+  if (!want) return;
+  if (!('wakeLock' in navigator) || typeof navigator.wakeLock?.request !== 'function') {
+    return; // unsupported
+  }
+  if (wakeLockSentinel && !wakeLockSentinel.released) return;
+  try {
+    wakeLockSentinel = await navigator.wakeLock.request('screen');
+    wakeLockSentinel.addEventListener('release', () => {
+      if (document.visibilityState === 'visible') {
+        tryEnableWakeLock().catch(() => {});
+      }
+    });
+  } catch (err) {
+    console.debug('WakeLock request failed:', err?.message || err);
+  }
+}
+
+async function releaseWakeLock() {
+  try { await wakeLockSentinel?.release?.(); } catch {}
+  wakeLockSentinel = null;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    tryEnableWakeLock().catch(() => {});
+  }
 });
 
 
@@ -1314,6 +1350,7 @@ document.addEventListener("DOMContentLoaded", () => {
   dimAmountSelect = document.getElementById('dim-amount-select');
   dimWhileSpeakingToggle = document.getElementById('toggle-self-dim');
   audioProcessingToggle = document.getElementById('toggle-processing');
+  const wakeLockToggle = document.getElementById('toggle-wakelock');
   userLevelControls = document.getElementById('user-level-controls');
   userInputGainSlider = document.getElementById('user-input-gain');
   userInputGainValueDisplay = document.getElementById('user-input-gain-value');
@@ -1335,6 +1372,22 @@ document.addEventListener("DOMContentLoaded", () => {
   setFeedMeterDisplayFor(feedMeterBarLEl, feedMeterValueLEl, feedMeterClipLEl, feedMeterStateL, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
   setFeedMeterDisplayFor(feedMeterBarREl, feedMeterValueREl, feedMeterClipREl, feedMeterStateR, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
   applyUserGainControlState();
+  // Initialize wake lock toggle from storage
+  if (wakeLockToggle) {
+    try {
+      const stored = localStorage.getItem(WAKE_LOCK_STORAGE_KEY);
+      wakeLockToggle.checked = stored === 'true';
+    } catch {}
+    wakeLockToggle.addEventListener('change', async () => {
+      const enabled = !!wakeLockToggle.checked;
+      try { localStorage.setItem(WAKE_LOCK_STORAGE_KEY, String(enabled)); } catch {}
+      if (enabled) {
+        await tryEnableWakeLock();
+      } else {
+        await releaseWakeLock();
+      }
+    });
+  }
 
   if (feedInputGainSlider) {
     feedInputGainSlider.addEventListener('input', () => {
@@ -1562,6 +1615,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
       });
     }
+    tryEnableWakeLock().catch(() => {});
   };
 
   audioUnlockButtonEl?.addEventListener('click', async () => {
@@ -1578,6 +1632,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (session.kind === 'user') {
         applyFeedDucking();
       }
+      await tryEnableWakeLock().catch(() => {});
     } catch (err) {
       console.warn('Audio unlock resume failed:', err);
     }
