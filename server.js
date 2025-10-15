@@ -315,28 +315,36 @@ app.post('/users/:id/talk', (req, res) => {
 
   const allConferenceId = getAllConferenceId();
 
-  if (targetType === 'global' || targetType === 'all') {
-    targetType = 'conference';
-    targetId = allConferenceId;
-  }
+  // Bei targetType 'reply' wird keine targetId benötigt
+  if (targetType === 'reply') {
+    targetId = undefined;
+  } else {
+    if (targetType === 'global' || targetType === 'all') {
+      targetType = 'conference';
+      targetId = allConferenceId;
+    }
 
-  if (targetType === 'conference' && (targetId === null || targetId === undefined)) {
-    targetId = allConferenceId;
-  }
+    if (targetType === 'conference' && (targetId === null || targetId === undefined)) {
+      targetId = allConferenceId;
+    }
 
-  if (targetType === 'conference' && (targetId === null || targetId === undefined)) {
-    return res.status(500).json({ error: 'All conference not configured' });
-  }
+    if (targetType === 'conference' && (targetId === null || targetId === undefined)) {
+      return res.status(500).json({ error: 'All conference not configured' });
+    }
 
-  if (targetType === 'conference' && targetId != null) {
-    targetId = Number(targetId);
-    if (!Number.isFinite(targetId)) {
-      return res.status(400).json({ error: 'Invalid conference id' });
+    if (targetType === 'conference' && targetId != null) {
+      targetId = Number(targetId);
+      if (!Number.isFinite(targetId)) {
+        return res.status(400).json({ error: 'Invalid conference id' });
+      }
     }
   }
 
   const uid = String(req.params.id);
-  const payload = { action, targetType, targetId };
+  // Für reply kein targetId mitsenden
+  const payload = targetType === 'reply'
+    ? { action, targetType }
+    : { action, targetType, targetId };
 
   let delivered = false;
   for (const [, peer] of peers) {
