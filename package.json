@@ -27,9 +27,8 @@
     "socket.io": "^4.5.1"
   },
   "devDependencies": {
-    "@yao-pkg/pkg": "^6.8.0",
     "esbuild": "^0.25.5",
-    "pkg": "@yao-pkg/pkg",
+    "pkg": "npm:@yao-pkg/pkg@^6.8.0",
     "webpack": "^5.99.9",
     "webpack-cli": "^6.0.1"
   },

@@ -17,6 +17,9 @@ talktome_arm64
 mediasoup-worker
 worker/
 
+# Lockfiles
+yarn.lock
+
 # IDE / editor metadata
 .idea/
 .vscode/
