@@ -187,9 +187,7 @@ const USER_ACTIVATION_EVENTS = ['pointerdown', 'touchstart', 'keydown'];
 const pendingAutoplayAudios = new Set();
 let sharedAudioContext = null;
 let onAudioContextRunning = null;
-let requestAudioUnlockOverlay = () => {};
-let dismissAudioUnlockOverlay = () => {};
-let audioUnlockAwaiting = false;
+let audioContextPrimed = false;
 let feedProcessingChain = null;
 let userProcessingChain = null;
 let settingsMonitorActive = false;
@@ -1051,13 +1049,19 @@ function handleUserActivation() {
   const ctx = ensureAudioContext();
   if (!ctx) return;
   if (ctx.state === 'running') {
-    if (!audioUnlockAwaiting && typeof onAudioContextRunning === 'function') {
+    if (typeof onAudioContextRunning === 'function') {
       onAudioContextRunning();
     }
-  } else if (ctx.state === 'suspended') {
-    if (typeof requestAudioUnlockOverlay === 'function') {
-      requestAudioUnlockOverlay();
-    }
+    return;
+  }
+  if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
+    ctx.resume().then(() => {
+      if (typeof onAudioContextRunning === 'function') {
+        onAudioContextRunning();
+      }
+    }).catch(err => {
+      console.warn('Failed to resume AudioContext:', err);
+    });
   }
 }
 
@@ -1528,8 +1532,6 @@ document.addEventListener("DOMContentLoaded", () => {
   let shouldInitializeAfterConnect = false;
   let activeLockButton = null;
   let activeLockTarget = null;
-  const audioUnlockOverlayEl = document.getElementById('audio-unlock-overlay');
-  const audioUnlockButtonEl = document.getElementById('audio-unlock-btn');
 
   function makeStreamKey(targetKey, producerId) {
     if (!producerId) return targetKey;
@@ -1608,22 +1610,10 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  requestAudioUnlockOverlay = () => {
-    if (!isiOS || !audioUnlockOverlayEl) return;
-    audioUnlockOverlayEl.hidden = false;
-    audioUnlockAwaiting = true;
-  };
-
-  dismissAudioUnlockOverlay = () => {
-    if (!audioUnlockOverlayEl) return;
-    audioUnlockOverlayEl.hidden = true;
-    audioUnlockAwaiting = false;
-  };
-
   onAudioContextRunning = () => {
-    primeVoiceProcessingMode().catch(() => {});
-    if (audioUnlockAwaiting) {
-      return;
+    if (!audioContextPrimed) {
+      audioContextPrimed = true;
+      primeVoiceProcessingMode().catch(() => {});
     }
     attemptPendingAutoplay();
     if (session.kind === 'user') {
@@ -1644,25 +1634,6 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
   };
-
-  audioUnlockButtonEl?.addEventListener('click', async () => {
-    const ctx = ensureAudioContext();
-    if (!ctx) {
-      dismissAudioUnlockOverlay();
-      return;
-    }
-    try {
-      await ctx.resume();
-      await primeVoiceProcessingMode();
-      dismissAudioUnlockOverlay();
-      attemptPendingAutoplay();
-      if (session.kind === 'user') {
-        applyFeedDucking();
-      }
-    } catch (err) {
-      console.warn('Audio unlock resume failed:', err);
-    }
-  });
 
   function setFeedEntryLevel(entry, value) {
     if (!entry || !entry.audio) return;
@@ -2865,8 +2836,8 @@ document.addEventListener("DOMContentLoaded", () => {
           gainNode.connect(ctxForFeed.destination);
           audio.muted = true;
           audio.volume = 0;
-          if (ctxForFeed.state !== 'running') {
-            requestAudioUnlockOverlay();
+          if (ctxForFeed.state !== 'running' && typeof ctxForFeed.resume === 'function') {
+            ctxForFeed.resume().catch(err => console.warn('Failed to resume AudioContext:', err));
           }
         } catch (err) {
           console.warn('Failed to initialize feed gain path:', err);
@@ -3304,23 +3275,38 @@ document.addEventListener("DOMContentLoaded", () => {
     const el = document.getElementById(targetKey);
     const iconCls = targetKey.startsWith("conf-") ? ".conf-icon" : targetKey.startsWith("feed-") ? ".feed-icon" : ".user-icon";
     const icon    = el?.querySelector(iconCls);
-
-    if (isSpeaking) {
-      el?.classList.add("speaking");
-      el?.classList.remove("last-spoke");
-      icon?.classList.add("speaking");
-      return;
-    }
-
-    el?.classList.remove("speaking");
-    icon?.classList.remove("speaking");
-
-    const labelText = getTargetLabel(targetKey);
     const separatorIndex = targetKey.indexOf("-");
     const rawId = separatorIndex >= 0 ? targetKey.slice(separatorIndex + 1) : targetKey;
     const isConference = targetKey.startsWith("conf-");
     const isUser = targetKey.startsWith("user-");
     const isFeed = targetKey.startsWith("feed-");
+
+    let lockTargetMatches = false;
+    if (activeLockButton && !isFeed && (isConference || isUser)) {
+      const candidate = {
+        type: isConference ? "conference" : "user",
+        id: rawId,
+      };
+      lockTargetMatches = isSameTarget(activeLockTarget, candidate);
+    }
+
+    if (isSpeaking) {
+      el?.classList.add("speaking");
+      el?.classList.remove("last-spoke");
+      icon?.classList.add("speaking");
+      if (lockTargetMatches) {
+        el?.classList.remove("talking-to");
+      }
+      return;
+    }
+
+    el?.classList.remove("speaking");
+    icon?.classList.remove("speaking");
+    if (lockTargetMatches) {
+      el?.classList.add("talking-to");
+    }
+
+    const labelText = getTargetLabel(targetKey);
 
     if (isFeed) {
       el?.classList.remove("last-spoke");

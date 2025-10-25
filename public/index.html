@@ -34,51 +34,6 @@
         background-color: red !important;
       }
 
-      #audio-unlock-overlay {
-        position: fixed;
-        inset: 0;
-        background: rgba(11, 17, 32, 0.92);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 1.5rem;
-        z-index: 2000;
-      }
-
-      #audio-unlock-overlay[hidden] {
-        display: none;
-      }
-
-      .audio-unlock-card {
-        background: rgba(19, 26, 42, 0.95);
-        border-radius: 16px;
-        padding: 2rem 1.75rem;
-        max-width: 320px;
-        width: 100%;
-        text-align: center;
-        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.55);
-        border: 1px solid rgba(148, 163, 184, 0.35);
-      }
-
-      .audio-unlock-card h2 {
-        margin: 0 0 0.5rem;
-        font-size: 1.4rem;
-        color: #e2e8f0;
-      }
-
-      .audio-unlock-card p {
-        margin: 0 0 1.25rem;
-        font-size: 0.95rem;
-        color: #cbd5f5;
-      }
-
-      .audio-unlock-card button {
-        padding: 0.65rem 1.3rem;
-        font-size: 1rem;
-        font-weight: 600;
-        border-radius: 999px;
-      }
-
       .container {
         max-width: 800px;
         margin: 1rem auto; /* center horizontally */
@@ -878,13 +833,6 @@
     </style>
   </head>
   <body>
-    <div id="audio-unlock-overlay" hidden>
-      <div class="audio-unlock-card">
-        <h2>Enable Audio</h2>
-        <p>Tap once to allow live audio playback.</p>
-        <button id="audio-unlock-btn" class="primary">Enable Audio</button>
-      </div>
-    </div>
     <div class="container">
     <!-- Login Section -->
     <div id="login-container">

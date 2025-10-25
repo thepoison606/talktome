@@ -205,11 +205,7 @@
   const pendingAutoplayAudios = /* @__PURE__ */ new Set();
   let sharedAudioContext = null;
   let onAudioContextRunning = null;
-  let requestAudioUnlockOverlay = () => {
-  };
-  let dismissAudioUnlockOverlay = () => {
-  };
-  let audioUnlockAwaiting = false;
+  let audioContextPrimed = false;
   let feedProcessingChain = null;
   let userProcessingChain = null;
   let settingsMonitorActive = false;
@@ -961,13 +957,19 @@
     const ctx = ensureAudioContext();
     if (!ctx) return;
     if (ctx.state === "running") {
-      if (!audioUnlockAwaiting && typeof onAudioContextRunning === "function") {
+      if (typeof onAudioContextRunning === "function") {
         onAudioContextRunning();
       }
-    } else if (ctx.state === "suspended") {
-      if (typeof requestAudioUnlockOverlay === "function") {
-        requestAudioUnlockOverlay();
-      }
+      return;
+    }
+    if (ctx.state === "suspended" && typeof ctx.resume === "function") {
+      ctx.resume().then(() => {
+        if (typeof onAudioContextRunning === "function") {
+          onAudioContextRunning();
+        }
+      }).catch((err) => {
+        console.warn("Failed to resume AudioContext:", err);
+      });
     }
   }
   USER_ACTIVATION_EVENTS.forEach((event) => {
@@ -1382,23 +1384,11 @@
     let shouldInitializeAfterConnect = false;
     let activeLockButton = null;
     let activeLockTarget = null;
-    const audioUnlockOverlayEl = document.getElementById("audio-unlock-overlay");
-    const audioUnlockButtonEl = document.getElementById("audio-unlock-btn");
-    requestAudioUnlockOverlay = () => {
-      if (!isiOS || !audioUnlockOverlayEl) return;
-      audioUnlockOverlayEl.hidden = false;
-      audioUnlockAwaiting = true;
-    };
-    dismissAudioUnlockOverlay = () => {
-      if (!audioUnlockOverlayEl) return;
-      audioUnlockOverlayEl.hidden = true;
-      audioUnlockAwaiting = false;
-    };
     onAudioContextRunning = () => {
-      primeVoiceProcessingMode().catch(() => {
-      });
-      if (audioUnlockAwaiting) {
-        return;
+      if (!audioContextPrimed) {
+        audioContextPrimed = true;
+        primeVoiceProcessingMode().catch(() => {
+        });
       }
       attemptPendingAutoplay();
       if (session.kind === "user") {
@@ -1421,24 +1411,6 @@
         });
       }
     };
-    audioUnlockButtonEl == null ? void 0 : audioUnlockButtonEl.addEventListener("click", async () => {
-      const ctx = ensureAudioContext();
-      if (!ctx) {
-        dismissAudioUnlockOverlay();
-        return;
-      }
-      try {
-        await ctx.resume();
-        await primeVoiceProcessingMode();
-        dismissAudioUnlockOverlay();
-        attemptPendingAutoplay();
-        if (session.kind === "user") {
-          applyFeedDucking();
-        }
-      } catch (err) {
-        console.warn("Audio unlock resume failed:", err);
-      }
-    });
     function setFeedEntryLevel(entry, value) {
       if (!entry || !entry.audio) return;
       const applied = Math.max(0, Math.min(1, value));
@@ -2440,8 +2412,10 @@
               gainNode.connect(ctxForFeed.destination);
               audio.muted = true;
               audio.volume = 0;
-              if (ctxForFeed.state !== "running") {
-                requestAudioUnlockOverlay();
+              if (ctxForFeed.state !== "running" && typeof ctxForFeed.resume === "function") {
+                ctxForFeed.resume().catch((err) => {
+                  console.warn("Failed to resume AudioContext:", err);
+                });
               }
             } catch (err) {
               console.warn("Failed to initialize feed gain path:", err);
@@ -2526,8 +2500,10 @@
                 entry.mediaSource.connect(entry.gainNode);
                 entry.audio.muted = true;
                 entry.audio.volume = 0;
-                if (ctx.state !== "running") {
-                  requestAudioUnlockOverlay();
+                if (ctx.state !== "running" && typeof ctx.resume === "function") {
+                  ctx.resume().catch((err) => {
+                    console.warn("Failed to resume AudioContext:", err);
+                  });
                 }
               } catch (err) {
                 console.warn("Failed to refresh feed gain path:", err);
