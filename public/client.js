@@ -104,6 +104,17 @@ if (typeof window !== 'undefined') {
     const storedProcessing = window.localStorage?.getItem(AUDIO_PROCESSING_STORAGE_KEY);
     if (storedProcessing !== null) {
       audioProcessingEnabled = storedProcessing === 'true';
+    } else {
+      // Default: enable processing on mobile, disable on desktop
+      try {
+        const ua = navigator?.userAgent || '';
+        const isIpadDesktopUA = (navigator?.maxTouchPoints > 1) && /Macintosh/.test(ua);
+        const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobi/i.test(ua);
+        audioProcessingEnabled = !!(isMobileUA || isIpadDesktopUA);
+      } catch (err) {
+        // If detection fails, fall back to desktop default (off)
+        audioProcessingEnabled = false;
+      }
     }
     const storedInputGainDb = window.localStorage?.getItem(FEED_INPUT_GAIN_DB_STORAGE_KEY);
     if (storedInputGainDb !== null) {
