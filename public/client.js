@@ -1510,6 +1510,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const audioEntryMap = new WeakMap();
   const confAudioElements = new Map();
   const feedAudioElements = new Map();
+  const targetStreamMap = new Map();
   const feedDimmingDisabled = new Set();
   const activeTalkersForMe = new Set();
   const talkerConsumersForMe = new Map();
@@ -1529,6 +1530,83 @@ document.addEventListener("DOMContentLoaded", () => {
   let activeLockTarget = null;
   const audioUnlockOverlayEl = document.getElementById('audio-unlock-overlay');
   const audioUnlockButtonEl = document.getElementById('audio-unlock-btn');
+
+  function makeStreamKey(targetKey, producerId) {
+    if (!producerId) return targetKey;
+    return `${targetKey}::${producerId}`;
+  }
+
+  function registerStreamKey(targetKey, streamKey) {
+    if (!targetStreamMap.has(targetKey)) {
+      targetStreamMap.set(targetKey, new Set());
+    }
+    targetStreamMap.get(targetKey).add(streamKey);
+  }
+
+  function unregisterStreamKey(targetKey, streamKey) {
+    const set = targetStreamMap.get(targetKey);
+    if (!set) return;
+    set.delete(streamKey);
+    if (set.size === 0) {
+      targetStreamMap.delete(targetKey);
+    }
+  }
+
+  function hasActiveStreams(targetKey) {
+    const set = targetStreamMap.get(targetKey);
+    return !!(set && set.size);
+  }
+
+  function forEachStreamKey(targetKey, callback) {
+    const set = targetStreamMap.get(targetKey);
+    if (!set) return;
+    Array.from(set).forEach(callback);
+  }
+
+  function forEachStreamEntry(targetKey, callback) {
+    forEachStreamKey(targetKey, (streamKey) => {
+      const entry = audioElements.get(streamKey);
+      if (entry) {
+        callback(entry, streamKey);
+      }
+    });
+  }
+
+  function collectConsumersForTarget(targetKey) {
+    const collected = [];
+    forEachStreamKey(targetKey, (streamKey) => {
+      const consumers = peerConsumers.get(streamKey);
+      if (consumers) {
+        consumers.forEach((consumer) => collected.push(consumer));
+      }
+    });
+    return collected;
+  }
+
+  function applyVolumeToTarget(targetKey, volume) {
+    const clamped = Math.max(0, Math.min(1, Number(volume) || 0));
+    forEachStreamEntry(targetKey, (entry) => {
+      entry.volume = clamped;
+      if (entry.type === 'feed') {
+        if (!mutedPeers.has(targetKey)) {
+          setFeedEntryLevel(entry, clamped);
+          enforcePitchLock(entry.audio);
+          attemptPlayAudio(entry.audio).catch(() => {});
+        }
+        return;
+      }
+
+      if (!entry.audio) return;
+      if (mutedPeers.has(targetKey)) {
+        entry.audio.muted = true;
+        entry.audio.volume = 0;
+        return;
+      }
+      entry.audio.muted = false;
+      entry.audio.volume = clamped;
+      enforcePitchLock(entry.audio);
+    });
+  }
 
   requestAudioUnlockOverlay = () => {
     if (!isiOS || !audioUnlockOverlayEl) return;
@@ -1842,11 +1920,33 @@ document.addEventListener("DOMContentLoaded", () => {
     if (feedKey) {
       speakingPeers.delete(feedKey);
       updateSpeakerHighlight(feedKey, false);
-      const consumers = peerConsumers.get(feedKey);
-      if (consumers) {
-        consumers.forEach(c => { try { c.close(); } catch {} });
-        peerConsumers.delete(feedKey);
-      }
+      forEachStreamKey(feedKey, (streamKey) => {
+        const consumers = peerConsumers.get(streamKey);
+        if (consumers) {
+          consumers.forEach(c => { try { c.close(); } catch {} });
+          peerConsumers.delete(streamKey);
+        }
+        const entry = audioElements.get(streamKey);
+        if (entry) {
+          pendingAutoplayAudios.delete(entry.audio);
+          if (entry.mediaSource) {
+            try { entry.mediaSource.disconnect(); } catch {}
+            entry.mediaSource = null;
+          }
+          if (entry.gainNode) {
+            try { entry.gainNode.disconnect(); } catch {}
+            entry.gainNode = null;
+          }
+          try { entry.audio.pause?.(); } catch {}
+          try { entry.audio.srcObject = null; } catch {}
+          entry.audio.remove();
+          audioEntryMap.delete(entry.audio);
+          audioElements.delete(streamKey);
+          const feedId = Number(session.feedId);
+          feedAudioElements.get(feedId)?.delete(entry.audio);
+        }
+        unregisterStreamKey(feedKey, streamKey);
+      });
     }
 
     shouldStartFeedWhenReady = false;
@@ -2307,6 +2407,7 @@ document.addEventListener("DOMContentLoaded", () => {
       info.appendChild(label);
 
       const userKey = `volume_user_${socketId}`;
+      const targetKey = `user-${socketId}`;
       const volSlider = document.createElement('input');
       volSlider.type = 'range';
       volSlider.min = '0';
@@ -2317,11 +2418,7 @@ document.addEventListener("DOMContentLoaded", () => {
       volSlider.title = 'Source Volume';
       volSlider.addEventListener('input', e => {
         const vol = parseFloat(e.target.value);
-        const entry = audioElements.get(socketId);
-        if (entry?.audio) {
-          entry.audio.volume = vol;
-          entry.volume = vol;
-        }
+        applyVolumeToTarget(targetKey, vol);
         storeVolume(userKey, vol);
       });
       info.appendChild(volSlider);
@@ -2607,14 +2704,17 @@ document.addEventListener("DOMContentLoaded", () => {
     for (const { entry, mapKey } of feedsToRemove) {
       const feedKey = entry.key;
       const feedId = Number(feedKey.split('-')[1]);
-      const consumers = peerConsumers.get(feedKey);
+      const consumers = peerConsumers.get(mapKey);
       if (consumers) {
         consumers.forEach(c => { try { c.close(); } catch {} });
-        peerConsumers.delete(feedKey);
+        peerConsumers.delete(mapKey);
       }
-      speakingPeers.delete(feedKey);
+      unregisterStreamKey(feedKey, mapKey);
+      if (!hasActiveStreams(feedKey)) {
+        speakingPeers.delete(feedKey);
+        updateSpeakerHighlight(feedKey, false);
+      }
       mutedPeers.delete(feedKey);
-      updateSpeakerHighlight(feedKey, false);
       pendingAutoplayAudios.delete(entry.audio);
       if (entry.mediaSource) {
         try { entry.mediaSource.disconnect(); } catch {}
@@ -2685,17 +2785,19 @@ document.addEventListener("DOMContentLoaded", () => {
 
   async function consumeProducerPayload({ peerId, producerId, appData }) {
     const normalizedAppData = appData && typeof appData === 'object' ? appData : {};
+    const isConference = normalizedAppData.type === 'conference';
+    const isFeed = normalizedAppData.type === 'feed';
 
-    let key;
+    let targetKey;
     let volumeStorageKey;
-    if (normalizedAppData.type === 'conference') {
-      key = `conf-${normalizedAppData.id}`;
+    if (isConference) {
+      targetKey = `conf-${normalizedAppData.id}`;
       volumeStorageKey = `volume_conf_${normalizedAppData.id}`;
-    } else if (normalizedAppData.type === 'feed') {
-      key = `feed-${normalizedAppData.id}`;
+    } else if (isFeed) {
+      targetKey = `feed-${normalizedAppData.id}`;
       volumeStorageKey = `volume_feed_${normalizedAppData.id}`;
     } else {
-      key = `user-${peerId}`;
+      targetKey = `user-${peerId}`;
       volumeStorageKey = `volume_user_${peerId}`;
     }
 
@@ -2708,12 +2810,14 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    try {
-      const shouldTrackForMe = normalizedAppData.type !== 'feed';
-      speakingPeers.add(key);
-      updateSpeakerHighlight(key, true);
+    const effectiveProducerId = producerId || normalizedAppData.producerId || `${peerId}-${Date.now()}`;
+    const streamKey = makeStreamKey(targetKey, effectiveProducerId);
 
-      // request to consume this producer
+    try {
+      const shouldTrackForMe = !isFeed;
+      speakingPeers.add(targetKey);
+      updateSpeakerHighlight(targetKey, true);
+
       const { error, ...consumeParams } = await new Promise((resolve) =>
         socket.emit('consume', {
           producerId,
@@ -2722,232 +2826,178 @@ document.addEventListener("DOMContentLoaded", () => {
       );
       if (error) throw new Error(error);
 
-      // actually create the consumer
       const consumer = await recvTransport.consume(consumeParams);
       const receiver = consumer?.rtpReceiver;
       if (receiver && 'playoutDelayHint' in receiver) {
         try { receiver.playoutDelayHint = 0.1; } catch (err) { console.debug('playoutDelayHint set failed', err); }
       }
 
-      // track this consumer for mute/unmute
-      if (!peerConsumers.has(key)) peerConsumers.set(key, new Set());
-      peerConsumers.get(key).add(consumer);
-      if (mutedPeers.has(key) && !isFeedKey(key)) consumer.pause();
+      if (!peerConsumers.has(streamKey)) peerConsumers.set(streamKey, new Set());
+      peerConsumers.get(streamKey).add(consumer);
+      if (mutedPeers.has(targetKey) && !isFeedKey(targetKey)) consumer.pause();
       if (shouldTrackForMe) {
-        trackTalkerForMe(key, consumer.id);
+        trackTalkerForMe(targetKey, consumer.id);
       }
 
-      // wrap the track in a MediaStream
       const stream = new MediaStream([consumer.track]);
-      const ctxForFeed = normalizedAppData.type === 'feed' ? ensureAudioContext() : null;
+      const ctxForFeed = isFeed ? ensureAudioContext() : null;
 
-      if (!audioElements.has(key)) {
-        const audio = document.createElement('audio');
-        audio.srcObject = stream;
-        audio.autoplay = true;
-        audio.playsInline = true;
-        audio.setAttribute('playsinline', 'true');
-        audio.setAttribute('autoplay', 'true');
-        enforcePitchLock(audio);
+      const initVolRaw = getStoredVolume(volumeStorageKey);
+      const initVol = Math.max(0, Math.min(1, initVolRaw));
 
-        const initVolRaw = getStoredVolume(volumeStorageKey);
-        const initVol = Math.max(0, Math.min(1, initVolRaw));
-        let gainNode = null;
-        let mediaSource = null;
+      const audio = document.createElement('audio');
+      audio.srcObject = stream;
+      audio.autoplay = true;
+      audio.playsInline = true;
+      audio.setAttribute('playsinline', 'true');
+      audio.setAttribute('autoplay', 'true');
+      enforcePitchLock(audio);
 
-        if (normalizedAppData.type === 'feed' && ctxForFeed) {
-          try {
-            mediaSource = ctxForFeed.createMediaStreamSource(stream);
-            gainNode = ctxForFeed.createGain();
-            gainNode.gain.value = 0;
-            mediaSource.connect(gainNode);
-            gainNode.connect(ctxForFeed.destination);
-            audio.muted = true;
-            audio.volume = 0;
-            if (ctxForFeed.state !== 'running') {
-              requestAudioUnlockOverlay();
-            }
-          } catch (err) {
-            console.warn('Failed to initialize feed gain path:', err);
-            gainNode = null;
-            mediaSource = null;
+      let gainNode = null;
+      let mediaSource = null;
+
+      if (isFeed && ctxForFeed) {
+        try {
+          mediaSource = ctxForFeed.createMediaStreamSource(stream);
+          gainNode = ctxForFeed.createGain();
+          gainNode.gain.value = 0;
+          mediaSource.connect(gainNode);
+          gainNode.connect(ctxForFeed.destination);
+          audio.muted = true;
+          audio.volume = 0;
+          if (ctxForFeed.state !== 'running') {
+            requestAudioUnlockOverlay();
           }
+        } catch (err) {
+          console.warn('Failed to initialize feed gain path:', err);
+          gainNode = null;
+          mediaSource = null;
+        }
+      }
+
+      if (!gainNode) {
+        const applied = Math.max(0, Math.min(1, initVol));
+        if (mutedPeers.has(targetKey)) {
+          audio.muted = true;
+          audio.volume = 0;
+        } else {
+          audio.muted = false;
+          audio.volume = applied;
+        }
+      }
+
+      audioStreamsDiv.appendChild(audio);
+      const entry = {
+        audio,
+        volume: initVol,
+        key: targetKey,
+        streamKey,
+        type: normalizedAppData.type || 'user',
+        gainNode,
+        mediaSource,
+        lastAppliedLevel: null,
+        producerId: effectiveProducerId,
+      };
+      audioElements.set(streamKey, entry);
+      audioEntryMap.set(audio, entry);
+      registerStreamKey(targetKey, streamKey);
+
+      if (isFeed) {
+        if (mutedPeers.has(targetKey)) {
+          muteFeedEntry(entry);
+        } else if (session.kind === 'user') {
+          setFeedEntryLevel(entry, entry.volume);
+          applyFeedDucking();
+        } else {
+          setFeedEntryLevel(entry, entry.volume);
         }
 
-        if (!gainNode) {
-          const applied = Math.max(0, Math.min(1, initVol));
-          if (mutedPeers.has(key)) {
-            audio.muted = true;
-            audio.volume = 0;
-          } else {
-            audio.muted = false;
-            audio.volume = applied;
-          }
+        const feedId = Number(normalizedAppData.id);
+        if (!feedAudioElements.has(feedId)) {
+          feedAudioElements.set(feedId, new Set());
         }
+        feedAudioElements.get(feedId).add(audio);
 
-        audioStreamsDiv.appendChild(audio);
-        const entry = {
-          audio,
-          volume: initVol,
-          key,
-          type: normalizedAppData.type || 'user',
-          gainNode,
-          mediaSource,
-          lastAppliedLevel: null,
-        };
-        audioElements.set(key, entry);
-        audioEntryMap.set(audio, entry);
-
-        if (normalizedAppData.type === 'feed') {
-          if (mutedPeers.has(key)) {
-            muteFeedEntry(entry);
-          } else if (session.kind === 'user') {
-            setFeedEntryLevel(entry, entry.volume);
+        consumer.on('producerclose', () => {
+          const set = feedAudioElements.get(feedId);
+          set?.delete(audio);
+          if (session.kind === 'user') {
             applyFeedDucking();
-          } else {
-            setFeedEntryLevel(entry, entry.volume);
           }
+        });
+      } else {
+        const applied = Math.max(0, Math.min(1, entry.volume));
+        if (mutedPeers.has(targetKey)) {
+          entry.audio.muted = true;
+          entry.audio.volume = 0;
+        } else {
+          entry.audio.muted = false;
+          entry.audio.volume = applied;
+        }
 
-          const feedId = Number(normalizedAppData.id);
-          if (!feedAudioElements.has(feedId)) {
-            feedAudioElements.set(feedId, new Set());
+        if (isConference) {
+          const confId = normalizedAppData.id;
+          if (!confAudioElements.has(confId)) {
+            confAudioElements.set(confId, new Set());
           }
-          feedAudioElements.get(feedId).add(audio);
+          confAudioElements.get(confId).add(audio);
 
           consumer.on('producerclose', () => {
-            const set = feedAudioElements.get(feedId);
-            set?.delete(audio);
-            if (session.kind === 'user') {
-              applyFeedDucking();
-            }
+            confAudioElements.get(confId)?.delete(audio);
           });
-        } else {
-          const applied = Math.max(0, Math.min(1, entry.volume));
-          if (mutedPeers.has(key)) {
-            entry.audio.muted = true;
-            entry.audio.volume = 0;
-          } else {
-            entry.audio.muted = false;
-            entry.audio.volume = applied;
-          }
-
-          if (normalizedAppData.type === 'conference') {
-            const confId = normalizedAppData.id;
-            if (!confAudioElements.has(confId)) {
-              confAudioElements.set(confId, new Set());
-            }
-            confAudioElements.get(confId).add(audio);
-
-            consumer.on('producerclose', () => {
-              confAudioElements.get(confId)?.delete(audio);
-            });
-          }
-        }
-      } else {
-        const entry = audioElements.get(key);
-        entry.audio.srcObject = stream;
-        enforcePitchLock(entry.audio);
-
-        if (entry.type === 'feed') {
-          const ctx = ensureAudioContext();
-          if (entry.gainNode && ctx) {
-            try {
-              entry.mediaSource?.disconnect();
-              entry.mediaSource = ctx.createMediaStreamSource(stream);
-              entry.mediaSource.connect(entry.gainNode);
-              entry.audio.muted = true;
-              entry.audio.volume = 0;
-              if (ctx.state !== 'running') {
-                requestAudioUnlockOverlay();
-              }
-            } catch (err) {
-              console.warn('Failed to refresh feed gain path:', err);
-              entry.mediaSource = null;
-              try { entry.gainNode.disconnect(); } catch {}
-              entry.gainNode = null;
-              entry.audio.muted = false;
-              entry.audio.volume = Math.max(0, Math.min(1, entry.volume ?? defaultVolume));
-            }
-          }
-
-          if (mutedPeers.has(key)) {
-            muteFeedEntry(entry);
-          } else if (session.kind === 'user') {
-            setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
-            applyFeedDucking();
-          } else {
-            setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
-          }
-        } else {
-          const applied = Math.max(0, Math.min(1, entry.volume ?? defaultVolume));
-          entry.audio.muted = mutedPeers.has(key);
-          entry.audio.volume = mutedPeers.has(key) ? 0 : applied;
-        }
-
-        audioEntryMap.set(entry.audio, entry);
-        if (entry.type === 'feed' && session.kind === 'user') {
-          applyFeedDucking();
         }
       }
 
-      // attempt to play
-      await attemptPlayAudio(audioElements.get(key)?.audio).catch(() => {});
+      await attemptPlayAudio(audio).catch(() => {});
 
-      // tell server to resume the consumer
       await new Promise((res) =>
         socket.emit('resume-consumer', { consumerId: consumer.id }, res)
       );
 
-      // cleanup when the producer actually closes
       consumer.on('producerclose', () => {
         console.log(`Producer closed for consumer ${consumer.id}`);
 
         if (shouldTrackForMe) {
-          untrackTalkerForMe(key, consumer.id);
+          untrackTalkerForMe(targetKey, consumer.id);
         }
 
-        const consumersSet = peerConsumers.get(key);
-        let remaining = 0;
+        const consumersSet = peerConsumers.get(streamKey);
         if (consumersSet) {
           consumersSet.delete(consumer);
-          remaining = consumersSet.size;
-          if (remaining === 0) {
-            peerConsumers.delete(key);
+          if (consumersSet.size === 0) {
+            peerConsumers.delete(streamKey);
           }
         }
 
-        if (remaining > 0) {
-          return;
+        unregisterStreamKey(targetKey, streamKey);
+        if (!hasActiveStreams(targetKey)) {
+          speakingPeers.delete(targetKey);
+          updateSpeakerHighlight(targetKey, false);
         }
 
-        speakingPeers.delete(key);
-        updateSpeakerHighlight(key, false);
+        pendingAutoplayAudios.delete(audio);
+        if (entry.mediaSource) {
+          try { entry.mediaSource.disconnect(); } catch {}
+          entry.mediaSource = null;
+        }
+        if (entry.gainNode) {
+          try { entry.gainNode.disconnect(); } catch {}
+          entry.gainNode = null;
+        }
+        try { audio.pause?.(); } catch {}
+        try { audio.srcObject = null; } catch {}
+        audio.remove();
+        audioEntryMap.delete(audio);
+        audioElements.delete(streamKey);
 
-        const stored = audioElements.get(key);
-        if (stored) {
-          const audioEl = stored.audio;
-          pendingAutoplayAudios.delete(audioEl);
-          if (stored.mediaSource) {
-            try { stored.mediaSource.disconnect(); } catch {}
-            stored.mediaSource = null;
+        if (entry.type === 'feed') {
+          const feedId = Number(normalizedAppData.id);
+          feedAudioElements.get(feedId)?.delete(audio);
+          if (session.kind === 'user') {
+            applyFeedDucking();
           }
-          if (stored.gainNode) {
-            try { stored.gainNode.disconnect(); } catch {}
-            stored.gainNode = null;
-          }
-          // Release element playback and underlying stream reference.
-          try { audioEl.pause?.(); } catch {}
-          try { audioEl.srcObject = null; } catch {}
-          audioEl.remove();
-          audioEntryMap.delete(audioEl);
-          audioElements.delete(key);
-          if (stored.type === 'feed') {
-            const feedId = Number(normalizedAppData.id);
-            feedAudioElements.get(feedId)?.delete(audioEl);
-            if (session.kind === 'user') {
-              applyFeedDucking();
-            }
-          }
+        } else if (entry.type === 'conference') {
+          confAudioElements.get(normalizedAppData.id)?.delete(audio);
         }
       });
     } catch (err) {
@@ -3169,7 +3219,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
 
-  socket.on("producer-closed", ({ peerId, appData }) => {
+  socket.on("producer-closed", ({ peerId, producerId, appData }) => {
     // 1️⃣ Compute the key like always
     let key;
     if (appData?.type === "conference") {
@@ -3180,12 +3230,16 @@ document.addEventListener("DOMContentLoaded", () => {
       key = `user-${peerId}`;
     }
 
+    const streamKey = makeStreamKey(key, producerId || appData?.producerId);
+
     // 2️⃣ Continue only if we were actually consuming this key
-    const consumersSet = peerConsumers.get(key);
+    const consumersSet = peerConsumers.get(streamKey);
     if (!consumersSet || consumersSet.size === 0) {
-      clearTalkersForKey(key);
-      speakingPeers.delete(key);
-      updateSpeakerHighlight(key, false);
+      unregisterStreamKey(key, streamKey);
+      if (!hasActiveStreams(key)) {
+        speakingPeers.delete(key);
+        updateSpeakerHighlight(key, false);
+      }
       return;
     }
 
@@ -3195,12 +3249,15 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       try { c.close(); } catch {}
     });
-    peerConsumers.delete(key);
+    peerConsumers.delete(streamKey);
+    unregisterStreamKey(key, streamKey);
 
-    speakingPeers.delete(key);
-    updateSpeakerHighlight(key, false);
+    if (!hasActiveStreams(key)) {
+      speakingPeers.delete(key);
+      updateSpeakerHighlight(key, false);
+    }
 
-    const stored = audioElements.get(key);
+    const stored = audioElements.get(streamKey);
     if (stored) {
       const audioEl = stored.audio;
       pendingAutoplayAudios.delete(audioEl);
@@ -3218,15 +3275,18 @@ document.addEventListener("DOMContentLoaded", () => {
       try { audioEl.srcObject = null; } catch {}
       audioEl.remove();
       audioEntryMap.delete(audioEl);
-      audioElements.delete(key);
+      audioElements.delete(streamKey);
       if (stored.type === 'feed') {
         const feedId = Number(appData?.id);
         feedAudioElements.get(feedId)?.delete(audioEl);
         if (session.kind === 'user') {
           applyFeedDucking();
         }
+      } else if (stored.type === 'conference') {
+        confAudioElements.get(appData?.id)?.delete(audioEl);
       }
     }
+
   });
 
 
@@ -3327,8 +3387,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const key = toKey(rawId);
 
     // ─── Debug helper ──────────────────────────────────────────────
-    const consumers = peerConsumers.get(key);
-    console.log("[DEBUG] toggleMute with key:", key, "Consumers:", consumers);
+    const consumers = collectConsumersForTarget(key);
+    console.log("[DEBUG] toggleMute with key:", key, "Consumers:", consumers.length);
 
     // 2) Remaining logic
     const wasMuted = mutedPeers.has(key);
@@ -3338,8 +3398,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const nowMuted = mutedPeers.has(key);
 
     if (isFeedKey(key)) {
-      const entry = audioElements.get(key);
-      if (entry?.audio) {
+      forEachStreamEntry(key, (entry) => {
         if (nowMuted) {
           muteFeedEntry(entry);
         } else {
@@ -3347,11 +3406,11 @@ document.addEventListener("DOMContentLoaded", () => {
           enforcePitchLock(entry.audio);
           attemptPlayAudio(entry.audio).catch(() => {});
         }
-      }
+      });
       if (session.kind === 'user') {
         applyFeedDucking();
       }
-    } else if (consumers) {
+    } else if (consumers.length) {
       consumers.forEach(c => {
         if (!c?.pause || !c?.resume) return;
         nowMuted ? c.pause() : c.resume();
@@ -3361,8 +3420,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (!isFeedKey(key)) {
-      const entry = audioElements.get(key);
-      if (entry?.audio) {
+      forEachStreamEntry(key, (entry) => {
+        if (!entry.audio) return;
         if (nowMuted) {
           entry.audio.muted = true;
           entry.audio.volume = 0;
@@ -3372,8 +3431,9 @@ document.addEventListener("DOMContentLoaded", () => {
           entry.audio.muted = false;
           entry.audio.volume = applied;
           enforcePitchLock(entry.audio);
+          attemptPlayAudio(entry.audio).catch(() => {});
         }
-      }
+      });
     }
 
     // Update icon and list entry

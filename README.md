@@ -142,10 +142,3 @@ Trigger a user’s talk buttons over HTTP for example to use control panels such
 Notes:
 - Hold the Space bar to talk to reply.
 - If the user has no Reply target selected in the UI, a `reply` command is ignored on the client.
-
----
-
-## Notes
-- For local development you can choose any high port (e.g. 3000, 8080, 8443).  
-- On Linux/macOS, binding to **port 443** requires elevated privileges (`sudo`) or capabilities (`setcap`).  
-- For production, using a reverse proxy like **Nginx** or **Caddy** in front of Node.js is recommended.
