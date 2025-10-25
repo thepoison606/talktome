@@ -1533,11 +1533,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const lastSpokePeers = new Map();
   const mutedPeers = new Set();
   const pendingProducerQueue = [];
-  let currentTargetPeer = null;
-  let lastTarget = null;
-  let isTalking = false;
-  let currentTarget = null;
-  let cachedUsers = [];
+let currentTargetPeer = null;
+let lastTarget = null;
+let isTalking = false;
+let currentTarget = null;
+let selfTalkingKey = null;
+let cachedUsers = [];
   let mediaInitialized = false;
   let initializingMediaPromise = null;
   let shouldInitializeAfterConnect = false;
@@ -3301,15 +3302,12 @@ document.addEventListener("DOMContentLoaded", () => {
       lockTargetMatches = isSameTarget(activeLockTarget, candidate);
     }
 
-    if (isSpeaking) {
-      el?.classList.add("speaking");
-      el?.classList.remove("last-spoke");
-      icon?.classList.add("speaking");
-      if (lockTargetMatches) {
-        el?.classList.remove("talking-to");
-      }
-      return;
-    }
+  if (isSpeaking) {
+    el?.classList.add("speaking");
+    el?.classList.remove("last-spoke");
+    icon?.classList.add("speaking");
+    return;
+  }
 
     el?.classList.remove("speaking");
     icon?.classList.remove("speaking");
@@ -3364,6 +3362,14 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
 // ---------- Helper defined once centrally ----------
+  function keyFromTarget(target) {
+    if (!target || target.id == null) return null;
+    if (target.type === 'conference') return `conf-${target.id}`;
+    if (target.type === 'user') return `user-${target.id}`;
+    if (target.type === 'feed') return `feed-${target.id}`;
+    return null;
+  }
+
   function toKey(rawId) {
     // Always treat the raw ID as a string
     const id = String(rawId);
@@ -3462,6 +3468,18 @@ document.addEventListener("DOMContentLoaded", () => {
     activeLockButton.setAttribute("aria-pressed", "false");
     activeLockButton = null;
     activeLockTarget = null;
+    setSelfTalkingKey(null);
+  }
+
+  function setSelfTalkingKey(nextKey) {
+    if (selfTalkingKey === nextKey) return;
+    if (selfTalkingKey) {
+      document.getElementById(selfTalkingKey)?.classList.remove('talking-self');
+    }
+    selfTalkingKey = nextKey || null;
+    if (selfTalkingKey) {
+      document.getElementById(selfTalkingKey)?.classList.add('talking-self');
+    }
   }
 
   function toggleTargetLock(target, button) {
@@ -3506,6 +3524,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (session.kind !== 'user') return;
     if (producer) return;
     if (!target) return;
+    const targetKey = keyFromTarget(target);
 
     isTalking     = true;
     currentTarget = target;
@@ -3513,6 +3532,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (feedDimSelf) {
       applyFeedDucking();
     }
+
+    const shouldPinSelfColor = targetKey ? speakingPeers.has(targetKey) : false;
+    setSelfTalkingKey(shouldPinSelfColor ? targetKey : null);
 
     try {
       const qualityKey = currentQualityKey();
@@ -3581,6 +3603,9 @@ document.addEventListener("DOMContentLoaded", () => {
           processedTrack.enabled = false;
         }
         scheduleMicCleanup();
+        if (targetKey && selfTalkingKey === targetKey) {
+          setSelfTalkingKey(null);
+        }
       });
 
       // ◆ Visual feedback only for targeted recipients
@@ -3610,6 +3635,7 @@ document.addEventListener("DOMContentLoaded", () => {
         document.querySelector(selector)?.classList.remove("talking-to");
       }
       currentTarget = null;
+      setSelfTalkingKey(null);
     }
   }
 
@@ -3643,6 +3669,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     isTalking = false;
+    setSelfTalkingKey(null);
 
     // Reset button states
     setReplyButtonActive(false);
