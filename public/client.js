@@ -73,6 +73,10 @@ const FEED_METER_TEXT_UPDATE_INTERVAL_MS = 160;
 const USER_METER_TEXT_UPDATE_INTERVAL_MS = 160;
 const METER_TEXT_DB_THRESHOLD = 0.5;
 
+const TARGET_HOTKEY_DIGITS = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+const targetHotkeys = new Map();
+const pressedHotkeyDigits = new Set();
+
 let feedDuckingDb = DEFAULT_FEED_DUCKING_DB;
 let feedDuckingFactor = dbToLinear(feedDuckingDb);
 let feedDimSelf = false;
@@ -2344,6 +2348,26 @@ let cachedUsers = [];
     if (!list) return;
     list.innerHTML = '';
 
+    if (pressedHotkeyDigits.size) {
+      handleStopTalking({ preventDefault() {}, currentTarget: null });
+    }
+    pressedHotkeyDigits.clear();
+    clearHotkeyActiveStyles();
+    targetHotkeys.clear();
+    let nextHotkeyIndex = 0;
+
+    const takeHotkeyDigit = () => {
+      if (nextHotkeyIndex >= TARGET_HOTKEY_DIGITS.length) return null;
+      return TARGET_HOTKEY_DIGITS[nextHotkeyIndex++];
+    };
+
+    const applyHotkeyToTarget = (li, labelRow, targetData) => {
+      const digit = takeHotkeyDigit();
+      if (!digit) return;
+      targetHotkeys.set(digit, targetData);
+      li.dataset.hotkey = digit;
+    };
+
     targetLabels.clear();
 
     const usersById = new Map();
@@ -2387,7 +2411,10 @@ let cachedUsers = [];
       const label = document.createElement('span');
       label.className = 'target-label';
       label.textContent = name || socketId;
-      info.appendChild(label);
+      const labelRow = document.createElement('div');
+      labelRow.className = 'target-label-row';
+      labelRow.appendChild(label);
+      info.appendChild(labelRow);
 
       const userKey = `volume_user_${socketId}`;
       const targetKey = `user-${socketId}`;
@@ -2446,6 +2473,7 @@ let cachedUsers = [];
       }
 
       li.append(icon, info, actions);
+      applyHotkeyToTarget(li, labelRow, { type: 'user', id: socketId });
 
       ['down', 'up', 'leave', 'cancel'].forEach(ev => {
         li.addEventListener(`pointer${ev}`, e => {
@@ -2481,7 +2509,10 @@ let cachedUsers = [];
       const label = document.createElement('span');
       label.className = 'target-label';
       label.textContent = name;
-      info.appendChild(label);
+      const labelRow = document.createElement('div');
+      labelRow.className = 'target-label-row';
+      labelRow.appendChild(label);
+      info.appendChild(labelRow);
 
       const confKey = `volume_conf_${id}`;
       const confSlider = document.createElement('input');
@@ -2544,6 +2575,7 @@ let cachedUsers = [];
       }
 
       li.append(icon, info, actions);
+      applyHotkeyToTarget(li, labelRow, { type: 'conference', id });
 
       ['down', 'up', 'leave', 'cancel'].forEach(ev => {
         li.addEventListener(`pointer${ev}`, e => {
@@ -3371,16 +3403,50 @@ let cachedUsers = [];
   }
 
   function toKey(rawId) {
-    // Always treat the raw ID as a string
     const id = String(rawId);
-
-    // Already a fully qualified key?
     if (id.startsWith("user-") || id.startsWith("conf-") || id.startsWith("feed-")) {
       return id;
     }
+    const numeric = Number(id);
+    if (Number.isFinite(numeric)) {
+      return `conf-${numeric}`;
+    }
+    return `user-${id}`;
+  }
 
-    // Conference IDs are numeric; everything else is a socket ID
-    return isFinite(id) ? `conf-${id}` : `user-${id}`;
+  function clearHotkeyActiveStyles() {
+    document
+      .querySelectorAll(".target-item.hotkey-active")
+      .forEach((el) => el.classList.remove("hotkey-active"));
+  }
+
+  function setHotkeyElementState(digit, isActive) {
+    const el = document.querySelector(`.target-item[data-hotkey="${digit}"]`);
+    if (!el) return;
+    el.classList.toggle("hotkey-active", Boolean(isActive));
+  }
+
+  function extractHotkeyDigit(event) {
+    if (!event) return null;
+    if (event.key && /^[1-9]$/.test(event.key)) {
+      return event.key;
+    }
+
+    const code = event.code || "";
+    let match = code.match(/^Digit([1-9])$/);
+    if (match) return match[1];
+    match = code.match(/^Numpad([1-9])$/);
+    if (match) return match[1];
+    return null;
+  }
+
+  function canUseTargetHotkeys(event) {
+    if (session.kind !== "user") return false;
+    if (activeLockButton) return false;
+    if (!event) return false;
+    if (event.altKey || event.ctrlKey || event.metaKey) return false;
+    if (isTextInput(event.target)) return false;
+    return true;
   }
 
 
@@ -3703,6 +3769,8 @@ let cachedUsers = [];
     currentTargetPeer = null;
     applyFeedDucking();
     attemptPendingAutoplay();
+    clearHotkeyActiveStyles();
+    pressedHotkeyDigits.clear();
   }
 
   // Keyboard Push-to-Talk: hold Space to talk
@@ -3745,6 +3813,32 @@ let cachedUsers = [];
       btnReply.setAttribute('aria-pressed', 'false');
     }
     setReplyButtonActive(false);
+    handleStopTalking({ preventDefault() {}, currentTarget: null });
+  });
+
+  window.addEventListener('keydown', e => {
+    if (e.repeat) return;
+    const digit = extractHotkeyDigit(e);
+    if (!digit) return;
+    if (!canUseTargetHotkeys(e)) return;
+     if (pressedHotkeyDigits.size) return;
+    if (pressedHotkeyDigits.has(digit)) return;
+    const target = targetHotkeys.get(digit);
+    if (!target) return;
+
+    pressedHotkeyDigits.add(digit);
+    e.preventDefault();
+    setHotkeyElementState(digit, true);
+    handleTalk(e, target);
+  });
+
+  window.addEventListener('keyup', e => {
+    const digit = extractHotkeyDigit(e);
+    if (!digit) return;
+    if (!pressedHotkeyDigits.has(digit)) return;
+    pressedHotkeyDigits.delete(digit);
+    setHotkeyElementState(digit, false);
+    e.preventDefault();
     handleStopTalking({ preventDefault() {}, currentTarget: null });
   });
 
