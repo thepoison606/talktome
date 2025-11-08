@@ -3334,6 +3334,22 @@ let cachedUsers = [];
       lockTargetMatches = isSameTarget(activeLockTarget, candidate);
     }
 
+    const lastTargetMatchesKey =
+      lastTarget &&
+      (lastTarget.type === "conference"
+        ? `conf-${lastTarget.id}` === targetKey
+        : lastTarget.type === "user"
+          ? `user-${lastTarget.id}` === targetKey
+          : false);
+
+    if (!el) {
+      if (!isFeed && lastTargetMatchesKey) {
+        clearReplyTarget();
+      }
+      applyFeedDucking();
+      return;
+    }
+
   if (isSpeaking) {
     el?.classList.add("speaking");
     el?.classList.remove("last-spoke");
