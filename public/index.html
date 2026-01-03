@@ -12,6 +12,8 @@
       html,
       body {
         touch-action: manipulation;
+        height: 100%;
+        overflow: hidden;
       }
 
       /* Global */
@@ -25,7 +27,7 @@
         font-family: sans-serif;
         margin: 0;
         padding: 0;
-        padding-bottom: 5.5rem;
+        padding-bottom: 0;
         background-color: #0b1120;
         color: #e2e8f0;
       }
@@ -35,8 +37,14 @@
       }
 
       .container {
-        max-width: 800px;
-        margin: 1rem auto; /* center horizontally */
+        max-width: 1100px;
+        width: calc(100% - 1rem);
+        margin: 0.5rem auto; /* center horizontally */
+        height: calc(100vh - 1rem);
+        height: calc(100dvh - 1rem);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
         background: #131a2a;
         border-radius: 0;
         box-shadow: none;
@@ -326,19 +334,28 @@
       }
 
       #targets-list {
-        margin: 1rem 0;
+        margin: 1rem 0 0;
         list-style: none;
         padding: 0;
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        overflow: auto;
+        background: #0b1120;
       }
 
       /* Individual items (user and conference targets) */
       #targets-list li.target-item {
+        --target-row-pad-y: 1.05rem;
+        --target-row-pad-x: 0.6rem;
         display: grid;
         grid-template-columns: auto 1fr auto;
         grid-template-areas: "icon info actions";
-        align-items: center;
+        align-items: stretch;
         gap: 0.6rem;
-        padding: 0.55rem 0.75rem;
+        padding: 0;
         margin: 0.35rem 0;
         background: #1f2937;
         border-radius: 6px;
@@ -347,6 +364,8 @@
         cursor: pointer;
         user-select: none;
         touch-action: manipulation;
+        overflow: hidden;
+        position: relative;
       }
 
       #targets-list li.target-item,
@@ -406,9 +425,11 @@
       #targets-list .conf-icon,
       #targets-list .feed-icon {
         grid-area: icon;
+        align-self: center;
         width: 40px;
         height: 40px;
         min-width: 40px;
+        margin-left: var(--target-row-pad-x);
         border-radius: 50%;
         background: #446cc2;
         color: white;
@@ -440,6 +461,8 @@
         flex-direction: column;
         gap: 0.35rem;
         min-width: 0;
+        align-self: center;
+        padding: var(--target-row-pad-y) 0;
       }
 
       #targets-list .target-label {
@@ -530,65 +553,98 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-      }
-
-      .dim-btn {
-        background: rgba(148, 163, 184, 0.18);
-        color: #cbd5f5;
+        background: transparent;
+        color: rgba(226, 232, 240, 0.9);
         border: 1px solid rgba(148, 163, 184, 0.35);
+        margin: 0;
+        -webkit-tap-highlight-color: transparent;
       }
 
-      .dim-btn:hover {
-        background: rgba(148, 163, 184, 0.18);
+      #targets-list .target-actions button:hover {
+        background: transparent;
       }
 
-      .dim-btn.dim-off {
-        color: rgba(148, 163, 184, 0.55);
-        text-decoration: line-through;
-        background: rgba(71, 85, 105, 0.2);
-        border-color: rgba(71, 85, 105, 0.4);
+      #targets-list .target-actions.ptt-actions {
+        align-self: stretch;
+        gap: 0;
+        align-items: stretch;
+        overflow: hidden;
       }
 
-      .dim-btn.dim-off {
-        color: rgba(148, 163, 184, 0.55);
-        text-decoration: line-through;
-        background: rgba(71, 85, 105, 0.2);
-        border-color: rgba(71, 85, 105, 0.4);
-      }
-
-      #targets-list .lock-btn {
-        background: rgba(59, 130, 246, 0.3);
-        color: #e2e8f0;
-        border: 1px solid rgba(59, 130, 246, 0.5);
-      }
-
-      #targets-list .lock-btn:hover {
-        background: rgba(59, 130, 246, 0.3);
-      }
-
-      #targets-list .lock-btn.active {
-        background: rgba(139, 92, 246, 0.35);
-        border-color: rgba(139, 92, 246, 0.6);
-        color: #ede9fe;
-      }
-
-      #targets-list .mute-btn {
-        background: #334155;
-        color: #e2e8f0;
+      #targets-list .target-actions.ptt-actions button {
+        width: var(--ptt-btn-size, 64px);
+        height: var(--ptt-btn-size, 64px);
+        padding: 0;
+        min-width: 0;
+        font-size: 18px;
+        line-height: 1;
+        border-radius: 0;
+        margin: 0;
+        -webkit-tap-highlight-color: transparent;
+        background: transparent;
+        color: rgba(226, 232, 240, 0.9);
         border: none;
+        border-left: 1px solid rgba(148, 163, 184, 0.35);
+        transition: none;
       }
 
-      #targets-list .mute-btn:hover {
-        background: #334155;
+      #targets-list .slide-to-lock-hint {
+        position: absolute;
+        top: 26%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 1rem;
+        font-weight: 700;
+        color: rgba(148, 163, 184, 0.85);
+        text-shadow: none;
+        pointer-events: none;
+        user-select: none;
+        white-space: nowrap;
+        opacity: 0;
+        z-index: 2;
       }
 
-      #targets-list .mute-btn.muted {
-        background: #ef4444;
-        color: #0f172a;
+      #intercom-app {
+        flex: 1 1 auto;
+        min-height: 0;
+        flex-direction: column;
+        padding-bottom: calc(var(--reply-bar-height, 6rem) + env(safe-area-inset-bottom));
+        background: #0b1120;
       }
 
-      #targets-list .mute-btn.muted:hover {
-        background: #ef4444;
+      #targets-list li.target-item.show-slide-hint:not(.talk-locked) .slide-to-lock-hint {
+        opacity: 1;
+        animation: slideHintFade 3s ease forwards;
+      }
+
+      @keyframes slideHintFade {
+        0%   { opacity: 1; }
+        80%  { opacity: 1; }
+        100% { opacity: 0; }
+      }
+
+      @media (max-width: 420px) {
+        #targets-list .slide-to-lock-hint {
+          display: none;
+        }
+      }
+
+      #targets-list .target-actions.ptt-actions button:hover {
+        background: transparent;
+      }
+
+      #targets-list .target-actions.ptt-actions button:active {
+        background: transparent;
+      }
+
+      #targets-list .target-actions.ptt-actions .mute-btn.muted {
+        background: transparent;
+        color: rgba(226, 232, 240, 0.9);
+      }
+
+      #targets-list .dim-btn.dim-off {
+        color: rgba(148, 163, 184, 0.65);
+        text-decoration: line-through;
       }
       #targets-list li.target-item.muted .user-icon,
       #targets-list li.target-item.muted .conf-icon,
@@ -598,26 +654,8 @@
 
       @media (max-width: 600px) {
         .container {
-          padding: 1.5rem;
-        }
-
-        #targets-list li.target-item {
-        grid-template-columns: auto 1fr;
-        grid-template-areas:
-          "icon info"
-          "actions actions";
-        }
-
-        #targets-list .target-actions {
-          width: 100%;
-          justify-content: stretch;
-        }
-
-        #targets-list .target-actions button {
-          flex: 1 1 0;
-          padding: 0.6rem 0.75rem;
-          width: auto;
-          min-width: 0;
+          width: calc(100% - 0.75rem);
+          margin: 0.4rem auto;
         }
 
         .reply-bar button {
@@ -848,6 +886,25 @@
       body.feed-mode #feed-banner {
         display: block;
       }
+
+      body.feed-mode #intercom-app {
+        padding-bottom: 0;
+      }
+
+      :root {
+        --reply-bar-height: 6rem;
+      }
+
+      .reply-bar {
+        height: calc(var(--reply-bar-height) + env(safe-area-inset-bottom));
+        padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
+        align-items: center;
+        box-sizing: border-box;
+      }
+
+      .reply-bar button {
+        margin: 0;
+      }
     </style>
   </head>
   <body>
@@ -1037,7 +1094,7 @@
   <script src="/socket.io/socket.io.js"></script>
   <script>
     document.addEventListener("DOMContentLoaded", () => {
-      document.querySelectorAll(".mute-btn, .lock-btn").forEach((btn) => {
+      document.querySelectorAll(".mute-btn, .lock-btn, .talk-btn").forEach((btn) => {
         btn.addEventListener("pointerdown", (e) => e.stopPropagation());
       });
 

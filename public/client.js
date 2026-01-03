@@ -198,7 +198,7 @@ let micPrimingPromise = null;
 let feedStreaming = false;
 let feedManualStop = false;
 let shouldStartFeedWhenReady = false;
-const USER_ACTIVATION_EVENTS = ['pointerdown', 'touchstart', 'keydown'];
+const USER_ACTIVATION_EVENTS = ['pointerdown', 'mousedown', 'click', 'touchstart', 'keydown'];
 const pendingAutoplayAudios = new Set();
 let sharedAudioContext = null;
 let onAudioContextRunning = null;
@@ -1548,6 +1548,37 @@ let cachedUsers = [];
   let shouldInitializeAfterConnect = false;
   let activeLockButton = null;
   let activeLockTarget = null;
+  let pendingPttSizingRaf = null;
+  let pttSizingListenerBound = false;
+  let speakingPruneInterval = null;
+  let slideHintShown = false;
+
+  function updatePttButtonSizing() {
+    const list = document.getElementById('targets-list');
+    if (!list) return;
+    list.querySelectorAll('li.target-item .target-actions.ptt-actions').forEach(actions => {
+      const li = actions.closest('li.target-item');
+      if (!li) return;
+      const info = li.querySelector('.target-info');
+      const baseEl = info || li;
+      const rectHeight = baseEl.getBoundingClientRect().height;
+      const height = Math.max(0, Math.round(rectHeight));
+      if (height > 0) {
+        const next = `${height}px`;
+        if (li.style.getPropertyValue('--ptt-btn-size') !== next) {
+          li.style.setProperty('--ptt-btn-size', next);
+        }
+      }
+    });
+  }
+
+  function schedulePttButtonSizing() {
+    if (pendingPttSizingRaf != null) return;
+    pendingPttSizingRaf = requestAnimationFrame(() => {
+      pendingPttSizingRaf = null;
+      updatePttButtonSizing();
+    });
+  }
 
   function makeStreamKey(targetKey, producerId) {
     if (!producerId) return targetKey;
@@ -1599,6 +1630,37 @@ let cachedUsers = [];
       }
     });
     return collected;
+  }
+
+  function pruneSpeakingState() {
+    // Remove stale stream bookkeeping so "speaking" can't get stuck due to missed events.
+    for (const [targetKey, set] of Array.from(targetStreamMap.entries())) {
+      for (const streamKey of Array.from(set)) {
+        const entry = audioElements.get(streamKey);
+        const consumers = peerConsumers.get(streamKey);
+        const hasConsumers = !!(consumers && consumers.size);
+        const audioEl = entry?.audio || null;
+        const track = audioEl?.srcObject?.getTracks?.()?.[0] || null;
+        const trackLive = !track || track.readyState === 'live';
+        const audioInDom = !!(audioEl && document.body.contains(audioEl));
+
+        if (!entry || !hasConsumers || !audioInDom || !trackLive) {
+          unregisterStreamKey(targetKey, streamKey);
+        }
+      }
+
+      if (!hasActiveStreams(targetKey) && speakingPeers.has(targetKey)) {
+        speakingPeers.delete(targetKey);
+        updateSpeakerHighlight(targetKey, false);
+      }
+    }
+
+    for (const targetKey of Array.from(speakingPeers)) {
+      if (!hasActiveStreams(targetKey)) {
+        speakingPeers.delete(targetKey);
+        updateSpeakerHighlight(targetKey, false);
+      }
+    }
   }
 
   function applyVolumeToTarget(targetKey, volume) {
@@ -2092,7 +2154,7 @@ let cachedUsers = [];
       session = { kind: "user", userId: storedId, feedId: null, name: storedName };
       console.log("Auto-login as:", storedName);
       loginContainer.style.display = "none";
-      intercomApp.style.display = "block";
+      intercomApp.style.display = "flex";
       myIdEl.textContent = storedName;
       socket.emit("register-user", { id: storedId, name: storedName, kind: "user" });
       applySessionUI();
@@ -2104,7 +2166,7 @@ let cachedUsers = [];
       session = { kind: "feed", userId: null, feedId: storedFeedId, name: storedName };
       console.log("Auto-login feed:", storedName);
       loginContainer.style.display = "none";
-      intercomApp.style.display = "block";
+      intercomApp.style.display = "flex";
       myIdEl.textContent = storedName;
       feedManualStop = false;
       shouldStartFeedWhenReady = true;
@@ -2164,7 +2226,7 @@ let cachedUsers = [];
       socket.emit("register-user", { id: identityId, name: user.name, kind });
 
       loginContainer.style.display = "none";
-      intercomApp.style.display = "block";
+      intercomApp.style.display = "flex";
       myIdEl.textContent = user.name;
       applySessionUI();
       initializeMediaIfPossible();
@@ -2303,17 +2365,7 @@ let cachedUsers = [];
     if (action === 'lock-toggle') {
       const target = resolveTarget();
       if (!target) return;
-      const lockBtn = findLockButtonForTarget(target);
-      if (!lockBtn) {
-        console.warn('Talk command: lock button not found for target', target);
-        return;
-      }
-
-      if (isSameTarget(activeLockTarget, target) && activeLockButton) {
-        handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
-      } else {
-        toggleTargetLock(target, lockBtn);
-      }
+      toggleTalkLock(target);
       return;
     }
 
@@ -2401,6 +2453,11 @@ let cachedUsers = [];
       li.id = `user-${socketId}`;
       li.classList.add('target-item', 'user-target');
 
+      const hint = document.createElement('div');
+      hint.className = 'slide-to-lock-hint';
+      hint.textContent = '← Slide to lock';
+      hint.setAttribute('aria-hidden', 'true');
+
       const icon = document.createElement('div');
       icon.className = 'user-icon';
       icon.textContent = name ? name.charAt(0).toUpperCase() : socketId.slice(0, 2);
@@ -2433,57 +2490,139 @@ let cachedUsers = [];
       });
       info.appendChild(volSlider);
 
-      const lockBtn = document.createElement('button');
-      lockBtn.className = 'lock-btn';
-      lockBtn.textContent = 'Talk Lock';
-      lockBtn.type = 'button';
-      lockBtn.setAttribute('aria-pressed', 'false');
-      lockBtn.setAttribute('aria-label', `Toggle talk lock for ${name || socketId}`);
-      lockBtn.addEventListener('pointerdown', e => e.stopPropagation());
-      lockBtn.addEventListener('click', e => {
+      const talkBtn = document.createElement('button');
+      talkBtn.className = 'talk-btn';
+      talkBtn.textContent = '🎙️';
+      talkBtn.type = 'button';
+      talkBtn.setAttribute('aria-pressed', 'false');
+      talkBtn.setAttribute('aria-label', `Hold to talk to ${name || socketId}`);
+      talkBtn.title = 'Hold to talk';
+      talkBtn.addEventListener('pointerdown', e => {
         e.stopPropagation();
-        toggleTargetLock({ type: 'user', id: socketId }, lockBtn);
+        li.classList.add('ptt-pressing');
+
+        const normalizedTarget = { type: 'user', id: socketId };
+
+        if (activeLockButton) {
+          if (activeLockButton === talkBtn) {
+            li.classList.remove('ptt-pressing');
+            handleStopTalking({ preventDefault() {}, currentTarget: talkBtn });
+            return;
+          }
+          handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
+        }
+
+        const startX = e.clientX;
+        let lockedByGesture = false;
+
+        const onMove = (ev) => {
+          if (lockedByGesture || activeLockButton === talkBtn) return;
+          if (ev.clientX - startX <= -42) {
+            lockedByGesture = true;
+            activateTalkLock(normalizedTarget, talkBtn);
+          }
+        };
+
+        const cleanup = () => {
+          talkBtn.removeEventListener('pointermove', onMove);
+          talkBtn.removeEventListener('pointerup', onEnd);
+          talkBtn.removeEventListener('pointercancel', onEnd);
+          try { talkBtn.releasePointerCapture(e.pointerId); } catch {}
+        };
+
+        const onEnd = (ev) => {
+          cleanup();
+          li.classList.remove('ptt-pressing');
+          if (activeLockButton === talkBtn) return;
+          handleStopTalking(ev);
+        };
+
+        try { talkBtn.setPointerCapture(e.pointerId); } catch {}
+        talkBtn.addEventListener('pointermove', onMove);
+        talkBtn.addEventListener('pointerup', onEnd);
+        talkBtn.addEventListener('pointercancel', onEnd);
+        handleTalk(e, normalizedTarget);
       });
 
       const muteBtn = document.createElement('button');
       muteBtn.className = 'mute-btn';
-      muteBtn.textContent = mutedPeers.has(`user-${socketId}`) ? 'Unmute' : 'Mute';
+      muteBtn.textContent = mutedPeers.has(`user-${socketId}`) ? '🔇' : '🔊';
       muteBtn.type = 'button';
+      muteBtn.title = mutedPeers.has(`user-${socketId}`) ? 'Unmute' : 'Mute';
       muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
       muteBtn.addEventListener('click', e => {
         e.stopPropagation();
         const key = `user-${socketId}`;
         toggleMute(socketId);
         const nowMuted = mutedPeers.has(key);
-        muteBtn.textContent = nowMuted ? 'Unmute' : 'Mute';
+        muteBtn.textContent = nowMuted ? '🔇' : '🔊';
+        muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
         muteBtn.classList.toggle('muted', nowMuted);
       });
       muteBtn.classList.toggle('muted', mutedPeers.has(`user-${socketId}`));
 
       const actions = document.createElement('div');
       actions.className = 'target-actions';
-      actions.append(lockBtn, muteBtn);
+      actions.classList.add('ptt-actions');
+      actions.append(muteBtn, talkBtn);
 
       const isLocked = isSameTarget(activeLockTarget, { type: 'user', id: socketId });
       if (isLocked) {
-        activeLockButton = lockBtn;
-        lockBtn.classList.add('active');
-        lockBtn.textContent = 'Unlock';
-        lockBtn.setAttribute('aria-pressed', 'true');
+        activeLockButton = talkBtn;
+        setTalkButtonLocked(talkBtn, true);
       }
 
-      li.append(icon, info, actions);
+      li.append(icon, info, actions, hint);
       applyHotkeyToTarget(li, labelRow, { type: 'user', id: socketId });
+
+      let rowPttGestureActive = false;
+      let rowPttStartX = 0;
+      let rowPttLockedByGesture = false;
+      li.addEventListener('pointermove', (e) => {
+        if (!rowPttGestureActive) return;
+        if (rowPttLockedByGesture || activeLockButton === talkBtn) return;
+        if (e.clientX - rowPttStartX <= -42) {
+          rowPttLockedByGesture = true;
+          activateTalkLock({ type: 'user', id: socketId }, talkBtn);
+        }
+      });
 
       ['down', 'up', 'leave', 'cancel'].forEach(ev => {
         li.addEventListener(`pointer${ev}`, e => {
           if (
+            e.target.closest('.talk-btn') ||
             e.target.closest('.mute-btn') ||
-            e.target.closest('.lock-btn') ||
             e.target.closest('.volume-slider')
           ) return;
-          if (ev === 'down') handleTalk(e, { type: 'user', id: socketId });
-          else handleStopTalking(e);
+          if (ev === 'down') {
+            const targetData = { type: 'user', id: socketId };
+            if (activeLockButton && isSameTarget(activeLockTarget, targetData)) {
+              handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
+              return;
+            }
+            if (activeLockButton && !isSameTarget(activeLockTarget, targetData)) {
+              toggleTalkLock(targetData);
+              return;
+            }
+
+            rowPttGestureActive = true;
+            rowPttLockedByGesture = false;
+            rowPttStartX = e.clientX;
+            li.classList.add('ptt-pressing');
+            try { li.setPointerCapture(e.pointerId); } catch {}
+            handleTalk(e, targetData);
+            return;
+          }
+
+          if (ev === 'up' || ev === 'leave' || ev === 'cancel') {
+            if (rowPttGestureActive) {
+              rowPttGestureActive = false;
+              li.classList.remove('ptt-pressing');
+              try { li.releasePointerCapture(e.pointerId); } catch {}
+              if (activeLockButton === talkBtn) return;
+            }
+          }
+          handleStopTalking(e);
         });
       });
 
@@ -2498,6 +2637,13 @@ let cachedUsers = [];
       const li = document.createElement('li');
       li.id = key;
       li.classList.add('target-item', 'conf-target');
+      li.dataset.type = 'conference';
+      li.dataset.id = String(id);
+
+      const hint = document.createElement('div');
+      hint.className = 'slide-to-lock-hint';
+      hint.textContent = '← Slide to lock';
+      hint.setAttribute('aria-hidden', 'true');
 
       const icon = document.createElement('div');
       icon.className = 'conf-icon';
@@ -2537,58 +2683,248 @@ let cachedUsers = [];
       });
       info.appendChild(confSlider);
 
-      const lockBtn = document.createElement('button');
-      lockBtn.className = 'lock-btn';
-      lockBtn.textContent = 'Talk Lock';
-      lockBtn.type = 'button';
-      lockBtn.setAttribute('aria-pressed', 'false');
-      lockBtn.setAttribute('aria-label', `Toggle talk lock for ${name}`);
-      lockBtn.addEventListener('pointerdown', e => e.stopPropagation());
-      lockBtn.addEventListener('click', e => {
+      const talkBtn = document.createElement('button');
+      talkBtn.className = 'talk-btn';
+      talkBtn.textContent = '🎙️';
+      talkBtn.type = 'button';
+      talkBtn.setAttribute('aria-pressed', 'false');
+      talkBtn.setAttribute('aria-label', `Hold to talk to ${name}`);
+      talkBtn.title = 'Hold to talk';
+      talkBtn.addEventListener('pointerdown', e => {
         e.stopPropagation();
-        toggleTargetLock({ type: 'conference', id }, lockBtn);
+        li.classList.add('ptt-pressing');
+
+        const normalizedTarget = { type: 'conference', id };
+
+        if (activeLockButton) {
+          if (activeLockButton === talkBtn) {
+            li.classList.remove('ptt-pressing');
+            handleStopTalking({ preventDefault() {}, currentTarget: talkBtn });
+            return;
+          }
+          handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
+        }
+
+        const startX = e.clientX;
+        let lockedByGesture = false;
+
+        const onMove = (ev) => {
+          if (lockedByGesture || activeLockButton === talkBtn) return;
+          if (ev.clientX - startX <= -42) {
+            lockedByGesture = true;
+            activateTalkLock(normalizedTarget, talkBtn);
+          }
+        };
+
+        const cleanup = () => {
+          talkBtn.removeEventListener('pointermove', onMove);
+          talkBtn.removeEventListener('pointerup', onEnd);
+          talkBtn.removeEventListener('pointercancel', onEnd);
+          try { talkBtn.releasePointerCapture(e.pointerId); } catch {}
+        };
+
+        const onEnd = (ev) => {
+          cleanup();
+          li.classList.remove('ptt-pressing');
+          if (activeLockButton === talkBtn) return;
+          handleStopTalking(ev);
+        };
+
+        try { talkBtn.setPointerCapture(e.pointerId); } catch {}
+        talkBtn.addEventListener('pointermove', onMove);
+        talkBtn.addEventListener('pointerup', onEnd);
+        talkBtn.addEventListener('pointercancel', onEnd);
+        handleTalk(e, normalizedTarget);
       });
 
       const muteBtn = document.createElement('button');
       muteBtn.className = 'mute-btn';
       const muted = mutedPeers.has(key);
-      muteBtn.textContent = muted ? 'Unmute' : 'Mute';
+      muteBtn.textContent = muted ? '🔇' : '🔊';
       muteBtn.type = 'button';
+      muteBtn.title = muted ? 'Unmute' : 'Mute';
       if (muted) muteBtn.classList.add('muted');
       muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
       muteBtn.addEventListener('click', e => {
         e.stopPropagation();
         toggleMute(id);
         const nowMuted = mutedPeers.has(key);
-        muteBtn.textContent = nowMuted ? 'Unmute' : 'Mute';
+        muteBtn.textContent = nowMuted ? '🔇' : '🔊';
+        muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
         muteBtn.classList.toggle('muted', nowMuted);
       });
       const actions = document.createElement('div');
       actions.className = 'target-actions';
-      actions.append(lockBtn, muteBtn);
+      actions.classList.add('ptt-actions');
+      actions.append(muteBtn, talkBtn);
 
       if (isSameTarget(activeLockTarget, { type: 'conference', id })) {
-        activeLockButton = lockBtn;
-        lockBtn.classList.add('active');
-        lockBtn.textContent = 'Unlock';
-        lockBtn.setAttribute('aria-pressed', 'true');
+        activeLockButton = talkBtn;
+        setTalkButtonLocked(talkBtn, true);
       }
 
-      li.append(icon, info, actions);
+      li.append(icon, info, actions, hint);
       applyHotkeyToTarget(li, labelRow, { type: 'conference', id });
+
+      let rowPttGestureActive = false;
+      let rowPttStartX = 0;
+      let rowPttLockedByGesture = false;
+      li.addEventListener('pointermove', (e) => {
+        if (!rowPttGestureActive) return;
+        if (rowPttLockedByGesture || activeLockButton === talkBtn) return;
+        if (e.clientX - rowPttStartX <= -42) {
+          rowPttLockedByGesture = true;
+          activateTalkLock({ type: 'conference', id }, talkBtn);
+        }
+      });
 
       ['down', 'up', 'leave', 'cancel'].forEach(ev => {
         li.addEventListener(`pointer${ev}`, e => {
           if (
+            e.target.closest('.talk-btn') ||
             e.target.closest('.mute-btn') ||
-            e.target.closest('.lock-btn') ||
             e.target.closest('.volume-slider')
           ) return;
-          if (ev === 'down') handleTalk(e, { type: 'conference', id });
-          else handleStopTalking(e);
+          if (ev === 'down') {
+            const targetData = { type: 'conference', id };
+            if (activeLockButton && isSameTarget(activeLockTarget, targetData)) {
+              handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
+              return;
+            }
+            if (activeLockButton && !isSameTarget(activeLockTarget, targetData)) {
+              toggleTalkLock(targetData);
+              return;
+            }
+
+            rowPttGestureActive = true;
+            rowPttLockedByGesture = false;
+            rowPttStartX = e.clientX;
+            li.classList.add('ptt-pressing');
+            try { li.setPointerCapture(e.pointerId); } catch {}
+            handleTalk(e, targetData);
+            return;
+          }
+
+          if (ev === 'up' || ev === 'leave' || ev === 'cancel') {
+            if (rowPttGestureActive) {
+              rowPttGestureActive = false;
+              li.classList.remove('ptt-pressing');
+              try { li.releasePointerCapture(e.pointerId); } catch {}
+              if (activeLockButton === talkBtn) return;
+            }
+          }
+          handleStopTalking(e);
         });
       });
 
+      list.appendChild(li);
+    };
+
+    const appendFeedTarget = (target) => {
+      const id = Number(target.targetId);
+      const name = target.name;
+      const key = `feed-${id}`;
+
+      const li = document.createElement('li');
+      li.id = key;
+      li.classList.add('target-item', 'feed-target');
+      li.dataset.type = 'feed';
+      li.dataset.id = String(id);
+
+      const icon = document.createElement('div');
+      icon.className = 'feed-icon';
+      icon.textContent = '🎧';
+
+      const info = document.createElement('div');
+      info.className = 'target-info';
+
+      const labelWrap = document.createElement('div');
+      labelWrap.className = 'target-label-row';
+
+      const label = document.createElement('span');
+      label.className = 'target-label';
+      label.textContent = name;
+      labelWrap.appendChild(label);
+
+      const dimBtn = document.createElement('button');
+      dimBtn.className = 'lock-btn dim-btn';
+      const feedKeyId = String(id);
+      const dimDisabled = feedDimmingDisabled.has(feedKeyId);
+      dimBtn.textContent = 'Dim';
+      dimBtn.type = 'button';
+      dimBtn.setAttribute('aria-pressed', dimDisabled ? 'true' : 'false');
+      dimBtn.classList.toggle('dim-off', dimDisabled);
+      dimBtn.addEventListener('pointerdown', e => e.stopPropagation());
+      dimBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        if (feedDimmingDisabled.has(feedKeyId)) {
+          feedDimmingDisabled.delete(feedKeyId);
+          dimBtn.setAttribute('aria-pressed', 'false');
+          dimBtn.classList.remove('dim-off');
+        } else {
+          feedDimmingDisabled.add(feedKeyId);
+          dimBtn.setAttribute('aria-pressed', 'true');
+          dimBtn.classList.add('dim-off');
+        }
+        applyFeedDucking();
+      });
+      labelWrap.appendChild(dimBtn);
+
+      info.appendChild(labelWrap);
+
+      const feedKey = `volume_feed_${id}`;
+      const feedSlider = document.createElement('input');
+      feedSlider.type = 'range';
+      feedSlider.min = '0';
+      feedSlider.max = '1';
+      feedSlider.step = '0.01';
+      feedSlider.value = getStoredVolume(feedKey).toString();
+      feedSlider.className = 'volume-slider';
+      feedSlider.title = 'Feed Volume';
+      feedSlider.addEventListener('input', e => {
+        const vol = Math.max(0, Math.min(1, parseFloat(e.target.value)));
+        const audios = feedAudioElements.get(id);
+        if (audios) {
+          audios.forEach(a => {
+            const entry = audioEntryMap.get(a);
+            if (entry?.audio) {
+              entry.volume = vol;
+              if (!mutedPeers.has(key)) {
+                setFeedEntryLevel(entry, vol);
+                enforcePitchLock(entry.audio);
+                attemptPlayAudio(entry.audio).catch(() => {});
+              }
+            }
+          });
+        }
+        storeVolume(feedKey, vol);
+        applyFeedDucking();
+      });
+      info.appendChild(feedSlider);
+
+      const muteBtn = document.createElement('button');
+      muteBtn.className = 'mute-btn';
+      const muted = mutedPeers.has(key);
+      muteBtn.textContent = muted ? '🔇' : '🔊';
+      muteBtn.type = 'button';
+      muteBtn.classList.toggle('muted', muted);
+      muteBtn.title = muted ? 'Unmute' : 'Mute';
+      muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
+      muteBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        toggleMute(key);
+        const nowMuted = mutedPeers.has(key);
+        muteBtn.textContent = nowMuted ? '🔇' : '🔊';
+        muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
+        muteBtn.classList.toggle('muted', nowMuted);
+      });
+
+      const actions = document.createElement('div');
+      actions.className = 'target-actions';
+      actions.classList.add('ptt-actions');
+      actions.append(muteBtn, dimBtn);
+
+      li.append(icon, info, actions);
       list.appendChild(li);
     };
 
@@ -2598,108 +2934,7 @@ let cachedUsers = [];
       } else if (target.targetType === 'conference') {
         appendConferenceTarget(target);
       } else if (target.targetType === 'feed') {
-        const id = Number(target.targetId);
-        const name = target.name;
-        const key = `feed-${id}`;
-
-        const li = document.createElement('li');
-        li.id = key;
-        li.classList.add('target-item', 'feed-target');
-        li.dataset.type = 'feed';
-        li.dataset.id = String(id);
-
-        const icon = document.createElement('div');
-        icon.className = 'feed-icon';
-        icon.textContent = '🎧';
-
-        const info = document.createElement('div');
-        info.className = 'target-info';
-
-        const labelWrap = document.createElement('div');
-        labelWrap.className = 'target-label-row';
-
-        const label = document.createElement('span');
-        label.className = 'target-label';
-        label.textContent = name;
-        labelWrap.appendChild(label);
-
-        const dimBtn = document.createElement('button');
-        dimBtn.className = 'lock-btn dim-btn';
-        const feedKeyId = String(id);
-        const dimDisabled = feedDimmingDisabled.has(feedKeyId);
-        dimBtn.textContent = 'Dim';
-        dimBtn.type = 'button';
-        dimBtn.setAttribute('aria-pressed', dimDisabled ? 'true' : 'false');
-        dimBtn.classList.toggle('dim-off', dimDisabled);
-        dimBtn.addEventListener('pointerdown', e => e.stopPropagation());
-        dimBtn.addEventListener('click', e => {
-          e.stopPropagation();
-          if (feedDimmingDisabled.has(feedKeyId)) {
-            feedDimmingDisabled.delete(feedKeyId);
-            dimBtn.setAttribute('aria-pressed', 'false');
-            dimBtn.classList.remove('dim-off');
-          } else {
-            feedDimmingDisabled.add(feedKeyId);
-            dimBtn.setAttribute('aria-pressed', 'true');
-            dimBtn.classList.add('dim-off');
-          }
-          applyFeedDucking();
-        });
-        labelWrap.appendChild(dimBtn);
-
-        info.appendChild(labelWrap);
-
-        const feedKey = `volume_feed_${id}`;
-        const feedSlider = document.createElement('input');
-        feedSlider.type = 'range';
-        feedSlider.min = '0';
-        feedSlider.max = '1';
-        feedSlider.step = '0.01';
-        feedSlider.value = getStoredVolume(feedKey).toString();
-        feedSlider.className = 'volume-slider';
-        feedSlider.title = 'Feed Volume';
-        feedSlider.addEventListener('input', e => {
-          const vol = Math.max(0, Math.min(1, parseFloat(e.target.value)));
-          const audios = feedAudioElements.get(id);
-          if (audios) {
-            audios.forEach(a => {
-              const entry = audioEntryMap.get(a);
-              if (entry?.audio) {
-                entry.volume = vol;
-                if (!mutedPeers.has(key)) {
-                  setFeedEntryLevel(entry, vol);
-                  enforcePitchLock(entry.audio);
-                  attemptPlayAudio(entry.audio).catch(() => {});
-                }
-              }
-            });
-          }
-          storeVolume(feedKey, vol);
-          applyFeedDucking();
-        });
-        info.appendChild(feedSlider);
-
-        const muteBtn = document.createElement('button');
-        muteBtn.className = 'mute-btn';
-        const muted = mutedPeers.has(key);
-        muteBtn.textContent = muted ? 'Unmute' : 'Mute';
-        muteBtn.type = 'button';
-        muteBtn.classList.toggle('muted', muted);
-        muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
-        muteBtn.addEventListener('click', e => {
-          e.stopPropagation();
-          toggleMute(key);
-          const nowMuted = mutedPeers.has(key);
-          muteBtn.textContent = nowMuted ? 'Unmute' : 'Mute';
-          muteBtn.classList.toggle('muted', nowMuted);
-        });
-
-        const actions = document.createElement('div');
-        actions.className = 'target-actions';
-        actions.append(dimBtn, muteBtn);
-
-        li.append(icon, info, actions);
-        list.appendChild(li);
+        appendFeedTarget(target);
       }
     });
 
@@ -2754,13 +2989,14 @@ let cachedUsers = [];
     }
 
     document.querySelectorAll('.target-item').forEach(li => {
-      const [type, id] = li.id.split('-');
-      const key = `${type}-${id}`;
-      const icon = type === 'user'
+      const key = li.id;
+      const icon = key.startsWith('user-')
         ? li.querySelector('.user-icon')
-        : type === 'conference'
+        : key.startsWith('conf-')
           ? li.querySelector('.conf-icon')
-          : li.querySelector('.feed-icon');
+          : key.startsWith('feed-')
+            ? li.querySelector('.feed-icon')
+            : null;
 
       const isSpeaking = speakingPeers.has(key);
       li.classList.toggle('speaking', isSpeaking);
@@ -2781,6 +3017,12 @@ let cachedUsers = [];
         lastTarget = { ...lastTarget, label: updatedLabel };
         renderReplyButtonLabel();
       }
+    }
+
+    schedulePttButtonSizing();
+    if (!pttSizingListenerBound) {
+      window.addEventListener('resize', schedulePttButtonSizing, { passive: true });
+      pttSizingListenerBound = true;
     }
   }
 
@@ -2830,8 +3072,6 @@ let cachedUsers = [];
 
     try {
       const shouldTrackForMe = !isFeed;
-      speakingPeers.add(targetKey);
-      updateSpeakerHighlight(targetKey, true);
 
       const { error, ...consumeParams } = await new Promise((resolve) =>
         socket.emit('consume', {
@@ -2916,6 +3156,10 @@ let cachedUsers = [];
       audioElements.set(streamKey, entry);
       audioEntryMap.set(audio, entry);
       registerStreamKey(targetKey, streamKey);
+      if (!speakingPeers.has(targetKey)) {
+        speakingPeers.add(targetKey);
+        updateSpeakerHighlight(targetKey, true);
+      }
 
       if (isFeed) {
         if (mutedPeers.has(targetKey)) {
@@ -3036,11 +3280,14 @@ let cachedUsers = [];
       }
     }
     if (seenDuringFlush.size) {
-      document.querySelectorAll('.target-item.conference-target').forEach(li => {
+      document.querySelectorAll('.target-item.conf-target').forEach(li => {
         const confId = Number(li.dataset.id);
-        if (!seenDuringFlush.has(confId)) {
-          li.classList.remove('speaking', 'last-spoke');
-          li.querySelector('.conf-icon')?.classList.remove('speaking');
+        if (!Number.isFinite(confId)) return;
+        const key = `conf-${confId}`;
+        if (!seenDuringFlush.has(confId) && !hasActiveStreams(key)) {
+          speakingPeers.delete(key);
+          lastSpokePeers.delete(key);
+          updateSpeakerHighlight(key, false);
         }
       });
     }
@@ -3210,6 +3457,9 @@ let cachedUsers = [];
 
       await processPendingProducers();
       await requestActiveProducers();
+      if (!speakingPruneInterval) {
+        speakingPruneInterval = setInterval(pruneSpeakingState, 2000);
+      }
       if (session.kind === 'feed') {
         updateFeedControls();
         if (!feedManualStop && (feedStreaming || shouldStartFeedWhenReady)) {
@@ -3545,12 +3795,64 @@ let cachedUsers = [];
 
   function clearLockState() {
     if (!activeLockButton) return;
-    activeLockButton.classList.remove("active");
-    activeLockButton.textContent = "Talk Lock";
-    activeLockButton.setAttribute("aria-pressed", "false");
+    setTalkButtonLocked(activeLockButton, false);
     activeLockButton = null;
     activeLockTarget = null;
     setSelfTalkingKey(null);
+  }
+
+  function setTalkButtonLocked(button, isLocked) {
+    if (!button) return;
+    button.closest('li.target-item')?.classList.toggle('talk-locked', isLocked);
+    if (isLocked) {
+      button.dataset.locked = 'true';
+      button.setAttribute('aria-pressed', 'true');
+      button.title = 'Locked (tap to unlock)';
+    } else {
+      button.removeAttribute('data-locked');
+      button.setAttribute('aria-pressed', 'false');
+      button.title = 'Hold to talk';
+    }
+  }
+
+  function activateTalkLock(target, button) {
+    if (session.kind !== 'user') return;
+    if (!target || !button) return;
+    activeLockButton = button;
+    activeLockTarget = { type: target.type, id: target.id };
+    setTalkButtonLocked(button, true);
+  }
+
+  function findTalkButtonForTarget(target) {
+    if (!target) return null;
+    if (target.type === 'user') {
+      return document.querySelector(`#user-${target.id} .talk-btn`);
+    }
+    if (target.type === 'conference') {
+      return document.querySelector(`#conf-${target.id} .talk-btn`);
+    }
+    return null;
+  }
+
+  function toggleTalkLock(target) {
+    if (session.kind !== 'user') return;
+    if (!target) return;
+    const talkBtn = findTalkButtonForTarget(target);
+    if (!talkBtn) return;
+
+    if (isSameTarget(activeLockTarget, target) && activeLockButton) {
+      handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
+      return;
+    }
+
+    if (activeLockButton && activeLockButton !== talkBtn) {
+      handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
+    } else if (producer) {
+      handleStopTalking({ preventDefault() {}, currentTarget: talkBtn });
+    }
+
+    activateTalkLock(target, talkBtn);
+    handleTalk({ preventDefault() {} }, { type: target.type, id: target.id });
   }
 
   function setSelfTalkingKey(nextKey) {
@@ -3564,41 +3866,8 @@ let cachedUsers = [];
     }
   }
 
-  function toggleTargetLock(target, button) {
-    if (session.kind !== 'user') return;
-    const normalizedTarget = {
-      type: target.type,
-      id: target.id
-    };
-
-    if (activeLockButton === button) {
-      handleStopTalking({ preventDefault() {}, currentTarget: button });
-      return;
-    }
-
-    if (activeLockButton && activeLockButton !== button) {
-      handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
-    } else if (producer) {
-      handleStopTalking({ preventDefault() {}, currentTarget: button });
-    }
-
-    activeLockButton = button;
-    activeLockTarget = normalizedTarget;
-    button.classList.add("active");
-    button.textContent = "Unlock";
-    button.setAttribute("aria-pressed", "true");
-    handleTalk({ preventDefault() {} }, normalizedTarget);
-  }
-
-  function findLockButtonForTarget(target) {
-    if (!target) return null;
-    if (target.type === 'user') {
-      return document.querySelector(`#user-${target.id} .lock-btn`);
-    }
-    if (target.type === 'conference') {
-      return document.querySelector(`#conf-${target.id} .lock-btn`);
-    }
-    return null;
+  function toggleTargetLock(target) {
+    toggleTalkLock(target);
   }
 
   async function handleTalk(e, target) {
@@ -3607,6 +3876,14 @@ let cachedUsers = [];
     if (producer) return;
     if (!target) return;
     const targetKey = keyFromTarget(target);
+    if (!slideHintShown && targetKey && !targetKey.startsWith('feed-')) {
+      const li = document.getElementById(targetKey);
+      if (li) {
+        slideHintShown = true;
+        li.classList.add('show-slide-hint');
+        setTimeout(() => li.classList.remove('show-slide-hint'), 3000);
+      }
+    }
 
     isTalking     = true;
     currentTarget = target;
