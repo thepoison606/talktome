@@ -199,6 +199,11 @@ let feedStreaming = false;
 let feedManualStop = false;
 let shouldStartFeedWhenReady = false;
 const USER_ACTIVATION_EVENTS = ['pointerdown', 'mousedown', 'click', 'touchstart', 'keydown'];
+const UI_ICONS = {
+  talk: '/images/walkie-talkies-white.png',
+  speakerOn: '/images/speaker-white.png',
+  speakerMuted: '/images/speaker-muted.png',
+};
 const pendingAutoplayAudios = new Set();
 let sharedAudioContext = null;
 let onAudioContextRunning = null;
@@ -2492,11 +2497,16 @@ let cachedUsers = [];
 
       const talkBtn = document.createElement('button');
       talkBtn.className = 'talk-btn';
-      talkBtn.textContent = '🎙️';
       talkBtn.type = 'button';
       talkBtn.setAttribute('aria-pressed', 'false');
       talkBtn.setAttribute('aria-label', `Hold to talk to ${name || socketId}`);
       talkBtn.title = 'Hold to talk';
+      const talkIcon = document.createElement('img');
+      talkIcon.className = 'btn-icon';
+      talkIcon.src = UI_ICONS.talk;
+      talkIcon.alt = '';
+      talkIcon.setAttribute('aria-hidden', 'true');
+      talkBtn.appendChild(talkIcon);
       talkBtn.addEventListener('pointerdown', e => {
         e.stopPropagation();
         li.classList.add('ptt-pressing');
@@ -2546,16 +2556,22 @@ let cachedUsers = [];
 
       const muteBtn = document.createElement('button');
       muteBtn.className = 'mute-btn';
-      muteBtn.textContent = mutedPeers.has(`user-${socketId}`) ? '🔇' : '🔊';
       muteBtn.type = 'button';
-      muteBtn.title = mutedPeers.has(`user-${socketId}`) ? 'Unmute' : 'Mute';
+      const initialMuted = mutedPeers.has(`user-${socketId}`);
+      muteBtn.title = initialMuted ? 'Unmute' : 'Mute';
+      const muteIcon = document.createElement('img');
+      muteIcon.className = 'btn-icon';
+      muteIcon.src = initialMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
+      muteIcon.alt = '';
+      muteIcon.setAttribute('aria-hidden', 'true');
+      muteBtn.appendChild(muteIcon);
       muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
       muteBtn.addEventListener('click', e => {
         e.stopPropagation();
         const key = `user-${socketId}`;
         toggleMute(socketId);
         const nowMuted = mutedPeers.has(key);
-        muteBtn.textContent = nowMuted ? '🔇' : '🔊';
+        muteIcon.src = nowMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
         muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
         muteBtn.classList.toggle('muted', nowMuted);
       });
@@ -2685,11 +2701,16 @@ let cachedUsers = [];
 
       const talkBtn = document.createElement('button');
       talkBtn.className = 'talk-btn';
-      talkBtn.textContent = '🎙️';
       talkBtn.type = 'button';
       talkBtn.setAttribute('aria-pressed', 'false');
       talkBtn.setAttribute('aria-label', `Hold to talk to ${name}`);
       talkBtn.title = 'Hold to talk';
+      const talkIcon = document.createElement('img');
+      talkIcon.className = 'btn-icon';
+      talkIcon.src = UI_ICONS.talk;
+      talkIcon.alt = '';
+      talkIcon.setAttribute('aria-hidden', 'true');
+      talkBtn.appendChild(talkIcon);
       talkBtn.addEventListener('pointerdown', e => {
         e.stopPropagation();
         li.classList.add('ptt-pressing');
@@ -2740,16 +2761,21 @@ let cachedUsers = [];
       const muteBtn = document.createElement('button');
       muteBtn.className = 'mute-btn';
       const muted = mutedPeers.has(key);
-      muteBtn.textContent = muted ? '🔇' : '🔊';
       muteBtn.type = 'button';
       muteBtn.title = muted ? 'Unmute' : 'Mute';
       if (muted) muteBtn.classList.add('muted');
+      const muteIcon = document.createElement('img');
+      muteIcon.className = 'btn-icon';
+      muteIcon.src = muted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
+      muteIcon.alt = '';
+      muteIcon.setAttribute('aria-hidden', 'true');
+      muteBtn.appendChild(muteIcon);
       muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
       muteBtn.addEventListener('click', e => {
         e.stopPropagation();
         toggleMute(id);
         const nowMuted = mutedPeers.has(key);
-        muteBtn.textContent = nowMuted ? '🔇' : '🔊';
+        muteIcon.src = nowMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
         muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
         muteBtn.classList.toggle('muted', nowMuted);
       });
@@ -2905,16 +2931,21 @@ let cachedUsers = [];
       const muteBtn = document.createElement('button');
       muteBtn.className = 'mute-btn';
       const muted = mutedPeers.has(key);
-      muteBtn.textContent = muted ? '🔇' : '🔊';
       muteBtn.type = 'button';
       muteBtn.classList.toggle('muted', muted);
       muteBtn.title = muted ? 'Unmute' : 'Mute';
+      const muteIcon = document.createElement('img');
+      muteIcon.className = 'btn-icon';
+      muteIcon.src = muted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
+      muteIcon.alt = '';
+      muteIcon.setAttribute('aria-hidden', 'true');
+      muteBtn.appendChild(muteIcon);
       muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
       muteBtn.addEventListener('click', e => {
         e.stopPropagation();
         toggleMute(key);
         const nowMuted = mutedPeers.has(key);
-        muteBtn.textContent = nowMuted ? '🔇' : '🔊';
+        muteIcon.src = nowMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
         muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
         muteBtn.classList.toggle('muted', nowMuted);
       });
