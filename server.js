@@ -27,15 +27,7 @@ while (
 // 3) Build the default worker path (without "node")
 let workerBin = path.join(mediasoupPkgDir, "worker", "out", "Release", workerName);
 
-// 4) Legacy fallback for the old ".../node/worker/..." layout
-if (!fs.existsSync(workerBin)) {
-  const legacyBin = path.join(mediasoupPkgDir, "node", "worker", "out", "Release", workerName);
-  if (fs.existsSync(legacyBin)) {
-    workerBin = legacyBin;
-  }
-}
-
-// 5) pkg bundle: copy the binary into a writable folder
+// 4) pkg bundle: copy the binary into a writable folder
 if (process.pkg) {
   const execDir = path.dirname(process.execPath);
   const sources = [

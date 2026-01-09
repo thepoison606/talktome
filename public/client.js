@@ -629,7 +629,7 @@ function ensureFeedProcessingChain(track) {
     meterDataL,
     meterDataR,
     rafId: null,
-    clipHoldFrames: 0, // legacy overall
+    clipHoldFrames: 0,
     clipHoldFramesL: 0,
     clipHoldFramesR: 0,
   };
