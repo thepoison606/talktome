@@ -4097,6 +4097,28 @@ let cachedUsers = [];
     pressedHotkeyDigits.clear();
   }
 
+  // Safety stop so PTT can't get stuck on iOS/background transitions.
+  function stopTalkingSafely({ respectLock = false } = {}) {
+    if (session.kind !== 'user') return;
+    if (!producer && !isTalking) return;
+    if (respectLock && activeLockButton) return;
+    handleStopTalking({ preventDefault() {}, currentTarget: null });
+  }
+
+  function stopTalkingIfHidden() {
+    if (document.visibilityState === 'hidden') {
+      stopTalkingSafely();
+    }
+  }
+
+  document.addEventListener('visibilitychange', stopTalkingIfHidden);
+  window.addEventListener('pagehide', () => stopTalkingSafely());
+  window.addEventListener('blur', () => stopTalkingSafely());
+  window.addEventListener('pointerup', () => stopTalkingSafely({ respectLock: true }));
+  window.addEventListener('pointercancel', () => stopTalkingSafely({ respectLock: true }));
+  window.addEventListener('touchend', () => stopTalkingSafely({ respectLock: true }), { passive: true });
+  window.addEventListener('touchcancel', () => stopTalkingSafely({ respectLock: true }), { passive: true });
+
   // Keyboard Push-to-Talk: hold Space to talk
   let spaceKeyHeld = false;
   function isTextInput(el) {
