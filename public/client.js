@@ -2441,8 +2441,11 @@ let cachedUsers = [];
 
     const usersById = new Map();
     users.forEach(u => {
+      if (u.userId == null) return;
       usersById.set(Number(u.userId), u);
-      targetLabels.set(`user-${u.socketId}`, u.name || u.socketId);
+      if (u.socketId) {
+        targetLabels.set(`user-${u.socketId}`, u.name || u.socketId);
+      }
     });
 
     const conferenceNames = new Map();
@@ -2461,14 +2464,24 @@ let cachedUsers = [];
 
     const appendUserTarget = (target) => {
       const targetIdNum = Number(target.targetId);
-      const user = usersById.get(targetIdNum);
-      if (!user) return;
-      const { socketId, name } = user;
-      if (!socketId || socketId === socket.id) return;
+      if (!Number.isFinite(targetIdNum)) return;
+      if (session.userId && Number(session.userId) === targetIdNum) return;
+
+      const onlineUser = usersById.get(targetIdNum);
+      const socketId = onlineUser?.socketId || null;
+      if (socketId && socketId === socket.id) return;
+
+      const isOnline = !!socketId;
+      const displayName = target.name || onlineUser?.name || `User ${targetIdNum}`;
+      const keyId = isOnline ? socketId : String(targetIdNum);
 
       const li = document.createElement('li');
-      li.id = `user-${socketId}`;
+      const targetKey = `user-${keyId}`;
+      li.id = targetKey;
       li.classList.add('target-item', 'user-target');
+      if (!isOnline) {
+        li.classList.add('is-offline');
+      }
 
       const hint = document.createElement('div');
       hint.className = 'slide-to-lock-hint';
@@ -2477,99 +2490,109 @@ let cachedUsers = [];
 
       const icon = document.createElement('div');
       icon.className = 'user-icon';
-      icon.textContent = name ? name.charAt(0).toUpperCase() : socketId.slice(0, 2);
+      icon.textContent = displayName ? displayName.charAt(0).toUpperCase() : String(targetIdNum).slice(0, 2);
 
       const info = document.createElement('div');
       info.className = 'target-info';
 
       const label = document.createElement('span');
       label.className = 'target-label';
-      label.textContent = name || socketId;
+      label.textContent = displayName;
       const labelRow = document.createElement('div');
       labelRow.className = 'target-label-row';
       labelRow.appendChild(label);
       info.appendChild(labelRow);
 
-      const userKey = `volume_user_${socketId}`;
-      const targetKey = `user-${socketId}`;
+      const userKey = isOnline ? `volume_user_${socketId}` : null;
       const volSlider = document.createElement('input');
       volSlider.type = 'range';
       volSlider.min = '0';
       volSlider.max = '1';
       volSlider.step = '0.01';
-      volSlider.value = getStoredVolume(userKey).toString();
+      volSlider.value = isOnline && userKey ? getStoredVolume(userKey).toString() : '1';
       volSlider.className = 'volume-slider';
       volSlider.title = 'Source Volume';
-      volSlider.addEventListener('input', e => {
-        const vol = parseFloat(e.target.value);
-        applyVolumeToTarget(targetKey, vol);
-        storeVolume(userKey, vol);
-      });
+      if (isOnline && userKey) {
+        volSlider.addEventListener('input', e => {
+          const vol = parseFloat(e.target.value);
+          applyVolumeToTarget(targetKey, vol);
+          storeVolume(userKey, vol);
+        });
+      } else {
+        volSlider.disabled = true;
+      }
       info.appendChild(volSlider);
 
       const talkBtn = document.createElement('button');
       talkBtn.className = 'talk-btn';
       talkBtn.type = 'button';
       talkBtn.setAttribute('aria-pressed', 'false');
-      talkBtn.setAttribute('aria-label', `Hold to talk to ${name || socketId}`);
-      talkBtn.title = 'Hold to talk';
+      talkBtn.setAttribute(
+        'aria-label',
+        isOnline ? `Hold to talk to ${displayName}` : `${displayName} is offline`
+      );
+      talkBtn.title = isOnline ? 'Hold to talk' : 'Offline';
       const talkIcon = document.createElement('img');
       talkIcon.className = 'btn-icon';
       talkIcon.src = UI_ICONS.talk;
       talkIcon.alt = '';
       talkIcon.setAttribute('aria-hidden', 'true');
       talkBtn.appendChild(talkIcon);
-      talkBtn.addEventListener('pointerdown', e => {
-        e.stopPropagation();
-        li.classList.add('ptt-pressing');
+      if (isOnline) {
+        talkBtn.addEventListener('pointerdown', e => {
+          e.stopPropagation();
+          li.classList.add('ptt-pressing');
 
-        const normalizedTarget = { type: 'user', id: socketId };
+          const normalizedTarget = { type: 'user', id: socketId };
 
-        if (activeLockButton) {
-          if (activeLockButton === talkBtn) {
+          if (activeLockButton) {
+            if (activeLockButton === talkBtn) {
+              li.classList.remove('ptt-pressing');
+              handleStopTalking({ preventDefault() {}, currentTarget: talkBtn });
+              return;
+            }
+            handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
+          }
+
+          const startX = e.clientX;
+          let lockedByGesture = false;
+
+          const onMove = (ev) => {
+            if (lockedByGesture || activeLockButton === talkBtn) return;
+            if (ev.clientX - startX <= -42) {
+              lockedByGesture = true;
+              activateTalkLock(normalizedTarget, talkBtn);
+            }
+          };
+
+          const cleanup = () => {
+            talkBtn.removeEventListener('pointermove', onMove);
+            talkBtn.removeEventListener('pointerup', onEnd);
+            talkBtn.removeEventListener('pointercancel', onEnd);
+            try { talkBtn.releasePointerCapture(e.pointerId); } catch {}
+          };
+
+          const onEnd = (ev) => {
+            cleanup();
             li.classList.remove('ptt-pressing');
-            handleStopTalking({ preventDefault() {}, currentTarget: talkBtn });
-            return;
-          }
-          handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
-        }
+            if (activeLockButton === talkBtn) return;
+            handleStopTalking(ev);
+          };
 
-        const startX = e.clientX;
-        let lockedByGesture = false;
-
-        const onMove = (ev) => {
-          if (lockedByGesture || activeLockButton === talkBtn) return;
-          if (ev.clientX - startX <= -42) {
-            lockedByGesture = true;
-            activateTalkLock(normalizedTarget, talkBtn);
-          }
-        };
-
-        const cleanup = () => {
-          talkBtn.removeEventListener('pointermove', onMove);
-          talkBtn.removeEventListener('pointerup', onEnd);
-          talkBtn.removeEventListener('pointercancel', onEnd);
-          try { talkBtn.releasePointerCapture(e.pointerId); } catch {}
-        };
-
-        const onEnd = (ev) => {
-          cleanup();
-          li.classList.remove('ptt-pressing');
-          if (activeLockButton === talkBtn) return;
-          handleStopTalking(ev);
-        };
-
-        try { talkBtn.setPointerCapture(e.pointerId); } catch {}
-        talkBtn.addEventListener('pointermove', onMove);
-        talkBtn.addEventListener('pointerup', onEnd);
-        talkBtn.addEventListener('pointercancel', onEnd);
-        handleTalk(e, normalizedTarget);
-      });
+          try { talkBtn.setPointerCapture(e.pointerId); } catch {}
+          talkBtn.addEventListener('pointermove', onMove);
+          talkBtn.addEventListener('pointerup', onEnd);
+          talkBtn.addEventListener('pointercancel', onEnd);
+          handleTalk(e, normalizedTarget);
+        });
+      } else {
+        talkBtn.disabled = true;
+      }
 
       const muteBtn = document.createElement('button');
       muteBtn.className = 'mute-btn';
       muteBtn.type = 'button';
-      const initialMuted = mutedPeers.has(`user-${socketId}`);
+      const initialMuted = isOnline && mutedPeers.has(targetKey);
       muteBtn.title = initialMuted ? 'Unmute' : 'Mute';
       const muteIcon = document.createElement('img');
       muteIcon.className = 'btn-icon';
@@ -2577,82 +2600,94 @@ let cachedUsers = [];
       muteIcon.alt = '';
       muteIcon.setAttribute('aria-hidden', 'true');
       muteBtn.appendChild(muteIcon);
-      muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
-      muteBtn.addEventListener('click', e => {
-        e.stopPropagation();
-        const key = `user-${socketId}`;
-        toggleMute(socketId);
-        const nowMuted = mutedPeers.has(key);
-        muteIcon.src = nowMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
-        muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
-        muteBtn.classList.toggle('muted', nowMuted);
-      });
-      muteBtn.classList.toggle('muted', mutedPeers.has(`user-${socketId}`));
+      if (isOnline) {
+        muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
+        muteBtn.addEventListener('click', e => {
+          e.stopPropagation();
+          toggleMute(socketId);
+          const nowMuted = mutedPeers.has(targetKey);
+          muteIcon.src = nowMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
+          muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
+          muteBtn.classList.toggle('muted', nowMuted);
+        });
+        muteBtn.classList.toggle('muted', mutedPeers.has(targetKey));
+      } else {
+        muteBtn.disabled = true;
+        muteBtn.title = 'Offline';
+      }
 
       const actions = document.createElement('div');
       actions.className = 'target-actions';
       actions.classList.add('ptt-actions');
       actions.append(muteBtn, talkBtn);
 
-      const isLocked = isSameTarget(activeLockTarget, { type: 'user', id: socketId });
-      if (isLocked) {
-        activeLockButton = talkBtn;
-        setTalkButtonLocked(talkBtn, true);
+      if (isOnline) {
+        const isLocked = isSameTarget(activeLockTarget, { type: 'user', id: socketId });
+        if (isLocked) {
+          activeLockButton = talkBtn;
+          setTalkButtonLocked(talkBtn, true);
+        }
       }
 
-      li.append(icon, info, actions, hint);
-      applyHotkeyToTarget(li, labelRow, { type: 'user', id: socketId });
+      if (isOnline) {
+        li.append(icon, info, actions, hint);
+        applyHotkeyToTarget(li, labelRow, { type: 'user', id: socketId });
+      } else {
+        li.append(icon, info, actions);
+      }
 
-      let rowPttGestureActive = false;
-      let rowPttStartX = 0;
-      let rowPttLockedByGesture = false;
-      li.addEventListener('pointermove', (e) => {
-        if (!rowPttGestureActive) return;
-        if (rowPttLockedByGesture || activeLockButton === talkBtn) return;
-        if (e.clientX - rowPttStartX <= -42) {
-          rowPttLockedByGesture = true;
-          activateTalkLock({ type: 'user', id: socketId }, talkBtn);
-        }
-      });
-
-      ['down', 'up', 'leave', 'cancel'].forEach(ev => {
-        li.addEventListener(`pointer${ev}`, e => {
-          if (
-            e.target.closest('.talk-btn') ||
-            e.target.closest('.mute-btn') ||
-            e.target.closest('.volume-slider')
-          ) return;
-          if (ev === 'down') {
-            const targetData = { type: 'user', id: socketId };
-            if (activeLockButton && isSameTarget(activeLockTarget, targetData)) {
-              handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
-              return;
-            }
-            if (activeLockButton && !isSameTarget(activeLockTarget, targetData)) {
-              toggleTalkLock(targetData);
-              return;
-            }
-
-            rowPttGestureActive = true;
-            rowPttLockedByGesture = false;
-            rowPttStartX = e.clientX;
-            li.classList.add('ptt-pressing');
-            try { li.setPointerCapture(e.pointerId); } catch {}
-            handleTalk(e, targetData);
-            return;
+      if (isOnline) {
+        let rowPttGestureActive = false;
+        let rowPttStartX = 0;
+        let rowPttLockedByGesture = false;
+        li.addEventListener('pointermove', (e) => {
+          if (!rowPttGestureActive) return;
+          if (rowPttLockedByGesture || activeLockButton === talkBtn) return;
+          if (e.clientX - rowPttStartX <= -42) {
+            rowPttLockedByGesture = true;
+            activateTalkLock({ type: 'user', id: socketId }, talkBtn);
           }
-
-          if (ev === 'up' || ev === 'leave' || ev === 'cancel') {
-            if (rowPttGestureActive) {
-              rowPttGestureActive = false;
-              li.classList.remove('ptt-pressing');
-              try { li.releasePointerCapture(e.pointerId); } catch {}
-              if (activeLockButton === talkBtn) return;
-            }
-          }
-          handleStopTalking(e);
         });
-      });
+
+        ['down', 'up', 'leave', 'cancel'].forEach(ev => {
+          li.addEventListener(`pointer${ev}`, e => {
+            if (
+              e.target.closest('.talk-btn') ||
+              e.target.closest('.mute-btn') ||
+              e.target.closest('.volume-slider')
+            ) return;
+            if (ev === 'down') {
+              const targetData = { type: 'user', id: socketId };
+              if (activeLockButton && isSameTarget(activeLockTarget, targetData)) {
+                handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
+                return;
+              }
+              if (activeLockButton && !isSameTarget(activeLockTarget, targetData)) {
+                toggleTalkLock(targetData);
+                return;
+              }
+
+              rowPttGestureActive = true;
+              rowPttLockedByGesture = false;
+              rowPttStartX = e.clientX;
+              li.classList.add('ptt-pressing');
+              try { li.setPointerCapture(e.pointerId); } catch {}
+              handleTalk(e, targetData);
+              return;
+            }
+
+            if (ev === 'up' || ev === 'leave' || ev === 'cancel') {
+              if (rowPttGestureActive) {
+                rowPttGestureActive = false;
+                li.classList.remove('ptt-pressing');
+                try { li.releasePointerCapture(e.pointerId); } catch {}
+                if (activeLockButton === talkBtn) return;
+              }
+            }
+            handleStopTalking(e);
+          });
+        });
+      }
 
       list.appendChild(li);
     };
