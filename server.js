@@ -1619,7 +1619,7 @@ io.on("connection", (socket) => {
     }
 
     peers.delete(socket.id);
-    io.emit("user-list", Array.from(peers.keys()));
+    io.emit("user-list", getUserList());
   });
 });
 
