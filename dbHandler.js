@@ -4,7 +4,11 @@ const bcrypt = require('bcryptjs');
 const ALL_CONFERENCE_NAME = 'All';
 
 function getAllUsers() {
-  return db.prepare('SELECT id, name FROM users').all();
+  return db.prepare('SELECT id, name, is_admin, is_superadmin FROM users ORDER BY name COLLATE NOCASE').all();
+}
+
+function getUserById(id) {
+  return db.prepare('SELECT id, name, is_admin, is_superadmin, admin_must_change FROM users WHERE id = ?').get(id);
 }
 
 function getAllConferences() {
@@ -20,13 +24,7 @@ function createUser(name, password) {
     const hash = bcrypt.hashSync(password, 10);
     const stmt = db.prepare('INSERT INTO users (name, password) VALUES (?, ?)');
     const result = stmt.run(name, hash);
-    const userId = result.lastInsertRowid;
-    const allConference = db.prepare('SELECT id FROM conferences WHERE name = ?').get(ALL_CONFERENCE_NAME);
-    if (allConference) {
-      addUserToConference(userId, allConference.id);
-      addUserTargetToConference(userId, allConference.id);
-    }
-    return userId;
+    return result.lastInsertRowid;
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
       throw new Error('Username already exists');
@@ -131,6 +129,31 @@ function updateUserPassword(id, password) {
   const hash = bcrypt.hashSync(password, 10);
   const stmt = db.prepare('UPDATE users SET password = ? WHERE id = ?');
   const result = stmt.run(hash, id);
+  return result.changes > 0;
+}
+
+function updateAdminPassword(id, password) {
+  const hash = bcrypt.hashSync(password, 10);
+  const stmt = db.prepare('UPDATE users SET password = ?, admin_must_change = 0 WHERE id = ?');
+  const result = stmt.run(hash, id);
+  return result.changes > 0;
+}
+
+function setUserAdminRole(id, isAdmin) {
+  const stmt = db.prepare('UPDATE users SET is_admin = ? WHERE id = ?');
+  const result = stmt.run(isAdmin ? 1 : 0, id);
+  return result.changes > 0;
+}
+
+function setUserSuperAdmin(id, isSuperAdmin) {
+  const stmt = db.prepare('UPDATE users SET is_superadmin = ? WHERE id = ?');
+  const result = stmt.run(isSuperAdmin ? 1 : 0, id);
+  return result.changes > 0;
+}
+
+function setAdminMustChange(id, mustChange) {
+  const stmt = db.prepare('UPDATE users SET admin_must_change = ? WHERE id = ?');
+  const result = stmt.run(mustChange ? 1 : 0, id);
   return result.changes > 0;
 }
 
@@ -336,9 +359,6 @@ function ensureAllConference() {
     row = { id: result.lastInsertRowid };
   }
 
-  const allId = row.id;
-  db.prepare('INSERT OR IGNORE INTO user_conference (user_id, conference_id) SELECT id, ? FROM users').run(allId);
-  db.prepare('INSERT OR IGNORE INTO user_conf_targets (user_id, target_conf) SELECT id, ? FROM users').run(allId);
   db.prepare("DELETE FROM user_target_order WHERE target_type = 'global'").run();
 }
 
@@ -355,12 +375,40 @@ function getUsersForFeed(feedId) {
   return db.prepare('SELECT user_id FROM user_feed_targets WHERE feed_id = ?').all(feedId);
 }
 
+function ensureDefaultAdmin() {
+  const existingAdmin = db.prepare('SELECT id FROM users WHERE is_admin = 1 LIMIT 1').get();
+  if (existingAdmin) return existingAdmin.id;
+
+  const existingUser = db.prepare('SELECT id FROM users WHERE name = ?').get('admin');
+  if (existingUser) {
+    db.prepare('UPDATE users SET is_admin = 1, is_superadmin = 1, admin_must_change = 1 WHERE id = ?')
+      .run(existingUser.id);
+    return existingUser.id;
+  }
+
+  const hash = bcrypt.hashSync('admin', 10);
+  const stmt = db.prepare(`
+    INSERT INTO users (name, password, is_admin, is_superadmin, admin_must_change)
+    VALUES (?, ?, 1, 1, 1)
+  `);
+  const result = stmt.run('admin', hash);
+  const userId = result.lastInsertRowid;
+  const allConference = db.prepare('SELECT id FROM conferences WHERE name = ?').get(ALL_CONFERENCE_NAME);
+  if (allConference) {
+    addUserToConference(userId, allConference.id);
+    addUserTargetToConference(userId, allConference.id);
+  }
+  return userId;
+}
+
 ensureAllConference();
+ensureDefaultAdmin();
 
 
 
 module.exports = {
   getAllUsers,
+  getUserById,
   getAllConferences,
   getAllFeeds,
   createUser,
@@ -373,8 +421,12 @@ module.exports = {
   updateUserName,
   updateConferenceName,
   updateUserPassword,
+  updateAdminPassword,
   updateFeedName,
   updateFeedPassword,
+  setUserAdminRole,
+  setUserSuperAdmin,
+  setAdminMustChange,
   deleteUser,
   deleteConference,
   deleteFeed,
@@ -388,5 +440,6 @@ module.exports = {
   updateUserTargetOrder,
   getAllConferenceId,
   getFeedIdsForUser,
-  getUsersForFeed
+  getUsersForFeed,
+  ensureDefaultAdmin
 };

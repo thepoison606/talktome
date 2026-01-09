@@ -1643,7 +1643,19 @@ let cachedUsers = [];
       for (const streamKey of Array.from(set)) {
         const entry = audioElements.get(streamKey);
         const consumers = peerConsumers.get(streamKey);
-        const hasConsumers = !!(consumers && consumers.size);
+        let hasConsumers = false;
+        if (consumers) {
+          for (const consumer of Array.from(consumers)) {
+            if (consumer?.closed) {
+              consumers.delete(consumer);
+            }
+          }
+          if (consumers.size === 0) {
+            peerConsumers.delete(streamKey);
+          } else {
+            hasConsumers = true;
+          }
+        }
         const audioEl = entry?.audio || null;
         const track = audioEl?.srcObject?.getTracks?.()?.[0] || null;
         const trackLive = !track || track.readyState === 'live';
@@ -3019,6 +3031,17 @@ let cachedUsers = [];
       handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
     }
 
+    for (const targetKey of Array.from(speakingPeers)) {
+      if (!hasActiveStreams(targetKey)) {
+        speakingPeers.delete(targetKey);
+      }
+    }
+    for (const [targetKey, streams] of targetStreamMap.entries()) {
+      if (streams && streams.size) {
+        speakingPeers.add(targetKey);
+      }
+    }
+
     document.querySelectorAll('.target-item').forEach(li => {
       const key = li.id;
       const icon = key.startsWith('user-')
@@ -3244,7 +3267,10 @@ let cachedUsers = [];
         socket.emit('resume-consumer', { consumerId: consumer.id }, res)
       );
 
-      consumer.on('producerclose', () => {
+      let consumerClosed = false;
+      const handleConsumerClosed = () => {
+        if (consumerClosed) return;
+        consumerClosed = true;
         console.log(`Producer closed for consumer ${consumer.id}`);
 
         if (shouldTrackForMe) {
@@ -3289,7 +3315,11 @@ let cachedUsers = [];
         } else if (entry.type === 'conference') {
           confAudioElements.get(normalizedAppData.id)?.delete(audio);
         }
-      });
+      };
+
+      consumer.on('producerclose', handleConsumerClosed);
+      consumer.on('trackended', handleConsumerClosed);
+      consumer.on('transportclose', handleConsumerClosed);
     } catch (err) {
       console.error('Error consuming:', err);
     }
@@ -3635,6 +3665,7 @@ let cachedUsers = [];
     el?.classList.add("speaking");
     el?.classList.remove("last-spoke");
     icon?.classList.add("speaking");
+    lastSpokePeers.delete(targetKey);
     return;
   }
 
@@ -3648,6 +3679,7 @@ let cachedUsers = [];
 
     if (isFeed) {
       el?.classList.remove("last-spoke");
+      lastSpokePeers.delete(targetKey);
       return;
     }
 
@@ -3673,6 +3705,8 @@ let cachedUsers = [];
     document.querySelectorAll(".last-spoke")
         .forEach(elem => elem.classList.remove("last-spoke"));
     el?.classList.add("last-spoke");
+    lastSpokePeers.clear();
+    lastSpokePeers.set(targetKey, Date.now());
 
 /*    setTimeout(() => {
       if (!speakingPeers.has(targetKey)) {

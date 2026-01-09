@@ -61,4 +61,16 @@ db.exec(`
     DROP TABLE IF EXISTS user_global_targets;
 `);
 
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  const exists = columns.some((col) => col.name === column);
+  if (!exists) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+ensureColumn("users", "is_admin", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("users", "is_superadmin", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("users", "admin_must_change", "INTEGER NOT NULL DEFAULT 0");
+
 module.exports = db;

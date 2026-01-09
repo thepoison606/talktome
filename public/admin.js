@@ -1,3 +1,50 @@
+const adminState = {
+  isAuthenticated: false,
+  isSuperAdmin: false,
+  mustChangePassword: false,
+  userId: null,
+  name: ''
+};
+
+const adminLogin = document.getElementById('admin-login');
+const adminLoginForm = document.getElementById('admin-login-form');
+const adminLoginMessage = document.getElementById('admin-login-message');
+const adminApp = document.getElementById('admin-app');
+const adminBar = document.getElementById('admin-bar');
+const adminNameLabel = document.getElementById('admin-name-label');
+const adminLogoutBtn = document.getElementById('admin-logout');
+
+function showLogin(message) {
+  if (adminLogin) adminLogin.classList.remove('is-hidden');
+  if (adminApp) adminApp.classList.add('is-hidden');
+  if (adminBar) adminBar.classList.add('is-hidden');
+  if (adminLoginMessage) {
+    adminLoginMessage.textContent = message || '';
+    adminLoginMessage.classList.toggle('is-visible', Boolean(message));
+    adminLoginMessage.classList.remove('flash-success', 'flash-warning');
+    adminLoginMessage.classList.add('flash-error');
+  }
+}
+
+function showAdminApp() {
+  if (adminLogin) adminLogin.classList.add('is-hidden');
+  if (adminApp) adminApp.classList.remove('is-hidden');
+  if (adminBar) adminBar.classList.remove('is-hidden');
+}
+
+function showLoginMessage(message, tone = 'error') {
+  if (!adminLoginMessage) return;
+  const toneClass = tone === 'success' || tone === 'green'
+    ? 'flash-success'
+    : tone === 'warning'
+      ? 'flash-warning'
+      : 'flash-error';
+
+  adminLoginMessage.textContent = message;
+  adminLoginMessage.classList.remove('flash-success', 'flash-error', 'flash-warning');
+  adminLoginMessage.classList.add('is-visible', toneClass);
+}
+
 function showMessage(text, tone = 'error', scope = 'global') {
   const targetId = scope === 'user'
     ? 'user-message'
@@ -37,10 +84,95 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+async function authedFetch(url, options) {
+  const res = await fetch(url, options);
+  if (res.status === 401) {
+    adminState.isAuthenticated = false;
+    adminState.isSuperAdmin = false;
+    adminState.mustChangePassword = false;
+    adminState.userId = null;
+    adminState.name = '';
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
 async function fetchJSON(url) {
-  const res = await fetch(url);
+  const res = await authedFetch(url);
   if (!res.ok) throw new Error(`Request failed: ${res.status}`);
   return res.json();
+}
+
+function applyAdminState(payload) {
+  adminState.isAuthenticated = true;
+  adminState.isSuperAdmin = Boolean(payload?.isSuperadmin);
+  adminState.mustChangePassword = Boolean(payload?.mustChangePassword);
+  adminState.userId = payload?.id ?? null;
+  adminState.name = payload?.name ?? '';
+  if (adminNameLabel) {
+    adminNameLabel.textContent = adminState.name || 'Admin';
+  }
+}
+
+async function logoutAdmin(message) {
+  try {
+    await authedFetch('/admin/logout', { method: 'POST' });
+  } catch (err) {
+    console.warn('Logout failed:', err);
+  }
+  adminState.isAuthenticated = false;
+  adminState.isSuperAdmin = false;
+  adminState.mustChangePassword = false;
+  adminState.userId = null;
+  adminState.name = '';
+  showLogin(message || '');
+}
+
+async function enforcePasswordChange() {
+  if (!adminState.mustChangePassword) return true;
+
+  const newPassword = prompt('Please set a new admin password (min 4 characters).');
+  if (!newPassword) {
+    await logoutAdmin('Password change required before continuing.');
+    return false;
+  }
+  if (newPassword.trim().length < 4) {
+    alert('Password must be at least 4 characters.');
+    return enforcePasswordChange();
+  }
+
+  try {
+    const res = await authedFetch('/admin/password', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: newPassword.trim() })
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      alert(payload.error || 'Failed to update password.');
+      return enforcePasswordChange();
+    }
+    adminState.mustChangePassword = false;
+    showMessage('✅ Admin password updated', 'success');
+    return true;
+  } catch (err) {
+    alert('Failed to update password.');
+    return enforcePasswordChange();
+  }
+}
+
+async function ensureAdminSession() {
+  try {
+    const payload = await fetchJSON('/admin/me');
+    applyAdminState(payload);
+    showAdminApp();
+    const ok = await enforcePasswordChange();
+    if (ok) {
+      await loadData();
+    }
+  } catch (err) {
+    showLogin();
+  }
 }
 
 async function loadData() {
@@ -60,6 +192,19 @@ async function loadData() {
 
   for (const user of users) {
     const safeName = escapeHtml(user.name);
+    const isAdmin = Boolean(user.is_admin);
+    const isSuperadmin = Boolean(user.is_superadmin);
+    const adminBadge = isSuperadmin
+      ? '<span class="badge superadmin">Superadmin</span>'
+      : isAdmin
+        ? '<span class="badge admin">Admin</span>'
+        : '';
+    const adminToggle = adminState.isAuthenticated
+      ? isSuperadmin
+        ? ''
+        : `<button type="button" class="small ${isAdmin ? 'warning' : ''}" onclick="toggleAdminRole(${user.id}, ${isAdmin ? 'false' : 'true'})">${isAdmin ? 'Remove admin' : 'Make admin'}</button>`
+      : '';
+    const deleteAttrs = isAdmin ? 'disabled title="Admin accounts cannot be deleted"' : '';
     const li = document.createElement('li');
     li.className = 'list-item';
 
@@ -72,12 +217,14 @@ async function loadData() {
         <div class="list-item-title">
           <button type="button" class="small" id="user-toggle-${user.id}" onclick="toggleUserConfs(${user.id}, this)" aria-expanded="false">Show details</button>
           <span>${safeName}</span>
+          ${adminBadge}
           <span class="badge">ID ${user.id}</span>
         </div>
         <div class="inline-controls">
           <button type="button" class="small warning" onclick='editUser(${user.id}, ${JSON.stringify(user.name)})'>Rename</button>
           <button type="button" class="small warning" onclick='resetPassword(${user.id}, ${JSON.stringify(user.name)})'>Reset Password</button>
-          <button type="button" class="small danger" onclick="deleteUser(${user.id})">Delete</button>
+          ${adminToggle}
+          <button type="button" class="small danger" onclick="deleteUser(${user.id})" ${deleteAttrs}>Delete</button>
         </div>
       </div>
       <div class="nested" id="user-nested-${user.id}">
@@ -163,14 +310,13 @@ async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
   const targets = await fetchJSON(`/users/${userId}/targets`);
   const ul = document.getElementById(`user-targets-${userId}`);
   ul.innerHTML = targets.map(t => {
-    const isAllTarget = t.targetType === 'conference' && (t.name || '').toLowerCase() === 'all';
     return `
       <li class="list-chip draggable-target" draggable="true"
           data-type="${escapeHtml(t.targetType)}" data-id="${escapeHtml(t.targetId)}">
         <span class="drag-handle" title="Drag to reorder">☰</span>
         <span class="chip-label">${escapeHtml(t.name)}</span>
         <span class="badge">${escapeHtml(t.targetType)}</span>
-        ${isAllTarget ? '' : `<button type="button" class="small danger" onclick="removeTarget(${userId}, '${t.targetType}', '${t.targetId}')">Remove</button>`}
+        <button type="button" class="small danger" onclick="removeTarget(${userId}, '${t.targetType}', '${t.targetId}')">Remove</button>
       </li>
     `;
   }).join('');
@@ -253,7 +399,7 @@ async function saveTargetOrder(userId, ul) {
   }));
 
   try {
-    const res = await fetch(`/users/${userId}/targets/order`, {
+    const res = await authedFetch(`/users/${userId}/targets/order`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items }),
@@ -273,34 +419,44 @@ async function saveTargetOrder(userId, ul) {
 window.addTarget = async function(userId) {
   const type = document.getElementById(`add-target-type-${userId}`).value;
   const id   = document.getElementById(`add-target-id-${userId}`).value;
-  const res = await fetch(`/users/${userId}/targets`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ targetType: type, targetId: id })
-  });
-  if (!res.ok) {
+  try {
+    const res = await authedFetch(`/users/${userId}/targets`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ targetType: type, targetId: id })
+    });
+    if (!res.ok) {
+      showMessage('❌ Failed to add target', 'error', 'user');
+    } else {
+      // Refresh only that user’s target list
+      const users = await fetchJSON('/users');
+      const confs = await fetchJSON('/conferences');
+      const feeds = await fetchJSON('/feeds');
+      await loadUserTargets(userId, users, confs, feeds);
+    }
+  } catch (err) {
     showMessage('❌ Failed to add target', 'error', 'user');
-  } else {
-    // Refresh only that user’s target list
-    const users = await fetchJSON('/users');
-    const confs = await fetchJSON('/conferences');
-    const feeds = await fetchJSON('/feeds');
-    await loadUserTargets(userId, users, confs, feeds);
+    console.error(err);
   }
 };
 
 // Called by each 🗑️ in the target list
 window.removeTarget = async function(userId, type, tid) {
-  const res = await fetch(
+  try {
+    const res = await authedFetch(
       `/users/${userId}/targets/${type}/${tid}`, { method: 'DELETE' }
-  );
-  if (!res.ok) {
+    );
+    if (!res.ok) {
+      showMessage('❌ Failed to remove target', 'error', 'user');
+    } else {
+      const users = await fetchJSON('/users');
+      const confs = await fetchJSON('/conferences');
+      const feeds = await fetchJSON('/feeds');
+      await loadUserTargets(userId, users, confs, feeds);
+    }
+  } catch (err) {
     showMessage('❌ Failed to remove target', 'error', 'user');
-  } else {
-    const users = await fetchJSON('/users');
-    const confs = await fetchJSON('/conferences');
-    const feeds = await fetchJSON('/feeds');
-    await loadUserTargets(userId, users, confs, feeds);
+    console.error(err);
   }
 };
 
@@ -310,7 +466,7 @@ window.editFeed = async function(feedId, currentName) {
   if (!newName || newName === currentName) return;
 
   try {
-    const res = await fetch(`/feeds/${feedId}`, {
+    const res = await authedFetch(`/feeds/${feedId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: newName })
@@ -340,7 +496,7 @@ window.resetFeedPassword = async function(feedId, feedName) {
   }
 
   try {
-    const res = await fetch(`/feeds/${feedId}/password`, {
+    const res = await authedFetch(`/feeds/${feedId}/password`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password: newPassword })
@@ -361,7 +517,7 @@ window.resetFeedPassword = async function(feedId, feedName) {
 window.deleteFeed = async function(feedId) {
   if (!confirm('Are you sure you want to delete this feed?')) return;
   try {
-    const res = await fetch(`/feeds/${feedId}`, { method: 'DELETE' });
+    const res = await authedFetch(`/feeds/${feedId}`, { method: 'DELETE' });
     if (res.ok) {
       showMessage('✅ Feed deleted', 'success', 'feed');
       loadData();
@@ -379,17 +535,22 @@ window.editUser = async function (userId, currentName) {
   const newName = prompt('New username:', currentName);
   if (!newName || newName === currentName) return;
 
-  const res = await fetch(`/users/${userId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: newName })
-  });
+  try {
+    const res = await authedFetch(`/users/${userId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName })
+    });
 
-  if (res.ok) {
-    showMessage('✅ User updated', 'success', 'user');
-    loadData();
-  } else {
+    if (res.ok) {
+      showMessage('✅ User updated', 'success', 'user');
+      loadData();
+    } else {
+      showMessage('❌ Failed to update user', 'error', 'user');
+    }
+  } catch (err) {
     showMessage('❌ Failed to update user', 'error', 'user');
+    console.error(err);
   }
 };
 
@@ -400,19 +561,23 @@ window.toggleUserConfs = async function (userId, toggleBtn) {
   const willOpen  = !targetDiv.classList.contains('is-open');
 
   if (willOpen) {
-    const confs = await fetchJSON(`/users/${userId}/conferences`);
-    confUl.innerHTML = confs.length
-      ? confs.map(c => `
-          <li class="list-chip">
-            <span class="chip-label">${escapeHtml(c.name)}</span>
-            ${c.name && c.name.toLowerCase() === 'all'
-                ? ''
-                : `<button type="button" class="small danger" onclick="confirmUnassign(${userId}, ${c.id})">Remove</button>`}
-          </li>
-        `).join('')
-      : '<li class="list-chip"><span class="chip-label">No conferences assigned yet</span></li>';
+    try {
+      const confs = await fetchJSON(`/users/${userId}/conferences`);
+      confUl.innerHTML = confs.length
+        ? confs.map(c => `
+            <li class="list-chip">
+              <span class="chip-label">${escapeHtml(c.name)}</span>
+              <button type="button" class="small danger" onclick="confirmUnassign(${userId}, ${c.id})">Remove</button>
+            </li>
+          `).join('')
+        : '<li class="list-chip"><span class="chip-label">No conferences assigned yet</span></li>';
 
-    targetDiv.classList.add('is-open');
+      targetDiv.classList.add('is-open');
+    } catch (err) {
+      showMessage('❌ Failed to load conferences', 'error', 'user');
+      console.error(err);
+      return;
+    }
   } else {
     targetDiv.classList.remove('is-open');
   }
@@ -430,7 +595,7 @@ window.editConference = async function(confId, currentName) {
   if (!newName || newName === currentName) return;
 
   try {
-    const res = await fetch(`/conferences/${confId}`, {
+    const res = await authedFetch(`/conferences/${confId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: newName })
@@ -456,20 +621,24 @@ window.toggleConfUsers = async function (confId, toggleBtn) {
   const usersUl  = document.getElementById(`conf-users-${confId}`);
   const button   = toggleBtn || document.getElementById(`conf-toggle-${confId}`);
   const willOpen = !nested.classList.contains('is-open');
-  const parentCard = button?.closest('.list-item');
-  const isAllConference = parentCard?.dataset?.isAll === 'true';
 
   if (willOpen) {
-    const users = await fetchJSON(`/conferences/${confId}/users`);
-    usersUl.innerHTML = users.length
-      ? users.map(u => `
-          <li class="list-chip">
-            <span class="chip-label">${escapeHtml(u.name)}</span>
-            ${isAllConference ? '' : `<button type="button" class="small danger" onclick="confirmUnassign(${u.id},${confId})">Remove</button>`}
-          </li>
-        `).join('')
-      : '<li class="list-chip"><span class="chip-label">No participants yet</span></li>';
-    nested.classList.add('is-open');
+    try {
+      const users = await fetchJSON(`/conferences/${confId}/users`);
+      usersUl.innerHTML = users.length
+        ? users.map(u => `
+            <li class="list-chip">
+              <span class="chip-label">${escapeHtml(u.name)}</span>
+              <button type="button" class="small danger" onclick="confirmUnassign(${u.id},${confId})">Remove</button>
+            </li>
+          `).join('')
+        : '<li class="list-chip"><span class="chip-label">No participants yet</span></li>';
+      nested.classList.add('is-open');
+    } catch (err) {
+      showMessage('❌ Failed to load participants', 'error', 'conf');
+      console.error(err);
+      return;
+    }
   } else {
     nested.classList.remove('is-open');
   }
@@ -490,7 +659,7 @@ window.confirmUnassign = function (userId, confId) {
 
 window.unassignUser = async function (userId, confId) {
   try {
-    const res = await fetch(`/conferences/${confId}/users/${userId}`, {
+    const res = await authedFetch(`/conferences/${confId}/users/${userId}`, {
       method: 'DELETE'
     });
     if (res.ok) {
@@ -509,14 +678,15 @@ window.unassignUser = async function (userId, confId) {
 window.deleteUser = async function (userId) {
   if (!confirm('Are you sure you want to delete this user?')) return;
   try {
-    const res = await fetch(`/users/${userId}`, {
+    const res = await authedFetch(`/users/${userId}`, {
       method: 'DELETE'
     });
     if (res.ok) {
       showMessage('✅ User deleted', 'success', 'user');
       loadData();
     } else {
-      showMessage('❌ Failed to delete user', 'error', 'user');
+      const payload = await res.json().catch(() => ({}));
+      showMessage(payload.error ? `❌ ${payload.error}` : '❌ Failed to delete user', 'error', 'user');
     }
   } catch (err) {
     showMessage('❌ Error deleting user: ' + err.message, 'error', 'user');
@@ -524,10 +694,32 @@ window.deleteUser = async function (userId) {
   }
 };
 
+window.toggleAdminRole = async function (userId, shouldMakeAdmin) {
+  const label = shouldMakeAdmin ? 'grant admin rights' : 'remove admin rights';
+  if (!confirm(`Are you sure you want to ${label} for this user?`)) return;
+  try {
+    const res = await authedFetch(`/admin/users/${userId}/admin`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isAdmin: Boolean(shouldMakeAdmin) })
+    });
+    if (res.ok) {
+      showMessage('✅ Admin role updated', 'success', 'user');
+      loadData();
+    } else {
+      const payload = await res.json().catch(() => ({}));
+      showMessage(payload.error ? `❌ ${payload.error}` : '❌ Failed to update admin role', 'error', 'user');
+    }
+  } catch (err) {
+    showMessage('❌ Error updating admin role: ' + err.message, 'error', 'user');
+    console.error(err);
+  }
+};
+
 window.deleteConference = async function (confId) {
   if (!confirm('Are you sure you want to delete this conference?')) return;
   try {
-    const res = await fetch(`/conferences/${confId}`, {
+    const res = await authedFetch(`/conferences/${confId}`, {
       method: 'DELETE'
     });
     if (res.ok) {
@@ -548,19 +740,24 @@ document.getElementById('user-form').addEventListener('submit', async (e) => {
   const name = document.getElementById('username').value;
   const password = document.getElementById('password').value;
 
-  const res = await fetch('/users', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, password })
-  });
+  try {
+    const res = await authedFetch('/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, password })
+    });
 
-  if (res.status === 409) {
-    showMessage('⚠️ Username already exists!', 'warning', 'user');
-  } else if (res.ok) {
-    showMessage('✅ User created', 'success', 'user');
-    loadData();
-  } else {
+    if (res.status === 409) {
+      showMessage('⚠️ Username already exists!', 'warning', 'user');
+    } else if (res.ok) {
+      showMessage('✅ User created', 'success', 'user');
+      loadData();
+    } else {
+      showMessage('❌ Failed to create user', 'error', 'user');
+    }
+  } catch (err) {
     showMessage('❌ Failed to create user', 'error', 'user');
+    console.error(err);
   }
 });
 
@@ -568,19 +765,24 @@ document.getElementById('conf-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const name = document.getElementById('confname').value;
 
-  const res = await fetch('/conferences', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name })
-  });
+  try {
+    const res = await authedFetch('/conferences', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name })
+    });
 
-  if (res.status === 409) {
-    showMessage('⚠️ Conference already exists!', 'warning', 'conf');
-  } else if (res.ok) {
-    showMessage('✅ Conference created', 'success', 'conf');
-    loadData();
-  } else {
+    if (res.status === 409) {
+      showMessage('⚠️ Conference already exists!', 'warning', 'conf');
+    } else if (res.ok) {
+      showMessage('✅ Conference created', 'success', 'conf');
+      loadData();
+    } else {
+      showMessage('❌ Failed to create conference', 'error', 'conf');
+    }
+  } catch (err) {
     showMessage('❌ Failed to create conference', 'error', 'conf');
+    console.error(err);
   }
 });
 
@@ -589,19 +791,24 @@ document.getElementById('feed-form').addEventListener('submit', async (e) => {
   const name = document.getElementById('feedname').value;
   const password = document.getElementById('feedpassword').value;
 
-  const res = await fetch('/feeds', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, password })
-  });
+  try {
+    const res = await authedFetch('/feeds', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, password })
+    });
 
-  if (res.status === 409) {
-    showMessage('⚠️ Feed already exists!', 'warning', 'feed');
-  } else if (res.ok) {
-    showMessage('✅ Feed created', 'success', 'feed');
-    loadData();
-  } else {
+    if (res.status === 409) {
+      showMessage('⚠️ Feed already exists!', 'warning', 'feed');
+    } else if (res.ok) {
+      showMessage('✅ Feed created', 'success', 'feed');
+      loadData();
+    } else {
+      showMessage('❌ Failed to create feed', 'error', 'feed');
+    }
+  } catch (err) {
     showMessage('❌ Failed to create feed', 'error', 'feed');
+    console.error(err);
   }
 });
 
@@ -610,18 +817,23 @@ document.getElementById('feed-form').addEventListener('submit', async (e) => {
 window.assignUserToConference = async function(userId) {
   const sel = document.getElementById(`add-user-conf-${userId}`);
   const confId = sel.value;
-  const res = await fetch(`/conferences/${confId}/users/${userId}`, {
-    method: 'POST'
-  });
-  if (res.ok) {
-    showMessage('✅ User assigned to conference', 'success', 'user');
-    const container = document.getElementById(`user-nested-${userId}`);
-    if (container?.classList.contains('is-open')) {
-      await toggleUserConfs(userId);
-      await toggleUserConfs(userId);
+  try {
+    const res = await authedFetch(`/conferences/${confId}/users/${userId}`, {
+      method: 'POST'
+    });
+    if (res.ok) {
+      showMessage('✅ User assigned to conference', 'success', 'user');
+      const container = document.getElementById(`user-nested-${userId}`);
+      if (container?.classList.contains('is-open')) {
+        await toggleUserConfs(userId);
+        await toggleUserConfs(userId);
+      }
+    } else {
+      showMessage('❌ Failed to assign user to conference', 'error', 'user');
     }
-  } else {
+  } catch (err) {
     showMessage('❌ Failed to assign user to conference', 'error', 'user');
+    console.error(err);
   }
 };
 
@@ -635,7 +847,7 @@ window.resetPassword = async function(userId, userName) {
   }
 
   try {
-    const res = await fetch(`/users/${userId}/password`, {
+    const res = await authedFetch(`/users/${userId}/password`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password: newPassword })
@@ -652,4 +864,45 @@ window.resetPassword = async function(userId, userName) {
   }
 };
 
-loadData();
+if (adminLoginForm) {
+  adminLoginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('admin-name')?.value?.trim() || '';
+    const password = document.getElementById('admin-password')?.value || '';
+
+    if (!name || !password) {
+      showLoginMessage('Username and password are required.', 'warning');
+      return;
+    }
+
+    try {
+      const res = await fetch('/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, password })
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        showLoginMessage(payload.error || 'Login failed.');
+        return;
+      }
+
+      const payload = await res.json();
+      applyAdminState(payload);
+      showAdminApp();
+      const ok = await enforcePasswordChange();
+      if (ok) {
+        await loadData();
+      }
+    } catch (err) {
+      showLoginMessage('Login failed.');
+      console.error('Admin login error:', err);
+    }
+  });
+}
+
+if (adminLogoutBtn) {
+  adminLogoutBtn.addEventListener('click', () => logoutAdmin());
+}
+
+ensureAdminSession();

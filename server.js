@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const socketIO = require("socket.io");
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const os = require("os");
 const dgram = require("dgram");
 const selfsigned = require("selfsigned");
@@ -82,9 +83,11 @@ const {
   updateUserName,
   updateConferenceName,
   updateUserPassword,
+  updateAdminPassword,
   getUsersForConference,
   getConferencesForUser,
   getAllUsers,
+  getUserById,
   getAllConferences,
   getAllFeeds,
   deleteUser,
@@ -100,11 +103,71 @@ const {
   updateUserTargetOrder,
   getAllConferenceId,
   getFeedIdsForUser,
-  getUsersForFeed
+  getUsersForFeed,
+  setUserAdminRole
 } = require("./dbHandler");
 
 const app = express();
 app.use(express.json());
+
+const ADMIN_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
+const adminSessions = new Map();
+
+function parseCookieHeader(header) {
+  const cookies = {};
+  if (!header) return cookies;
+  header.split(";").forEach((part) => {
+    const trimmed = part.trim();
+    if (!trimmed) return;
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) return;
+    const key = trimmed.slice(0, eqIdx);
+    const value = trimmed.slice(eqIdx + 1);
+    cookies[key] = decodeURIComponent(value);
+  });
+  return cookies;
+}
+
+function getAdminSession(req) {
+  const cookies = parseCookieHeader(req.headers.cookie || "");
+  const token = cookies.admin_session;
+  if (!token) return null;
+  const session = adminSessions.get(token);
+  if (!session) return null;
+  if (session.expiresAt <= Date.now()) {
+    adminSessions.delete(token);
+    return null;
+  }
+  return { token, session };
+}
+
+function createAdminSession(user) {
+  const token = crypto.randomBytes(32).toString("hex");
+  adminSessions.set(token, {
+    userId: user.id,
+    isSuperAdmin: !!user.is_superadmin,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + ADMIN_SESSION_TTL_MS,
+  });
+  return token;
+}
+
+function requireAdmin(req, res, next) {
+  const result = getAdminSession(req);
+  if (!result) {
+    return res.status(401).json({ error: "Admin login required" });
+  }
+  req.adminSession = result.session;
+  req.adminToken = result.token;
+  next();
+}
+
+function requireSuperAdmin(req, res, next) {
+  if (!req.adminSession?.isSuperAdmin) {
+    return res.status(403).json({ error: "Superadmin required" });
+  }
+  next();
+}
 
 // HTTPS port (defaults to 443)
 const HTTPS_PORT = parseInt(process.env.PORT || process.env.HTTPS_PORT || "443", 10);
@@ -133,19 +196,19 @@ const httpPortSource = process.env.HTTP_PORT ? "explicit" : (HTTP_PORT !== null 
 let cutCameraUser = null;
 
 // === GET ===
-app.get("/users", (req, res) => {
+app.get("/users", requireAdmin, (req, res) => {
   res.json(getAllUsers());
 });
 
-app.get("/conferences", (req, res) => {
+app.get("/conferences", requireAdmin, (req, res) => {
   res.json(getAllConferences());
 });
 
-app.get("/feeds", (req, res) => {
+app.get("/feeds", requireAdmin, (req, res) => {
   res.json(getAllFeeds());
 });
 
-app.get("/users/:id/conferences", (req, res) => {
+app.get("/users/:id/conferences", requireAdmin, (req, res) => {
   try {
     const conferences = getConferencesForUser(req.params.id);
     res.json(conferences);
@@ -155,7 +218,7 @@ app.get("/users/:id/conferences", (req, res) => {
   }
 });
 
-app.get('/conferences/:id/users', (req, res) => {
+app.get('/conferences/:id/users', requireAdmin, (req, res) => {
   const confId = req.params.id;
   console.log(`[DEBUG] GET /conferences/${confId}/users → looking up in DB…`);
   try {
@@ -204,7 +267,121 @@ app.post("/login", (req, res) => {
   }
 });
 
-app.post("/users", (req, res) => {
+app.post("/admin/login", (req, res) => {
+  const { name, password } = req.body || {};
+  if (!name || !password) {
+    return res.status(400).json({ error: "Name and password are required" });
+  }
+
+  try {
+    const user = verifyUser(name, password);
+    if (!user) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+    if (!user.is_admin) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const token = createAdminSession(user);
+    res.cookie("admin_session", token, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: true,
+      maxAge: ADMIN_SESSION_TTL_MS,
+    });
+    return res.json({
+      id: user.id,
+      name: user.name,
+      isAdmin: true,
+      isSuperadmin: !!user.is_superadmin,
+      mustChangePassword: !!user.admin_must_change,
+    });
+  } catch (err) {
+    console.error("Admin login error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.post("/admin/logout", requireAdmin, (req, res) => {
+  if (req.adminToken) {
+    adminSessions.delete(req.adminToken);
+  }
+  res.clearCookie("admin_session", { httpOnly: true, sameSite: "lax", secure: true });
+  res.sendStatus(204);
+});
+
+app.get("/admin/me", (req, res) => {
+  const result = getAdminSession(req);
+  if (!result) {
+    return res.status(401).json({ error: "Not authenticated" });
+  }
+
+  const user = getUserById(result.session.userId);
+  if (!user || !user.is_admin) {
+    adminSessions.delete(result.token);
+    res.clearCookie("admin_session", { httpOnly: true, sameSite: "lax", secure: true });
+    return res.status(401).json({ error: "Not authenticated" });
+  }
+
+  return res.json({
+    id: user.id,
+    name: user.name,
+    isAdmin: !!user.is_admin,
+    isSuperadmin: !!user.is_superadmin,
+    mustChangePassword: !!user.admin_must_change,
+  });
+});
+
+app.put("/admin/password", requireAdmin, (req, res) => {
+  const { password } = req.body || {};
+  if (typeof password !== "string" || password.trim().length < 4) {
+    return res.status(400).json({ error: "Password must be at least 4 characters" });
+  }
+
+  try {
+    const updated = updateAdminPassword(req.adminSession.userId, password.trim());
+    if (!updated) {
+      return res.status(404).json({ error: "Admin user not found" });
+    }
+    res.sendStatus(204);
+  } catch (err) {
+    console.error("Error updating admin password:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.put("/admin/users/:id/admin", requireAdmin, (req, res) => {
+  const { isAdmin } = req.body || {};
+  if (typeof isAdmin !== "boolean") {
+    return res.status(400).json({ error: "isAdmin must be boolean" });
+  }
+
+  const userId = Number(req.params.id);
+  if (!Number.isFinite(userId)) {
+    return res.status(400).json({ error: "Invalid user id" });
+  }
+
+  const user = getUserById(userId);
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  if (user.is_superadmin && !isAdmin) {
+    return res.status(403).json({ error: "Superadmin cannot be demoted" });
+  }
+
+  try {
+    const updated = setUserAdminRole(userId, isAdmin);
+    if (!updated) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    res.sendStatus(204);
+  } catch (err) {
+    console.error("Error updating admin role:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.post("/users", requireAdmin, (req, res) => {
   const { name, password } = req.body;
   try {
     const id = createUser(name, password);
@@ -218,7 +395,7 @@ app.post("/users", (req, res) => {
   }
 });
 
-app.post("/conferences", (req, res) => {
+app.post("/conferences", requireAdmin, (req, res) => {
   const { name } = req.body;
   try {
     const id = createConference(name);
@@ -232,7 +409,7 @@ app.post("/conferences", (req, res) => {
   }
 });
 
-app.post("/feeds", (req, res) => {
+app.post("/feeds", requireAdmin, (req, res) => {
   const { name, password } = req.body || {};
   if (!name || !password) {
     return res.status(400).json({ error: "Name and password are required" });
@@ -250,13 +427,13 @@ app.post("/feeds", (req, res) => {
   }
 });
 
-app.post('/conferences/:conferenceId/users/:userId', (req, res) => {
+app.post('/conferences/:conferenceId/users/:userId', requireAdmin, (req, res) => {
   addUserToConference(req.params.userId, req.params.conferenceId);
   res.sendStatus(204);
 });
 
 
-app.post('/users/:id/targets', (req, res) => {
+app.post('/users/:id/targets', requireAdmin, (req, res) => {
   const { targetType, targetId } = req.body;
   try {
     if (targetType === 'user') {
@@ -276,7 +453,7 @@ app.post('/users/:id/targets', (req, res) => {
   }
 });
 
-app.put('/users/:id/targets/order', (req, res) => {
+app.put('/users/:id/targets/order', requireAdmin, (req, res) => {
   const items = Array.isArray(req.body?.items) ? req.body.items : null;
   if (!items) {
     return res.status(400).json({ error: 'items array required' });
@@ -362,7 +539,7 @@ app.post('/users/:id/talk', (req, res) => {
 });
 
 // === PUT ===
-app.put("/users/:id", (req, res) => {
+app.put("/users/:id", requireAdmin, (req, res) => {
   const { name } = req.body;
   try {
     const success = updateUserName(req.params.id, name);
@@ -377,7 +554,7 @@ app.put("/users/:id", (req, res) => {
   }
 });
 
-app.put('/users/:id/password', (req, res) => {
+app.put('/users/:id/password', requireAdmin, (req, res) => {
   const { password } = req.body;
 
   if (typeof password !== 'string' || password.trim().length < 4) {
@@ -395,7 +572,7 @@ app.put('/users/:id/password', (req, res) => {
 });
 
 // Rename conference
-app.put('/conferences/:id', (req, res) => {
+app.put('/conferences/:id', requireAdmin, (req, res) => {
   const { name } = req.body;
   const allId = getAllConferenceId();
   if (allId !== null && Number(req.params.id) === Number(allId)) {
@@ -415,7 +592,7 @@ app.put('/conferences/:id', (req, res) => {
   }
 });
 
-app.put('/feeds/:id', (req, res) => {
+app.put('/feeds/:id', requireAdmin, (req, res) => {
   const { name } = req.body || {};
   if (typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'Name is required' });
@@ -437,7 +614,7 @@ app.put('/feeds/:id', (req, res) => {
   }
 });
 
-app.put('/feeds/:id/password', (req, res) => {
+app.put('/feeds/:id/password', requireAdmin, (req, res) => {
   const { password } = req.body || {};
   if (typeof password !== 'string' || password.trim().length < 4) {
     return res.status(400).json({ error: 'Password must be at least 4 characters long' });
@@ -455,11 +632,7 @@ app.put('/feeds/:id/password', (req, res) => {
 
 
 // === DELETE (specific routes FIRST) ===
-app.delete("/conferences/:conferenceId/users/:userId", (req, res) => {
-  const allId = getAllConferenceId();
-  if (allId !== null && Number(req.params.conferenceId) === Number(allId)) {
-    return res.status(400).json({ error: "Cannot remove users from the All conference" });
-  }
+app.delete("/conferences/:conferenceId/users/:userId", requireAdmin, (req, res) => {
   try {
     removeUserFromConference(req.params.userId, req.params.conferenceId);
     res.sendStatus(204);
@@ -470,8 +643,15 @@ app.delete("/conferences/:conferenceId/users/:userId", (req, res) => {
 });
 
 // Delete user (generic)
-app.delete("/users/:id", (req, res) => {
+app.delete("/users/:id", requireAdmin, (req, res) => {
   try {
+    const user = getUserById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    if (user.is_admin) {
+      return res.status(403).json({ error: "Admin accounts cannot be deleted" });
+    }
     deleteUser(req.params.id);
     res.sendStatus(204);
   } catch (err) {
@@ -479,7 +659,7 @@ app.delete("/users/:id", (req, res) => {
   }
 });
 
-app.delete("/feeds/:id", (req, res) => {
+app.delete("/feeds/:id", requireAdmin, (req, res) => {
   try {
     const listeners = getUsersForFeed(req.params.id) || [];
     deleteFeed(req.params.id);
@@ -491,7 +671,7 @@ app.delete("/feeds/:id", (req, res) => {
 });
 
 // Delete conference (generic)
-app.delete("/conferences/:id", (req, res) => {
+app.delete("/conferences/:id", requireAdmin, (req, res) => {
   const allId = getAllConferenceId();
   if (allId !== null && Number(req.params.id) === Number(allId)) {
     return res.status(400).json({ error: "Cannot delete the All conference" });
@@ -504,7 +684,7 @@ app.delete("/conferences/:id", (req, res) => {
   }
 });
 
-app.delete("/users/:id/targets/:type/:tid", (req, res) => {
+app.delete("/users/:id/targets/:type/:tid", requireAdmin, (req, res) => {
   const allId = getAllConferenceId();
   if (req.params.type === 'conference' && allId !== null && Number(req.params.tid) === Number(allId)) {
     return res.status(400).json({ error: "Cannot remove the All conference from targets" });

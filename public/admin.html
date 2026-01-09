@@ -2,6 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
     <title>Admin Panel</title>
     <style>
       :root {
@@ -35,6 +39,50 @@
         background: var(--bg);
         color: var(--text);
         line-height: 1.5;
+      }
+
+      .is-hidden {
+        display: none !important;
+      }
+
+      .admin-bar {
+        padding: 1.25rem 2rem 0;
+        max-width: 1100px;
+        margin: 0 auto;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 1rem;
+      }
+
+      .admin-bar__meta {
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      .admin-bar__meta strong {
+        color: var(--text);
+      }
+
+      .admin-login {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.72);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5rem;
+        z-index: 100;
+      }
+
+      .admin-login .card {
+        width: 100%;
+        max-width: 420px;
+      }
+
+      .admin-login form {
+        display: grid;
+        gap: 0.75rem;
       }
 
       main {
@@ -249,6 +297,16 @@
         font-weight: 600;
       }
 
+      .badge.admin {
+        background: rgba(34, 197, 94, 0.2);
+        color: #bbf7d0;
+      }
+
+      .badge.superadmin {
+        background: rgba(245, 158, 11, 0.2);
+        color: #fde68a;
+      }
+
       details {
         border: 1px solid var(--border);
         border-radius: 10px;
@@ -388,7 +446,28 @@
     </style>
   </head>
   <body>
-    <main>
+    <div id="admin-login" class="admin-login is-hidden" role="dialog" aria-modal="true" aria-labelledby="admin-login-title">
+      <div class="card">
+        <h2 id="admin-login-title">Admin Login</h2>
+        <div id="admin-login-message" class="flash-message"></div>
+        <form id="admin-login-form" autocomplete="off">
+          <label for="admin-name">Username</label>
+          <input type="text" id="admin-name" autocomplete="username" required />
+
+          <label for="admin-password">Password</label>
+          <input type="password" id="admin-password" autocomplete="current-password" required />
+
+          <button type="submit">Login</button>
+        </form>
+      </div>
+    </div>
+
+    <div id="admin-bar" class="admin-bar is-hidden">
+      <div class="admin-bar__meta">Logged in as <strong id="admin-name-label"></strong></div>
+      <button id="admin-logout" type="button">Logout</button>
+    </div>
+
+    <main id="admin-app" class="is-hidden">
       <div id="message" class="flash-message"></div>
 
       <section class="card" aria-labelledby="users-heading">
