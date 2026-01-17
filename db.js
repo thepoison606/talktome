@@ -1,6 +1,36 @@
 // db.js
+const fs = require("fs");
+const path = require("path");
 const Database = require("better-sqlite3");
-const db = new Database("app.db");
+
+function resolveNativeBinding() {
+  if (!process.pkg) return null;
+  const execDir = path.dirname(process.execPath);
+  const targetPath = path.join(execDir, "better_sqlite3.node");
+  if (fs.existsSync(targetPath)) return targetPath;
+
+  const bundledPath = path.join(
+    __dirname,
+    "node_modules",
+    "better-sqlite3",
+    "build",
+    "Release",
+    "better_sqlite3.node"
+  );
+  if (fs.existsSync(bundledPath)) {
+    fs.copyFileSync(bundledPath, targetPath);
+    return targetPath;
+  }
+
+  throw new Error(
+    "better_sqlite3.node is missing. Place it next to the executable."
+  );
+}
+
+const nativeBinding = resolveNativeBinding();
+const db = nativeBinding
+  ? new Database("app.db", { nativeBinding })
+  : new Database("app.db");
 
 // Initialize tables (run once)
 db.exec(`
