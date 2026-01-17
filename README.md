@@ -16,8 +16,8 @@ Prerequisites: **Node.js 18+** (with `npm`) and a build toolchain for mediasoup.
 - macOS: `xcode-select --install`
 - Debian/Ubuntu: `sudo apt install build-essential python3 make`
 
-macOS binary:
-- If you don't want to install Node, grab the macOS arm64 binary from the GitHub Releases page and execute "talktome_arm64"
+macOS / Windows binaries:
+- If you don't want to install Node, grab the matching binary from the GitHub Releases page.
 
 Setup:
 ```bash
@@ -49,22 +49,6 @@ The answers are saved to `config.json` next to the executable (or project root i
 Environment variables still override the config.
 Delete `config.json` to re-run the setup.
 
-## macOS arm64 binary
-Build:
-```bash
-npm run build:mac_arm64
-```
-
-Artifacts (ship these together):
-- `talktome_arm64` (main executable)
-- `public/` (web UI assets)
-- `better_sqlite3.node` (SQLite native binding)
-- `mediasoup-worker*` (mediasoup worker binary and optional sidecar files)
-
-Run:
-```bash
-./talktome_arm64
-```
 
 ## Admin accounts & passwords
 - On first boot, a superadmin `admin` user is auto-created with password `admin` and the flag `admin_must_change=1`.
