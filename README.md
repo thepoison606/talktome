@@ -1,13 +1,15 @@
 # Talk To Me
-<img src="public/images/iphone_browser.png" alt="Talk To Me mobile UI" align="right" width="220">
 Intercom / talkback app built with Node.js and mediasoup.
+<br>
+<br>
+<img src="public/images/iphone_ipad.png" alt="Talk To Me mobile UI" width="800">
 
 ## What it does
-- Web client with per-target talk buttons, reply, and “talk lock”.
+- Web client with per-target and conference talk buttons, reply, and “talk lock”.
 - Admin UI to manage users, conferences, feeds, and target order.
 - Feed accounts for program audio injection (experimental).
+- HTTP API for camera tally and remote talk control.
 - mDNS advertising (`intercom.local`), optional HTTP→HTTPS redirect, self-signed TLS generation.
-- HTTP hooks for camera tally and remote talk control.
 
 ## Quick start
 Prerequisites: **Node.js 18+** (with `npm`) and a build toolchain for mediasoup.
