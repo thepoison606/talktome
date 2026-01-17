@@ -10,6 +10,7 @@ certs/
 fernet.key
 .env
 .env.*
+config.json
 
 # Dependency directories
 node_modules/
@@ -22,6 +23,10 @@ node_modules/
 # Build artifacts
 talktome_arm64
 mediasoup-worker
+mediasoup-worker*
+better_sqlite3.node
+talktome-macos-arm64.zip
+talktome-macos-arm64/
 worker/
 dist/
 build/
