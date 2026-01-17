@@ -1,15 +1,15 @@
 # Talk To Me
-Intercom / talkback app built with Node.js and mediasoup for low-latency audio.
+Intercom / talkback app built with Node.js and mediasoup.
 
 ## What it does
 - Web client with per-target talk buttons, reply, and “talk lock”.
 - Admin UI to manage users, conferences, feeds, and target order.
-- Feed accounts for program audio injection (no AGC/NS/EC applied).
+- Feed accounts for program audio injection (experimental).
 - mDNS advertising (`intercom.local`), optional HTTP→HTTPS redirect, self-signed TLS generation.
 - HTTP hooks for camera tally and remote talk control.
 
 ## Quick start
-Prerequisites: **Node.js 18+** (with `npm`) and a build toolchain for mediasoup (`python3`, `make`, `gcc/g++`, …).
+Prerequisites: **Node.js 18+** (with `npm`) and a build toolchain for mediasoup.
 - macOS: `xcode-select --install`
 - Debian/Ubuntu: `sudo apt install build-essential python3 make`
 
@@ -18,10 +18,9 @@ Setup:
 git clone https://github.com/thepoison606/talktome.git
 cd talktome
 npm install
-node server.js            # defaults to 443
+node server.js            # defaults to Port 443
 ```
 Visit `https://localhost:443/` (accept the self-signed cert warning) or `https://<IP>:<PORT>/`.
-- Main client: `/`
 - Admin UI: `/admin.html`
 
 Ports:
@@ -100,6 +99,7 @@ Examples:
        -d '{"action":"press","targetType":"reply"}'
   ```
 
-Notes:
+Shortcuts:
 - Space bar: hold-to-talk on the selected Reply target.
+- Number keys: to talk to targets
 - If no Reply target is selected in the UI, `targetType: "reply"` is ignored by the client.
