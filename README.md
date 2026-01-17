@@ -1,4 +1,5 @@
 # Talk To Me
+<img src="public/images/iphone_browser.png" alt="Talk To Me mobile UI" align="right" width="220">
 Intercom / talkback app built with Node.js and mediasoup.
 
 ## What it does
