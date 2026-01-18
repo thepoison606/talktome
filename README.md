@@ -6,20 +6,22 @@ A local WebRTC Intercom app built with Node.js and mediasoup.
 
 ## What it does
 - Web client with per-target and conference talk buttons, reply, and “talk lock”.
+- Tally for camera operators via HTTP API
+- Button control via HTTP API (Streamdeck, Companion, ..)
+- Button control via Keyboard shortcuts 
 - Admin UI to manage users, conferences, feeds, and target order.
 - Feeds for program audio injection (experimental).
-- HTTP API for camera tally and remote talk control.
-- mDNS advertising (`intercom.local`), optional HTTP→HTTPS redirect, self-signed TLS generation.
 
 ## Quick start
+
+### macOS / Windows binaries:
+If you don't want to install Node, grab the matching binary from the GitHub Releases page.
+
+### Setup:
 Prerequisites: **Node.js 18+** (with `npm`) and a build toolchain for mediasoup.
 - macOS: `xcode-select --install`
 - Debian/Ubuntu: `sudo apt install build-essential python3 make`
 
-macOS / Windows binaries:
-- If you don't want to install Node, grab the matching binary from the GitHub Releases page.
-
-Setup:
 ```bash
 git clone https://github.com/thepoison606/talktome.git
 cd talktome
