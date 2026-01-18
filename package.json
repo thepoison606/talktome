@@ -7,6 +7,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
     "prebuild:pkg": "npm rebuild better-sqlite3 --target=18.20.4 --runtime=node --dist-url=https://nodejs.org/dist",
+    "build:win64": "npm run prebuild:pkg && pkg package.json --targets node18-win-x64 --output talktome_win64 --assets public/**/* --assets node_modules/socket.io/client-dist/**/* --assets node_modules/mediasoup/worker/out/Release/* --assets node_modules/better-sqlite3/build/Release/better_sqlite3.node && npm run postbuild:pkg",
     "build:mac_arm64": "npm run prebuild:pkg && pkg server.js --targets node18-macos-arm64 --output talktome_arm64 --assets node_modules/mediasoup/worker/out/Release/mediasoup-worker* --assets node_modules/better-sqlite3/build/Release/better_sqlite3.node && cp node_modules/better-sqlite3/build/Release/better_sqlite3.node ./better_sqlite3.node && cp node_modules/mediasoup/worker/out/Release/mediasoup-worker* ./ && npm run postbuild:pkg",
     "postbuild:pkg": "npm rebuild better-sqlite3 --target=$(node -p \"process.version\") --runtime=node --dist-url=https://nodejs.org/dist"
   },
@@ -35,6 +36,7 @@
   "pkg": {
     "assets": [
       "public/**/*",
+      "node_modules/socket.io/client-dist/**/*",
       "node_modules/mediasoup/worker/out/Release/*",
       "node_modules/better-sqlite3/build/Release/better_sqlite3.node"
     ],

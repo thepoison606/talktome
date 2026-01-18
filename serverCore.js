@@ -103,13 +103,108 @@ const app = express();
 app.use(express.json());
 
 const execDir = path.dirname(process.execPath);
-const packagedPublicDir = path.join(execDir, "public");
+const execPublicDir = path.join(execDir, "public");
 const snapshotPublicDir = path.join(__dirname, "public");
-const publicDir =
-  process.pkg && fs.existsSync(packagedPublicDir)
-    ? packagedPublicDir
-    : snapshotPublicDir;
+
+function copyDirRecursive(srcDir, destDir) {
+  if (!fs.existsSync(srcDir)) {
+    return false;
+  }
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const srcPath = path.join(srcDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      copyDirRecursive(srcPath, destPath);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
+  return true;
+}
+
+let publicDir = snapshotPublicDir;
+if (process.pkg) {
+  try {
+    if (copyDirRecursive(snapshotPublicDir, execPublicDir)) {
+      publicDir = execPublicDir;
+    } else {
+      console.warn(`[PUBLIC] Snapshot directory not found: ${snapshotPublicDir}`);
+    }
+  } catch (err) {
+    console.warn(`[PUBLIC] Failed to materialize assets: ${err.message}`);
+  }
+}
+
+if (!fs.existsSync(publicDir)) {
+  console.warn(`[PUBLIC] Not found: ${publicDir}`);
+} else if (!fs.existsSync(path.join(publicDir, "index.html"))) {
+  console.warn(`[PUBLIC] Missing index.html in ${publicDir}`);
+}
+
 app.use(express.static(publicDir));
+
+app.get("/", (req, res) => {
+  const indexPath = path.join(publicDir, "index.html");
+  if (!fs.existsSync(indexPath)) {
+    return res.status(404).send("Cannot GET /");
+  }
+  try {
+    const html = fs.readFileSync(indexPath, "utf8");
+    res.type("html").send(html);
+  } catch (err) {
+    res.status(500).send("Failed to load index.html");
+  }
+});
+
+function findSocketIoClientPath() {
+  const socketIoEntry = require.resolve("socket.io");
+  let socketIoPkgDir = path.dirname(socketIoEntry);
+  const root = path.parse(socketIoPkgDir).root;
+  while (
+    !fs.existsSync(path.join(socketIoPkgDir, "package.json")) &&
+    socketIoPkgDir !== root
+  ) {
+    socketIoPkgDir = path.dirname(socketIoPkgDir);
+  }
+  const candidate = path.join(socketIoPkgDir, "client-dist", "socket.io.js");
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+const socketIoClientPath = findSocketIoClientPath();
+if (process.pkg) {
+  if (socketIoClientPath) {
+    const destPath = path.join(execPublicDir, "socket.io.js");
+    try {
+      if (!fs.existsSync(destPath)) {
+        fs.copyFileSync(socketIoClientPath, destPath);
+      }
+    } catch (err) {
+      console.warn(`[SOCKET.IO] Failed to copy client script: ${err.message}`);
+    }
+  } else {
+    console.warn("[SOCKET.IO] client script not found; /socket.io.js will 404");
+  }
+} else if (socketIoClientPath) {
+  app.get("/socket.io.js", (req, res) => {
+    res.sendFile(socketIoClientPath);
+  });
+} else {
+  console.warn("[SOCKET.IO] client script not found; /socket.io.js will 404");
+}
+
+if (process.pkg) {
+  app.get("/socket.io.js", (req, res) => {
+    const diskPath = path.join(execPublicDir, "socket.io.js");
+    if (fs.existsSync(diskPath)) {
+      return res.sendFile(diskPath);
+    }
+    if (socketIoClientPath) {
+      return res.sendFile(socketIoClientPath);
+    }
+    res.sendStatus(404);
+  });
+}
 
 const nodeModulesDir = path.join(__dirname, "node_modules");
 if (fs.existsSync(nodeModulesDir)) {
@@ -751,7 +846,7 @@ const httpsOptions = {
 };
 
 const server = https.createServer(httpsOptions, app);
-const io = socketIO(server);
+const io = socketIO(server, { serveClient: false });
 
 app.post("/cut-camera", (req, res) => {
   const { user } = req.body;

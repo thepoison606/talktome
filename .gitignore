@@ -25,6 +25,8 @@ talktome_arm64
 mediasoup-worker
 mediasoup-worker*
 better_sqlite3.node
+talktome_win64*.exe
+talktome_win64*.zip
 talktome-macos-arm64.zip
 talktome-macos-arm64/
 worker/
@@ -51,3 +53,6 @@ npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
 lerna-debug.log*
+
+# Generated runtime assets
+public/socket.io.js
