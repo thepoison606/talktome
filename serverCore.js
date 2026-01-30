@@ -1191,23 +1191,60 @@ io.on("connection", (socket) => {
   io.emit("user-list", getUserList());
   socket.emit("conference-list", getAllConferences());
 
-  socket.on("register-user", ({ id, name, kind = "user" }) => {
+  socket.on("register-user", ({ id, name, kind = "user", force = false } = {}, callback) => {
     const peer = peers.get(socket.id);
-    if (!peer) return;
+    if (!peer) {
+      if (typeof callback === "function") callback({ error: "Peer not registered" });
+      return;
+    }
 
     const normalizedKind = kind === "feed" ? "feed" : "user";
     const numericId = Number(id);
     const effectiveId = Number.isFinite(numericId) ? numericId : id;
 
-    peer.name = name;
-    peer.kind = normalizedKind;
-
     if (normalizedKind === "user") {
+      const existing = Array.from(peers.entries()).find(([sid, p]) => (
+        sid !== socket.id
+        && p?.kind === "user"
+        && p?.userId != null
+        && String(p.userId) === String(effectiveId)
+      ));
+
+      if (existing) {
+        const [existingSocketId, existingPeer] = existing;
+        if (!force) {
+          if (typeof callback === "function") {
+            callback({
+              conflict: true,
+              existing: {
+                socketId: existingSocketId,
+                name: existingPeer?.name || null,
+              },
+            });
+          }
+          return;
+        }
+
+        try {
+          existingPeer?.socket?.emit("session-kicked", {
+            reason: "duplicate-login",
+            bySocketId: socket.id,
+          });
+        } catch {}
+        try {
+          existingPeer?.socket?.disconnect(true);
+        } catch {}
+      }
+
+      peer.name = name;
+      peer.kind = normalizedKind;
       peer.userId = effectiveId;
       peer.feedId = null;
       console.log(`[USER] Registered operator ${name} (${effectiveId}) on socket ${socket.id}`);
       socket.emit("cut-camera", name === cutCameraUser);
     } else {
+      peer.name = name;
+      peer.kind = normalizedKind;
       peer.feedId = effectiveId;
       peer.userId = null;
       console.log(`[USER] Registered feed ${name} (${effectiveId}) on socket ${socket.id}`);
@@ -1218,6 +1255,8 @@ io.on("connection", (socket) => {
     if (normalizedKind === "feed") {
       socket.emit("conference-list", []);
     }
+
+    if (typeof callback === "function") callback({ ok: true });
   });
 
   socket.on("request-active-producers", (callback = () => {}) => {

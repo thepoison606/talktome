@@ -2246,6 +2246,60 @@ let cachedUsers = [];
     }
   }
 
+  function clearStoredIdentity() {
+    localStorage.removeItem("userId");
+    localStorage.removeItem(FEED_ID_STORAGE_KEY);
+    localStorage.removeItem("userName");
+    localStorage.removeItem(IDENTITY_KIND_KEY);
+  }
+
+  function hardLogoutAndReload(message = null) {
+    try {
+      if (message) alert(message);
+    } catch {}
+    try {
+      if (session?.kind === 'feed') {
+        stopFeedStream({ manual: true });
+      }
+    } catch {}
+    clearStoredIdentity();
+    location.reload();
+  }
+
+  function emitRegisterUser(payload, { timeoutMs = 5000 } = {}) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (result) => {
+        if (done) return;
+        done = true;
+        resolve(result || {});
+      };
+      const timer = setTimeout(() => finish({ error: "register-user timeout" }), timeoutMs);
+      try {
+        socket.emit("register-user", payload, (resp) => {
+          clearTimeout(timer);
+          finish(resp);
+        });
+      } catch (err) {
+        clearTimeout(timer);
+        finish({ error: err?.message || String(err) });
+      }
+    });
+  }
+
+  async function registerUserWithConflictPrompt({ id, name, kind, allowPrompt = true } = {}) {
+    const first = await emitRegisterUser({ id, name, kind, force: false });
+    if (first?.conflict && kind === 'user') {
+      if (!allowPrompt) return { conflict: true };
+      const existingName = first?.existing?.name ? ` (${first.existing.name})` : '';
+      const ok = confirm(`This user is already signed in${existingName}. Sign out the other session?`);
+      if (!ok) return { cancelled: true };
+      const forced = await emitRegisterUser({ id, name, kind, force: true });
+      return forced?.ok ? { ok: true } : forced;
+    }
+    return first?.ok ? { ok: true } : first;
+  }
+
   // Check Auto-Login
   const storedName = localStorage.getItem("userName");
   const storedKindRaw = localStorage.getItem(IDENTITY_KIND_KEY);
@@ -2260,7 +2314,11 @@ let cachedUsers = [];
       loginContainer.style.display = "none";
       intercomApp.style.display = "flex";
       myIdEl.textContent = storedName;
-      socket.emit("register-user", { id: storedId, name: storedName, kind: "user" });
+      registerUserWithConflictPrompt({ id: storedId, name: storedName, kind: "user", allowPrompt: true })
+        .then((res) => {
+          if (res?.ok) return;
+          hardLogoutAndReload("Login cancelled or session already in use.");
+        });
       applySessionUI();
       initializeMediaIfPossible();
     }
@@ -2274,7 +2332,7 @@ let cachedUsers = [];
       myIdEl.textContent = storedName;
       feedManualStop = false;
       shouldStartFeedWhenReady = true;
-      socket.emit("register-user", { id: storedFeedId, name: storedName, kind: "feed" });
+      emitRegisterUser({ id: storedFeedId, name: storedName, kind: "feed", force: false }).catch(() => {});
       applySessionUI();
       initializeMediaIfPossible();
     }
@@ -2312,9 +2370,28 @@ let cachedUsers = [];
         name: user.name,
       };
 
+      feedManualStop = false;
+      shouldStartFeedWhenReady = kind === 'feed';
+
+      const identityId = kind === 'feed' ? session.feedId : session.userId;
+      if (kind === 'user') {
+        const reg = await registerUserWithConflictPrompt({ id: identityId, name: user.name, kind, allowPrompt: true });
+        if (!reg?.ok) {
+          loginError.textContent = reg?.cancelled ? "Login cancelled" : "Unable to sign in";
+          session = { kind: "guest", userId: null, feedId: null, name: null };
+          return;
+        }
+      } else {
+        const reg = await emitRegisterUser({ id: identityId, name: user.name, kind, force: false });
+        if (!reg?.ok) {
+          loginError.textContent = "Unable to sign in";
+          session = { kind: "guest", userId: null, feedId: null, name: null };
+          return;
+        }
+      }
+
       localStorage.setItem("userName", user.name);
       localStorage.setItem(IDENTITY_KIND_KEY, kind);
-
       if (kind === 'user') {
         localStorage.setItem("userId", session.userId);
         localStorage.removeItem(FEED_ID_STORAGE_KEY);
@@ -2322,12 +2399,6 @@ let cachedUsers = [];
         localStorage.setItem(FEED_ID_STORAGE_KEY, session.feedId);
         localStorage.removeItem("userId");
       }
-
-      feedManualStop = false;
-      shouldStartFeedWhenReady = kind === 'feed';
-
-      const identityId = kind === 'feed' ? session.feedId : session.userId;
-      socket.emit("register-user", { id: identityId, name: user.name, kind });
 
       loginContainer.style.display = "none";
       intercomApp.style.display = "flex";
@@ -2369,9 +2440,13 @@ let cachedUsers = [];
     console.log("Connected to signaling server as", socket.id);
     if (session.name) {
       if (session.kind === 'user' && session.userId) {
-        socket.emit("register-user", { id: session.userId, name: session.name, kind: "user" });
+        const reg = await registerUserWithConflictPrompt({ id: session.userId, name: session.name, kind: "user", allowPrompt: true });
+        if (!reg?.ok) {
+          hardLogoutAndReload("You are already signed in on another device.");
+          return;
+        }
       } else if (session.kind === 'feed' && session.feedId) {
-        socket.emit("register-user", { id: session.feedId, name: session.name, kind: "feed" });
+        await emitRegisterUser({ id: session.feedId, name: session.name, kind: "feed", force: false });
       }
       myIdEl.textContent = session.name;
     }
@@ -2393,6 +2468,10 @@ let cachedUsers = [];
     }
 
     updateFeedControls();
+  });
+
+  socket.on("session-kicked", () => {
+    hardLogoutAndReload("You were signed out because you signed in somewhere else.");
   });
 
   socket.on("disconnect", () => {
