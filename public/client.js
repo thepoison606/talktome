@@ -1556,6 +1556,7 @@ let cachedUsers = [];
   let pendingPttSizingRaf = null;
   let pttSizingListenerBound = false;
   let speakingPruneInterval = null;
+  let activeProducersSyncInFlight = false;
   let slideHintShown = false;
 
   function updatePttButtonSizing() {
@@ -1658,7 +1659,7 @@ let cachedUsers = [];
         }
         const audioEl = entry?.audio || null;
         const track = audioEl?.srcObject?.getTracks?.()?.[0] || null;
-        const trackLive = !track || track.readyState === 'live';
+        const trackLive = !!(track && track.readyState === 'live');
         const audioInDom = !!(audioEl && document.body.contains(audioEl));
 
         if (!entry || !hasConsumers || !audioInDom || !trackLive) {
@@ -1678,6 +1679,92 @@ let cachedUsers = [];
         updateSpeakerHighlight(targetKey, false);
       }
     }
+  }
+
+  function targetKeyFromProducerPayload(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    const { peerId, appData } = payload;
+    if (!appData || typeof appData !== 'object') return null;
+    if (appData.type === 'conference') return `conf-${appData.id}`;
+    if (appData.type === 'feed') return `feed-${appData.id}`;
+    return `user-${peerId}`;
+  }
+
+  function streamKeyFromProducerPayload(payload) {
+    const targetKey = targetKeyFromProducerPayload(payload);
+    if (!targetKey) return null;
+    const producerId = payload?.producerId || payload?.appData?.producerId || null;
+    return makeStreamKey(targetKey, producerId);
+  }
+
+  function cleanupIncomingStream(targetKey, streamKey, { suppressUi = false } = {}) {
+    const consumersSet = peerConsumers.get(streamKey);
+    if (consumersSet) {
+      consumersSet.forEach(c => {
+        if (!isFeedKey(targetKey)) {
+          untrackTalkerForMe(targetKey, c.id);
+        }
+        try { c.close(); } catch {}
+      });
+      peerConsumers.delete(streamKey);
+    }
+
+    unregisterStreamKey(targetKey, streamKey);
+
+    const stored = audioElements.get(streamKey);
+    if (stored) {
+      const audioEl = stored.audio;
+      pendingAutoplayAudios.delete(audioEl);
+      if (stored.mediaSource) {
+        try { stored.mediaSource.disconnect(); } catch {}
+        stored.mediaSource = null;
+      }
+      if (stored.gainNode) {
+        try { stored.gainNode.disconnect(); } catch {}
+        stored.gainNode = null;
+      }
+      try { audioEl.pause?.(); } catch {}
+      try { audioEl.srcObject = null; } catch {}
+      audioEl.remove();
+      audioEntryMap.delete(audioEl);
+      audioElements.delete(streamKey);
+
+      if (stored.type === 'feed') {
+        const feedId = Number(targetKey.split('-')[1]);
+        feedAudioElements.get(feedId)?.delete(audioEl);
+        if (session.kind === 'user') {
+          applyFeedDucking();
+        }
+      } else if (stored.type === 'conference') {
+        const confId = Number(targetKey.split('-')[1]);
+        confAudioElements.get(confId)?.delete(audioEl);
+      }
+    }
+
+    if (!hasActiveStreams(targetKey) && speakingPeers.has(targetKey)) {
+      speakingPeers.delete(targetKey);
+      if (!suppressUi) {
+        updateSpeakerHighlight(targetKey, false);
+      }
+    }
+  }
+
+  function cleanupAllIncomingStreams({ suppressUi = false } = {}) {
+    for (const [targetKey, set] of Array.from(targetStreamMap.entries())) {
+      for (const streamKey of Array.from(set)) {
+        cleanupIncomingStream(targetKey, streamKey, { suppressUi });
+      }
+    }
+    targetStreamMap.clear();
+    peerConsumers.clear();
+    audioElements.clear();
+    pendingAutoplayAudios.clear();
+    speakingPeers.clear();
+    lastSpokePeers.clear();
+    activeTalkersForMe.clear();
+    talkerConsumersForMe.clear();
+    confAudioElements.clear();
+    feedAudioElements.clear();
   }
 
   function applyVolumeToTarget(targetKey, volume) {
@@ -2312,10 +2399,28 @@ let cachedUsers = [];
     console.log("Disconnected from server");
     myIdEl.textContent = "Getrennt";
     clearReplyTarget();
+    setReplyButtonActive(false);
     // Disable all user buttons
     document
       .querySelectorAll(".talk-user")
       .forEach((btn) => (btn.disabled = true));
+
+    stopTalkingSafely();
+    clearLockState();
+
+    if (speakingPruneInterval) {
+      clearInterval(speakingPruneInterval);
+      speakingPruneInterval = null;
+    }
+    activeProducersSyncInFlight = false;
+    cleanupAllIncomingStreams({ suppressUi: true });
+    document.querySelectorAll('#targets-list li.target-item').forEach(li => {
+      li.classList.remove('talking-to', 'speaking', 'last-spoke');
+      li.querySelector('.user-icon')?.classList.remove('speaking');
+      li.querySelector('.conf-icon')?.classList.remove('speaking');
+      li.querySelector('.feed-icon')?.classList.remove('speaking');
+    });
+    clearReplyTarget();
 
     mediaInitialized = false;
     initializingMediaPromise = null;
@@ -2324,10 +2429,6 @@ let cachedUsers = [];
     recvTransport = null;
     producer = null;
     pendingProducerQueue.length = 0;
-    speakingPeers.clear();
-    activeTalkersForMe.clear();
-    talkerConsumersForMe.clear();
-    feedAudioElements.clear();
 
     if (session.kind === 'feed') {
       feedStreaming = false;
@@ -2342,6 +2443,7 @@ let cachedUsers = [];
     cachedUsers = users;
     if (session.kind === 'user') {
       await renderTargetList(users);
+      requestActiveProducers().catch(() => {});
     }
   });
 
@@ -2350,6 +2452,7 @@ let cachedUsers = [];
     if (cachedUsers.length) {
       await renderTargetList(cachedUsers);
     }
+    requestActiveProducers().catch(() => {});
   });
 
   socket.on('api-talk-command', async ({ action, targetType = 'conference', targetId = null }) => {
@@ -3016,6 +3119,26 @@ let cachedUsers = [];
       }
     });
 
+    // Re-apply outgoing talk highlight after re-rendering the target list.
+    // The list is rebuilt via `innerHTML = ''`, so any previous DOM classes
+    // (like "talking-to") are lost even though the producer may still be live.
+    if (producer || isTalking || activeLockTarget) {
+      const target = currentTarget || activeLockTarget;
+      if (target && (target.type === 'conference' || target.type === 'user')) {
+        const selector = target.type === 'conference'
+          ? `#conf-${target.id}`
+          : `#user-${target.id}`;
+        const el = document.querySelector(selector);
+        if (el) {
+          el.classList.add('talking-to');
+        } else if (producer || isTalking) {
+          // If we're still producing but the target is no longer present in the UI
+          // (e.g. a user went offline), stop to avoid misleading UI/state.
+          stopTalkingSafely();
+        }
+      }
+    }
+
     const allowedFeedKeys = new Set(
       targets
         .filter(t => t.targetType === 'feed')
@@ -3065,6 +3188,8 @@ let cachedUsers = [];
     if (activeLockButton && !document.body.contains(activeLockButton)) {
       handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
     }
+
+    pruneSpeakingState();
 
     for (const targetKey of Array.from(speakingPeers)) {
       if (!hasActiveStreams(targetKey)) {
@@ -3390,6 +3515,8 @@ let cachedUsers = [];
   }
 
   async function requestActiveProducers() {
+    if (activeProducersSyncInFlight) return;
+    activeProducersSyncInFlight = true;
     try {
       const payloads = await new Promise((resolve, reject) => {
         const timeout = setTimeout(
@@ -3407,11 +3534,34 @@ let cachedUsers = [];
         });
       });
 
+      const expectedStreamKeys = new Set();
+
       for (const payload of payloads) {
+        const targetKey = targetKeyFromProducerPayload(payload);
+        const streamKey = streamKeyFromProducerPayload(payload);
+        if (!targetKey || !streamKey) continue;
+        expectedStreamKeys.add(streamKey);
+
+        const alreadyHave = audioElements.has(streamKey)
+          || peerConsumers.has(streamKey)
+          || (targetStreamMap.get(targetKey)?.has(streamKey) ?? false);
+
+        if (alreadyHave) continue;
         await handleIncomingProducer(payload);
+      }
+
+      // Remove streams we still have locally but that the server no longer
+      // reports as active (e.g. missed events while backgrounded).
+      for (const [targetKey, set] of Array.from(targetStreamMap.entries())) {
+        for (const streamKey of Array.from(set)) {
+          if (expectedStreamKeys.has(streamKey)) continue;
+          cleanupIncomingStream(targetKey, streamKey);
+        }
       }
     } catch (err) {
       console.error('Failed to request active producers', err);
+    } finally {
+      activeProducersSyncInFlight = false;
     }
   }
 
@@ -3670,6 +3820,7 @@ let cachedUsers = [];
     const isConference = targetKey.startsWith("conf-");
     const isUser = targetKey.startsWith("user-");
     const isFeed = targetKey.startsWith("feed-");
+    const labelText = getTargetLabel(targetKey);
 
     let lockTargetMatches = false;
     if (activeLockButton && !isFeed && (isConference || isUser)) {
@@ -3688,6 +3839,32 @@ let cachedUsers = [];
           ? `user-${lastTarget.id}` === targetKey
           : false);
 
+    if (isSpeaking) {
+      el?.classList.add("speaking");
+      el?.classList.remove("last-spoke");
+      icon?.classList.add("speaking");
+      lastSpokePeers.delete(targetKey);
+
+      // Update reply target immediately when someone starts speaking so the
+      // user can reply even if the speaker is on talk lock (never "stops").
+      if (session.kind === 'user' && !isFeed && (isConference || isUser)) {
+        const targetData = {
+          type: isConference ? "conference" : "user",
+          id: rawId,
+          label: labelText || rawId,
+        };
+
+        if (!(targetData.type === "user" && targetData.id === socket.id)) {
+          lastTarget = targetData;
+          btnReply.disabled = false;
+          renderReplyButtonLabel();
+        }
+      }
+
+      applyFeedDucking();
+      return;
+    }
+
     if (!el) {
       if (!isFeed && lastTargetMatchesKey) {
         clearReplyTarget();
@@ -3696,21 +3873,11 @@ let cachedUsers = [];
       return;
     }
 
-  if (isSpeaking) {
-    el?.classList.add("speaking");
-    el?.classList.remove("last-spoke");
-    icon?.classList.add("speaking");
-    lastSpokePeers.delete(targetKey);
-    return;
-  }
-
     el?.classList.remove("speaking");
     icon?.classList.remove("speaking");
     if (lockTargetMatches) {
       el?.classList.add("talking-to");
     }
-
-    const labelText = getTargetLabel(targetKey);
 
     if (isFeed) {
       el?.classList.remove("last-spoke");
@@ -4179,12 +4346,25 @@ let cachedUsers = [];
       // When switching tabs, the document becomes hidden. Don't force-stop if
       // talk lock is active.
       stopTalkingSafely({ respectLock: true });
+      return;
+    }
+    if (document.visibilityState === 'visible') {
+      pruneSpeakingState();
+      if (mediaInitialized) {
+        requestActiveProducers().catch(() => {});
+      }
     }
   }
 
   document.addEventListener('visibilitychange', stopTalkingIfHidden);
   window.addEventListener('pagehide', () => stopTalkingSafely());
   window.addEventListener('blur', () => stopTalkingSafely({ respectLock: true }));
+  window.addEventListener('focus', () => {
+    pruneSpeakingState();
+    if (mediaInitialized) {
+      requestActiveProducers().catch(() => {});
+    }
+  });
   window.addEventListener('pointerup', () => stopTalkingSafely({ respectLock: true }));
   window.addEventListener('pointercancel', () => stopTalkingSafely({ respectLock: true }));
   window.addEventListener('touchend', () => stopTalkingSafely({ respectLock: true }), { passive: true });

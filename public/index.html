@@ -329,6 +329,21 @@
         to   { opacity: 1; transform: translateY(0); }
       }
 
+      /* When a target is both "talking-to" (outgoing) and "speaking" (incoming),
+         alternate between both highlight colors so the user sees both states. */
+      @keyframes talkingSpeakingSwap {
+        0%, 49% {
+          border-color: rgba(139, 92, 246, 0.8);
+          background: rgba(139, 92, 246, 0.12);
+          box-shadow: 0 0 12px rgba(139, 92, 246, 0.35);
+        }
+        50%, 100% {
+          border-color: rgba(34, 197, 94, 0.8);
+          background: rgba(34, 197, 94, 0.12);
+          box-shadow: 0 0 12px rgba(34, 197, 94, 0.4);
+        }
+      }
+
       /* Base button styles */
       button {
         -webkit-touch-callout: none; /* iOS Safari */
@@ -476,6 +491,14 @@
         background: rgba(250, 204, 21, 0.12);
       }
 
+      /* If both classes are present due to delayed UI updates, prefer "speaking". */
+      #targets-list li.target-item.speaking.last-spoke {
+        border-color: rgba(34, 197, 94, 0.8);
+        background: rgba(34, 197, 94, 0.12);
+        box-shadow: 0 0 12px rgba(34, 197, 94, 0.4);
+        animation: speakingPulse 1s ease-in-out infinite;
+      }
+
       /* Offline targets */
       #targets-list li.target-item.is-offline {
         border-color: rgba(148, 163, 184, 0.25);
@@ -505,15 +528,25 @@
       }
 
       #targets-list li.target-item.talking-to.speaking {
-        border-color: rgba(34, 197, 94, 0.8);
-        background: rgba(34, 197, 94, 0.12);
-        box-shadow: 0 0 12px rgba(34, 197, 94, 0.4);
-      }
-
-      #targets-list li.target-item.talking-to.speaking.talking-self {
         border-color: rgba(139, 92, 246, 0.8);
         background: rgba(139, 92, 246, 0.12);
         box-shadow: 0 0 12px rgba(139, 92, 246, 0.35);
+        animation: talkingSpeakingSwap 1.2s ease-in-out infinite;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #targets-list li.target-item.talking-to.speaking {
+          animation: none;
+          border-color: rgba(139, 92, 246, 0.8);
+          background: linear-gradient(
+            90deg,
+            rgba(139, 92, 246, 0.12),
+            rgba(34, 197, 94, 0.12)
+          );
+          box-shadow:
+            0 0 12px rgba(139, 92, 246, 0.35),
+            0 0 12px rgba(34, 197, 94, 0.4);
+        }
       }
 
       #targets-list li.target-item.hotkey-active {
