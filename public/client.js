@@ -4176,7 +4176,9 @@ let cachedUsers = [];
 
   function stopTalkingIfHidden() {
     if (document.visibilityState === 'hidden') {
-      stopTalkingSafely();
+      // When switching tabs, the document becomes hidden. Don't force-stop if
+      // talk lock is active.
+      stopTalkingSafely({ respectLock: true });
     }
   }
 
