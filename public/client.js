@@ -4182,7 +4182,7 @@ let cachedUsers = [];
 
   document.addEventListener('visibilitychange', stopTalkingIfHidden);
   window.addEventListener('pagehide', () => stopTalkingSafely());
-  window.addEventListener('blur', () => stopTalkingSafely());
+  window.addEventListener('blur', () => stopTalkingSafely({ respectLock: true }));
   window.addEventListener('pointerup', () => stopTalkingSafely({ respectLock: true }));
   window.addEventListener('pointercancel', () => stopTalkingSafely({ respectLock: true }));
   window.addEventListener('touchend', () => stopTalkingSafely({ respectLock: true }), { passive: true });
