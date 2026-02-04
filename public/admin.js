@@ -84,6 +84,23 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function selectNextByIndex(selectEl, previousIndex) {
+  if (!selectEl) return;
+  const options = Array.from(selectEl.options || []);
+  if (!options.length) return;
+  let startIndex = Number.isInteger(previousIndex) ? previousIndex : selectEl.selectedIndex;
+  if (startIndex < 0) startIndex = 0;
+  if (startIndex >= options.length) startIndex = 0;
+  const total = options.length;
+  for (let offset = 0; offset < total; offset += 1) {
+    const idx = (startIndex + offset) % total;
+    if (!options[idx].disabled) {
+      selectEl.selectedIndex = idx;
+      return;
+    }
+  }
+}
+
 async function authedFetch(url, options) {
   const res = await fetch(url, options);
   if (res.status === 401) {
@@ -230,15 +247,14 @@ async function loadData() {
       <div class="nested" id="user-nested-${user.id}">
         <div class="nested-block">
           <strong>Conferences</strong>
-          <ul id="user-confs-${user.id}"></ul>
           <div class="inline-controls">
             <select id="add-user-conf-${user.id}">${optionsHtml}</select>
             <button type="button" class="small" ${conferences.length ? '' : 'disabled'} onclick="assignUserToConference(${user.id})">Add to conference</button>
           </div>
+          <ul id="user-confs-${user.id}"></ul>
         </div>
         <div class="nested-block">
           <strong>Target Buttons</strong>
-          <ul id="user-targets-${user.id}"></ul>
           <div class="inline-controls">
             <select id="add-target-type-${user.id}">
               <option value="user">User</option>
@@ -248,11 +264,13 @@ async function loadData() {
             <select id="add-target-id-${user.id}"></select>
             <button type="button" id="add-target-btn-${user.id}" class="small" onclick="addTarget(${user.id})">Add target</button>
           </div>
+          <ul id="user-targets-${user.id}"></ul>
         </div>
       </div>
     `;
 
     userList.appendChild(li);
+    await updateUserConferenceOptions(user.id, conferences);
     await loadUserTargets(user.id, users, conferences, feeds);
   }
 
@@ -305,9 +323,47 @@ async function loadData() {
   }
 }
 
+async function updateUserConferenceOptions(userId, allConfs, previousIndex) {
+  const select = document.getElementById(`add-user-conf-${userId}`);
+  if (!select) return;
+  const button = select.parentElement?.querySelector('button');
+  let assigned = [];
+  try {
+    assigned = await fetchJSON(`/users/${userId}/conferences`);
+  } catch (err) {
+    console.error('Failed to load user conferences for select', err);
+  }
+
+  const assignedIds = new Set(assigned.map(c => String(c.id)));
+  const conferences = Array.isArray(allConfs) ? allConfs : [];
+  const available = conferences.filter(c => !assignedIds.has(String(c.id)));
+
+  if (!available.length) {
+    select.disabled = true;
+    select.innerHTML = '<option value="" disabled selected>No conferences available</option>';
+    if (button) button.disabled = true;
+    return;
+  }
+
+  select.disabled = false;
+  select.innerHTML = available
+    .map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`)
+    .join('');
+  if (button) button.disabled = false;
+  selectNextByIndex(select, previousIndex);
+}
+
 // Fetch and render targets + rebuild the “type → id” dropdown
 async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
   const targets = await fetchJSON(`/users/${userId}/targets`);
+  const usedByType = targets.reduce((acc, target) => {
+    const type = String(target.targetType || '');
+    const id = String(target.targetId || '');
+    if (!type) return acc;
+    if (!acc[type]) acc[type] = new Set();
+    acc[type].add(id);
+    return acc;
+  }, {});
   const ul = document.getElementById(`user-targets-${userId}`);
   ul.innerHTML = targets.map(t => {
     return `
@@ -330,11 +386,20 @@ async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
     const type = selType.value;
     let options = [];
     if (type === 'user') {
-      options = allUsers.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
+      const used = usedByType.user || new Set();
+      options = allUsers
+        .filter(item => !used.has(String(item.id)))
+        .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
     } else if (type === 'conference') {
-      options = allConfs.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
+      const used = usedByType.conference || new Set();
+      options = allConfs
+        .filter(item => !used.has(String(item.id)))
+        .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
     } else if (type === 'feed') {
-      options = allFeeds.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
+      const used = usedByType.feed || new Set();
+      options = allFeeds
+        .filter(item => !used.has(String(item.id)))
+        .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
     }
 
     if (options.length === 0) {
@@ -417,8 +482,11 @@ async function saveTargetOrder(userId, ul) {
 
 // Called by the “➕” button
 window.addTarget = async function(userId) {
-  const type = document.getElementById(`add-target-type-${userId}`).value;
-  const id   = document.getElementById(`add-target-id-${userId}`).value;
+  const typeSelect = document.getElementById(`add-target-type-${userId}`);
+  const idSelect = document.getElementById(`add-target-id-${userId}`);
+  const type = typeSelect?.value;
+  const id = idSelect?.value;
+  const prevIdIndex = idSelect?.selectedIndex ?? -1;
   try {
     const res = await authedFetch(`/users/${userId}/targets`, {
       method: 'POST',
@@ -433,6 +501,15 @@ window.addTarget = async function(userId) {
       const confs = await fetchJSON('/conferences');
       const feeds = await fetchJSON('/feeds');
       await loadUserTargets(userId, users, confs, feeds);
+      const nextTypeSelect = document.getElementById(`add-target-type-${userId}`);
+      const nextIdSelect = document.getElementById(`add-target-id-${userId}`);
+      if (nextTypeSelect && type) {
+        nextTypeSelect.value = type;
+        nextTypeSelect.dispatchEvent(new Event('change'));
+      }
+      if (nextIdSelect) {
+        selectNextByIndex(nextIdSelect, prevIdIndex);
+      }
     }
   } catch (err) {
     showMessage('❌ Failed to add target', 'error', 'user');
@@ -817,12 +894,15 @@ document.getElementById('feed-form').addEventListener('submit', async (e) => {
 window.assignUserToConference = async function(userId) {
   const sel = document.getElementById(`add-user-conf-${userId}`);
   const confId = sel.value;
+  const prevIndex = sel?.selectedIndex ?? -1;
   try {
     const res = await authedFetch(`/conferences/${confId}/users/${userId}`, {
       method: 'POST'
     });
     if (res.ok) {
       showMessage('✅ User assigned to conference', 'success', 'user');
+      const confs = await fetchJSON('/conferences');
+      await updateUserConferenceOptions(userId, confs, prevIndex);
       const container = document.getElementById(`user-nested-${userId}`);
       if (container?.classList.contains('is-open')) {
         await toggleUserConfs(userId);
