@@ -2,6 +2,7 @@
 const fs = require("fs");
 const path = require("path");
 const Database = require("better-sqlite3");
+const { getDataFile } = require("./dataPaths");
 
 function resolveNativeBinding() {
   if (!process.pkg) return null;
@@ -28,9 +29,10 @@ function resolveNativeBinding() {
 }
 
 const nativeBinding = resolveNativeBinding();
+const dbPath = getDataFile("app.db");
 const db = nativeBinding
-  ? new Database("app.db", { nativeBinding })
-  : new Database("app.db");
+  ? new Database(dbPath, { nativeBinding })
+  : new Database(dbPath);
 
 // Initialize tables (run once)
 db.exec(`

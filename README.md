@@ -40,14 +40,22 @@ TLS:
 - If `certs/key.pem` and `certs/cert.pem` are missing, the server generates a self-signed pair in `./certs`.
 
 Data:
-- All state lives in `app.db` (SQLite). Back it up before upgrades if you need to preserve accounts and routing.
+- All state lives in `app.db` (SQLite) stored in the per-user app data directory:
+  - macOS: `~/Library/Application Support/talktome/app.db`
+  - Windows: `%LOCALAPPDATA%\\talktome\\app.db`
+  - Linux: `$XDG_DATA_HOME/talktome/app.db` (fallback: `~/.local/share/talktome/app.db`)
+  - Override with `TALKTOME_DATA_DIR`.
+  Back it up before upgrades if you need to preserve accounts and routing.
 
 ## Configuration
 On first interactive start, the server asks for:
 - HTTPS port
 - mDNS hostname (use `off` to disable)
 
-The answers are saved to `config.json` next to the executable (or project root in dev).
+The answers are saved to `config.json` in the per-user app data directory:
+- macOS: `~/Library/Application Support/talktome/config.json`
+- Windows: `%LOCALAPPDATA%\\talktome\\config.json`
+- Linux: `$XDG_DATA_HOME/talktome/config.json` (fallback: `~/.local/share/talktome/config.json`)
 Environment variables still override the config.
 Delete `config.json` to re-run the setup.
 

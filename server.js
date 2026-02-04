@@ -2,11 +2,32 @@ const fs = require("fs");
 const path = require("path");
 const net = require("net");
 const readline = require("readline");
+const { getDataDir } = require("./dataPaths");
 
 const execDir = path.dirname(process.execPath);
-const configPath = process.pkg
-  ? path.join(execDir, "config.json")
-  : path.join(__dirname, "config.json");
+const dataDir = getDataDir();
+const dataConfigPath = path.join(dataDir, "config.json");
+const legacyConfigPath = path.join(__dirname, "config.json");
+const legacyPkgConfigPath = path.join(execDir, "config.json");
+let configPath = dataConfigPath;
+
+if (!process.pkg && fs.existsSync(legacyConfigPath)) {
+  configPath = legacyConfigPath;
+} else if (
+  process.pkg &&
+  fs.existsSync(legacyPkgConfigPath) &&
+  !fs.existsSync(dataConfigPath)
+) {
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.copyFileSync(legacyPkgConfigPath, dataConfigPath);
+    console.log(`[CONFIG] Migrated ${legacyPkgConfigPath} → ${dataConfigPath}`);
+  } catch (error) {
+    console.warn(
+      `[CONFIG] Failed to migrate ${legacyPkgConfigPath}: ${error.message}`
+    );
+  }
+}
 
 function isInteractive() {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
@@ -25,6 +46,7 @@ function loadConfig() {
 
 function saveConfig(config) {
   try {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
     console.log(`[CONFIG] Saved ${configPath}`);
   } catch (error) {

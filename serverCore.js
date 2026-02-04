@@ -8,6 +8,7 @@ const crypto = require("crypto");
 const os = require("os");
 const dgram = require("dgram");
 const selfsigned = require("selfsigned");
+const { getDataDir } = require("./dataPaths");
 
 const workerName = process.platform === "win32" ? "mediasoup-worker.exe" : "mediasoup-worker";
 
@@ -820,10 +821,9 @@ function notifyTargetChange(userId) {
 }
 
 
-// Create a self-signed certificate if none exists yet
-// When running inside `pkg` the bundled directory is read-only
-// so we keep the certificates relative to the current working directory
-const certDir = path.join(process.cwd(), "certs");
+// Create a self-signed certificate if none exists yet.
+// Keep certificates in the per-user app data directory (writable across platforms).
+const certDir = path.join(getDataDir(), "certs");
 const keyPath = path.join(certDir, "key.pem");
 const certPath = path.join(certDir, "cert.pem");
 
