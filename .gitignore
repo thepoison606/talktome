@@ -27,8 +27,8 @@ mediasoup-worker*
 better_sqlite3.node
 talktome_win64*.exe
 talktome_win64*.zip
-talktome-macos-arm64.zip
-talktome-macos-arm64/
+talktome_macos*.zip
+talktome-macos*
 worker/
 dist/
 build/
