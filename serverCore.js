@@ -1780,6 +1780,19 @@ io.on("connection", (socket) => {
   });
 });
 
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`[HTTPS] Port ${HTTPS_PORT} is already in use.`);
+    console.error("       Choose another port or stop the process using it.");
+  } else if (err.code === "EACCES") {
+    console.error(`[HTTPS] Permission denied on port ${HTTPS_PORT}.`);
+    console.error("       Run with elevated privileges or choose a high port.");
+  } else {
+    console.error(`[HTTPS] Failed to start server on port ${HTTPS_PORT}: ${err.message}`);
+  }
+  process.exit(1);
+});
+
 server.listen(HTTPS_PORT, () => {
   console.log(`🔒 HTTPS Server running on port ${HTTPS_PORT}`);
   console.log(`📍 Access via: https://YOUR-IP:${HTTPS_PORT}`);

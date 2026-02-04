@@ -56,3 +56,7 @@ lerna-debug.log*
 
 # Generated runtime assets
 public/socket.io.js
+
+# local build artifacts
+talktome_win64_bundle/
+
