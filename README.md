@@ -1,7 +1,5 @@
 # Talk To Me
 A local WebRTC Intercom app built with Node.js and mediasoup.
-Bitfocus Companion module available at `https://github.com/thepoison606/companion-module-talktome-intercom`.
-<br>
 <br>
 <img src="public/images/iphone_ipad.png" alt="Talk To Me mobile UI" width="800">
 
@@ -9,6 +7,7 @@ Bitfocus Companion module available at `https://github.com/thepoison606/companio
 - Web client with per-target and conference talk buttons, reply, and “talk lock”.
 - Tally for camera operators via HTTP API
 - Button control via HTTP API (Streamdeck, Companion, ..)
+- Bitfocus Companion module available at `https://github.com/thepoison606/companion-module-talktome-intercom`.
 - Button control via Keyboard shortcuts 
 - Admin UI to manage users, conferences, feeds, and target order.
 - Feeds for program audio injection (experimental).
