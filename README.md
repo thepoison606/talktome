@@ -82,48 +82,64 @@ Post when a user’s camera is on-air; their UI background turns red.
   { "user": "<USERNAME>" }
   ```
 
-## Remote talk control API
-Trigger a user’s talk buttons over HTTP (e.g. Stream Deck via Companion).
+## Companion API (v1)
+For Stream Deck / Companion integrations use the versioned API and live status channel.
 > Simultaneous talk into multiple destinations is not supported yet.
 
-- **URL:** `https://<IP-ADDRESS>:<PORT>/users/<USER_ID>/talk`
-- **Method:** `POST`
-- **Headers:** `Content-Type: application/json`
+Companion module source is maintained in a separate standalone repository.
 
-Body:
+Authentication:
+- API key auth:
+  - Header `x-api-key: <API_KEY>` or `Authorization: Bearer <API_KEY>`
+- Key source:
+  - Env var: `COMPANION_API_KEY`
+  - Or generated file in app data dir: `companion_api_key`
+  - Admin retrieval endpoint: `GET /admin/api-key`
+- User login auth (session token):
+  - `POST /api/v1/companion/auth/login` with `{ "name": "...", "password": "..." }`
+  - Use returned token as `Authorization: Bearer <SESSION_TOKEN>`
+  - Scope:
+    - non-superadmin users can control only their own operator user id
+    - superadmin users keep full access
+
+Core endpoints:
+- `POST /api/v1/companion/auth/login`
+- `GET /api/v1/companion/config`
+- `GET /api/v1/companion/state` (full snapshot)
+- `GET /api/v1/companion/users`
+- `GET /api/v1/companion/conferences`
+- `GET /api/v1/companion/feeds`
+- `GET /api/v1/companion/users/:id/targets`
+- `POST /api/v1/companion/users/:id/talk` (command + ack/result)
+
+Legacy endpoint:
+- `POST /users/:id/talk`
+
+Live events (Socket.IO):
+- Namespace: `/companion`
+- Events:
+  - `snapshot`
+  - `user-state`
+  - `command-result`
+  - `cut-camera`
+
+Command body:
 ```json
 {
-  "action": "press",          // "press", "release", or "lock-toggle"
-  "targetType": "conference", // "conference" (default), "user", or "reply"
-  "targetId": 12              // required unless targetType is "reply"
+  "action": "press",
+  "targetType": "conference",
+  "targetId": 12,
+  "waitMs": 1500
 }
 ```
 
-Examples:
-- Talk to conference ID 3:
-  ```bash
-  curl -X POST https://localhost/users/8/talk \
-       -H "Content-Type: application/json" \
-       -d '{"action":"press","targetType":"conference","targetId":3}'
-  ```
-- Talk to user ID 8:
-  ```bash
-  curl -X POST https://localhost/users/8/talk \
-       -H "Content-Type: application/json" \
-       -d '{"action":"press","targetType":"user","targetId":8}'
-  ```
-- Release (stop talking):
-  ```bash
-  curl -X POST https://localhost/users/8/talk \
-       -H "Content-Type: application/json" \
-       -d '{"action":"release"}'
-  ```
-- Hold-to-talk on Reply:
-  ```bash
-  curl -X POST https://localhost/users/8/talk \
-       -H "Content-Type: application/json" \
-       -d '{"action":"press","targetType":"reply"}'
-  ```
+Example:
+```bash
+curl -X POST https://localhost/api/v1/companion/users/8/talk \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: <API_KEY>" \
+  -d '{"action":"press","targetType":"conference","targetId":3}'
+```
 
 Keyboard Shortcuts:
 - Space bar: Reply to last received target.

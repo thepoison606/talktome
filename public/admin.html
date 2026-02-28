@@ -7,6 +7,7 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
     <title>Admin Panel</title>
+    <link rel="stylesheet" href="/login.css" />
     <style>
       :root {
         --bg: #0b1120;
@@ -62,27 +63,6 @@
 
       .admin-bar__meta strong {
         color: var(--text);
-      }
-
-      .admin-login {
-        position: fixed;
-        inset: 0;
-        background: rgba(15, 23, 42, 0.72);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 1.5rem;
-        z-index: 100;
-      }
-
-      .admin-login .card {
-        width: 100%;
-        max-width: 420px;
-      }
-
-      .admin-login form {
-        display: grid;
-        gap: 0.75rem;
       }
 
       main {
@@ -177,6 +157,15 @@
 
       .field-group input {
         min-width: 180px;
+      }
+
+      .field-group--stacked {
+        align-items: stretch;
+        flex: 1 1 280px;
+      }
+
+      .field-group--stacked label {
+        margin-bottom: 0.35rem;
       }
 
       label {
@@ -364,6 +353,18 @@
         font-weight: 500;
       }
 
+      .setting-meta {
+        display: grid;
+        gap: 0.35rem;
+        margin-bottom: 1rem;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      .setting-meta strong {
+        color: var(--text);
+      }
+
       .drag-handle {
         cursor: grab;
         font-size: 1rem;
@@ -446,19 +447,22 @@
     </style>
   </head>
   <body>
-    <div id="admin-login" class="admin-login is-hidden" role="dialog" aria-modal="true" aria-labelledby="admin-login-title">
-      <div class="card">
-        <h2 id="admin-login-title">Admin Login</h2>
-        <div id="admin-login-message" class="flash-message"></div>
-        <form id="admin-login-form" autocomplete="off">
-          <label for="admin-name">Username</label>
-          <input type="text" id="admin-name" autocomplete="username" required />
-
-          <label for="admin-password">Password</label>
-          <input type="password" id="admin-password" autocomplete="current-password" required />
-
-          <button type="submit">Login</button>
+    <div id="admin-login" class="login-overlay is-hidden" role="dialog" aria-modal="true" aria-labelledby="admin-login-title">
+      <div class="login-card">
+        <h2 id="admin-login-title" class="login-title">Admin Login</h2>
+        <form id="admin-login-form" class="login-form" autocomplete="off">
+          <div class="login-field">
+            <label for="admin-name">Username</label>
+            <input type="text" id="admin-name" class="login-input" autocomplete="username" required />
+          </div>
+          <div class="login-field">
+            <label for="admin-password">Password</label>
+            <input type="password" id="admin-password" class="login-input" autocomplete="current-password" required />
+          </div>
+          <button type="submit" class="login-submit">Login</button>
         </form>
+        <div id="admin-login-message" class="login-message" aria-live="polite"></div>
+        <a class="login-switch-link" href="/">→ to intercom login</a>
       </div>
     </div>
 
@@ -535,6 +539,29 @@
         </div>
 
         <ul id="conf-list" class="item-list" aria-live="polite"></ul>
+      </section>
+
+      <section class="card" aria-labelledby="mdns-heading">
+        <div class="card-header">
+          <h2 id="mdns-heading">mDNS</h2>
+          <div id="mdns-message" class="flash-message"></div>
+        </div>
+
+        <div class="setting-meta">
+          <div>Active mDNS alias: <strong id="mdns-active-host">Loading...</strong></div>
+          <div>Changed mDNS alias: <strong id="mdns-saved-host">Loading...</strong></div>
+          <div id="mdns-restart-hint">Changes require a server restart to take effect.</div>
+        </div>
+
+        <div class="form-grid">
+          <form id="mdns-form" class="inline-form" autocomplete="off">
+            <div class="field-group field-group--stacked">
+              <label for="mdns-host">mDNS name</label>
+              <input type="text" id="mdns-host" placeholder="e.g. intercom.local or off" required />
+            </div>
+            <button type="submit">Save mDNS name</button>
+          </form>
+        </div>
       </section>
     </main>
 

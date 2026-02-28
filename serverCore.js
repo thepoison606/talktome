@@ -106,6 +106,10 @@ app.use(express.json());
 const execDir = path.dirname(process.execPath);
 const execPublicDir = path.join(execDir, "public");
 const snapshotPublicDir = path.join(__dirname, "public");
+const dataDir = getDataDir();
+const dataConfigPath = path.join(dataDir, "config.json");
+const legacyConfigPath = path.join(__dirname, "config.json");
+const legacyPkgConfigPath = path.join(execDir, "config.json");
 
 function copyDirRecursive(srcDir, destDir) {
   if (!fs.existsSync(srcDir)) {
@@ -141,6 +145,61 @@ if (!fs.existsSync(publicDir)) {
   console.warn(`[PUBLIC] Not found: ${publicDir}`);
 } else if (!fs.existsSync(path.join(publicDir, "index.html"))) {
   console.warn(`[PUBLIC] Missing index.html in ${publicDir}`);
+}
+
+function getConfigPath() {
+  if (!process.pkg && fs.existsSync(legacyConfigPath)) {
+    return legacyConfigPath;
+  }
+
+  if (process.pkg && fs.existsSync(legacyPkgConfigPath) && !fs.existsSync(dataConfigPath)) {
+    return legacyPkgConfigPath;
+  }
+
+  return dataConfigPath;
+}
+
+function loadRuntimeConfig() {
+  const configPath = getConfigPath();
+  if (!fs.existsSync(configPath)) return null;
+
+  try {
+    return JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch (error) {
+    console.warn(`[CONFIG] Failed to read ${configPath}: ${error.message}`);
+    return null;
+  }
+}
+
+function saveRuntimeConfig(config) {
+  const configPath = getConfigPath();
+
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  return configPath;
+}
+
+function normalizeMdnsSetting(value) {
+  if (value === undefined || value === null) {
+    return "intercom.local";
+  }
+
+  const trimmed = String(value).trim();
+  if (!trimmed) return "intercom.local";
+
+  const lowered = trimmed.toLowerCase();
+  if (["off", "false", "no", "none", "disable", "disabled"].includes(lowered)) {
+    return "off";
+  }
+
+  const normalized = normalizeHostname(trimmed);
+  if (!normalized) return "intercom.local";
+
+  if (!/^[a-z0-9-]+(?:\.[a-z0-9-]+)*\.local$/.test(normalized)) {
+    return null;
+  }
+
+  return normalized;
 }
 
 app.use(express.static(publicDir));
@@ -269,6 +328,556 @@ function requireSuperAdmin(req, res, next) {
     return res.status(403).json({ error: "Superadmin required" });
   }
   next();
+}
+
+const COMPANION_DEFAULT_WAIT_MS = 1500;
+const COMPANION_MAX_WAIT_MS = 10000;
+const COMPANION_PENDING_TTL_MS = 30000;
+const COMPANION_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
+const COMPANION_API_KEY_FILE = path.join(getDataDir(), "companion_api_key");
+
+const companionUserState = new Map();
+const companionPendingCommands = new Map();
+const companionSessions = new Map();
+let companionNamespace = null;
+
+function readCompanionApiKeyFromEnv() {
+  if (typeof process.env.COMPANION_API_KEY !== "string") {
+    return null;
+  }
+  const value = process.env.COMPANION_API_KEY.trim();
+  return value.length ? value : null;
+}
+
+function loadOrCreateCompanionApiKey() {
+  const envKey = readCompanionApiKeyFromEnv();
+  if (envKey) {
+    console.log("[COMPANION] Using API key from COMPANION_API_KEY");
+    return envKey;
+  }
+
+  try {
+    if (fs.existsSync(COMPANION_API_KEY_FILE)) {
+      const existing = fs.readFileSync(COMPANION_API_KEY_FILE, "utf8").trim();
+      if (existing) {
+        console.log(`[COMPANION] Using API key from ${COMPANION_API_KEY_FILE}`);
+        return existing;
+      }
+    }
+  } catch (err) {
+    console.warn(`[COMPANION] Failed to read API key file: ${err.message}`);
+  }
+
+  const generated = crypto.randomBytes(32).toString("hex");
+  try {
+    fs.mkdirSync(path.dirname(COMPANION_API_KEY_FILE), { recursive: true });
+    fs.writeFileSync(COMPANION_API_KEY_FILE, generated, { mode: 0o600 });
+    console.log(`[COMPANION] Generated API key at ${COMPANION_API_KEY_FILE}`);
+  } catch (err) {
+    console.warn(`[COMPANION] Failed to persist API key: ${err.message}`);
+  }
+  return generated;
+}
+
+const companionApiKey = loadOrCreateCompanionApiKey();
+
+function parseBearerToken(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed.toLowerCase().startsWith("bearer ")) return null;
+  const token = trimmed.slice(7).trim();
+  return token || null;
+}
+
+function extractCompanionApiKeyFromRequest(req) {
+  const bearer = parseBearerToken(req.get("authorization"));
+  if (bearer) return bearer;
+
+  const headerKey = req.get("x-api-key");
+  if (headerKey) return String(headerKey).trim();
+
+  if (typeof req.query?.apiKey === "string" && req.query.apiKey.trim()) {
+    return req.query.apiKey.trim();
+  }
+
+  return null;
+}
+
+function extractCompanionApiKeyFromSocket(socket) {
+  const authPayload = socket?.handshake?.auth || {};
+  if (typeof authPayload === "object" && authPayload !== null) {
+    if (typeof authPayload.apiKey === "string" && authPayload.apiKey.trim()) {
+      return authPayload.apiKey.trim();
+    }
+    if (typeof authPayload.token === "string" && authPayload.token.trim()) {
+      return authPayload.token.trim();
+    }
+  }
+
+  const headers = socket?.handshake?.headers || {};
+  const bearer = parseBearerToken(headers.authorization);
+  if (bearer) return bearer;
+
+  const headerKey = headers["x-api-key"];
+  if (typeof headerKey === "string" && headerKey.trim()) {
+    return headerKey.trim();
+  }
+
+  const queryPayload = socket?.handshake?.query || {};
+  if (typeof queryPayload.apiKey === "string" && queryPayload.apiKey.trim()) {
+    return queryPayload.apiKey.trim();
+  }
+
+  return null;
+}
+
+function isValidCompanionApiKey(candidate) {
+  if (typeof candidate !== "string" || !candidate) return false;
+  const left = Buffer.from(candidate, "utf8");
+  const right = Buffer.from(companionApiKey, "utf8");
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function createCompanionSession(user) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const now = Date.now();
+  companionSessions.set(token, {
+    userId: user.id,
+    userName: user.name || null,
+    isAdmin: !!user.is_admin,
+    isSuperadmin: !!user.is_superadmin,
+    createdAt: now,
+    expiresAt: now + COMPANION_SESSION_TTL_MS,
+  });
+  return token;
+}
+
+function getCompanionSession(token) {
+  const value = typeof token === "string" ? token.trim() : "";
+  if (!value) return null;
+  const session = companionSessions.get(value);
+  if (!session) return null;
+  if (session.expiresAt <= Date.now()) {
+    companionSessions.delete(value);
+    return null;
+  }
+  return { token: value, session };
+}
+
+function resolveCompanionAuth(candidate) {
+  if (isValidCompanionApiKey(candidate)) {
+    return {
+      type: "api-key",
+      token: null,
+      userId: null,
+      userName: null,
+      isAdmin: true,
+      isSuperadmin: true,
+    };
+  }
+
+  const sessionResult = getCompanionSession(candidate);
+  if (!sessionResult) return null;
+  return {
+    type: "session",
+    token: sessionResult.token,
+    userId: sessionResult.session.userId,
+    userName: sessionResult.session.userName,
+    isAdmin: !!sessionResult.session.isAdmin,
+    isSuperadmin: !!sessionResult.session.isSuperadmin,
+  };
+}
+
+function hasCompanionGlobalAccess(auth) {
+  return Boolean(auth && (auth.type === "api-key" || auth.isSuperadmin));
+}
+
+function canCompanionControlUser(auth, userId) {
+  if (!auth || !Number.isFinite(Number(userId))) return false;
+  if (hasCompanionGlobalAccess(auth)) return true;
+  return Number(auth.userId) === Number(userId);
+}
+
+function buildCompanionAuthScope(auth) {
+  if (!auth) {
+    return { mode: "none", userId: null };
+  }
+  if (hasCompanionGlobalAccess(auth)) {
+    return {
+      mode: "all",
+      userId: Number.isFinite(Number(auth.userId)) ? Number(auth.userId) : null,
+      userName: auth.userName || null,
+      isSuperadmin: !!auth.isSuperadmin,
+    };
+  }
+  return {
+    mode: "self",
+    userId: Number(auth.userId),
+    userName: auth.userName || null,
+    isSuperadmin: false,
+  };
+}
+
+function requireCompanionApiKey(req, res, next) {
+  const candidate = extractCompanionApiKeyFromRequest(req);
+  const auth = resolveCompanionAuth(candidate);
+  if (!candidate || !auth) {
+    return res.status(401).json({ error: "Companion authentication required" });
+  }
+  req.companionAuth = auth;
+  next();
+}
+
+function normalizeCompanionTarget(target) {
+  if (!target || typeof target !== "object") return null;
+  const rawType = typeof target.type === "string" ? target.type.trim().toLowerCase() : "";
+  if (!["user", "conference"].includes(rawType)) {
+    return null;
+  }
+  const rawId = target.id;
+  if (rawId === null || rawId === undefined || rawId === "") {
+    return null;
+  }
+  const numeric = Number(rawId);
+  const normalizedId = Number.isFinite(numeric) ? numeric : String(rawId);
+  return { type: rawType, id: normalizedId };
+}
+
+function parseCompanionWaitMs(raw) {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return COMPANION_DEFAULT_WAIT_MS;
+  }
+  return Math.min(COMPANION_MAX_WAIT_MS, Math.max(100, Math.round(parsed)));
+}
+
+function normalizeTalkCommandInput(input = {}) {
+  let { action, targetType = "conference", targetId = null } = input || {};
+
+  if (!["press", "release", "lock-toggle"].includes(action)) {
+    return { ok: false, status: 400, error: "action must be press, release, or lock-toggle" };
+  }
+
+  const allConferenceId = getAllConferenceId();
+  const normalizedType = typeof targetType === "string" ? targetType.trim().toLowerCase() : "conference";
+  targetType = normalizedType;
+
+  if (targetType === "reply") {
+    targetId = undefined;
+  } else {
+    if (targetType === "global" || targetType === "all") {
+      targetType = "conference";
+      targetId = allConferenceId;
+    }
+
+    if (targetType === "conference" && (targetId === null || targetId === undefined || targetId === "")) {
+      targetId = allConferenceId;
+    }
+
+    if (targetType === "conference" && (targetId === null || targetId === undefined)) {
+      return { ok: false, status: 500, error: "All conference not configured" };
+    }
+
+    if (targetType === "conference" || targetType === "user") {
+      const numericTargetId = Number(targetId);
+      if (!Number.isFinite(numericTargetId)) {
+        const errorLabel = targetType === "conference" ? "conference" : "user";
+        return { ok: false, status: 400, error: `Invalid ${errorLabel} id` };
+      }
+      targetId = numericTargetId;
+    } else {
+      return { ok: false, status: 400, error: "targetType must be conference, user, reply, global, or all" };
+    }
+  }
+
+  const payload = targetType === "reply"
+    ? { action, targetType }
+    : { action, targetType, targetId };
+
+  return { ok: true, value: { action, targetType, targetId, payload } };
+}
+
+function findUserPeerByUserId(userId) {
+  const key = String(userId);
+  for (const [socketId, peer] of peers) {
+    if (peer?.kind === "user" && peer.userId != null && String(peer.userId) === key) {
+      return { socketId, peer };
+    }
+  }
+  return null;
+}
+
+function disconnectUserPeerForLogout({ userId = null, socketId = null } = {}) {
+  const normalizedUserId = Number(userId);
+  const normalizedSocketId =
+    typeof socketId === "string" && socketId.trim() ? socketId.trim() : null;
+
+  let target = null;
+  if (normalizedSocketId) {
+    const peer = peers.get(normalizedSocketId);
+    if (
+      peer &&
+      peer.kind === "user" &&
+      Number.isFinite(normalizedUserId) &&
+      String(peer.userId) === String(normalizedUserId)
+    ) {
+      target = { socketId: normalizedSocketId, peer };
+    }
+  }
+
+  if (!target && Number.isFinite(normalizedUserId)) {
+    target = findUserPeerByUserId(normalizedUserId);
+  }
+
+  if (!target) {
+    return false;
+  }
+
+  try {
+    target.peer?.socket?.disconnect(true);
+  } catch {}
+  return true;
+}
+
+function getPeerActiveTalkTarget(peer) {
+  if (!peer || peer.kind !== "user") return null;
+  for (const producer of peer.producers.values()) {
+    const appData = producer?.appData;
+    if (!appData || typeof appData !== "object") continue;
+    if (appData.type === "user" || appData.type === "conference") {
+      return normalizeCompanionTarget({ type: appData.type, id: appData.id });
+    }
+  }
+  return null;
+}
+
+function ensureCompanionUserState(userId, fallbackName = null) {
+  const key = String(userId);
+  let state = companionUserState.get(key);
+  if (!state) {
+    state = {
+      userId,
+      userName: fallbackName || null,
+      online: false,
+      socketId: null,
+      talking: false,
+      talkLocked: false,
+      currentTarget: null,
+      lastTarget: null,
+      lastSpokeAt: null,
+      lastCommandId: null,
+      lastCommandResult: null,
+      updatedAt: Date.now(),
+    };
+    companionUserState.set(key, state);
+  } else if (fallbackName && !state.userName) {
+    state.userName = fallbackName;
+  }
+  return state;
+}
+
+function buildCompanionUserState(userId, fallbackName = null) {
+  const base = ensureCompanionUserState(userId, fallbackName);
+  const found = findUserPeerByUserId(userId);
+  const peer = found?.peer || null;
+  const socketId = found?.socketId || null;
+  const activeTarget = peer ? getPeerActiveTalkTarget(peer) : null;
+  const fallbackCurrentTarget = normalizeCompanionTarget(base.currentTarget);
+  const currentTarget = activeTarget || fallbackCurrentTarget || null;
+  const talking = Boolean(found && (activeTarget || base.talking));
+  const resolvedName = peer?.name || base.userName || fallbackName || null;
+  const lastTarget = normalizeCompanionTarget(base.lastTarget) || currentTarget || null;
+
+  return {
+    userId,
+    name: resolvedName,
+    socketId,
+    online: Boolean(found),
+    talking,
+    talkLocked: Boolean(base.talkLocked && found),
+    currentTarget: talking ? currentTarget : null,
+    lastTarget,
+    lastSpokeAt: base.lastSpokeAt || null,
+    cutCamera: Boolean(resolvedName && cutCameraUser && resolvedName === cutCameraUser),
+    lastCommandId: base.lastCommandId || null,
+    lastCommandResult: base.lastCommandResult || null,
+    updatedAt: base.updatedAt || null,
+  };
+}
+
+function isCompanionAddressableUser(user) {
+  return Boolean(user && !user.is_superadmin);
+}
+
+function isCompanionAddressableUserId(userId) {
+  const user = getUserById(userId);
+  return isCompanionAddressableUser(user);
+}
+
+function getCompanionAddressableUsers() {
+  return getAllUsers().filter(isCompanionAddressableUser);
+}
+
+function buildCompanionSnapshot() {
+  const users = getCompanionAddressableUsers().map((user) => ({
+    id: user.id,
+    name: user.name,
+    state: buildCompanionUserState(user.id, user.name),
+  }));
+
+  return {
+    version: 1,
+    serverTime: new Date().toISOString(),
+    cutCameraUser,
+    users,
+    conferences: getAllConferences(),
+    feeds: getAllFeeds(),
+  };
+}
+
+function buildCompanionSnapshotForAuth(auth) {
+  return {
+    ...buildCompanionSnapshot(),
+    scope: buildCompanionAuthScope(auth),
+  };
+}
+
+function emitCompanionEvent(event, payload = {}) {
+  if (!companionNamespace) return;
+  companionNamespace.emit(event, payload);
+}
+
+function emitCompanionUserState(userId, reason = "state-updated", fallbackName = null) {
+  if (!isCompanionAddressableUserId(userId)) return;
+  const state = buildCompanionUserState(userId, fallbackName);
+  emitCompanionEvent("user-state", {
+    reason,
+    at: new Date().toISOString(),
+    state,
+  });
+}
+
+function updateCompanionUserState(userId, patch = {}, { reason = "state-updated", fallbackName = null } = {}) {
+  if (userId === null || userId === undefined) return;
+  if (!isCompanionAddressableUserId(userId)) return;
+  const state = ensureCompanionUserState(userId, fallbackName);
+  Object.assign(state, patch, { userId, updatedAt: Date.now() });
+  if (fallbackName && !state.userName) {
+    state.userName = fallbackName;
+  }
+  emitCompanionUserState(userId, reason, fallbackName);
+}
+
+function syncPeerCompanionState(peer, { reason = "peer-sync" } = {}) {
+  if (!peer || peer.kind !== "user" || peer.userId === null || peer.userId === undefined) {
+    return;
+  }
+  const activeTarget = getPeerActiveTalkTarget(peer);
+  const patch = {
+    userName: peer.name || null,
+    online: true,
+    socketId: peer.socket?.id || null,
+    talking: Boolean(activeTarget),
+    currentTarget: activeTarget,
+  };
+  if (activeTarget) {
+    patch.lastTarget = activeTarget;
+  } else {
+    patch.talkLocked = false;
+    patch.lastSpokeAt = Date.now();
+  }
+  updateCompanionUserState(peer.userId, patch, { reason, fallbackName: peer.name || null });
+}
+
+function registerCompanionPendingCommand(meta = {}) {
+  const commandId = meta.commandId || crypto.randomUUID();
+  let resolvePromise = () => {};
+  const promise = new Promise((resolve) => {
+    resolvePromise = resolve;
+  });
+
+  const expiresAt = Date.now() + COMPANION_PENDING_TTL_MS;
+  const expiryTimer = setTimeout(() => {
+    const entry = companionPendingCommands.get(commandId);
+    if (!entry) return;
+    companionPendingCommands.delete(commandId);
+    const timeoutPayload = {
+      commandId,
+      ok: false,
+      reason: "result-timeout",
+      timedOut: true,
+      userId: entry.userId ?? null,
+      at: new Date().toISOString(),
+    };
+    entry.resolve(timeoutPayload);
+    emitCompanionEvent("command-result", timeoutPayload);
+  }, COMPANION_PENDING_TTL_MS);
+
+  companionPendingCommands.set(commandId, {
+    ...meta,
+    commandId,
+    expiresAt,
+    expiryTimer,
+    resolve: resolvePromise,
+  });
+
+  return { commandId, promise };
+}
+
+function settleCompanionPendingCommand(commandId, payload = {}) {
+  const entry = companionPendingCommands.get(commandId);
+  if (!entry) return false;
+
+  companionPendingCommands.delete(commandId);
+  clearTimeout(entry.expiryTimer);
+  entry.resolve({
+    commandId,
+    userId: entry.userId ?? null,
+    ...payload,
+  });
+  return true;
+}
+
+function failPendingCommandsForUser(userId, reason = "user-disconnected") {
+  const nowIso = new Date().toISOString();
+  for (const [commandId, entry] of companionPendingCommands.entries()) {
+    if (String(entry.userId) !== String(userId)) continue;
+    companionPendingCommands.delete(commandId);
+    clearTimeout(entry.expiryTimer);
+    const payload = {
+      commandId,
+      userId: entry.userId ?? null,
+      ok: false,
+      reason,
+      at: nowIso,
+    };
+    entry.resolve(payload);
+    emitCompanionEvent("command-result", payload);
+  }
+}
+
+function dispatchTalkCommandToUser(userId, payload, { commandId = null } = {}) {
+  const target = findUserPeerByUserId(userId);
+  if (!target) {
+    return { ok: false, status: 404, error: "user not connected" };
+  }
+
+  const message = { ...payload };
+  if (commandId) {
+    message.commandId = commandId;
+    message.sentAt = new Date().toISOString();
+    updateCompanionUserState(target.peer.userId, {
+      lastCommandId: commandId,
+      lastCommandResult: "pending",
+    }, {
+      reason: "command-dispatched",
+      fallbackName: target.peer.name || null,
+    });
+  }
+
+  target.peer.socket.emit("api-talk-command", message);
+  return { ok: true, socketId: target.socketId, peer: target.peer };
 }
 
 // HTTPS port (defaults to 443)
@@ -423,6 +1032,14 @@ app.post("/admin/logout", requireAdmin, (req, res) => {
   res.sendStatus(204);
 });
 
+app.get(["/admin", "/admin/"], (req, res) => {
+  res.redirect("/admin.html");
+});
+
+app.get(["/debug", "/debug/"], (req, res) => {
+  res.redirect("/debug.html");
+});
+
 app.get("/admin/me", (req, res) => {
   const result = getAdminSession(req);
   if (!result) {
@@ -443,6 +1060,82 @@ app.get("/admin/me", (req, res) => {
     isSuperadmin: !!user.is_superadmin,
     mustChangePassword: !!user.admin_must_change,
   });
+});
+
+app.get("/admin/api-key", requireAdmin, (req, res) => {
+  res.json({ apiKey: companionApiKey });
+});
+
+app.get("/admin/settings/mdns", requireAdmin, (req, res) => {
+  const config = loadRuntimeConfig() || {};
+  const configuredHost = normalizeMdnsSetting(config.mdnsHost) || "intercom.local";
+  const activeHost = mdnsHostname || "off";
+
+  res.json({
+    mdnsHost: configuredHost,
+    activeMdnsHost: activeHost,
+    restartRequired: configuredHost !== activeHost,
+    configPath: getConfigPath(),
+  });
+});
+
+app.put("/admin/settings/mdns", requireAdmin, (req, res) => {
+  const nextHost = normalizeMdnsSetting(req.body?.mdnsHost);
+  if (!nextHost) {
+    return res.status(400).json({ error: "Invalid mDNS name. Use letters, numbers, hyphens and optional dots, or 'off'." });
+  }
+  const currentConfig = loadRuntimeConfig() || {};
+  const updatedConfig = {
+    ...currentConfig,
+    mdnsHost: nextHost,
+  };
+
+  try {
+    const configPath = saveRuntimeConfig(updatedConfig);
+    return res.json({
+      mdnsHost: nextHost,
+      activeMdnsHost: mdnsHostname || "off",
+      restartRequired: nextHost !== (mdnsHostname || "off"),
+      configPath,
+    });
+  } catch (err) {
+    console.error("Error saving mDNS setting:", err);
+    return res.status(500).json({ error: "Failed to save mDNS setting" });
+  }
+});
+
+app.post("/api/v1/companion/auth/login", (req, res) => {
+  const { name, password } = req.body || {};
+  if (!name || !password) {
+    return res.status(400).json({ error: "Name and password are required" });
+  }
+
+  try {
+    const user = verifyUser(name, password);
+    if (!user) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    const token = createCompanionSession(user);
+    const scope = user.is_superadmin ? "all" : "self";
+    return res.json({
+      token,
+      expiresInMs: COMPANION_SESSION_TTL_MS,
+      user: {
+        id: user.id,
+        name: user.name,
+        isAdmin: !!user.is_admin,
+        isSuperadmin: !!user.is_superadmin,
+      },
+      scope: {
+        mode: scope,
+        userId: user.id,
+      },
+    });
+  } catch (err) {
+    console.error("Companion auth login error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 app.put("/admin/password", requireAdmin, (req, res) => {
@@ -550,6 +1243,17 @@ app.post('/users/:id/targets', requireAdmin, (req, res) => {
   const { targetType, targetId } = req.body;
   try {
     if (targetType === 'user') {
+      const numericTargetId = Number(targetId);
+      if (!Number.isFinite(numericTargetId)) {
+        return res.status(400).json({ error: 'Invalid target user id' });
+      }
+      const targetUser = getUserById(numericTargetId);
+      if (!targetUser) {
+        return res.status(404).json({ error: 'Target user not found' });
+      }
+      if (targetUser.is_superadmin) {
+        return res.status(400).json({ error: 'Superadmin users cannot be targets' });
+      }
       addUserTargetToUser(req.params.id, targetId);
     } else if (targetType === 'conference') {
       addUserTargetToConference(req.params.id, targetId);
@@ -562,6 +1266,10 @@ app.post('/users/:id/targets', requireAdmin, (req, res) => {
     res.sendStatus(204);
   } catch (err) {
     console.error('Error in add-target:', err);
+    const lower = String(err?.message || '').toLowerCase();
+    if (lower.includes('superadmin users cannot be targets') || lower.includes('target user not found')) {
+      return res.status(400).json({ error: err.message });
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -596,56 +1304,195 @@ app.put('/users/:id/targets/order', requireAdmin, (req, res) => {
   }
 });
 
-app.post('/users/:id/talk', (req, res) => {
-  let { action, targetType = 'conference', targetId = null } = req.body || {};
+app.get("/api/v1/companion/config", requireCompanionApiKey, (req, res) => {
+  res.json({
+    version: 1,
+    auth: {
+      type: "api-key-or-session-token",
+      header: "x-api-key",
+      alternative: "Authorization: Bearer <api-key-or-session-token>",
+      loginEndpoint: "/api/v1/companion/auth/login",
+    },
+    scope: buildCompanionAuthScope(req.companionAuth),
+    realtime: {
+      transport: "socket.io",
+      namespace: "/companion",
+      events: ["snapshot", "user-state", "command-result", "cut-camera"],
+    },
+  });
+});
 
-  if (!['press', 'release', 'lock-toggle'].includes(action)) {
-    return res.status(400).json({ error: 'action must be press, release, or lock-toggle' });
+app.get("/api/v1/companion/state", requireCompanionApiKey, (req, res) => {
+  res.json({
+    ...buildCompanionSnapshot(),
+    scope: buildCompanionAuthScope(req.companionAuth),
+  });
+});
+
+app.get("/api/v1/companion/users", requireCompanionApiKey, (req, res) => {
+  const allUsers = getCompanionAddressableUsers().map((user) => ({
+    id: user.id,
+    name: user.name,
+    state: buildCompanionUserState(user.id, user.name),
+  }));
+
+  if (!hasCompanionGlobalAccess(req.companionAuth)) {
+    const ownUserId = Number(req.companionAuth?.userId);
+    const ownRows = allUsers.filter((row) => Number(row.id) === ownUserId);
+    return res.json(ownRows);
   }
 
-  const allConferenceId = getAllConferenceId();
+  res.json(allUsers);
+});
 
-  // Bei targetType 'reply' wird keine targetId benötigt
-  if (targetType === 'reply') {
-    targetId = undefined;
-  } else {
-    if (targetType === 'global' || targetType === 'all') {
-      targetType = 'conference';
-      targetId = allConferenceId;
-    }
+app.get("/api/v1/companion/conferences", requireCompanionApiKey, (req, res) => {
+  res.json(getAllConferences());
+});
 
-    if (targetType === 'conference' && (targetId === null || targetId === undefined)) {
-      targetId = allConferenceId;
-    }
+app.get("/api/v1/companion/feeds", requireCompanionApiKey, (req, res) => {
+  res.json(getAllFeeds());
+});
 
-    if (targetType === 'conference' && (targetId === null || targetId === undefined)) {
-      return res.status(500).json({ error: 'All conference not configured' });
-    }
+app.get("/api/v1/companion/users/:id/targets", requireCompanionApiKey, (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isFinite(userId)) {
+    return res.status(400).json({ error: "Invalid user id" });
+  }
+  if (!isCompanionAddressableUserId(userId)) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  try {
+    const targets = getUserTargets(userId);
+    res.json(targets);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
-    if (targetType === 'conference' && targetId != null) {
-      targetId = Number(targetId);
-      if (!Number.isFinite(targetId)) {
-        return res.status(400).json({ error: 'Invalid conference id' });
+app.post("/api/v1/client/logout", (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const userId = Number(body.userId);
+  const socketId = typeof body.socketId === "string" ? body.socketId : null;
+
+  if (!Number.isFinite(userId)) {
+    return res.sendStatus(204);
+  }
+
+  const disconnected = disconnectUserPeerForLogout({ userId, socketId });
+
+  // Fallback: if no live peer was found, reflect offline immediately for companion.
+  if (!disconnected && isCompanionAddressableUserId(userId)) {
+    const userName = getUserById(userId)?.name || null;
+    updateCompanionUserState(
+      userId,
+      {
+        userName,
+        online: false,
+        socketId: null,
+        talking: false,
+        talkLocked: false,
+        currentTarget: null,
+        lastSpokeAt: Date.now(),
+      },
+      {
+        reason: "client-logout-http",
+        fallbackName: userName,
       }
-    }
+    );
+    failPendingCommandsForUser(userId, "user-logout");
   }
 
-  const uid = String(req.params.id);
-  // Für reply kein targetId mitsenden
-  const payload = targetType === 'reply'
-    ? { action, targetType }
-    : { action, targetType, targetId };
+  return res.sendStatus(204);
+});
 
-  let delivered = false;
-  for (const [, peer] of peers) {
-    if (String(peer.userId) === uid) {
-      peer.socket.emit('api-talk-command', payload);
-      delivered = true;
-    }
+app.post("/api/v1/companion/users/:id/talk", requireCompanionApiKey, async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isFinite(userId)) {
+    return res.status(400).json({ error: "Invalid user id" });
+  }
+  if (!canCompanionControlUser(req.companionAuth, userId)) {
+    return res.status(403).json({ error: "Forbidden for this companion account" });
+  }
+  if (!isCompanionAddressableUserId(userId)) {
+    return res.status(404).json({ error: "User not found" });
   }
 
-  if (!delivered) {
-    return res.status(404).json({ error: 'user not connected' });
+  const normalized = normalizeTalkCommandInput(req.body || {});
+  if (!normalized.ok) {
+    return res.status(normalized.status).json({ error: normalized.error });
+  }
+
+  const waitMs = parseCompanionWaitMs(
+    req.query?.waitMs ?? req.body?.waitMs ?? COMPANION_DEFAULT_WAIT_MS
+  );
+  const commandId = crypto.randomUUID();
+  const { promise } = registerCompanionPendingCommand({
+    commandId,
+    userId,
+    action: normalized.value.action,
+    targetType: normalized.value.targetType,
+    targetId: normalized.value.targetId,
+  });
+
+  const dispatch = dispatchTalkCommandToUser(userId, normalized.value.payload, { commandId });
+  if (!dispatch.ok) {
+    const failedPayload = {
+      ok: false,
+      reason: dispatch.error || "dispatch-failed",
+      at: new Date().toISOString(),
+    };
+    settleCompanionPendingCommand(commandId, failedPayload);
+    emitCompanionEvent("command-result", {
+      commandId,
+      userId,
+      ...failedPayload,
+    });
+    return res.status(dispatch.status || 500).json({ error: dispatch.error || "Dispatch failed" });
+  }
+
+  const result = await Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(null), waitMs)),
+  ]);
+
+  if (!result) {
+    return res.status(202).json({
+      commandId,
+      status: "pending",
+      waitMs,
+      accepted: true,
+    });
+  }
+
+  const responsePayload = {
+    commandId,
+    status: result.ok ? "ok" : "failed",
+    accepted: true,
+    result,
+  };
+  return res.status(result.ok ? 200 : 409).json(responsePayload);
+});
+
+app.post('/users/:id/talk', requireCompanionApiKey, (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isFinite(userId)) {
+    return res.status(400).json({ error: "Invalid user id" });
+  }
+  if (!canCompanionControlUser(req.companionAuth, userId)) {
+    return res.status(403).json({ error: "Forbidden for this companion account" });
+  }
+  if (!isCompanionAddressableUserId(userId)) {
+    return res.status(404).json({ error: "User not found" });
+  }
+
+  const normalized = normalizeTalkCommandInput(req.body || {});
+  if (!normalized.ok) {
+    return res.status(normalized.status).json({ error: normalized.error });
+  }
+
+  const dispatch = dispatchTalkCommandToUser(userId, normalized.value.payload);
+  if (!dispatch.ok) {
+    return res.status(dispatch.status || 500).json({ error: dispatch.error || "Dispatch failed" });
   }
 
   res.sendStatus(202);
@@ -818,6 +1665,10 @@ function notifyTargetChange(userId) {
       peer.socket.emit('user-targets-updated');
     }
   }
+  emitCompanionEvent("user-targets-updated", {
+    at: new Date().toISOString(),
+    userId: Number(userId),
+  });
 }
 
 
@@ -848,6 +1699,23 @@ const httpsOptions = {
 const server = https.createServer(httpsOptions, app);
 const io = socketIO(server, { serveClient: false });
 
+companionNamespace = io.of("/companion");
+companionNamespace.use((socket, next) => {
+  const candidate = extractCompanionApiKeyFromSocket(socket);
+  const auth = resolveCompanionAuth(candidate);
+  if (!candidate || !auth) {
+    return next(new Error("unauthorized"));
+  }
+  socket.data.companionAuth = auth;
+  next();
+});
+companionNamespace.on("connection", (socket) => {
+  socket.emit("snapshot", buildCompanionSnapshotForAuth(socket.data?.companionAuth || null));
+  socket.on("request-snapshot", () => {
+    socket.emit("snapshot", buildCompanionSnapshotForAuth(socket.data?.companionAuth || null));
+  });
+});
+
 app.post("/cut-camera", (req, res) => {
   const { user } = req.body;
   if (typeof user !== "string") {
@@ -855,11 +1723,30 @@ app.post("/cut-camera", (req, res) => {
   }
 
   console.log(`[CUT-CAMERA] Request for user: ${user}`);
+  const previousCutCameraUser = cutCameraUser;
   // empty string disables all highlights
   cutCameraUser = user.trim() || null;
 
   for (const peer of peers.values()) {
     peer.socket.emit("cut-camera", peer.name === cutCameraUser);
+  }
+
+  emitCompanionEvent("cut-camera", {
+    at: new Date().toISOString(),
+    previousUser: previousCutCameraUser,
+    user: cutCameraUser,
+  });
+
+  if (previousCutCameraUser !== cutCameraUser) {
+    const touchedNames = new Set([previousCutCameraUser, cutCameraUser].filter(Boolean));
+    if (touchedNames.size) {
+      const allUsers = getAllUsers();
+      allUsers.forEach((u) => {
+        if (touchedNames.has(u.name)) {
+          emitCompanionUserState(u.id, "cut-camera-changed", u.name);
+        }
+      });
+    }
   }
 
   res.json({ user: cutCameraUser });
@@ -915,6 +1802,18 @@ function getLocalIPv4Addresses() {
   }
 
   return addresses;
+}
+
+function getStartupHosts() {
+  const configuredPublicIp = typeof process.env.PUBLIC_IP === "string"
+    ? process.env.PUBLIC_IP.trim()
+    : "";
+
+  if (configuredPublicIp) {
+    return [configuredPublicIp];
+  }
+
+  return Array.from(new Set(getLocalIPv4Addresses()));
 }
 
 function encodeDnsName(name) {
@@ -1252,11 +2151,113 @@ io.on("connection", (socket) => {
 
     io.emit("user-list", getUserList());
 
+    if (normalizedKind === "user" && peer.userId !== null && peer.userId !== undefined) {
+      updateCompanionUserState(peer.userId, {
+        userName: peer.name || null,
+        online: true,
+        socketId: socket.id,
+      }, {
+        reason: "user-online",
+        fallbackName: peer.name || null,
+      });
+      syncPeerCompanionState(peer, { reason: "register-user" });
+    }
+
     if (normalizedKind === "feed") {
       socket.emit("conference-list", []);
     }
 
     if (typeof callback === "function") callback({ ok: true });
+  });
+
+  socket.on("ptt-state", (payload = {}) => {
+    const peer = peers.get(socket.id);
+    if (!peer || peer.kind !== "user" || peer.userId === null || peer.userId === undefined) {
+      return;
+    }
+
+    const patch = {
+      userName: peer.name || null,
+      online: true,
+      socketId: socket.id,
+    };
+
+    if (typeof payload.talking === "boolean") {
+      patch.talking = payload.talking;
+      if (!payload.talking) {
+        patch.currentTarget = null;
+        patch.lastSpokeAt = Date.now();
+      }
+    }
+    if (typeof payload.lockActive === "boolean") {
+      patch.talkLocked = payload.lockActive;
+    }
+
+    const normalizedTarget = normalizeCompanionTarget(payload.target);
+    if (normalizedTarget) {
+      patch.currentTarget = normalizedTarget;
+      patch.lastTarget = normalizedTarget;
+      patch.talking = payload.talking === false ? false : true;
+    } else if (payload.target === null) {
+      patch.currentTarget = null;
+    }
+
+    updateCompanionUserState(peer.userId, patch, {
+      reason: "ptt-state",
+      fallbackName: peer.name || null,
+    });
+  });
+
+  socket.on("api-talk-command-result", (payload = {}) => {
+    const peer = peers.get(socket.id);
+    if (!peer || peer.kind !== "user" || peer.userId === null || peer.userId === undefined) {
+      return;
+    }
+
+    const commandId = typeof payload.commandId === "string" ? payload.commandId : null;
+    if (!commandId) return;
+
+    const resultPayload = {
+      commandId,
+      userId: peer.userId,
+      userName: peer.name || null,
+      socketId: socket.id,
+      ok: Boolean(payload.ok),
+      action: payload.action || null,
+      targetType: payload.targetType || null,
+      targetId: payload.targetId ?? null,
+      reason: payload.reason || null,
+      at: new Date().toISOString(),
+    };
+
+    const normalizedTarget = normalizeCompanionTarget(payload.target);
+    const patch = {
+      userName: peer.name || null,
+      lastCommandId: commandId,
+      lastCommandResult: resultPayload.ok ? "ok" : (resultPayload.reason || "failed"),
+    };
+    if (typeof payload.lockActive === "boolean") {
+      patch.talkLocked = payload.lockActive;
+    }
+    if (typeof payload.talking === "boolean") {
+      patch.talking = payload.talking;
+      if (!payload.talking) {
+        patch.currentTarget = null;
+        patch.lastSpokeAt = Date.now();
+      }
+    }
+    if (normalizedTarget) {
+      patch.currentTarget = normalizedTarget;
+      patch.lastTarget = normalizedTarget;
+    }
+    updateCompanionUserState(peer.userId, patch, {
+      reason: "command-result",
+      fallbackName: peer.name || null,
+    });
+
+    resultPayload.state = buildCompanionUserState(peer.userId, peer.name || null);
+    settleCompanionPendingCommand(commandId, resultPayload);
+    emitCompanionEvent("command-result", resultPayload);
   });
 
   socket.on("request-active-producers", (callback = () => {}) => {
@@ -1336,6 +2337,13 @@ io.on("connection", (socket) => {
     callback(response);
   });
 
+  socket.on("user-logout", (callback = () => {}) => {
+    try {
+      callback({ ok: true });
+    } catch {}
+    disconnectUserPeerForLogout({ socketId: socket.id });
+  });
+
   socket.on("producer-close", ({ producerId }) => {
     console.log(
         `[SIGNAL] producer-close received from client ${socket.id} for producer ${producerId}`
@@ -1354,6 +2362,7 @@ io.on("connection", (socket) => {
     // 2. Close the producer and clean up internal state
     producer.close();
     peer.producers.delete(producerId);
+    syncPeerCompanionState(peer, { reason: "producer-close" });
 
     // 3. Broadcast to all other clients immediately, including appData
     socket.broadcast.emit("producer-closed", {
@@ -1371,6 +2380,17 @@ io.on("connection", (socket) => {
     if (peer) {
       peer.name = name;
       console.log(`[USER] Registered name for ${socket.id}: ${name}`);
+
+      if (peer.kind === "user" && peer.userId !== null && peer.userId !== undefined) {
+        updateCompanionUserState(peer.userId, {
+          userName: peer.name || null,
+          online: true,
+          socketId: socket.id,
+        }, {
+          reason: "register-name",
+          fallbackName: peer.name || null,
+        });
+      }
 
       // Send the updated list afterwards
       io.emit("user-list", getUserList());
@@ -1584,6 +2604,7 @@ io.on("connection", (socket) => {
           });
 
           peer.producers.set(producer.id, producer);
+          syncPeerCompanionState(peer, { reason: "produce-started" });
           console.log(
               `[PRODUCE] Producer created: ${producer.id} for ${socket.id}`
           );
@@ -1649,6 +2670,7 @@ io.on("connection", (socket) => {
 
           producer.on("close", () => {
             peer.producers.delete(producer.id);
+            syncPeerCompanionState(peer, { reason: "produce-closed" });
             socket.broadcast.emit("producer-closed", {
               peerId:     socket.id,
               producerId: producer.id,
@@ -1659,6 +2681,7 @@ io.on("connection", (socket) => {
 
           producer.on("transportclose", () => {
             peer.producers.delete(producer.id);
+            syncPeerCompanionState(peer, { reason: "produce-transport-closed" });
           });
         } catch (error) {
           console.error("[PRODUCE] Error:", error);
@@ -1748,6 +2771,12 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     console.log(`[CONN] Client disconnected: ${socket.id}`);
     const peer = peers.get(socket.id);
+    const disconnectedUserId =
+      peer && peer.kind === "user" && peer.userId !== null && peer.userId !== undefined
+        ? peer.userId
+        : null;
+    const disconnectedUserName =
+      disconnectedUserId !== null ? (peer?.name || null) : null;
 
     if (peer) {
       // Close all producers
@@ -1775,7 +2804,26 @@ io.on("connection", (socket) => {
       );
     }
 
+    // Remove the peer first so companion state rebuild does not still resolve
+    // this socket as online while we emit the offline update.
     peers.delete(socket.id);
+
+    if (disconnectedUserId !== null) {
+      updateCompanionUserState(disconnectedUserId, {
+        userName: disconnectedUserName,
+        online: false,
+        socketId: null,
+        talking: false,
+        talkLocked: false,
+        currentTarget: null,
+        lastSpokeAt: Date.now(),
+      }, {
+        reason: "user-offline",
+        fallbackName: disconnectedUserName,
+      });
+      failPendingCommandsForUser(disconnectedUserId, "user-disconnected");
+    }
+
     io.emit("user-list", getUserList());
   });
 });
@@ -1794,9 +2842,16 @@ server.on("error", (err) => {
 });
 
 server.listen(HTTPS_PORT, () => {
+  const startupHosts = getStartupHosts();
   console.log(`🔒 HTTPS Server running on port ${HTTPS_PORT}`);
-  console.log(`📍 Access via: https://YOUR-IP:${HTTPS_PORT}`);
-  console.log(`🛠️ Administration via: https://YOUR-IP:${HTTPS_PORT}/admin.html`);
+  console.log("📍 Access via:");
+  startupHosts.forEach((host) => {
+    console.log(`   https://${host}:${HTTPS_PORT}`);
+  });
+  console.log("🛠️ Administration via:");
+  startupHosts.forEach((host) => {
+    console.log(`   https://${host}:${HTTPS_PORT}/admin.html`);
+  });
   console.log("");
   console.log("⚠️  Browsers will show a certificate warning.");
   console.log('   Click "Advanced" → "Proceed to site" to continue.');
@@ -1816,5 +2871,13 @@ server.listen(HTTPS_PORT, () => {
   if (!process.env.PUBLIC_IP) {
     console.log("💡 For external access, set PUBLIC_IP environment variable:");
     console.log("   PUBLIC_IP=YOUR.PUBLIC.IP node server-https.js");
+  }
+  console.log("🔌 Companion API:");
+  startupHosts.forEach((host) => {
+    console.log(`   https://${host}:${HTTPS_PORT}/api/v1/companion/state`);
+  });
+  console.log(`🔌 Companion Socket.IO namespace: /companion`);
+  if (!readCompanionApiKeyFromEnv()) {
+    console.log(`🔐 API key file: ${COMPANION_API_KEY_FILE}`);
   }
 });

@@ -68,6 +68,7 @@ function getUsersForConference(conferenceId) {
     SELECT users.id, users.name FROM users
     JOIN user_conference ON users.id = user_conference.user_id
     WHERE user_conference.conference_id = ?
+      AND users.is_superadmin = 0
   `);
   return stmt.all(conferenceId);
 }
@@ -203,7 +204,7 @@ function getUserTargets(userId) {
         o.position AS position,
         ut.rowid AS fallback
       FROM user_user_targets ut
-      JOIN users u ON u.id = ut.target_user
+      JOIN users u ON u.id = ut.target_user AND u.is_superadmin = 0
       LEFT JOIN user_target_order o
         ON o.user_id = ut.user_id
        AND o.target_type = 'user'
@@ -249,6 +250,14 @@ function getUserTargets(userId) {
 
 
 function addUserTargetToUser(userId, targetUserId) {
+  const targetUser = getUserById(targetUserId);
+  if (!targetUser) {
+    throw new Error('Target user not found');
+  }
+  if (targetUser.is_superadmin) {
+    throw new Error('Superadmin users cannot be targets');
+  }
+
   db.prepare(`
     INSERT OR IGNORE INTO user_user_targets (user_id, target_user)
     VALUES (?, ?)

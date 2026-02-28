@@ -52,6 +52,8 @@ function showMessage(text, tone = 'error', scope = 'global') {
       ? 'conf-message'
       : scope === 'feed'
         ? 'feed-message'
+        : scope === 'mdns'
+          ? 'mdns-message'
       : 'message';
 
   const el = document.getElementById(targetId);
@@ -197,6 +199,7 @@ async function loadData() {
   const users       = await fetchJSON('/users');
   const conferences = await fetchJSON('/conferences');
   const feeds       = await fetchJSON('/feeds');
+  await loadMdnsSettings();
 
   // 2) Container referenzieren und leeren
   const userList   = document.getElementById('user-list');
@@ -316,10 +319,35 @@ async function loadData() {
       </div>
       <div class="nested" id="conf-controls-${conf.id}">
         <strong>Participants</strong>
+        <div class="inline-controls">
+          <select id="add-conf-user-${conf.id}"></select>
+          <button type="button" class="small" id="add-conf-user-btn-${conf.id}" onclick="assignConferenceParticipant(${conf.id})">Add participant</button>
+        </div>
         <ul id="conf-users-${conf.id}"></ul>
       </div>
     `;
     confList.appendChild(li);
+    await updateConferenceParticipantOptions(conf.id, users);
+  }
+}
+
+async function loadMdnsSettings() {
+  const payload = await fetchJSON('/admin/settings/mdns');
+  const activeHostEl = document.getElementById('mdns-active-host');
+  const savedHostEl = document.getElementById('mdns-saved-host');
+  const inputEl = document.getElementById('mdns-host');
+  const restartHintEl = document.getElementById('mdns-restart-hint');
+
+  const activeHost = payload?.activeMdnsHost || 'off';
+  const savedHost = payload?.mdnsHost || 'off';
+
+  if (activeHostEl) activeHostEl.textContent = activeHost;
+  if (savedHostEl) savedHostEl.textContent = savedHost;
+  if (inputEl) inputEl.value = savedHost === 'off' ? 'off' : savedHost;
+  if (restartHintEl) {
+    restartHintEl.textContent = payload?.restartRequired
+      ? 'Saved. Restart the server to apply the new mDNS alias.'
+      : 'Current server alias matches the saved setting.';
   }
 }
 
@@ -348,6 +376,37 @@ async function updateUserConferenceOptions(userId, allConfs, previousIndex) {
   select.disabled = false;
   select.innerHTML = available
     .map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`)
+    .join('');
+  if (button) button.disabled = false;
+  selectNextByIndex(select, previousIndex);
+}
+
+async function updateConferenceParticipantOptions(confId, allUsers, previousIndex) {
+  const select = document.getElementById(`add-conf-user-${confId}`);
+  if (!select) return;
+  const button = document.getElementById(`add-conf-user-btn-${confId}`) || select.parentElement?.querySelector('button');
+
+  let assignedUsers = [];
+  try {
+    assignedUsers = await fetchJSON(`/conferences/${confId}/users`);
+  } catch (err) {
+    console.error('Failed to load conference participants for select', err);
+  }
+
+  const assignedIds = new Set(assignedUsers.map(u => String(u.id)));
+  const users = Array.isArray(allUsers) ? allUsers : [];
+  const available = users.filter(u => !assignedIds.has(String(u.id)));
+
+  if (!available.length) {
+    select.disabled = true;
+    select.innerHTML = '<option value="" disabled selected>No users available</option>';
+    if (button) button.disabled = true;
+    return;
+  }
+
+  select.disabled = false;
+  select.innerHTML = available
+    .map(u => `<option value="${u.id}">${escapeHtml(u.name)}</option>`)
     .join('');
   if (button) button.disabled = false;
   selectNextByIndex(select, previousIndex);
@@ -384,10 +443,11 @@ async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
   const addBtn  = document.getElementById(`add-target-btn-${userId}`);
   const refreshTargetSelectors = () => {
     const type = selType.value;
+    const selectableUsers = allUsers.filter(item => !item.is_superadmin && Number(item.id) !== Number(userId));
     let options = [];
     if (type === 'user') {
       const used = usedByType.user || new Set();
-      options = allUsers
+      options = selectableUsers
         .filter(item => !used.has(String(item.id)))
         .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
     } else if (type === 'conference') {
@@ -889,6 +949,39 @@ document.getElementById('feed-form').addEventListener('submit', async (e) => {
   }
 });
 
+document.getElementById('mdns-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('mdns-host');
+  const mdnsHost = input?.value?.trim() || '';
+
+  try {
+    const res = await authedFetch('/admin/settings/mdns', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mdnsHost })
+    });
+
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      showMessage(payload.error || 'Failed to save mDNS name', 'error', 'mdns');
+      return;
+    }
+
+    const payload = await res.json();
+    await loadMdnsSettings();
+    showMessage(
+      payload.restartRequired
+        ? '✅ mDNS name saved. Restart the server to apply it.'
+        : '✅ mDNS name saved.',
+      'success',
+      'mdns'
+    );
+  } catch (err) {
+    console.error('Failed to save mDNS setting:', err);
+    showMessage('❌ Failed to save mDNS name', 'error', 'mdns');
+  }
+});
+
 
 // Called by the "Add to Conf" button inside each user's block
 window.assignUserToConference = async function(userId) {
@@ -913,6 +1006,36 @@ window.assignUserToConference = async function(userId) {
     }
   } catch (err) {
     showMessage('❌ Failed to assign user to conference', 'error', 'user');
+    console.error(err);
+  }
+};
+
+window.assignConferenceParticipant = async function(confId) {
+  const sel = document.getElementById(`add-conf-user-${confId}`);
+  const userId = sel?.value;
+  const prevIndex = sel?.selectedIndex ?? -1;
+
+  if (!sel || !userId) return;
+
+  try {
+    const res = await authedFetch(`/conferences/${confId}/users/${userId}`, {
+      method: 'POST'
+    });
+    if (res.ok) {
+      showMessage('✅ User assigned to conference', 'success', 'conf');
+      const users = await fetchJSON('/users');
+      await updateConferenceParticipantOptions(confId, users, prevIndex);
+
+      const container = document.getElementById(`conf-controls-${confId}`);
+      if (container?.classList.contains('is-open')) {
+        await toggleConfUsers(confId);
+        await toggleConfUsers(confId);
+      }
+    } else {
+      showMessage('❌ Failed to assign user to conference', 'error', 'conf');
+    }
+  } catch (err) {
+    showMessage('❌ Failed to assign user to conference', 'error', 'conf');
     console.error(err);
   }
 };

@@ -1539,7 +1539,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const activeTalkersForMe = new Set();
   const talkerConsumersForMe = new Map();
   const speakingPeers = new Set();
-  const lastSpokePeers = new Map();
   const mutedPeers = new Set();
   const pendingProducerQueue = [];
 let currentTargetPeer = null;
@@ -1558,6 +1557,61 @@ let cachedUsers = [];
   let speakingPruneInterval = null;
   let activeProducersSyncInFlight = false;
   let slideHintShown = false;
+
+  function normalizePttTarget(target) {
+    if (!target || typeof target !== 'object') return null;
+    if (target.type !== 'user' && target.type !== 'conference') return null;
+    const numericId = Number(target.id);
+    return {
+      type: target.type,
+      id: Number.isFinite(numericId) ? numericId : String(target.id),
+    };
+  }
+
+  function getCurrentPttState(overrides = {}) {
+    const baseTarget = overrides.target !== undefined
+      ? overrides.target
+      : (currentTarget || activeLockTarget || null);
+    return {
+      talking: typeof overrides.talking === 'boolean' ? overrides.talking : Boolean(isTalking || producer),
+      lockActive: typeof overrides.lockActive === 'boolean' ? overrides.lockActive : Boolean(activeLockButton),
+      target: normalizePttTarget(baseTarget),
+    };
+  }
+
+  function emitPttState(reason, overrides = {}) {
+    if (session.kind !== 'user') return;
+    if (!socket.connected) return;
+    const state = getCurrentPttState(overrides);
+    socket.emit('ptt-state', {
+      ...state,
+      reason: reason || undefined,
+    });
+  }
+
+  function emitApiTalkCommandResult({
+    commandId = null,
+    ok = false,
+    reason = null,
+    action = null,
+    targetType = null,
+    targetId = null,
+    talking,
+    lockActive,
+    target,
+  } = {}) {
+    if (!commandId || !socket.connected || session.kind !== 'user') return;
+    const state = getCurrentPttState({ talking, lockActive, target });
+    socket.emit('api-talk-command-result', {
+      commandId,
+      ok: Boolean(ok),
+      reason: reason || null,
+      action: action || null,
+      targetType: targetType || null,
+      targetId: targetId ?? null,
+      ...state,
+    });
+  }
 
   function updatePttButtonSizing() {
     const list = document.getElementById('targets-list');
@@ -1760,7 +1814,6 @@ let cachedUsers = [];
     audioElements.clear();
     pendingAutoplayAudios.clear();
     speakingPeers.clear();
-    lastSpokePeers.clear();
     activeTalkersForMe.clear();
     talkerConsumersForMe.clear();
     confAudioElements.clear();
@@ -2253,7 +2306,85 @@ let cachedUsers = [];
     localStorage.removeItem(IDENTITY_KIND_KEY);
   }
 
-  function hardLogoutAndReload(message = null) {
+  function sendLogoutBeacon() {
+    if (session?.kind !== 'user' || !session?.userId) return;
+    if (typeof navigator?.sendBeacon !== 'function') return;
+    const payload = JSON.stringify({
+      userId: Number(session.userId),
+      socketId: socket?.id || null,
+    });
+    try {
+      const blob = new Blob([payload], { type: 'application/json' });
+      navigator.sendBeacon('/api/v1/client/logout', blob);
+    } catch {}
+  }
+
+  async function notifyServerLogoutViaHttp({ timeoutMs = 800 } = {}) {
+    if (session?.kind !== 'user' || !session?.userId) return;
+
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller
+      ? setTimeout(() => {
+          try {
+            controller.abort();
+          } catch {}
+        }, timeoutMs)
+      : null;
+
+    try {
+      await fetch('/api/v1/client/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        keepalive: true,
+        body: JSON.stringify({
+          userId: Number(session.userId),
+          socketId: socket?.id || null,
+        }),
+        signal: controller?.signal,
+      });
+    } catch {
+      sendLogoutBeacon();
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async function notifyServerLogoutAndDisconnect({ timeoutMs = 800 } = {}) {
+    const pending = [notifyServerLogoutViaHttp({ timeoutMs })];
+
+    if (socket?.connected) {
+      pending.push(
+        new Promise((resolve) => {
+          let done = false;
+          const finish = () => {
+            if (done) return;
+            done = true;
+            resolve();
+          };
+          const timer = setTimeout(finish, timeoutMs);
+          try {
+            socket.emit("user-logout", () => {
+              clearTimeout(timer);
+              finish();
+            });
+          } catch {
+            clearTimeout(timer);
+            finish();
+          }
+        })
+      );
+    }
+
+    await Promise.allSettled(pending);
+
+    if (socket?.connected) {
+      try {
+        socket.disconnect();
+      } catch {}
+    }
+  }
+
+  async function hardLogoutAndReload(message = null) {
     try {
       if (message) alert(message);
     } catch {}
@@ -2262,9 +2393,19 @@ let cachedUsers = [];
         stopFeedStream({ manual: true });
       }
     } catch {}
+    await notifyServerLogoutAndDisconnect();
     clearStoredIdentity();
     location.reload();
   }
+
+  window.addEventListener("pagehide", () => {
+    sendLogoutBeacon();
+    if (socket?.connected) {
+      try {
+        socket.disconnect();
+      } catch {}
+    }
+  });
 
   function emitRegisterUser(payload, { timeoutMs = 5000 } = {}) {
     return new Promise((resolve) => {
@@ -2413,14 +2554,12 @@ let cachedUsers = [];
 
   // Logout Handler
   if (logoutBtn) {
-    logoutBtn.addEventListener("click", () => {
+    logoutBtn.addEventListener("click", async () => {
       if (session.kind === 'feed') {
         stopFeedStream({ manual: true });
       }
-      localStorage.removeItem("userId");
-      localStorage.removeItem(FEED_ID_STORAGE_KEY);
-      localStorage.removeItem("userName");
-      localStorage.removeItem(IDENTITY_KIND_KEY);
+      await notifyServerLogoutAndDisconnect();
+      clearStoredIdentity();
       location.reload();
     });
   }
@@ -2468,6 +2607,9 @@ let cachedUsers = [];
     }
 
     updateFeedControls();
+    if (session.kind === 'user') {
+      emitPttState('socket-connect-sync');
+    }
   });
 
   socket.on("session-kicked", () => {
@@ -2476,7 +2618,7 @@ let cachedUsers = [];
 
   socket.on("disconnect", () => {
     console.log("Disconnected from server");
-    myIdEl.textContent = "Getrennt";
+    myIdEl.textContent = "Disconnected";
     clearReplyTarget();
     setReplyButtonActive(false);
     // Disable all user buttons
@@ -2494,7 +2636,7 @@ let cachedUsers = [];
     activeProducersSyncInFlight = false;
     cleanupAllIncomingStreams({ suppressUi: true });
     document.querySelectorAll('#targets-list li.target-item').forEach(li => {
-      li.classList.remove('talking-to', 'speaking', 'last-spoke');
+      li.classList.remove('talking-to', 'speaking');
       li.querySelector('.user-icon')?.classList.remove('speaking');
       li.querySelector('.conf-icon')?.classList.remove('speaking');
       li.querySelector('.feed-icon')?.classList.remove('speaking');
@@ -2534,8 +2676,19 @@ let cachedUsers = [];
     requestActiveProducers().catch(() => {});
   });
 
-  socket.on('api-talk-command', async ({ action, targetType = 'conference', targetId = null }) => {
-    if (session.kind !== 'user') return;
+  socket.on('api-talk-command', async ({ commandId = null, action, targetType = 'conference', targetId = null } = {}) => {
+    if (session.kind !== 'user') {
+      emitApiTalkCommandResult({
+        commandId,
+        ok: false,
+        reason: 'not-user-session',
+        action,
+        targetType,
+        targetId,
+      });
+      return;
+    }
+
     const dummyEvent = { preventDefault() {} };
 
     const resolveUserTarget = () => {
@@ -2558,27 +2711,100 @@ let cachedUsers = [];
         return { type: lastTarget.type, id: lastTarget.id };
       }
       if (targetType === 'conference') return { type: 'conference', id: Number(targetId) };
-      return null; // fallback
+      return null;
     };
 
-    if (action === 'lock-toggle') {
-      const target = resolveTarget();
-      if (!target) return;
-      toggleTalkLock(target);
-      return;
-    }
+    try {
+      if (action === 'lock-toggle') {
+        const target = resolveTarget();
+        if (!target) {
+          emitApiTalkCommandResult({
+            commandId,
+            ok: false,
+            reason: 'target-not-available',
+            action,
+            targetType,
+            targetId,
+          });
+          return;
+        }
+        toggleTalkLock(target);
+        emitApiTalkCommandResult({
+          commandId,
+          ok: true,
+          action,
+          targetType,
+          targetId,
+          target,
+        });
+        return;
+      }
 
-    if (action === 'press') {
-      const target = resolveTarget();
-      if (targetType === 'reply' && target) {
-        btnReply.classList.add('active');
+      if (action === 'press') {
+        const target = resolveTarget();
+        if (!target) {
+          emitApiTalkCommandResult({
+            commandId,
+            ok: false,
+            reason: 'target-not-available',
+            action,
+            targetType,
+            targetId,
+          });
+          return;
+        }
+        if (targetType === 'reply') {
+          btnReply.classList.add('active');
+        }
+        await handleTalk(dummyEvent, target);
+        const started = Boolean(producer || isTalking);
+        emitApiTalkCommandResult({
+          commandId,
+          ok: started,
+          reason: started ? null : 'press-failed',
+          action,
+          targetType,
+          targetId,
+          target,
+        });
+        return;
       }
-      await handleTalk(dummyEvent, target);
-    } else if (action === 'release') {
-      if (targetType === 'reply') {
-        btnReply.classList.remove('active');
+
+      if (action === 'release') {
+        if (targetType === 'reply') {
+          btnReply.classList.remove('active');
+        }
+        handleStopTalking({ preventDefault() {}, currentTarget: null });
+        emitApiTalkCommandResult({
+          commandId,
+          ok: true,
+          action,
+          targetType,
+          targetId,
+          talking: false,
+          lockActive: false,
+          target: null,
+        });
+        return;
       }
-      handleStopTalking({ preventDefault() {}, currentTarget: null });
+
+      emitApiTalkCommandResult({
+        commandId,
+        ok: false,
+        reason: 'unsupported-action',
+        action,
+        targetType,
+        targetId,
+      });
+    } catch (err) {
+      emitApiTalkCommandResult({
+        commandId,
+        ok: false,
+        reason: err?.message || 'command-error',
+        action,
+        targetType,
+        targetId,
+      });
     }
   });
 
@@ -3295,7 +3521,6 @@ let cachedUsers = [];
       li.classList.toggle('speaking', isSpeaking);
       if (icon) icon.classList.toggle('speaking', isSpeaking);
 
-      li.classList.toggle('last-spoke', lastSpokePeers.has(key));
       const isMuted = mutedPeers.has(key);
       li.classList.toggle('muted', isMuted);
       if (icon) icon.classList.toggle('muted', isMuted);
@@ -3586,7 +3811,6 @@ let cachedUsers = [];
         const key = `conf-${confId}`;
         if (!seenDuringFlush.has(confId) && !hasActiveStreams(key)) {
           speakingPeers.delete(key);
-          lastSpokePeers.delete(key);
           updateSpeakerHighlight(key, false);
         }
       });
@@ -3920,9 +4144,7 @@ let cachedUsers = [];
 
     if (isSpeaking) {
       el?.classList.add("speaking");
-      el?.classList.remove("last-spoke");
       icon?.classList.add("speaking");
-      lastSpokePeers.delete(targetKey);
 
       // Update reply target immediately when someone starts speaking so the
       // user can reply even if the speaker is on talk lock (never "stops").
@@ -3959,8 +4181,6 @@ let cachedUsers = [];
     }
 
     if (isFeed) {
-      el?.classList.remove("last-spoke");
-      lastSpokePeers.delete(targetKey);
       return;
     }
 
@@ -3982,25 +4202,6 @@ let cachedUsers = [];
 
     btnReply.disabled = !lastTarget;
     renderReplyButtonLabel();
-
-    document.querySelectorAll(".last-spoke")
-        .forEach(elem => elem.classList.remove("last-spoke"));
-    el?.classList.add("last-spoke");
-    lastSpokePeers.clear();
-    lastSpokePeers.set(targetKey, Date.now());
-
-/*    setTimeout(() => {
-      if (!speakingPeers.has(targetKey)) {
-        el?.classList.remove("last-spoke");
-        if (lastTarget &&
-            (lastTarget.type === "conference"
-                ? `conf-${lastTarget.id}` === targetKey
-                : `user-${lastTarget.id}` === targetKey)
-        ) {
-          clearReplyTarget();
-        }
-      }
-    }, 20000);*/
 
     applyFeedDucking();
   }
@@ -4145,6 +4346,7 @@ let cachedUsers = [];
     activeLockButton = null;
     activeLockTarget = null;
     setSelfTalkingKey(null);
+    emitPttState('lock-cleared', { lockActive: false });
   }
 
   function setTalkButtonLocked(button, isLocked) {
@@ -4167,6 +4369,7 @@ let cachedUsers = [];
     activeLockButton = button;
     activeLockTarget = { type: target.type, id: target.id };
     setTalkButtonLocked(button, true);
+    emitPttState('lock-activated', { lockActive: true, target });
   }
 
   function findTalkButtonForTarget(target) {
@@ -4318,6 +4521,7 @@ let cachedUsers = [];
           ? `#user-${target.id}`
           : `#conf-${target.id}`;
       document.querySelector(selector)?.classList.add("talking-to");
+      emitPttState('talk-started', { talking: true, target });
     } catch (err) {
       console.error("Microphone error:", err);
       alert("Failed to start the microphone: " + err.message);
@@ -4341,6 +4545,7 @@ let cachedUsers = [];
       }
       currentTarget = null;
       setSelfTalkingKey(null);
+      emitPttState('talk-start-failed', { talking: false, lockActive: Boolean(activeLockButton), target: activeLockTarget || null });
     }
   }
 
@@ -4410,6 +4615,7 @@ let cachedUsers = [];
     attemptPendingAutoplay();
     clearHotkeyActiveStyles();
     pressedHotkeyDigits.clear();
+    emitPttState('talk-stopped', { talking: false, lockActive: false, target: null });
   }
 
   // Safety stop so PTT can't get stuck on iOS/background transitions.
