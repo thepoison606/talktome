@@ -365,6 +365,55 @@
         color: var(--text);
       }
 
+      .config-layout {
+        display: grid;
+        gap: 1rem;
+      }
+
+      .config-panel {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(15, 23, 42, 0.55);
+        padding: 0.95rem 1rem;
+      }
+
+      .config-panel h3 {
+        margin: 0 0 0.75rem;
+        font-size: 1.05rem;
+      }
+
+      .config-panel .setting-meta {
+        margin-bottom: 0.85rem;
+      }
+
+      .config-panel form.inline-form {
+        margin-bottom: 0;
+      }
+
+      .config-transfer-grid {
+        display: grid;
+        grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+        gap: 1rem;
+        align-items: end;
+      }
+
+      .config-export-group,
+      .config-import-group {
+        display: grid;
+        gap: 0.4rem;
+      }
+
+      .config-import-actions {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+      }
+
+      .config-import-actions input[type='file'] {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+
       .drag-handle {
         cursor: grab;
         font-size: 1rem;
@@ -410,6 +459,15 @@
 
         .card {
           padding: 1.5rem;
+        }
+
+        .config-transfer-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .config-import-actions {
+          flex-direction: column;
+          align-items: stretch;
         }
 
         form.inline-form {
@@ -547,34 +605,48 @@
           <div id="config-message" class="flash-message"></div>
         </div>
 
-        <div class="setting-meta">
-          <div>Active mDNS alias: <strong id="mdns-active-host">Loading...</strong></div>
-          <div>Saved mDNS alias: <strong id="mdns-saved-host">Loading...</strong></div>
-          <div id="mdns-restart-hint">Changes require a server restart to take effect.</div>
-        </div>
+        <div class="config-layout">
+          <section class="config-panel" aria-labelledby="config-network-heading">
+            <h3 id="config-network-heading">Network alias</h3>
 
-        <div class="form-grid">
-          <form id="mdns-form" class="inline-form" autocomplete="off">
-            <div class="field-group field-group--stacked">
-              <label for="mdns-host">mDNS name</label>
-              <input type="text" id="mdns-host" placeholder="e.g. intercom.local or off" required />
+            <div class="setting-meta">
+              <div>Active mDNS alias: <strong id="mdns-active-host">Loading...</strong></div>
+              <div>Saved mDNS alias: <strong id="mdns-saved-host">Loading...</strong></div>
+              <div id="mdns-restart-hint">Changes require a server restart to take effect.</div>
             </div>
-            <button type="submit">Save mDNS name</button>
-          </form>
 
-          <div class="setting-meta">
-            <div>Export and import the full server configuration as a JSON backup.</div>
-            <div>This includes server config, users, feeds, conferences, memberships and target routing.</div>
-          </div>
+            <form id="mdns-form" class="inline-form" autocomplete="off">
+              <div class="field-group field-group--stacked">
+                <label for="mdns-host">mDNS name</label>
+                <input type="text" id="mdns-host" placeholder="e.g. intercom.local or off" required />
+              </div>
+              <button type="submit">Save mDNS name</button>
+            </form>
+          </section>
 
-          <form id="config-transfer-form" class="inline-form" autocomplete="off">
-            <button type="button" id="config-export-btn">Export config</button>
-            <div class="field-group field-group--stacked">
-              <label for="config-import-file">Import config file</label>
-              <input type="file" id="config-import-file" accept=".json,application/json" />
+          <section class="config-panel" aria-labelledby="config-backup-heading">
+            <h3 id="config-backup-heading">Backup and restore</h3>
+
+            <div class="setting-meta">
+              <div>Export and import the full server configuration as a JSON backup.</div>
+              <div>This includes server config, users, feeds, conferences, memberships and target routing.</div>
             </div>
-            <button type="button" id="config-import-btn" class="warning">Import config</button>
-          </form>
+
+            <div class="config-transfer-grid">
+              <div class="config-export-group">
+                <label>Export backup</label>
+                <button type="button" id="config-export-btn">Export config</button>
+              </div>
+
+              <div class="config-import-group">
+                <label for="config-import-file">Import config file</label>
+                <div class="config-import-actions">
+                  <input type="file" id="config-import-file" accept=".json,application/json" />
+                  <button type="button" id="config-import-btn" class="warning">Import config</button>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
       </section>
     </main>
