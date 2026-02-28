@@ -1,5 +1,6 @@
 # Talk To Me
 A local WebRTC Intercom app built with Node.js and mediasoup.
+Bitfocus Companion module available at `https://github.com/thepoison606/companion-module-talktome-intercom`.
 <br>
 <br>
 <img src="public/images/iphone_ipad.png" alt="Talk To Me mobile UI" width="800">
