@@ -97,11 +97,13 @@ const {
   getAllConferenceId,
   getFeedIdsForUser,
   getUsersForFeed,
-  setUserAdminRole
+  setUserAdminRole,
+  exportDatabaseSnapshot,
+  importDatabaseSnapshot
 } = require("./dbHandler");
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 
 const execDir = path.dirname(process.execPath);
 const execPublicDir = path.join(execDir, "public");
@@ -1104,6 +1106,75 @@ app.put("/admin/settings/mdns", requireAdmin, (req, res) => {
   }
 });
 
+app.get("/admin/config/export", requireAdmin, (req, res) => {
+  try {
+    const bundle = {
+      format: "talktome-config",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      serverConfig: loadRuntimeConfig() || {},
+      database: exportDatabaseSnapshot(),
+    };
+
+    const stamp = bundle.exportedAt.replace(/[:.]/g, "-");
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename=\"talktome-config-${stamp}.json\"`);
+    res.send(JSON.stringify(bundle, null, 2));
+  } catch (err) {
+    console.error("Error exporting config:", err);
+    res.status(500).json({ error: "Failed to export configuration" });
+  }
+});
+
+app.post("/admin/config/import", requireAdmin, (req, res) => {
+  const bundle = req.body;
+  if (!bundle || typeof bundle !== "object") {
+    return res.status(400).json({ error: "Invalid import payload" });
+  }
+  if (bundle.format !== "talktome-config") {
+    return res.status(400).json({ error: "Unsupported config file" });
+  }
+  if (!bundle.database || typeof bundle.database !== "object") {
+    return res.status(400).json({ error: "Config file is missing database data" });
+  }
+
+  try {
+    const currentConfig = loadRuntimeConfig() || {};
+    const nextConfig = { ...currentConfig };
+
+    if (bundle.serverConfig && typeof bundle.serverConfig === "object") {
+      if (Object.prototype.hasOwnProperty.call(bundle.serverConfig, "httpsPort")) {
+        const httpsPort = parseRequiredPort(bundle.serverConfig.httpsPort, nextConfig.httpsPort ?? 443);
+        nextConfig.httpsPort = httpsPort;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(bundle.serverConfig, "httpPort")) {
+        nextConfig.httpPort = parseOptionalPort(bundle.serverConfig.httpPort);
+      }
+
+      if (Object.prototype.hasOwnProperty.call(bundle.serverConfig, "mdnsHost")) {
+        const mdnsHost = normalizeMdnsSetting(bundle.serverConfig.mdnsHost);
+        if (!mdnsHost) {
+          return res.status(400).json({ error: "Config file contains an invalid mDNS name" });
+        }
+        nextConfig.mdnsHost = mdnsHost;
+      }
+    }
+
+    importDatabaseSnapshot(bundle.database);
+    saveRuntimeConfig(nextConfig);
+
+    res.json({
+      ok: true,
+      restartRequired: true,
+      importedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error("Error importing config:", err);
+    res.status(500).json({ error: err.message || "Failed to import configuration" });
+  }
+});
+
 app.post("/api/v1/companion/auth/login", (req, res) => {
   const { name, password } = req.body || {};
   if (!name || !password) {
@@ -1781,6 +1852,14 @@ function parseOptionalPort(value) {
     return null;
   }
 
+  return port;
+}
+
+function parseRequiredPort(value, fallback = null) {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return fallback;
+  }
   return port;
 }
 

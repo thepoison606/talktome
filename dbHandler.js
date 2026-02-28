@@ -19,6 +19,169 @@ function getAllFeeds() {
   return db.prepare('SELECT id, name FROM feeds ORDER BY name COLLATE NOCASE').all();
 }
 
+function exportDatabaseSnapshot() {
+  return {
+    users: db.prepare(`
+      SELECT id, name, password, is_admin, is_superadmin, admin_must_change
+      FROM users
+      ORDER BY id
+    `).all(),
+    conferences: db.prepare(`
+      SELECT id, name
+      FROM conferences
+      ORDER BY id
+    `).all(),
+    feeds: db.prepare(`
+      SELECT id, name, password
+      FROM feeds
+      ORDER BY id
+    `).all(),
+    userConference: db.prepare(`
+      SELECT user_id, conference_id
+      FROM user_conference
+      ORDER BY user_id, conference_id
+    `).all(),
+    userUserTargets: db.prepare(`
+      SELECT user_id, target_user
+      FROM user_user_targets
+      ORDER BY user_id, target_user
+    `).all(),
+    userConfTargets: db.prepare(`
+      SELECT user_id, target_conf
+      FROM user_conf_targets
+      ORDER BY user_id, target_conf
+    `).all(),
+    userFeedTargets: db.prepare(`
+      SELECT user_id, feed_id
+      FROM user_feed_targets
+      ORDER BY user_id, feed_id
+    `).all(),
+    userTargetOrder: db.prepare(`
+      SELECT user_id, target_type, target_id, position
+      FROM user_target_order
+      ORDER BY user_id, position, target_type, target_id
+    `).all(),
+  };
+}
+
+function importDatabaseSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') {
+    throw new Error('Invalid database snapshot');
+  }
+
+  const users = Array.isArray(snapshot.users) ? snapshot.users : null;
+  const conferences = Array.isArray(snapshot.conferences) ? snapshot.conferences : null;
+  const feeds = Array.isArray(snapshot.feeds) ? snapshot.feeds : null;
+  const userConference = Array.isArray(snapshot.userConference) ? snapshot.userConference : [];
+  const userUserTargets = Array.isArray(snapshot.userUserTargets) ? snapshot.userUserTargets : [];
+  const userConfTargets = Array.isArray(snapshot.userConfTargets) ? snapshot.userConfTargets : [];
+  const userFeedTargets = Array.isArray(snapshot.userFeedTargets) ? snapshot.userFeedTargets : [];
+  const userTargetOrder = Array.isArray(snapshot.userTargetOrder) ? snapshot.userTargetOrder : [];
+
+  if (!users || !conferences || !feeds) {
+    throw new Error('Snapshot is missing required collections');
+  }
+
+  const restore = db.transaction(() => {
+    db.prepare('DELETE FROM user_target_order').run();
+    db.prepare('DELETE FROM user_user_targets').run();
+    db.prepare('DELETE FROM user_conf_targets').run();
+    db.prepare('DELETE FROM user_feed_targets').run();
+    db.prepare('DELETE FROM user_conference').run();
+    db.prepare('DELETE FROM feeds').run();
+    db.prepare('DELETE FROM conferences').run();
+    db.prepare('DELETE FROM users').run();
+
+    try {
+      db.prepare("DELETE FROM sqlite_sequence WHERE name IN ('users', 'conferences', 'feeds')").run();
+    } catch (err) {
+      // sqlite_sequence may not exist yet; safe to ignore
+    }
+
+    const insertUser = db.prepare(`
+      INSERT INTO users (id, name, password, is_admin, is_superadmin, admin_must_change)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const insertConference = db.prepare(`
+      INSERT INTO conferences (id, name)
+      VALUES (?, ?)
+    `);
+    const insertFeed = db.prepare(`
+      INSERT INTO feeds (id, name, password)
+      VALUES (?, ?, ?)
+    `);
+    const insertMembership = db.prepare(`
+      INSERT INTO user_conference (user_id, conference_id)
+      VALUES (?, ?)
+    `);
+    const insertUserTarget = db.prepare(`
+      INSERT INTO user_user_targets (user_id, target_user)
+      VALUES (?, ?)
+    `);
+    const insertConfTarget = db.prepare(`
+      INSERT INTO user_conf_targets (user_id, target_conf)
+      VALUES (?, ?)
+    `);
+    const insertFeedTarget = db.prepare(`
+      INSERT INTO user_feed_targets (user_id, feed_id)
+      VALUES (?, ?)
+    `);
+    const insertTargetOrder = db.prepare(`
+      INSERT INTO user_target_order (user_id, target_type, target_id, position)
+      VALUES (?, ?, ?, ?)
+    `);
+
+    users.forEach((row) => {
+      insertUser.run(
+        Number(row.id),
+        String(row.name),
+        String(row.password),
+        row.is_admin ? 1 : 0,
+        row.is_superadmin ? 1 : 0,
+        row.admin_must_change ? 1 : 0
+      );
+    });
+
+    conferences.forEach((row) => {
+      insertConference.run(Number(row.id), String(row.name));
+    });
+
+    feeds.forEach((row) => {
+      insertFeed.run(Number(row.id), String(row.name), String(row.password));
+    });
+
+    userConference.forEach((row) => {
+      insertMembership.run(Number(row.user_id), Number(row.conference_id));
+    });
+
+    userUserTargets.forEach((row) => {
+      insertUserTarget.run(Number(row.user_id), Number(row.target_user));
+    });
+
+    userConfTargets.forEach((row) => {
+      insertConfTarget.run(Number(row.user_id), Number(row.target_conf));
+    });
+
+    userFeedTargets.forEach((row) => {
+      insertFeedTarget.run(Number(row.user_id), Number(row.feed_id));
+    });
+
+    userTargetOrder.forEach((row) => {
+      insertTargetOrder.run(
+        Number(row.user_id),
+        String(row.target_type),
+        Number(row.target_id),
+        Number(row.position)
+      );
+    });
+
+    ensureAllConference();
+    ensureDefaultAdmin();
+  });
+
+  restore();
+}
+
 function createUser(name, password) {
   try {
     const hash = bcrypt.hashSync(password, 10);
@@ -450,5 +613,7 @@ module.exports = {
   getAllConferenceId,
   getFeedIdsForUser,
   getUsersForFeed,
-  ensureDefaultAdmin
+  ensureDefaultAdmin,
+  exportDatabaseSnapshot,
+  importDatabaseSnapshot
 };

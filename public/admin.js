@@ -13,6 +13,9 @@ const adminApp = document.getElementById('admin-app');
 const adminBar = document.getElementById('admin-bar');
 const adminNameLabel = document.getElementById('admin-name-label');
 const adminLogoutBtn = document.getElementById('admin-logout');
+const configExportBtn = document.getElementById('config-export-btn');
+const configImportBtn = document.getElementById('config-import-btn');
+const configImportFile = document.getElementById('config-import-file');
 
 function showLogin(message) {
   if (adminLogin) adminLogin.classList.remove('is-hidden');
@@ -52,8 +55,8 @@ function showMessage(text, tone = 'error', scope = 'global') {
       ? 'conf-message'
       : scope === 'feed'
         ? 'feed-message'
-        : scope === 'mdns'
-          ? 'mdns-message'
+        : scope === 'config'
+          ? 'config-message'
       : 'message';
 
   const el = document.getElementById(targetId);
@@ -84,6 +87,17 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function selectNextByIndex(selectEl, previousIndex) {
@@ -963,7 +977,7 @@ document.getElementById('mdns-form').addEventListener('submit', async (e) => {
 
     if (!res.ok) {
       const payload = await res.json().catch(() => ({}));
-      showMessage(payload.error || 'Failed to save mDNS name', 'error', 'mdns');
+      showMessage(payload.error || 'Failed to save mDNS name', 'error', 'config');
       return;
     }
 
@@ -974,13 +988,87 @@ document.getElementById('mdns-form').addEventListener('submit', async (e) => {
         ? '✅ mDNS name saved. Restart the server to apply it.'
         : '✅ mDNS name saved.',
       'success',
-      'mdns'
+      'config'
     );
   } catch (err) {
     console.error('Failed to save mDNS setting:', err);
-    showMessage('❌ Failed to save mDNS name', 'error', 'mdns');
+    showMessage('❌ Failed to save mDNS name', 'error', 'config');
   }
 });
+
+if (configExportBtn) {
+  configExportBtn.addEventListener('click', async () => {
+    try {
+      const res = await authedFetch('/admin/config/export');
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        showMessage(payload.error || 'Failed to export configuration', 'error', 'config');
+        return;
+      }
+
+      const blob = await res.blob();
+      const disposition = res.headers.get('content-disposition') || '';
+      const match = disposition.match(/filename="?([^"]+)"?/i);
+      const filename = match?.[1] || 'talktome-config.json';
+      triggerDownload(blob, filename);
+      showMessage('✅ Configuration exported', 'success', 'config');
+    } catch (err) {
+      console.error('Failed to export configuration:', err);
+      showMessage('❌ Failed to export configuration', 'error', 'config');
+    }
+  });
+}
+
+if (configImportBtn) {
+  configImportBtn.addEventListener('click', async () => {
+    const file = configImportFile?.files?.[0];
+    if (!file) {
+      showMessage('⚠️ Select a config file first', 'warning', 'config');
+      return;
+    }
+
+    const confirmed = confirm('Importing will replace the current users, conferences, feeds and target configuration. Continue?');
+    if (!confirmed) return;
+
+    configImportBtn.disabled = true;
+
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      const res = await authedFetch('/admin/config/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const responsePayload = await res.json().catch(() => ({}));
+        showMessage(responsePayload.error || 'Failed to import configuration', 'error', 'config');
+        configImportBtn.disabled = false;
+        return;
+      }
+
+      const responsePayload = await res.json();
+      await loadData();
+      if (configImportFile) {
+        configImportFile.value = '';
+      }
+
+      showMessage(
+        responsePayload.restartRequired
+          ? '✅ Configuration imported. Restart the server to fully apply it.'
+          : '✅ Configuration imported.',
+        'success',
+        'config'
+      );
+    } catch (err) {
+      console.error('Failed to import configuration:', err);
+      showMessage('❌ Failed to import configuration', 'error', 'config');
+    } finally {
+      configImportBtn.disabled = false;
+    }
+  });
+}
 
 
 // Called by the "Add to Conf" button inside each user's block
