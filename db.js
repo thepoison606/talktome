@@ -90,6 +90,22 @@ db.exec(`
                                                       PRIMARY KEY (user_id, feed_id)
     );
 
+    CREATE TABLE IF NOT EXISTS apple_ptt_channels (
+                                                      user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                                                      channel_uuid TEXT    NOT NULL UNIQUE,
+                                                      channel_name TEXT    NOT NULL,
+                                                      updated_at   TEXT    NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS apple_ptt_registrations (
+                                                            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                                                            user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                                                            channel_uuid TEXT    NOT NULL,
+                                                            push_token   TEXT    NOT NULL UNIQUE,
+                                                            created_at   TEXT    NOT NULL,
+                                                            updated_at   TEXT    NOT NULL
+    );
+
     DROP TABLE IF EXISTS user_global_targets;
 `);
 

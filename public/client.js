@@ -1545,6 +1545,7 @@ let currentTargetPeer = null;
 let lastTarget = null;
 let isTalking = false;
 let currentTarget = null;
+let pendingTalkStart = null;
 let selfTalkingKey = null;
 let cachedUsers = [];
   let mediaInitialized = false;
@@ -1589,7 +1590,7 @@ let cachedUsers = [];
     });
   }
 
-  function emitApiTalkCommandResult({
+  function emitApiCommandResult(eventName, {
     commandId = null,
     ok = false,
     reason = null,
@@ -1602,7 +1603,7 @@ let cachedUsers = [];
   } = {}) {
     if (!commandId || !socket.connected || session.kind !== 'user') return;
     const state = getCurrentPttState({ talking, lockActive, target });
-    socket.emit('api-talk-command-result', {
+    socket.emit(eventName, {
       commandId,
       ok: Boolean(ok),
       reason: reason || null,
@@ -1611,6 +1612,14 @@ let cachedUsers = [];
       targetId: targetId ?? null,
       ...state,
     });
+  }
+
+  function emitApiTalkCommandResult(payload = {}) {
+    emitApiCommandResult('api-talk-command-result', payload);
+  }
+
+  function emitApiTargetAudioCommandResult(payload = {}) {
+    emitApiCommandResult('api-target-audio-command-result', payload);
   }
 
   function updatePttButtonSizing() {
@@ -1843,6 +1852,25 @@ let cachedUsers = [];
       entry.audio.volume = clamped;
       enforcePitchLock(entry.audio);
     });
+  }
+
+  function updateTargetVolumeSliderUi(targetKey, volume) {
+    const targetEl = document.getElementById(targetKey);
+    const slider = targetEl?.querySelector('.volume-slider');
+    if (slider) {
+      slider.value = String(Math.max(0, Math.min(1, Number(volume) || 0)));
+    }
+  }
+
+  function setTargetVolumeAndPersist(targetKey, volumeStorageKey, volume) {
+    const clamped = Math.max(0, Math.min(1, Number(volume) || 0));
+    applyVolumeToTarget(targetKey, clamped);
+    storeVolume(volumeStorageKey, clamped);
+    updateTargetVolumeSliderUi(targetKey, clamped);
+    if (targetKey.startsWith('feed-') && session.kind === 'user') {
+      applyFeedDucking();
+    }
+    return clamped;
   }
 
   onAudioContextRunning = () => {
@@ -2676,6 +2704,150 @@ let cachedUsers = [];
     requestActiveProducers().catch(() => {});
   });
 
+  function resolveApiUserTargetSocketId(rawTargetId) {
+    const numericId = Number(rawTargetId);
+    const user = cachedUsers.find(u => Number(u.userId) === numericId);
+    if (!user || !user.socketId) {
+      return null;
+    }
+    return user.socketId;
+  }
+
+  function resolveApiTalkTarget(targetType, targetId) {
+    if (targetType === 'user') {
+      const socketId = resolveApiUserTargetSocketId(targetId);
+      if (!socketId) {
+        console.warn('Talk command: target user not available', targetId);
+        return null;
+      }
+      return { type: 'user', id: socketId };
+    }
+
+    if (targetType === 'reply') {
+      if (!lastTarget) {
+        console.warn('Talk command: no last target for reply');
+        return null;
+      }
+      return { type: lastTarget.type, id: lastTarget.id };
+    }
+
+    if (targetType === 'conference') {
+      return { type: 'conference', id: Number(targetId) };
+    }
+
+    return null;
+  }
+
+  function resolveApiAudioTarget(targetType, targetId) {
+    const normalizedType = typeof targetType === 'string' ? targetType.trim().toLowerCase() : '';
+    const numericId = Number(targetId);
+    let targetKey = null;
+    let volumeStorageKey = null;
+
+    if (normalizedType === 'user') {
+      const socketId = resolveApiUserTargetSocketId(targetId);
+      if (!socketId) {
+        console.warn('Target audio command: target user not available', targetId);
+        return null;
+      }
+      targetKey = `user-${socketId}`;
+      volumeStorageKey = `volume_user_${socketId}`;
+    } else if (normalizedType === 'conference' && Number.isFinite(numericId)) {
+      targetKey = `conf-${numericId}`;
+      volumeStorageKey = `volume_conf_${numericId}`;
+    } else if (normalizedType === 'feed' && Number.isFinite(numericId)) {
+      targetKey = `feed-${numericId}`;
+      volumeStorageKey = `volume_feed_${numericId}`;
+    } else {
+      return null;
+    }
+
+    if (!document.getElementById(targetKey)) {
+      console.warn('Target audio command: target not available in current UI', targetType, targetId);
+      return null;
+    }
+
+    return { targetKey, volumeStorageKey };
+  }
+
+  function resolveCompanionTargetAudioStateFromKey(key) {
+    if (typeof key !== 'string' || !key) return null;
+
+    if (key.startsWith('conf-')) {
+      const targetId = Number(key.slice(5));
+      if (!Number.isFinite(targetId)) return null;
+      return { targetType: 'conference', targetId, muted: mutedPeers.has(key) };
+    }
+
+    if (key.startsWith('feed-')) {
+      const targetId = Number(key.slice(5));
+      if (!Number.isFinite(targetId)) return null;
+      return { targetType: 'feed', targetId, muted: mutedPeers.has(key) };
+    }
+
+    if (key.startsWith('user-')) {
+      const rawUserKey = key.slice(5);
+      const user = cachedUsers.find((entry) => String(entry.socketId) === rawUserKey || String(entry.userId) === rawUserKey);
+      const targetId = Number(user?.userId ?? rawUserKey);
+      if (!Number.isFinite(targetId)) return null;
+      return { targetType: 'user', targetId, muted: mutedPeers.has(key) };
+    }
+
+    return null;
+  }
+
+  function collectVisibleTargetAudioStates() {
+    const list = document.getElementById('targets-list');
+    if (!list) return [];
+
+    const seen = new Set();
+    const states = [];
+    list.querySelectorAll('li.target-item').forEach((targetEl) => {
+      const key = targetEl?.id;
+      const state = resolveCompanionTargetAudioStateFromKey(key);
+      if (!state) return;
+      const dedupeKey = `${state.targetType}:${state.targetId}`;
+      if (seen.has(dedupeKey)) return;
+      seen.add(dedupeKey);
+      states.push(state);
+    });
+    return states;
+  }
+
+  function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
+    if (session.kind !== 'user') return;
+    if (!socket.connected) return;
+    socket.emit('target-audio-state-snapshot', {
+      reason,
+      states: collectVisibleTargetAudioStates(),
+    });
+  }
+
+  function applyRemoteAudioCommand(action, targetType, targetId, step) {
+    const targetConfig = resolveApiAudioTarget(targetType, targetId);
+    if (!targetConfig) {
+      return { ok: false, reason: 'target-not-available' };
+    }
+
+    if (action === 'volume-up' || action === 'volume-down') {
+      const requestedStep = Number(step);
+      const normalizedStep = Number.isFinite(requestedStep) ? requestedStep : 0.1;
+      const volumeStep = Math.max(0.01, Math.min(1, normalizedStep));
+      const signedStep = action === 'volume-up' ? volumeStep : -volumeStep;
+      const currentVolume = getStoredVolume(targetConfig.volumeStorageKey);
+      const nextVolume = Math.max(0, Math.min(1, currentVolume + signedStep));
+      setTargetVolumeAndPersist(targetConfig.targetKey, targetConfig.volumeStorageKey, nextVolume);
+      return { ok: true };
+    }
+
+    if (action === 'mute-toggle') {
+      setMuteState(targetConfig.targetKey);
+      return { ok: true };
+    }
+
+    return { ok: false, reason: 'unsupported-action' };
+  }
+
   socket.on('api-talk-command', async ({ commandId = null, action, targetType = 'conference', targetId = null } = {}) => {
     if (session.kind !== 'user') {
       emitApiTalkCommandResult({
@@ -2691,32 +2863,9 @@ let cachedUsers = [];
 
     const dummyEvent = { preventDefault() {} };
 
-    const resolveUserTarget = () => {
-      const numericId = Number(targetId);
-      const user = cachedUsers.find(u => Number(u.userId) === numericId);
-      if (!user || !user.socketId) {
-        console.warn('Talk command: target user not available', targetId);
-        return null;
-      }
-      return { type: 'user', id: user.socketId };
-    };
-
-    const resolveTarget = () => {
-      if (targetType === 'user') return resolveUserTarget();
-      if (targetType === 'reply') {
-        if (!lastTarget) {
-          console.warn('Talk command: no last target for reply');
-          return null;
-        }
-        return { type: lastTarget.type, id: lastTarget.id };
-      }
-      if (targetType === 'conference') return { type: 'conference', id: Number(targetId) };
-      return null;
-    };
-
     try {
       if (action === 'lock-toggle') {
-        const target = resolveTarget();
+        const target = resolveApiTalkTarget(targetType, targetId);
         if (!target) {
           emitApiTalkCommandResult({
             commandId,
@@ -2741,7 +2890,7 @@ let cachedUsers = [];
       }
 
       if (action === 'press') {
-        const target = resolveTarget();
+        const target = resolveApiTalkTarget(targetType, targetId);
         if (!target) {
           emitApiTalkCommandResult({
             commandId,
@@ -2765,7 +2914,7 @@ let cachedUsers = [];
           action,
           targetType,
           targetId,
-          target,
+          target: started ? target : null,
         });
         return;
       }
@@ -2798,6 +2947,41 @@ let cachedUsers = [];
       });
     } catch (err) {
       emitApiTalkCommandResult({
+        commandId,
+        ok: false,
+        reason: err?.message || 'command-error',
+        action,
+        targetType,
+        targetId,
+      });
+    }
+  });
+
+  socket.on('api-target-audio-command', ({ commandId = null, action, targetType = 'conference', targetId = null, step = null } = {}) => {
+    if (session.kind !== 'user') {
+      emitApiTargetAudioCommandResult({
+        commandId,
+        ok: false,
+        reason: 'not-user-session',
+        action,
+        targetType,
+        targetId,
+      });
+      return;
+    }
+
+    try {
+      const result = applyRemoteAudioCommand(action, targetType, targetId, step);
+      emitApiTargetAudioCommandResult({
+        commandId,
+        ok: result.ok,
+        reason: result.reason || null,
+        action,
+        targetType,
+        targetId,
+      });
+    } catch (err) {
+      emitApiTargetAudioCommandResult({
         commandId,
         ok: false,
         reason: err?.message || 'command-error',
@@ -2923,8 +3107,7 @@ let cachedUsers = [];
       if (isOnline && userKey) {
         volSlider.addEventListener('input', e => {
           const vol = parseFloat(e.target.value);
-          applyVolumeToTarget(targetKey, vol);
-          storeVolume(userKey, vol);
+          setTargetVolumeAndPersist(targetKey, userKey, vol);
         });
       } else {
         volSlider.disabled = true;
@@ -3013,10 +3196,6 @@ let cachedUsers = [];
         muteBtn.addEventListener('click', e => {
           e.stopPropagation();
           toggleMute(socketId);
-          const nowMuted = mutedPeers.has(targetKey);
-          muteIcon.src = nowMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
-          muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
-          muteBtn.classList.toggle('muted', nowMuted);
         });
         muteBtn.classList.toggle('muted', mutedPeers.has(targetKey));
       } else {
@@ -3142,15 +3321,7 @@ let cachedUsers = [];
       confSlider.title = 'Conference Volume';
       confSlider.addEventListener('input', e => {
         const vol = parseFloat(e.target.value);
-        const audios = confAudioElements.get(id);
-        if (audios) {
-          audios.forEach(a => {
-            a.volume = vol;
-            const entry = audioEntryMap.get(a);
-            if (entry) entry.volume = vol;
-          });
-        }
-        storeVolume(confKey, vol);
+        setTargetVolumeAndPersist(key, confKey, vol);
       });
       info.appendChild(confSlider);
 
@@ -3229,10 +3400,6 @@ let cachedUsers = [];
       muteBtn.addEventListener('click', e => {
         e.stopPropagation();
         toggleMute(id);
-        const nowMuted = mutedPeers.has(key);
-        muteIcon.src = nowMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
-        muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
-        muteBtn.classList.toggle('muted', nowMuted);
       });
       const actions = document.createElement('div');
       actions.className = 'target-actions';
@@ -3364,22 +3531,7 @@ let cachedUsers = [];
       feedSlider.title = 'Feed Volume';
       feedSlider.addEventListener('input', e => {
         const vol = Math.max(0, Math.min(1, parseFloat(e.target.value)));
-        const audios = feedAudioElements.get(id);
-        if (audios) {
-          audios.forEach(a => {
-            const entry = audioEntryMap.get(a);
-            if (entry?.audio) {
-              entry.volume = vol;
-              if (!mutedPeers.has(key)) {
-                setFeedEntryLevel(entry, vol);
-                enforcePitchLock(entry.audio);
-                attemptPlayAudio(entry.audio).catch(() => {});
-              }
-            }
-          });
-        }
-        storeVolume(feedKey, vol);
-        applyFeedDucking();
+        setTargetVolumeAndPersist(key, feedKey, vol);
       });
       info.appendChild(feedSlider);
 
@@ -3399,10 +3551,6 @@ let cachedUsers = [];
       muteBtn.addEventListener('click', e => {
         e.stopPropagation();
         toggleMute(key);
-        const nowMuted = mutedPeers.has(key);
-        muteIcon.src = nowMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
-        muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
-        muteBtn.classList.toggle('muted', nowMuted);
       });
 
       const actions = document.createElement('div');
@@ -3542,6 +3690,7 @@ let cachedUsers = [];
       window.addEventListener('resize', schedulePttButtonSizing, { passive: true });
       pttSizingListenerBound = true;
     }
+    emitTargetAudioStateSnapshot('target-audio-render');
   }
 
 
@@ -4227,6 +4376,18 @@ let cachedUsers = [];
     return `user-${id}`;
   }
 
+  function updateOutgoingTalkHighlight(target, isActive) {
+    if (!target) return;
+    let selector = null;
+    if (target.type === 'conference') {
+      selector = `#conf-${target.id}`;
+    } else if (target.type === 'user') {
+      selector = `#user-${target.id}`;
+    }
+    if (!selector) return;
+    document.querySelector(selector)?.classList.toggle('talking-to', Boolean(isActive));
+  }
+
   function clearHotkeyActiveStyles() {
     document
       .querySelectorAll(".target-item.hotkey-active")
@@ -4264,20 +4425,38 @@ let cachedUsers = [];
 
 
 // ---------- Toggle mute ----------
-  function toggleMute(rawId) {
-    // 1) Derive the key
+  function updateMuteUiForTarget(key, nowMuted) {
+    const targetEl = document.getElementById(key);
+    const iconSelector = key.startsWith("conf-")
+        ? '.conf-icon'
+        : key.startsWith('feed-')
+          ? '.feed-icon'
+          : '.user-icon';
+
+    targetEl?.classList.toggle('muted', nowMuted);
+    targetEl?.querySelector(iconSelector)?.classList.toggle('muted', nowMuted);
+
+    const muteBtn = targetEl?.querySelector('.mute-btn');
+    if (!muteBtn) return;
+    muteBtn.classList.toggle('muted', nowMuted);
+    muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
+
+    const muteIcon = muteBtn.querySelector('.btn-icon');
+    if (muteIcon) {
+      muteIcon.src = nowMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
+    }
+  }
+
+  function setMuteState(rawId) {
     const key = toKey(rawId);
 
-    // ─── Debug helper ──────────────────────────────────────────────
     const consumers = collectConsumersForTarget(key);
     console.log("[DEBUG] toggleMute with key:", key, "Consumers:", consumers.length);
 
-    // 2) Remaining logic
     const wasMuted = mutedPeers.has(key);
-    if (wasMuted) mutedPeers.delete(key);
-    else          mutedPeers.add(key);
-
-    const nowMuted = mutedPeers.has(key);
+    const nowMuted = !wasMuted;
+    if (nowMuted) mutedPeers.add(key);
+    else mutedPeers.delete(key);
 
     if (isFeedKey(key)) {
       forEachStreamEntry(key, (entry) => {
@@ -4318,16 +4497,13 @@ let cachedUsers = [];
       });
     }
 
-    // Update icon and list entry
-    const elSelector   = `#${key}`;
-    const iconSelector = key.startsWith("conf-")
-        ? `${elSelector} .conf-icon`
-        : key.startsWith('feed-')
-          ? `${elSelector} .feed-icon`
-          : `${elSelector} .user-icon`;
+    updateMuteUiForTarget(key, nowMuted);
+    emitTargetAudioStateSnapshot('target-audio-mute');
+    return nowMuted;
+  }
 
-    document.querySelector(elSelector)?.classList.toggle("muted", nowMuted);
-    document.querySelector(iconSelector)?.classList.toggle("muted", nowMuted);
+  function toggleMute(rawId) {
+    return setMuteState(rawId);
   }
 
 
@@ -4422,9 +4598,10 @@ let cachedUsers = [];
   async function handleTalk(e, target) {
     e.preventDefault();
     if (session.kind !== 'user') return;
-    if (producer) return;
+    if (producer || pendingTalkStart) return;
     if (!target) return;
-    const targetKey = keyFromTarget(target);
+    const normalizedTarget = { type: target.type, id: target.id };
+    const targetKey = keyFromTarget(normalizedTarget);
     if (!slideHintShown && targetKey && !targetKey.startsWith('feed-')) {
       const li = document.getElementById(targetKey);
       if (li) {
@@ -4434,15 +4611,15 @@ let cachedUsers = [];
       }
     }
 
-    isTalking     = true;
-    currentTarget = target;
-    currentTargetPeer = target.type === 'user' ? target.id : null;
+    const pendingStart = {
+      canceled: false,
+      target: normalizedTarget,
+      targetPeer: normalizedTarget.type === 'user' ? normalizedTarget.id : null,
+    };
+    pendingTalkStart = pendingStart;
     if (feedDimSelf) {
       applyFeedDucking();
     }
-
-    const shouldPinSelfColor = targetKey ? speakingPeers.has(targetKey) : false;
-    setSelfTalkingKey(shouldPinSelfColor ? targetKey : null);
 
     try {
       const qualityKey = currentQualityKey();
@@ -4463,6 +4640,15 @@ let cachedUsers = [];
 
       // 3️⃣ Ensure the microphone stream is ready and enabled
       const track = await ensureMicTrack(audioConstraints, selectedDeviceId);
+      if (pendingTalkStart !== pendingStart || pendingStart.canceled) {
+        if (pendingTalkStart === pendingStart) {
+          pendingTalkStart = null;
+        }
+        track.enabled = false;
+        scheduleMicCleanup();
+        applyFeedDucking();
+        return;
+      }
       track.enabled = true;
 
       let processedTrack = null;
@@ -4473,11 +4659,17 @@ let cachedUsers = [];
 
       const finalTrack = processedTrack || track;
       finalTrack.enabled = true;
+      currentTarget = normalizedTarget;
+      currentTargetPeer = pendingStart.targetPeer;
+      isTalking = true;
+
+      const shouldPinSelfColor = targetKey ? speakingPeers.has(targetKey) : false;
+      setSelfTalkingKey(shouldPinSelfColor ? targetKey : null);
 
       // ◆ Producer parameters: always include appData
       const params = {
         track: finalTrack,
-        appData: { type: target.type, id: target.id },
+        appData: { type: normalizedTarget.type, id: normalizedTarget.id },
         codecOptions: profile?.codecOptions ? { ...profile.codecOptions } : undefined,
         encodings: profile?.encodings ? profile.encodings.map(enc => ({ ...enc })) : undefined,
         stopTracks: false,
@@ -4487,7 +4679,10 @@ let cachedUsers = [];
       const newProducer = await sendTransport.produce(params);
 
       // ◆ If the button was released in the meantime
-      if (!isTalking) {
+      if (!isTalking || pendingTalkStart !== pendingStart || pendingStart.canceled) {
+        if (pendingTalkStart === pendingStart) {
+          pendingTalkStart = null;
+        }
         newProducer.close();
         finalTrack.enabled = false;
         if (processedTrack && processedTrack !== track) {
@@ -4498,6 +4693,7 @@ let cachedUsers = [];
         return;
       }
 
+      pendingTalkStart = null;
       producer = newProducer;
 
       newProducer.on('close', () => {
@@ -4517,17 +4713,23 @@ let cachedUsers = [];
       });
 
       // ◆ Visual feedback only for targeted recipients
-      const selector = target.type === "user"
-          ? `#user-${target.id}`
-          : `#conf-${target.id}`;
-      document.querySelector(selector)?.classList.add("talking-to");
-      emitPttState('talk-started', { talking: true, target });
+      updateOutgoingTalkHighlight(normalizedTarget, true);
+      emitPttState('talk-started', { talking: true, target: normalizedTarget });
     } catch (err) {
+      const talkStartCanceled = pendingTalkStart === pendingStart && pendingStart.canceled;
+      if (pendingTalkStart === pendingStart) {
+        pendingTalkStart = null;
+      }
+      if (talkStartCanceled) {
+        applyFeedDucking();
+        return;
+      }
       console.error("Microphone error:", err);
       alert("Failed to start the microphone: " + err.message);
       setReplyButtonActive(false);
       clearLockState();
       isTalking = false;
+      currentTargetPeer = null;
       if (micTrack) {
         micTrack.enabled = false;
       }
@@ -4537,12 +4739,7 @@ let cachedUsers = [];
       scheduleMicCleanup();
       applyFeedDucking();
 
-      if (currentTarget) {
-        const selector = currentTarget.type === "conference"
-            ? `#conf-${currentTarget.id}`
-            : `#user-${currentTarget.id}`;
-        document.querySelector(selector)?.classList.remove("talking-to");
-      }
+      updateOutgoingTalkHighlight(currentTarget, false);
       currentTarget = null;
       setSelfTalkingKey(null);
       emitPttState('talk-start-failed', { talking: false, lockActive: Boolean(activeLockButton), target: activeLockTarget || null });
@@ -4580,6 +4777,10 @@ let cachedUsers = [];
 
     isTalking = false;
     setSelfTalkingKey(null);
+    const pendingTarget = pendingTalkStart?.target || null;
+    if (pendingTalkStart) {
+      pendingTalkStart.canceled = true;
+    }
 
     // Reset button states
     setReplyButtonActive(false);
@@ -4601,14 +4802,7 @@ let cachedUsers = [];
     scheduleMicCleanup();
 
     // Remove the purple highlight from the <li>
-    if (currentTarget) {
-      const li = document.querySelector(
-          currentTarget.type === "conference"
-              ? `#conf-${currentTarget.id}`
-              : `#user-${currentTarget.id}`
-      );
-      li?.classList.remove("talking-to");
-    }
+    updateOutgoingTalkHighlight(currentTarget || pendingTarget, false);
     currentTarget = null;
     currentTargetPeer = null;
     applyFeedDucking();
@@ -4621,7 +4815,7 @@ let cachedUsers = [];
   // Safety stop so PTT can't get stuck on iOS/background transitions.
   function stopTalkingSafely({ respectLock = false } = {}) {
     if (session.kind !== 'user') return;
-    if (!producer && !isTalking) return;
+    if (!producer && !isTalking && !pendingTalkStart) return;
     if (respectLock && activeLockButton) return;
     handleStopTalking({ preventDefault() {}, currentTarget: null });
   }

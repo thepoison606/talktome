@@ -9,6 +9,7 @@ const os = require("os");
 const dgram = require("dgram");
 const selfsigned = require("selfsigned");
 const { getDataDir } = require("./dataPaths");
+const { ApplePttPushService } = require("./applePttPushService");
 
 const workerName = process.platform === "win32" ? "mediasoup-worker.exe" : "mediasoup-worker";
 
@@ -97,6 +98,10 @@ const {
   getAllConferenceId,
   getFeedIdsForUser,
   getUsersForFeed,
+  getOrCreateApplePttChannelForUser,
+  registerApplePttPushToken,
+  unregisterApplePttPushToken,
+  getApplePttRegistrationsForUsers,
   setUserAdminRole,
   exportDatabaseSnapshot,
   importDatabaseSnapshot
@@ -180,6 +185,11 @@ function saveRuntimeConfig(config) {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   return configPath;
 }
+
+const applePttPushService = new ApplePttPushService({
+  loadConfig: loadRuntimeConfig,
+  logger: console,
+});
 
 function normalizeMdnsSetting(value) {
   if (value === undefined || value === null) {
@@ -336,6 +346,7 @@ const COMPANION_DEFAULT_WAIT_MS = 1500;
 const COMPANION_MAX_WAIT_MS = 10000;
 const COMPANION_PENDING_TTL_MS = 30000;
 const COMPANION_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
+const COMPANION_DEFAULT_VOLUME_STEP = 0.1;
 const COMPANION_API_KEY_FILE = path.join(getDataDir(), "companion_api_key");
 
 const companionUserState = new Map();
@@ -546,6 +557,44 @@ function normalizeCompanionTarget(target) {
   return { type: rawType, id: normalizedId };
 }
 
+function normalizeCompanionTargetAudioState(state) {
+  if (!state || typeof state !== "object") return null;
+  const rawType = typeof state.targetType === "string" ? state.targetType.trim().toLowerCase() : "";
+  if (!["user", "conference", "feed"].includes(rawType)) {
+    return null;
+  }
+
+  const targetId = Number(state.targetId);
+  if (!Number.isFinite(targetId)) {
+    return null;
+  }
+
+  return {
+    targetType: rawType,
+    targetId,
+    muted: Boolean(state.muted),
+  };
+}
+
+function normalizeCompanionTargetAudioStates(states) {
+  if (!Array.isArray(states)) {
+    return [];
+  }
+
+  const normalized = [];
+  const seen = new Set();
+  for (const rawState of states) {
+    const state = normalizeCompanionTargetAudioState(rawState);
+    if (!state) continue;
+    const key = `${state.targetType}:${state.targetId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(state);
+  }
+
+  return normalized;
+}
+
 function parseCompanionWaitMs(raw) {
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -598,6 +647,44 @@ function normalizeTalkCommandInput(input = {}) {
     : { action, targetType, targetId };
 
   return { ok: true, value: { action, targetType, targetId, payload } };
+}
+
+function normalizeTargetAudioCommandInput(input = {}) {
+  let { action, targetType = "conference", targetId = null, step = COMPANION_DEFAULT_VOLUME_STEP } = input || {};
+
+  if (!["volume-up", "volume-down", "mute-toggle"].includes(action)) {
+    return {
+      ok: false,
+      status: 400,
+      error: "action must be volume-up, volume-down, or mute-toggle",
+    };
+  }
+
+  const normalizedType = typeof targetType === "string" ? targetType.trim().toLowerCase() : "conference";
+  targetType = normalizedType;
+  if (!["conference", "user", "feed"].includes(targetType)) {
+    return { ok: false, status: 400, error: "targetType must be conference, user, or feed" };
+  }
+
+  const numericTargetId = Number(targetId);
+  if (!Number.isFinite(numericTargetId)) {
+    return { ok: false, status: 400, error: `Invalid ${targetType} id` };
+  }
+  targetId = numericTargetId;
+
+  let normalizedStep = null;
+  if (action === "volume-up" || action === "volume-down") {
+    const requestedStep = Number(step);
+    const safeStep = Number.isFinite(requestedStep) ? requestedStep : COMPANION_DEFAULT_VOLUME_STEP;
+    normalizedStep = Math.min(1, Math.max(0.01, safeStep));
+  }
+
+  const payload = { action, targetType, targetId };
+  if (normalizedStep !== null) {
+    payload.step = normalizedStep;
+  }
+
+  return { ok: true, value: { action, targetType, targetId, step: normalizedStep, payload } };
 }
 
 function findUserPeerByUserId(userId) {
@@ -667,6 +754,7 @@ function ensureCompanionUserState(userId, fallbackName = null) {
       talkLocked: false,
       currentTarget: null,
       lastTarget: null,
+      targetAudioStates: [],
       lastSpokeAt: null,
       lastCommandId: null,
       lastCommandResult: null,
@@ -704,6 +792,7 @@ function buildCompanionUserState(userId, fallbackName = null) {
     cutCamera: Boolean(resolvedName && cutCameraUser && resolvedName === cutCameraUser),
     lastCommandId: base.lastCommandId || null,
     lastCommandResult: base.lastCommandResult || null,
+    targetAudioStates: normalizeCompanionTargetAudioStates(base.targetAudioStates),
     updatedAt: base.updatedAt || null,
   };
 }
@@ -764,7 +853,11 @@ function updateCompanionUserState(userId, patch = {}, { reason = "state-updated"
   if (userId === null || userId === undefined) return;
   if (!isCompanionAddressableUserId(userId)) return;
   const state = ensureCompanionUserState(userId, fallbackName);
-  Object.assign(state, patch, { userId, updatedAt: Date.now() });
+  const normalizedPatch = { ...patch };
+  if ("targetAudioStates" in normalizedPatch) {
+    normalizedPatch.targetAudioStates = normalizeCompanionTargetAudioStates(normalizedPatch.targetAudioStates);
+  }
+  Object.assign(state, normalizedPatch, { userId, updatedAt: Date.now() });
   if (fallbackName && !state.userName) {
     state.userName = fallbackName;
   }
@@ -859,7 +952,7 @@ function failPendingCommandsForUser(userId, reason = "user-disconnected") {
   }
 }
 
-function dispatchTalkCommandToUser(userId, payload, { commandId = null } = {}) {
+function dispatchCompanionCommandToUser(userId, socketEvent, payload, { commandId = null } = {}) {
   const target = findUserPeerByUserId(userId);
   if (!target) {
     return { ok: false, status: 404, error: "user not connected" };
@@ -878,8 +971,16 @@ function dispatchTalkCommandToUser(userId, payload, { commandId = null } = {}) {
     });
   }
 
-  target.peer.socket.emit("api-talk-command", message);
+  target.peer.socket.emit(socketEvent, message);
   return { ok: true, socketId: target.socketId, peer: target.peer };
+}
+
+function dispatchTalkCommandToUser(userId, payload, options = {}) {
+  return dispatchCompanionCommandToUser(userId, "api-talk-command", payload, options);
+}
+
+function dispatchTargetAudioCommandToUser(userId, payload, options = {}) {
+  return dispatchCompanionCommandToUser(userId, "api-target-audio-command", payload, options);
 }
 
 // HTTPS port (defaults to 443)
@@ -1463,6 +1564,7 @@ app.post("/api/v1/client/logout", (req, res) => {
         talking: false,
         talkLocked: false,
         currentTarget: null,
+        targetAudioStates: [],
         lastSpokeAt: Date.now(),
       },
       {
@@ -1506,6 +1608,74 @@ app.post("/api/v1/companion/users/:id/talk", requireCompanionApiKey, async (req,
   });
 
   const dispatch = dispatchTalkCommandToUser(userId, normalized.value.payload, { commandId });
+  if (!dispatch.ok) {
+    const failedPayload = {
+      ok: false,
+      reason: dispatch.error || "dispatch-failed",
+      at: new Date().toISOString(),
+    };
+    settleCompanionPendingCommand(commandId, failedPayload);
+    emitCompanionEvent("command-result", {
+      commandId,
+      userId,
+      ...failedPayload,
+    });
+    return res.status(dispatch.status || 500).json({ error: dispatch.error || "Dispatch failed" });
+  }
+
+  const result = await Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(null), waitMs)),
+  ]);
+
+  if (!result) {
+    return res.status(202).json({
+      commandId,
+      status: "pending",
+      waitMs,
+      accepted: true,
+    });
+  }
+
+  const responsePayload = {
+    commandId,
+    status: result.ok ? "ok" : "failed",
+    accepted: true,
+    result,
+  };
+  return res.status(result.ok ? 200 : 409).json(responsePayload);
+});
+
+app.post("/api/v1/companion/users/:id/target-audio", requireCompanionApiKey, async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isFinite(userId)) {
+    return res.status(400).json({ error: "Invalid user id" });
+  }
+  if (!canCompanionControlUser(req.companionAuth, userId)) {
+    return res.status(403).json({ error: "Forbidden for this companion account" });
+  }
+  if (!isCompanionAddressableUserId(userId)) {
+    return res.status(404).json({ error: "User not found" });
+  }
+
+  const normalized = normalizeTargetAudioCommandInput(req.body || {});
+  if (!normalized.ok) {
+    return res.status(normalized.status).json({ error: normalized.error });
+  }
+
+  const waitMs = parseCompanionWaitMs(
+    req.query?.waitMs ?? req.body?.waitMs ?? COMPANION_DEFAULT_WAIT_MS
+  );
+  const commandId = crypto.randomUUID();
+  const { promise } = registerCompanionPendingCommand({
+    commandId,
+    userId,
+    action: normalized.value.action,
+    targetType: normalized.value.targetType,
+    targetId: normalized.value.targetId,
+  });
+
+  const dispatch = dispatchTargetAudioCommandToUser(userId, normalized.value.payload, { commandId });
   if (!dispatch.ok) {
     const failedPayload = {
       ok: false,
@@ -2153,6 +2323,77 @@ function getUserList() {
   }));
 }
 
+function resolveApplePttRecipientUserIds({ type, targetId, speakerSocketId }) {
+  const recipientUserIds = new Set();
+  const speakerPeer = peers.get(speakerSocketId);
+  const speakerUserId = speakerPeer?.userId != null ? Number(speakerPeer.userId) : null;
+
+  if (type === "user") {
+    const targetPeer = peers.get(targetId);
+    if (targetPeer?.userId != null) {
+      recipientUserIds.add(Number(targetPeer.userId));
+    }
+  } else if (type === "conference") {
+    const members = getUsersForConference(targetId) || [];
+    for (const member of members) {
+      recipientUserIds.add(Number(member.id));
+    }
+  } else if (type === "feed") {
+    const listeners = getUsersForFeed(targetId) || [];
+    for (const listener of listeners) {
+      recipientUserIds.add(Number(listener.user_id));
+    }
+  }
+
+  if (speakerUserId != null) {
+    recipientUserIds.delete(speakerUserId);
+  }
+
+  return Array.from(recipientUserIds);
+}
+
+function resolveApplePttSpeakerName(socketId) {
+  const peer = peers.get(socketId);
+  const trimmed = typeof peer?.name === "string" ? peer.name.trim() : "";
+  return trimmed || "TalkToMe";
+}
+
+async function sendApplePttSpeakerStarted({ type, targetId, speakerSocketId, reason }) {
+  if (!applePttPushService.isConfigured()) {
+    return [];
+  }
+
+  const recipientUserIds = resolveApplePttRecipientUserIds({ type, targetId, speakerSocketId });
+  if (recipientUserIds.length === 0) {
+    return recipientUserIds;
+  }
+
+  const registrations = getApplePttRegistrationsForUsers(recipientUserIds);
+  await applePttPushService.sendActiveRemoteParticipant({
+    registrations,
+    participantName: resolveApplePttSpeakerName(speakerSocketId),
+    reason,
+  });
+
+  return recipientUserIds;
+}
+
+async function sendApplePttServiceUpdate({ recipientUserIds, reason }) {
+  if (!applePttPushService.isConfigured()) {
+    return;
+  }
+
+  if (!Array.isArray(recipientUserIds) || recipientUserIds.length === 0) {
+    return;
+  }
+
+  const registrations = getApplePttRegistrationsForUsers(recipientUserIds);
+  await applePttPushService.sendServiceUpdate({
+    registrations,
+    reason,
+  });
+}
+
 io.on("connection", (socket) => {
   console.log(`[CONN] Client connected: ${socket.id}`);
   peers.set(socket.id, {
@@ -2235,6 +2476,7 @@ io.on("connection", (socket) => {
         userName: peer.name || null,
         online: true,
         socketId: socket.id,
+        targetAudioStates: [],
       }, {
         reason: "user-online",
         fallbackName: peer.name || null,
@@ -2247,6 +2489,73 @@ io.on("connection", (socket) => {
     }
 
     if (typeof callback === "function") callback({ ok: true });
+  });
+
+  socket.on("request-apple-ptt-bootstrap", (callback = () => {}) => {
+    const peer = peers.get(socket.id);
+    if (!peer || peer.kind !== "user" || peer.userId == null) {
+      return callback({ ok: false, error: "Peer not registered" });
+    }
+
+    const runtimeConfig = loadRuntimeConfig() || {};
+    if (runtimeConfig.applePtt?.enabled !== true) {
+      return callback({ ok: true, enabled: false });
+    }
+
+    const channel = getOrCreateApplePttChannelForUser(peer.userId, "TalkToMe");
+    callback({
+      ok: true,
+      enabled: true,
+      channelUUID: channel.channel_uuid,
+      channelName: channel.channel_name,
+    });
+  });
+
+  socket.on("register-apple-ptt-push-token", ({ channelUUID, pushToken } = {}, callback = () => {}) => {
+    const peer = peers.get(socket.id);
+    if (!peer || peer.kind !== "user" || peer.userId == null) {
+      return callback({ ok: false, error: "Peer not registered" });
+    }
+
+    if (typeof channelUUID !== "string" || !channelUUID.trim()) {
+      return callback({ ok: false, error: "Missing channelUUID" });
+    }
+
+    if (typeof pushToken !== "string" || !/^[0-9a-f]+$/i.test(pushToken)) {
+      return callback({ ok: false, error: "Invalid pushToken" });
+    }
+
+    registerApplePttPushToken(peer.userId, channelUUID.trim(), pushToken.toLowerCase());
+    callback({ ok: true });
+  });
+
+  socket.on("unregister-apple-ptt-push-token", ({ channelUUID } = {}, callback = () => {}) => {
+    const peer = peers.get(socket.id);
+    if (!peer || peer.kind !== "user" || peer.userId == null) {
+      return callback({ ok: false, error: "Peer not registered" });
+    }
+
+    if (typeof channelUUID !== "string" || !channelUUID.trim()) {
+      return callback({ ok: false, error: "Missing channelUUID" });
+    }
+
+    unregisterApplePttPushToken(peer.userId, channelUUID.trim());
+    callback({ ok: true });
+  });
+
+  socket.on("target-audio-state-snapshot", ({ reason = "target-audio-state", states = [] } = {}) => {
+    const peer = peers.get(socket.id);
+    if (!peer || peer.kind !== "user" || peer.userId === null || peer.userId === undefined) {
+      return;
+    }
+
+    updateCompanionUserState(peer.userId, {
+      userName: peer.name || null,
+      targetAudioStates: states,
+    }, {
+      reason,
+      fallbackName: peer.name || null,
+    });
   });
 
   socket.on("ptt-state", (payload = {}) => {
@@ -2274,9 +2583,10 @@ io.on("connection", (socket) => {
 
     const normalizedTarget = normalizeCompanionTarget(payload.target);
     if (normalizedTarget) {
-      patch.currentTarget = normalizedTarget;
       patch.lastTarget = normalizedTarget;
-      patch.talking = payload.talking === false ? false : true;
+      if (payload.talking !== false) {
+        patch.currentTarget = normalizedTarget;
+      }
     } else if (payload.target === null) {
       patch.currentTarget = null;
     }
@@ -2287,7 +2597,7 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on("api-talk-command-result", (payload = {}) => {
+  const handleApiCommandResult = (payload = {}) => {
     const peer = peers.get(socket.id);
     if (!peer || peer.kind !== "user" || peer.userId === null || peer.userId === undefined) {
       return;
@@ -2326,8 +2636,10 @@ io.on("connection", (socket) => {
       }
     }
     if (normalizedTarget) {
-      patch.currentTarget = normalizedTarget;
       patch.lastTarget = normalizedTarget;
+      if (payload.talking !== false) {
+        patch.currentTarget = normalizedTarget;
+      }
     }
     updateCompanionUserState(peer.userId, patch, {
       reason: "command-result",
@@ -2337,7 +2649,10 @@ io.on("connection", (socket) => {
     resultPayload.state = buildCompanionUserState(peer.userId, peer.name || null);
     settleCompanionPendingCommand(commandId, resultPayload);
     emitCompanionEvent("command-result", resultPayload);
-  });
+  };
+
+  socket.on("api-talk-command-result", handleApiCommandResult);
+  socket.on("api-target-audio-command-result", handleApiCommandResult);
 
   socket.on("request-active-producers", (callback = () => {}) => {
     const peer = peers.get(socket.id);
@@ -2742,10 +3057,18 @@ io.on("connection", (socket) => {
             }
             console.log(`[ROUTE] Sent to feed listeners of ${targetId}`);
           }
+
+          const applePttRecipientUserIds = await sendApplePttSpeakerStarted({
+            type,
+            targetId,
+            speakerSocketId: socket.id,
+            reason: "producer-started",
+          });
           //----------------------------------------------------------------
           // 4️⃣  Cleanup listener
           //----------------------------------------------------------------
           producer.appData = appData;  // store once
+          producer.__applePttRecipientUserIds = applePttRecipientUserIds;
 
           producer.on("close", () => {
             peer.producers.delete(producer.id);
@@ -2895,6 +3218,7 @@ io.on("connection", (socket) => {
         talking: false,
         talkLocked: false,
         currentTarget: null,
+        targetAudioStates: [],
         lastSpokeAt: Date.now(),
       }, {
         reason: "user-offline",
