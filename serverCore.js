@@ -569,10 +569,16 @@ function normalizeCompanionTargetAudioState(state) {
     return null;
   }
 
+  const rawVolume = Number(state.volume);
+  const volume = Number.isFinite(rawVolume)
+    ? Math.min(1, Math.max(0, rawVolume))
+    : null;
+
   return {
     targetType: rawType,
     targetId,
     muted: Boolean(state.muted),
+    volume,
   };
 }
 
@@ -3253,7 +3259,7 @@ server.listen(HTTPS_PORT, () => {
   });
   console.log("🛠️ Administration via:");
   startupHosts.forEach((host) => {
-    console.log(`   https://${host}:${HTTPS_PORT}/admin.html`);
+    console.log(`   https://${host}:${HTTPS_PORT}/admin`);
   });
   console.log("");
   console.log("⚠️  Browsers will show a certificate warning.");

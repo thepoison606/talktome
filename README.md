@@ -6,11 +6,11 @@ A local WebRTC Intercom app built with Node.js and mediasoup.
 
 ## What it does
 - Web client with per-target and conference talk buttons, reply, and “talk lock”.
+- Bitfocus Companion module available at `https://github.com/thepoison606/companion-module-talktome-intercom`.
+- Button control via Keyboard shortcuts.
+- Admin UI to manage users, conferences, feeds, and target order.
 - Tally for camera operators via HTTP API.
 - Button control via HTTP API.
-- Bitfocus Companion module available at `https://github.com/thepoison606/companion-module-talktome-intercom`.
-- Button control via Keyboard shortcuts 
-- Admin UI to manage users, conferences, feeds, and target order.
 - Feeds for program audio injection (experimental).
 
 ## Quick start
@@ -63,7 +63,7 @@ Delete `config.json` to re-run the setup.
 
 ## Admin accounts & passwords
 - On first boot, a superadmin `admin` user is auto-created with password `admin` and the flag `admin_must_change=1`.
-- First admin login happens at `/admin.html`; the UI enforces a password change before access is granted.
+- First admin login happens at `/admin`; the UI enforces a password change before access is granted.
 - Admin sessions are stored as an httpOnly cookie (`admin_session`) with a 12h TTL.
 - Superadmins cannot be demoted; admin accounts cannot be deleted.
 - Create additional admins in the Admin UI; they share the same login page as operators.

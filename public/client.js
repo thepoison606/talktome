@@ -51,6 +51,9 @@ const QUALITY_PROFILES = {
 };
 
 const defaultVolume = 0.9;
+const volumeMemoryStore = new Map();
+let warnedVolumeStorageRead = false;
+let warnedVolumeStorageWrite = false;
 const IDENTITY_KIND_KEY = 'identityKind';
 const FEED_ID_STORAGE_KEY = 'feedId';
 const FEED_DUCKING_DB_STORAGE_KEY = 'feedDimDb';
@@ -1101,12 +1104,48 @@ async function fetchJSON(url) {
 }
 
 function getStoredVolume(key, defaultValue = defaultVolume) {
-  const v = sessionStorage.getItem(key);
-  return v !== null ? parseFloat(v) : defaultValue;
+  const normalizeVolume = (rawValue, fallbackValue) => {
+    const numericValue = Number(rawValue);
+    if (!Number.isFinite(numericValue)) return fallbackValue;
+    return Math.max(0, Math.min(1, numericValue));
+  };
+
+  try {
+    const v = sessionStorage.getItem(key);
+    if (v !== null) {
+      const normalized = normalizeVolume(v, defaultValue);
+      volumeMemoryStore.set(key, normalized);
+      return normalized;
+    }
+  } catch (error) {
+    if (!warnedVolumeStorageRead) {
+      warnedVolumeStorageRead = true;
+      console.warn('Session storage unavailable for volume read:', error);
+    }
+  }
+
+  if (volumeMemoryStore.has(key)) {
+    return normalizeVolume(volumeMemoryStore.get(key), defaultValue);
+  }
+
+  return normalizeVolume(defaultValue, defaultValue);
 }
 
 function storeVolume(key, value) {
-  sessionStorage.setItem(key, String(value));
+  const numericValue = Number(value);
+  const normalized = Math.max(
+    0,
+    Math.min(1, Number.isFinite(numericValue) ? numericValue : defaultVolume)
+  );
+  volumeMemoryStore.set(key, normalized);
+  try {
+    sessionStorage.setItem(key, String(normalized));
+  } catch (error) {
+    if (!warnedVolumeStorageWrite) {
+      warnedVolumeStorageWrite = true;
+      console.warn('Session storage unavailable for volume write:', error);
+    }
+  }
 }
 
 async function updateDeviceList() {
@@ -1870,6 +1909,7 @@ let cachedUsers = [];
     if (targetKey.startsWith('feed-') && session.kind === 'user') {
       applyFeedDucking();
     }
+    emitTargetAudioStateSnapshot('target-audio-volume');
     return clamped;
   }
 
@@ -2772,17 +2812,40 @@ let cachedUsers = [];
 
   function resolveCompanionTargetAudioStateFromKey(key) {
     if (typeof key !== 'string' || !key) return null;
+    const normalizeCompanionVolume = (rawVolume) => {
+      const numericVolume = Number(rawVolume);
+      if (!Number.isFinite(numericVolume)) return defaultVolume;
+      return Math.max(0, Math.min(1, numericVolume));
+    };
+    const readVisibleTargetVolume = (targetKey, volumeStorageKey) => {
+      const targetEl = document.getElementById(targetKey);
+      const sliderValue = Number(targetEl?.querySelector('.volume-slider')?.value);
+      if (Number.isFinite(sliderValue)) {
+        return normalizeCompanionVolume(sliderValue);
+      }
+      return normalizeCompanionVolume(getStoredVolume(volumeStorageKey));
+    };
 
     if (key.startsWith('conf-')) {
       const targetId = Number(key.slice(5));
       if (!Number.isFinite(targetId)) return null;
-      return { targetType: 'conference', targetId, muted: mutedPeers.has(key) };
+      return {
+        targetType: 'conference',
+        targetId,
+        muted: mutedPeers.has(key),
+        volume: readVisibleTargetVolume(key, `volume_conf_${targetId}`),
+      };
     }
 
     if (key.startsWith('feed-')) {
       const targetId = Number(key.slice(5));
       if (!Number.isFinite(targetId)) return null;
-      return { targetType: 'feed', targetId, muted: mutedPeers.has(key) };
+      return {
+        targetType: 'feed',
+        targetId,
+        muted: mutedPeers.has(key),
+        volume: readVisibleTargetVolume(key, `volume_feed_${targetId}`),
+      };
     }
 
     if (key.startsWith('user-')) {
@@ -2790,7 +2853,12 @@ let cachedUsers = [];
       const user = cachedUsers.find((entry) => String(entry.socketId) === rawUserKey || String(entry.userId) === rawUserKey);
       const targetId = Number(user?.userId ?? rawUserKey);
       if (!Number.isFinite(targetId)) return null;
-      return { targetType: 'user', targetId, muted: mutedPeers.has(key) };
+      return {
+        targetType: 'user',
+        targetId,
+        muted: mutedPeers.has(key),
+        volume: readVisibleTargetVolume(key, `volume_user_${rawUserKey}`),
+      };
     }
 
     return null;
