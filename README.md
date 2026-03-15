@@ -6,7 +6,7 @@ A local WebRTC Intercom app built with Node.js and mediasoup.
 
 ## What it does
 - Web client with per-target and conference talk buttons, reply, and “talk lock”.
-- Bitfocus Companion module available at `https://github.com/thepoison606/companion-module-talktome-intercom`.
+- [Bitfocus Companion module](https://github.com/thepoison606/companion-module-talktome-intercom)
 - Button control via Keyboard shortcuts.
 - Admin UI to manage users, conferences, feeds, and target order.
 - Tally for camera operators via HTTP API.
