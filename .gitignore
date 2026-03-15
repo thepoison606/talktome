@@ -28,6 +28,7 @@ better_sqlite3.node
 talktome_win64*.exe
 talktome_win64*.zip
 talktome_macos*.zip
+talktome_macos*.sha256
 talktome-macos*
 worker/
 dist/
@@ -59,4 +60,3 @@ public/socket.io.js
 
 # local build artifacts
 talktome_win64_bundle/
-
