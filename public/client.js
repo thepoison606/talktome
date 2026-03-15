@@ -1872,24 +1872,14 @@ let cachedUsers = [];
     const clamped = Math.max(0, Math.min(1, Number(volume) || 0));
     forEachStreamEntry(targetKey, (entry) => {
       entry.volume = clamped;
-      if (entry.type === 'feed') {
-        if (!mutedPeers.has(targetKey)) {
-          setFeedEntryLevel(entry, clamped);
-          enforcePitchLock(entry.audio);
-          attemptPlayAudio(entry.audio).catch(() => {});
-        }
+      if (mutedPeers.has(targetKey)) {
+        mutePlaybackEntry(entry);
         return;
       }
 
-      if (!entry.audio) return;
-      if (mutedPeers.has(targetKey)) {
-        entry.audio.muted = true;
-        entry.audio.volume = 0;
-        return;
-      }
-      entry.audio.muted = false;
-      entry.audio.volume = clamped;
+      setPlaybackEntryLevel(entry, clamped);
       enforcePitchLock(entry.audio);
+      attemptPlayAudio(entry.audio).catch(() => {});
     });
   }
 
@@ -1919,26 +1909,23 @@ let cachedUsers = [];
       primeVoiceProcessingMode().catch(() => {});
     }
     attemptPendingAutoplay();
+    audioElements.forEach((entry) => {
+      if (!entry?.gainNode || !entry.audio) return;
+      if (entry.type === 'feed' && session.kind === 'user') return;
+      if (mutedPeers.has(entry.key)) {
+        mutePlaybackEntry(entry);
+      } else {
+        setPlaybackEntryLevel(entry, entry.volume ?? defaultVolume);
+        enforcePitchLock(entry.audio);
+        attemptPlayAudio(entry.audio).catch(() => {});
+      }
+    });
     if (session.kind === 'user') {
       applyFeedDucking();
-    } else {
-      feedAudioElements.forEach(set => {
-        set.forEach(audioEl => {
-          const entry = audioEntryMap.get(audioEl);
-          if (!entry) return;
-          if (mutedPeers.has(entry.key)) {
-            muteFeedEntry(entry);
-          } else {
-            setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
-            enforcePitchLock(entry.audio);
-            attemptPlayAudio(entry.audio).catch(() => {});
-          }
-        });
-      });
     }
   };
 
-  function setFeedEntryLevel(entry, value) {
+  function setPlaybackEntryLevel(entry, value) {
     if (!entry || !entry.audio) return;
     const applied = Math.max(0, Math.min(1, value));
     if (entry.gainNode) {
@@ -1952,7 +1939,7 @@ let cachedUsers = [];
     entry.lastAppliedLevel = applied;
   }
 
-  function muteFeedEntry(entry) {
+  function mutePlaybackEntry(entry) {
     if (!entry || !entry.audio) return;
     if (entry.gainNode) {
       entry.audio.muted = true;
@@ -1963,6 +1950,14 @@ let cachedUsers = [];
       entry.audio.volume = 0;
     }
     entry.lastAppliedLevel = 0;
+  }
+
+  function setFeedEntryLevel(entry, value) {
+    setPlaybackEntryLevel(entry, value);
+  }
+
+  function muteFeedEntry(entry) {
+    mutePlaybackEntry(entry);
   }
   let feedDuckingActive = false;
 
@@ -3830,7 +3825,8 @@ let cachedUsers = [];
       }
 
       const stream = new MediaStream([consumer.track]);
-      const ctxForFeed = isFeed ? ensureAudioContext() : null;
+      const shouldUseWebAudioLevelControl = isFeed || isiOS;
+      const ctxForPlayback = shouldUseWebAudioLevelControl ? ensureAudioContext() : null;
 
       const initVolRaw = getStoredVolume(volumeStorageKey);
       const initVol = Math.max(0, Math.min(1, initVolRaw));
@@ -3846,20 +3842,20 @@ let cachedUsers = [];
       let gainNode = null;
       let mediaSource = null;
 
-      if (isFeed && ctxForFeed) {
+      if (ctxForPlayback) {
         try {
-          mediaSource = ctxForFeed.createMediaStreamSource(stream);
-          gainNode = ctxForFeed.createGain();
+          mediaSource = ctxForPlayback.createMediaStreamSource(stream);
+          gainNode = ctxForPlayback.createGain();
           gainNode.gain.value = 0;
           mediaSource.connect(gainNode);
-          gainNode.connect(ctxForFeed.destination);
+          gainNode.connect(ctxForPlayback.destination);
           audio.muted = true;
           audio.volume = 0;
-          if (ctxForFeed.state !== 'running' && typeof ctxForFeed.resume === 'function') {
-            ctxForFeed.resume().catch(err => console.warn('Failed to resume AudioContext:', err));
+          if (ctxForPlayback.state !== 'running' && typeof ctxForPlayback.resume === 'function') {
+            ctxForPlayback.resume().catch(err => console.warn('Failed to resume AudioContext:', err));
           }
         } catch (err) {
-          console.warn('Failed to initialize feed gain path:', err);
+          console.warn('Failed to initialize remote gain path:', err);
           gainNode = null;
           mediaSource = null;
         }
@@ -3898,12 +3894,12 @@ let cachedUsers = [];
 
       if (isFeed) {
         if (mutedPeers.has(targetKey)) {
-          muteFeedEntry(entry);
+          mutePlaybackEntry(entry);
         } else if (session.kind === 'user') {
-          setFeedEntryLevel(entry, entry.volume);
+          setPlaybackEntryLevel(entry, entry.volume);
           applyFeedDucking();
         } else {
-          setFeedEntryLevel(entry, entry.volume);
+          setPlaybackEntryLevel(entry, entry.volume);
         }
 
         const feedId = Number(normalizedAppData.id);
@@ -3920,13 +3916,10 @@ let cachedUsers = [];
           }
         });
       } else {
-        const applied = Math.max(0, Math.min(1, entry.volume));
         if (mutedPeers.has(targetKey)) {
-          entry.audio.muted = true;
-          entry.audio.volume = 0;
+          mutePlaybackEntry(entry);
         } else {
-          entry.audio.muted = false;
-          entry.audio.volume = applied;
+          setPlaybackEntryLevel(entry, entry.volume);
         }
 
         if (isConference) {
@@ -4529,9 +4522,9 @@ let cachedUsers = [];
     if (isFeedKey(key)) {
       forEachStreamEntry(key, (entry) => {
         if (nowMuted) {
-          muteFeedEntry(entry);
+          mutePlaybackEntry(entry);
         } else {
-          setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
+          setPlaybackEntryLevel(entry, entry.volume ?? defaultVolume);
           enforcePitchLock(entry.audio);
           attemptPlayAudio(entry.audio).catch(() => {});
         }
@@ -4552,13 +4545,9 @@ let cachedUsers = [];
       forEachStreamEntry(key, (entry) => {
         if (!entry.audio) return;
         if (nowMuted) {
-          entry.audio.muted = true;
-          entry.audio.volume = 0;
+          mutePlaybackEntry(entry);
         } else {
-          const base = Math.max(0, Math.min(1, entry.volume ?? defaultVolume));
-          const applied = Math.max(0, Math.min(1, base));
-          entry.audio.muted = false;
-          entry.audio.volume = applied;
+          setPlaybackEntryLevel(entry, entry.volume ?? defaultVolume);
           enforcePitchLock(entry.audio);
           attemptPlayAudio(entry.audio).catch(() => {});
         }
