@@ -783,6 +783,20 @@ function setReplyEntry(targetMap, targetUserId, entry) {
   }
 }
 
+function rememberIncomingReplyEntry(targetUserId, entry) {
+  const userId = Number(targetUserId);
+  if (!Number.isFinite(userId) || !entry) {
+    return;
+  }
+
+  const state = ensureCompanionUserState(userId);
+  const existing = state.lastIncomingReplyEntry;
+  if (!existing || Number(entry.at) >= Number(existing?.at || 0)) {
+    state.lastIncomingReplyEntry = entry;
+    state.updatedAt = Date.now();
+  }
+}
+
 function buildIncomingTalkStateSnapshot() {
   const addressedNowByUser = new Map();
   const replyTargetByUser = new Map();
@@ -810,19 +824,20 @@ function buildIncomingTalkStateSnapshot() {
       for (const addressedUserId of addressedUsers) {
         mergeAddressedNowEntry(addressedNowByUser, addressedUserId, activeEntry);
         setReplyEntry(replyTargetByUser, addressedUserId, activeEntry);
+        rememberIncomingReplyEntry(addressedUserId, activeEntry);
       }
     }
+  }
 
-    const historyTarget = normalizeRuntimeTalkTarget(base.lastTarget) || activeTarget;
-    const historyAt = Number(base.lastSpokeAt) || Number(base.updatedAt) || activeAt;
-    if (!historyTarget) {
+  for (const user of getCompanionAddressableUsers()) {
+    const userId = Number(user?.id);
+    if (!Number.isFinite(userId)) {
       continue;
     }
 
-    const historyEntry = buildAddressedEntry(historyTarget, speakerUserId, speakerName, historyAt);
-    const addressedUsers = resolveAddressedUserIdsForTarget(historyTarget, speakerUserId);
-    for (const addressedUserId of addressedUsers) {
-      setReplyEntry(replyTargetByUser, addressedUserId, historyEntry);
+    const base = ensureCompanionUserState(userId, user?.name || null);
+    if (base.lastIncomingReplyEntry) {
+      setReplyEntry(replyTargetByUser, userId, base.lastIncomingReplyEntry);
     }
   }
 
@@ -997,6 +1012,7 @@ function ensureCompanionUserState(userId, fallbackName = null) {
       talkLocked: false,
       currentTarget: null,
       lastTarget: null,
+      lastIncomingReplyEntry: null,
       targetAudioStates: [],
       lastSpokeAt: null,
       lastCommandId: null,

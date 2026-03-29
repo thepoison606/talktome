@@ -213,6 +213,7 @@ let sharedAudioContext = null;
 let onAudioContextRunning = null;
 let audioContextPrimed = false;
 let feedProcessingChain = null;
+let feedPlaybackBus = null;
 let userProcessingChain = null;
 let settingsMonitorActive = false;
 let settingsMonitorPromise = null;
@@ -285,6 +286,36 @@ function ensureAudioContext() {
     }
   }
   return sharedAudioContext;
+}
+
+function ensureFeedPlaybackBus() {
+  const ctx = ensureAudioContext();
+  if (!ctx) return null;
+
+  if (feedPlaybackBus?.ctx === ctx && feedPlaybackBus.inputNode && feedPlaybackBus.outputNode) {
+    return feedPlaybackBus;
+  }
+
+  if (feedPlaybackBus) {
+    try { feedPlaybackBus.inputNode?.disconnect(); } catch {}
+    try { feedPlaybackBus.outputNode?.disconnect(); } catch {}
+    feedPlaybackBus = null;
+  }
+
+  try {
+    const inputNode = ctx.createGain();
+    const outputNode = ctx.createGain();
+    inputNode.gain.value = 1;
+    outputNode.gain.value = 1;
+    inputNode.connect(outputNode);
+    outputNode.connect(ctx.destination);
+    feedPlaybackBus = { ctx, inputNode, outputNode };
+  } catch (err) {
+    console.warn('Failed to initialize feed playback bus:', err);
+    feedPlaybackBus = null;
+  }
+
+  return feedPlaybackBus;
 }
 
 function syncAudioProcessingOptions() {
@@ -1843,19 +1874,7 @@ let cachedUsers = [];
     const stored = audioElements.get(streamKey);
     if (stored) {
       const audioEl = stored.audio;
-      pendingAutoplayAudios.delete(audioEl);
-      if (stored.mediaSource) {
-        try { stored.mediaSource.disconnect(); } catch {}
-        stored.mediaSource = null;
-      }
-      if (stored.gainNode) {
-        try { stored.gainNode.disconnect(); } catch {}
-        stored.gainNode = null;
-      }
-      try { audioEl.pause?.(); } catch {}
-      try { audioEl.srcObject = null; } catch {}
-      audioEl.remove();
-      audioEntryMap.delete(audioEl);
+      disposePlaybackEntry(stored);
       audioElements.delete(streamKey);
 
       if (stored.type === 'feed') {
@@ -1893,18 +1912,68 @@ let cachedUsers = [];
     feedAudioElements.clear();
   }
 
+  function disconnectPlaybackNodes(entry) {
+    if (!entry) return;
+    if (entry.mediaSource) {
+      try { entry.mediaSource.disconnect(); } catch {}
+      entry.mediaSource = null;
+    }
+    if (entry.gainNode) {
+      try { entry.gainNode.disconnect(); } catch {}
+      entry.gainNode = null;
+    }
+    if (entry.feedDuckingNode) {
+      try { entry.feedDuckingNode.disconnect(); } catch {}
+      entry.feedDuckingNode = null;
+    }
+  }
+
+  function disposePlaybackEntry(entry) {
+    if (!entry?.audio) return;
+    pendingAutoplayAudios.delete(entry.audio);
+    disconnectPlaybackNodes(entry);
+    try { entry.audio.pause?.(); } catch {}
+    try { entry.audio.srcObject = null; } catch {}
+    entry.audio.remove();
+    audioEntryMap.delete(entry.audio);
+  }
+
+  function shouldDimFeedEntry(entry) {
+    if (session.kind !== 'user') return false;
+    if (!feedDuckingActive || feedDuckingFactor >= 0.999) return false;
+    const feedId = Number(String(entry?.key || '').slice(5));
+    if (!Number.isFinite(feedId)) return false;
+    return !feedDimmingDisabled.has(String(feedId));
+  }
+
+  function getFeedEntryLevel(entry, value) {
+    const base = Math.max(0, Math.min(1, Number(value) || 0));
+    if (entry?.feedDuckingNode) {
+      return base;
+    }
+    return shouldDimFeedEntry(entry)
+      ? Math.max(0, Math.min(1, base * feedDuckingFactor))
+      : base;
+  }
+
   function applyVolumeToTarget(targetKey, volume) {
     const clamped = Math.max(0, Math.min(1, Number(volume) || 0));
     forEachStreamEntry(targetKey, (entry) => {
       entry.volume = clamped;
       if (mutedPeers.has(targetKey)) {
-        mutePlaybackEntry(entry);
+        if (isFeedKey(targetKey)) {
+          muteFeedEntry(entry);
+        } else {
+          mutePlaybackEntry(entry);
+        }
         return;
       }
 
-      setPlaybackEntryLevel(entry, clamped);
-      enforcePitchLock(entry.audio);
-      attemptPlayAudio(entry.audio).catch(() => {});
+      if (isFeedKey(targetKey)) {
+        setFeedEntryLevel(entry, clamped);
+      } else {
+        setPlaybackEntryLevel(entry, clamped);
+      }
     });
   }
 
@@ -1941,8 +2010,6 @@ let cachedUsers = [];
         mutePlaybackEntry(entry);
       } else {
         setPlaybackEntryLevel(entry, entry.volume ?? defaultVolume);
-        enforcePitchLock(entry.audio);
-        attemptPlayAudio(entry.audio).catch(() => {});
       }
     });
     if (session.kind === 'user') {
@@ -1978,7 +2045,7 @@ let cachedUsers = [];
   }
 
   function setFeedEntryLevel(entry, value) {
-    setPlaybackEntryLevel(entry, value);
+    setPlaybackEntryLevel(entry, getFeedEntryLevel(entry, value));
   }
 
   function muteFeedEntry(entry) {
@@ -2062,6 +2129,25 @@ let cachedUsers = [];
   function clearReplyTarget() {
     lastTarget = null;
     btnReply.disabled = true;
+    renderReplyButtonLabel();
+  }
+
+  function resolveReplyUserSocketId(target) {
+    if (!target || target.type !== 'user') return null;
+    return resolveUserSocketId(target.id)
+      || cachedUsers.find((entry) => String(entry?.socketId) === String(target.id))?.socketId
+      || null;
+  }
+
+  function updateReplyButtonState() {
+    if (!lastTarget) {
+      clearReplyTarget();
+      return;
+    }
+
+    refreshLastTargetLabel();
+    const replyUserSocketId = resolveReplyUserSocketId(lastTarget);
+    btnReply.disabled = lastTarget.type === 'user' ? !replyUserSocketId : false;
     renderReplyButtonLabel();
   }
 
@@ -2179,19 +2265,12 @@ let cachedUsers = [];
       updateSpeakerHighlight(targetKey, true);
     }
 
-    const replyTarget = resolveReplyTargetFromIncomingEntry(incomingTalkState.replyTarget);
+    const replyTarget = resolveReplyTargetFromIncomingEntry(incomingTalkState.replyTarget)
+      || resolveReplyTargetFromIncomingEntry(incomingTalkState.addressedNow[0] || null);
     if (replyTarget) {
       lastTarget = replyTarget;
-      const replyUserSocketId = replyTarget.type === 'user'
-        ? resolveUserSocketId(replyTarget.id)
-          || cachedUsers.find((entry) => String(entry?.socketId) === String(replyTarget.id))?.socketId
-          || null
-        : null;
-      btnReply.disabled = replyTarget.type === 'user' ? !replyUserSocketId : false;
-      renderReplyButtonLabel();
-    } else {
-      clearReplyTarget();
     }
+    updateReplyButtonState();
 
     applyFeedDucking();
   }
@@ -2278,7 +2357,6 @@ let cachedUsers = [];
     if (session.kind !== 'user') return;
     const shouldDimSelf = feedDimSelf && isTalking;
     const shouldDuck = speakingPeers.size > 0 || shouldDimSelf;
-    const stateChanged = shouldDuck !== feedDuckingActive;
     feedDuckingActive = shouldDuck;
 
     for (const [feedId, audios] of feedAudioElements) {
@@ -2296,19 +2374,14 @@ let cachedUsers = [];
           continue;
         }
 
-        const base = Math.max(0, Math.min(1, entry.volume ?? defaultVolume));
-        const targetVol = shouldDim
-          ? Math.max(0, Math.min(1, base * feedDuckingFactor))
-          : base;
+        if (entry.feedDuckingNode) {
+          entry.feedDuckingNode.gain.value = shouldDim ? feedDuckingFactor : 1;
+          setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
+          continue;
+        }
 
-        setFeedEntryLevel(entry, targetVol);
-        enforcePitchLock(entry.audio);
-        attemptPlayAudio(entry.audio).catch(() => {});
+        setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
       }
-    }
-
-    if (stateChanged) {
-      attemptPendingAutoplay();
     }
   }
 
@@ -2338,19 +2411,7 @@ let cachedUsers = [];
         }
         const entry = audioElements.get(streamKey);
         if (entry) {
-          pendingAutoplayAudios.delete(entry.audio);
-          if (entry.mediaSource) {
-            try { entry.mediaSource.disconnect(); } catch {}
-            entry.mediaSource = null;
-          }
-          if (entry.gainNode) {
-            try { entry.gainNode.disconnect(); } catch {}
-            entry.gainNode = null;
-          }
-          try { entry.audio.pause?.(); } catch {}
-          try { entry.audio.srcObject = null; } catch {}
-          entry.audio.remove();
-          audioEntryMap.delete(entry.audio);
+          disposePlaybackEntry(entry);
           audioElements.delete(streamKey);
           const feedId = Number(session.feedId);
           feedAudioElements.get(feedId)?.delete(entry.audio);
@@ -3853,17 +3914,7 @@ let cachedUsers = [];
         updateSpeakerHighlight(feedKey, false);
       }
       mutedPeers.delete(feedKey);
-      pendingAutoplayAudios.delete(entry.audio);
-      if (entry.mediaSource) {
-        try { entry.mediaSource.disconnect(); } catch {}
-        entry.mediaSource = null;
-      }
-      if (entry.gainNode) {
-        try { entry.gainNode.disconnect(); } catch {}
-        entry.gainNode = null;
-      }
-      entry.audio.remove();
-      audioEntryMap.delete(entry.audio);
+      disposePlaybackEntry(entry);
       audioElements.delete(mapKey);
       feedAudioElements.get(feedId)?.delete(entry.audio);
     }
@@ -3972,7 +4023,8 @@ let cachedUsers = [];
       if (mutedPeers.has(targetKey) && !isFeedKey(targetKey)) consumer.pause();
 
       const stream = new MediaStream([consumer.track]);
-      const shouldUseWebAudioLevelControl = isFeed || isiOS;
+      const feedPlayback = isFeed ? ensureFeedPlaybackBus() : null;
+      const shouldUseWebAudioLevelControl = !isFeed && isiOS;
       const ctxForPlayback = shouldUseWebAudioLevelControl ? ensureAudioContext() : null;
 
       const initVolRaw = getStoredVolume(volumeStorageKey);
@@ -3988,8 +4040,27 @@ let cachedUsers = [];
 
       let gainNode = null;
       let mediaSource = null;
+      let feedDuckingNode = null;
 
-      if (ctxForPlayback) {
+      if (feedPlayback) {
+        try {
+          mediaSource = feedPlayback.ctx.createMediaStreamSource(stream);
+          gainNode = feedPlayback.ctx.createGain();
+          feedDuckingNode = feedPlayback.ctx.createGain();
+          gainNode.gain.value = 0;
+          feedDuckingNode.gain.value = 1;
+          mediaSource.connect(gainNode);
+          gainNode.connect(feedDuckingNode);
+          feedDuckingNode.connect(feedPlayback.inputNode);
+          audio.muted = true;
+          audio.volume = 0;
+        } catch (err) {
+          console.warn('Failed to initialize feed playback bus path:', err);
+          gainNode = null;
+          mediaSource = null;
+          feedDuckingNode = null;
+        }
+      } else if (ctxForPlayback) {
         try {
           mediaSource = ctxForPlayback.createMediaStreamSource(stream);
           gainNode = ctxForPlayback.createGain();
@@ -4029,6 +4100,7 @@ let cachedUsers = [];
         type: normalizedAppData.type || 'user',
         gainNode,
         mediaSource,
+        feedDuckingNode,
         lastAppliedLevel: null,
         producerId: effectiveProducerId,
       };
@@ -4042,12 +4114,9 @@ let cachedUsers = [];
 
       if (isFeed) {
         if (mutedPeers.has(targetKey)) {
-          mutePlaybackEntry(entry);
-        } else if (session.kind === 'user') {
-          setPlaybackEntryLevel(entry, entry.volume);
-          applyFeedDucking();
+          muteFeedEntry(entry);
         } else {
-          setPlaybackEntryLevel(entry, entry.volume);
+          setFeedEntryLevel(entry, entry.volume);
         }
 
         const feedId = Number(normalizedAppData.id);
@@ -4084,6 +4153,9 @@ let cachedUsers = [];
       }
 
       await attemptPlayAudio(audio).catch(() => {});
+      if (isFeed && session.kind === 'user') {
+        applyFeedDucking();
+      }
 
       await new Promise((res) =>
         socket.emit('resume-consumer', { consumerId: consumer.id }, res)
@@ -4109,19 +4181,7 @@ let cachedUsers = [];
           updateSpeakerHighlight(targetKey, false);
         }
 
-        pendingAutoplayAudios.delete(audio);
-        if (entry.mediaSource) {
-          try { entry.mediaSource.disconnect(); } catch {}
-          entry.mediaSource = null;
-        }
-        if (entry.gainNode) {
-          try { entry.gainNode.disconnect(); } catch {}
-          entry.gainNode = null;
-        }
-        try { audio.pause?.(); } catch {}
-        try { audio.srcObject = null; } catch {}
-        audio.remove();
-        audioEntryMap.delete(audio);
+        disposePlaybackEntry(entry);
         audioElements.delete(streamKey);
 
         if (entry.type === 'feed') {
@@ -4435,21 +4495,7 @@ let cachedUsers = [];
     const stored = audioElements.get(streamKey);
     if (stored) {
       const audioEl = stored.audio;
-      pendingAutoplayAudios.delete(audioEl);
-      // Disconnect any WebAudio nodes first to avoid stale graph artifacts.
-      if (stored.mediaSource) {
-        try { stored.mediaSource.disconnect(); } catch {}
-        stored.mediaSource = null;
-      }
-      if (stored.gainNode) {
-        try { stored.gainNode.disconnect(); } catch {}
-        stored.gainNode = null;
-      }
-      // Release element playback and stream reference before removing.
-      try { audioEl.pause?.(); } catch {}
-      try { audioEl.srcObject = null; } catch {}
-      audioEl.remove();
-      audioEntryMap.delete(audioEl);
+      disposePlaybackEntry(stored);
       audioElements.delete(streamKey);
       if (stored.type === 'feed') {
         const feedId = Number(appData?.id);
@@ -4629,11 +4675,9 @@ let cachedUsers = [];
     if (isFeedKey(key)) {
       forEachStreamEntry(key, (entry) => {
         if (nowMuted) {
-          mutePlaybackEntry(entry);
+          muteFeedEntry(entry);
         } else {
-          setPlaybackEntryLevel(entry, entry.volume ?? defaultVolume);
-          enforcePitchLock(entry.audio);
-          attemptPlayAudio(entry.audio).catch(() => {});
+          setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
         }
       });
       if (session.kind === 'user') {
@@ -4655,8 +4699,6 @@ let cachedUsers = [];
           mutePlaybackEntry(entry);
         } else {
           setPlaybackEntryLevel(entry, entry.volume ?? defaultVolume);
-          enforcePitchLock(entry.audio);
-          attemptPlayAudio(entry.audio).catch(() => {});
         }
       });
     }
@@ -4986,7 +5028,6 @@ let cachedUsers = [];
     currentTarget = null;
     currentTargetPeer = null;
     applyFeedDucking();
-    attemptPendingAutoplay();
     clearHotkeyActiveStyles();
     pressedHotkeyDigits.clear();
     emitPttState('talk-stopped', { talking: false, lockActive: false, target: null });
