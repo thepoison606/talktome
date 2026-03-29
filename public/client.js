@@ -202,6 +202,7 @@ let feedStreaming = false;
 let feedManualStop = false;
 let shouldStartFeedWhenReady = false;
 const USER_ACTIVATION_EVENTS = ['pointerdown', 'mousedown', 'click', 'touchstart', 'keydown'];
+const ACTIVE_PRODUCERS_SYNC_INTERVAL_MS = 10000;
 const UI_ICONS = {
   talk: '/images/walkie-talkies-white.png',
   speakerOn: '/images/speaker-white.png',
@@ -1566,6 +1567,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const feedStreamStatus = document.getElementById("feed-stream-status");
   const peerConsumers = new Map();
   const targetLabels = new Map();
+  const conferenceLabels = new Map();
 
   // mediasoup variables
   let device, sendTransport, recvTransport, producer;
@@ -1575,8 +1577,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const feedAudioElements = new Map();
   const targetStreamMap = new Map();
   const feedDimmingDisabled = new Set();
-  const activeTalkersForMe = new Set();
-  const talkerConsumersForMe = new Map();
+  const activeFeedKeys = new Set();
+  // Server-authoritative set of user/conference targets that are currently addressing us.
   const speakingPeers = new Set();
   const mutedPeers = new Set();
   const pendingProducerQueue = [];
@@ -1587,6 +1589,7 @@ let currentTarget = null;
 let pendingTalkStart = null;
 let selfTalkingKey = null;
 let cachedUsers = [];
+  let incomingTalkState = { addressedNow: [], replyTarget: null };
   let mediaInitialized = false;
   let initializingMediaPromise = null;
   let shouldInitializeAfterConnect = false;
@@ -1594,7 +1597,8 @@ let cachedUsers = [];
   let activeLockTarget = null;
   let pendingPttSizingRaf = null;
   let pttSizingListenerBound = false;
-  let speakingPruneInterval = null;
+  let streamPruneInterval = null;
+  let activeProducerSyncInterval = null;
   let activeProducersSyncInFlight = false;
   let slideHintShown = false;
 
@@ -1714,6 +1718,10 @@ let cachedUsers = [];
     return !!(set && set.size);
   }
 
+  function isTargetSpeaking(targetKey) {
+    return speakingPeers.has(targetKey) || activeFeedKeys.has(targetKey);
+  }
+
   function forEachStreamKey(targetKey, callback) {
     const set = targetStreamMap.get(targetKey);
     if (!set) return;
@@ -1740,8 +1748,8 @@ let cachedUsers = [];
     return collected;
   }
 
-  function pruneSpeakingState() {
-    // Remove stale stream bookkeeping so "speaking" can't get stuck due to missed events.
+  function pruneIncomingStreamBookkeeping() {
+    // Remove stale stream bookkeeping so orphaned audio elements cannot linger.
     for (const [targetKey, set] of Array.from(targetStreamMap.entries())) {
       for (const streamKey of Array.from(set)) {
         const entry = audioElements.get(streamKey);
@@ -1769,15 +1777,8 @@ let cachedUsers = [];
         }
       }
 
-      if (!hasActiveStreams(targetKey) && speakingPeers.has(targetKey)) {
-        speakingPeers.delete(targetKey);
-        updateSpeakerHighlight(targetKey, false);
-      }
-    }
-
-    for (const targetKey of Array.from(speakingPeers)) {
-      if (!hasActiveStreams(targetKey)) {
-        speakingPeers.delete(targetKey);
+      if (isFeedKey(targetKey) && !hasActiveStreams(targetKey) && activeFeedKeys.has(targetKey)) {
+        activeFeedKeys.delete(targetKey);
         updateSpeakerHighlight(targetKey, false);
       }
     }
@@ -1799,13 +1800,39 @@ let cachedUsers = [];
     return makeStreamKey(targetKey, producerId);
   }
 
+  function cleanupConsumerById(consumerId, { suppressUi = false } = {}) {
+    if (!consumerId) return false;
+    const normalizedId = String(consumerId);
+
+    for (const [streamKey, entry] of audioElements.entries()) {
+      if (String(entry?.consumerId || "") !== normalizedId) continue;
+      const targetKey = entry?.key || null;
+      if (!targetKey) return false;
+      cleanupIncomingStream(targetKey, streamKey, { suppressUi });
+      return true;
+    }
+
+    for (const [streamKey, consumers] of peerConsumers.entries()) {
+      const matches = Array.from(consumers || []).some(
+        (consumer) => String(consumer?.id || "") === normalizedId
+      );
+      if (!matches) continue;
+
+      const targetKey = audioElements.get(streamKey)?.key
+        || Array.from(targetStreamMap.entries()).find(([, set]) => set?.has(streamKey))?.[0]
+        || null;
+      if (!targetKey) return false;
+      cleanupIncomingStream(targetKey, streamKey, { suppressUi });
+      return true;
+    }
+
+    return false;
+  }
+
   function cleanupIncomingStream(targetKey, streamKey, { suppressUi = false } = {}) {
     const consumersSet = peerConsumers.get(streamKey);
     if (consumersSet) {
       consumersSet.forEach(c => {
-        if (!isFeedKey(targetKey)) {
-          untrackTalkerForMe(targetKey, c.id);
-        }
         try { c.close(); } catch {}
       });
       peerConsumers.delete(streamKey);
@@ -1843,8 +1870,8 @@ let cachedUsers = [];
       }
     }
 
-    if (!hasActiveStreams(targetKey) && speakingPeers.has(targetKey)) {
-      speakingPeers.delete(targetKey);
+    if (isFeedKey(targetKey) && !hasActiveStreams(targetKey) && activeFeedKeys.has(targetKey)) {
+      activeFeedKeys.delete(targetKey);
       if (!suppressUi) {
         updateSpeakerHighlight(targetKey, false);
       }
@@ -1861,9 +1888,7 @@ let cachedUsers = [];
     peerConsumers.clear();
     audioElements.clear();
     pendingAutoplayAudios.clear();
-    speakingPeers.clear();
-    activeTalkersForMe.clear();
-    talkerConsumersForMe.clear();
+    activeFeedKeys.clear();
     confAudioElements.clear();
     feedAudioElements.clear();
   }
@@ -2007,6 +2032,33 @@ let cachedUsers = [];
     btnReply.setAttribute("aria-label", aria);
   }
 
+  function resolveReplyLabel(target) {
+    if (!target || target.id == null) return "";
+
+    if (target.type === "conference") {
+      const numericId = Number(target.id);
+      if (Number.isFinite(numericId) && conferenceLabels.has(numericId)) {
+        return conferenceLabels.get(numericId) ?? "";
+      }
+      return targetLabels.get(`conf-${target.id}`) ?? target.label ?? "";
+    }
+
+    if (target.type === "user") {
+      return targetLabels.get(`user-${target.id}`) ?? target.label ?? "";
+    }
+
+    return target.label ?? "";
+  }
+
+  function refreshLastTargetLabel() {
+    if (!lastTarget) return;
+    const resolved = resolveReplyLabel(lastTarget);
+    if (resolved && resolved !== lastTarget.label) {
+      lastTarget = { ...lastTarget, label: resolved };
+      renderReplyButtonLabel();
+    }
+  }
+
   function clearReplyTarget() {
     lastTarget = null;
     btnReply.disabled = true;
@@ -2014,6 +2066,135 @@ let cachedUsers = [];
   }
 
   clearReplyTarget();
+
+  function normalizeIncomingAddressedEntry(rawEntry) {
+    if (!rawEntry || typeof rawEntry !== 'object') return null;
+    const targetType = typeof rawEntry.targetType === 'string' ? rawEntry.targetType.trim().toLowerCase() : '';
+    if (targetType !== 'user' && targetType !== 'conference') return null;
+
+    const numericTargetId = Number(rawEntry.targetId);
+    const targetId = Number.isFinite(numericTargetId) ? numericTargetId : String(rawEntry.targetId ?? '');
+    if (targetId === '') return null;
+
+    const numericFromUserId = Number(rawEntry.fromUserId);
+    const at = Number(rawEntry.at);
+
+    return {
+      targetType,
+      targetId,
+      fromUserId: Number.isFinite(numericFromUserId) ? numericFromUserId : null,
+      fromName: typeof rawEntry.fromName === 'string' ? rawEntry.fromName : '',
+      at: Number.isFinite(at) ? at : 0,
+    };
+  }
+
+  function normalizeIncomingTalkState(rawState) {
+    const normalizedEntries = [];
+    const seen = new Set();
+    const entries = Array.isArray(rawState?.addressedNow) ? rawState.addressedNow : [];
+    entries.forEach((rawEntry) => {
+      const entry = normalizeIncomingAddressedEntry(rawEntry);
+      if (!entry) return;
+      const key = `${entry.targetType}:${entry.targetId}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      normalizedEntries.push(entry);
+    });
+    normalizedEntries.sort((left, right) => Number(right?.at || 0) - Number(left?.at || 0));
+
+    return {
+      addressedNow: normalizedEntries,
+      replyTarget: normalizeIncomingAddressedEntry(rawState?.replyTarget),
+    };
+  }
+
+  function resolveUserSocketId(rawUserId) {
+    const numericId = Number(rawUserId);
+    if (!Number.isFinite(numericId)) return null;
+    const user = cachedUsers.find((entry) => Number(entry?.userId) === numericId);
+    return user?.socketId || null;
+  }
+
+  function targetKeyFromIncomingAddressedEntry(entry) {
+    if (!entry) return null;
+    if (entry.targetType === 'conference') {
+      return `conf-${entry.targetId}`;
+    }
+    if (entry.targetType === 'user') {
+      const socketId = resolveUserSocketId(entry.targetId);
+      return `user-${socketId || entry.targetId}`;
+    }
+    return null;
+  }
+
+  function resolveReplyTargetFromIncomingEntry(entry) {
+    if (!entry) return null;
+
+    if (entry.targetType === 'conference') {
+      const conferenceId = Number(entry.targetId);
+      if (!Number.isFinite(conferenceId)) return null;
+      return {
+        type: 'conference',
+        id: conferenceId,
+        label: conferenceLabels.get(conferenceId) || targetLabels.get(`conf-${conferenceId}`) || String(conferenceId),
+      };
+    }
+
+    if (entry.targetType === 'user') {
+      const numericUserId = Number(entry.targetId);
+      if (!Number.isFinite(numericUserId)) return null;
+      const socketId = resolveUserSocketId(numericUserId);
+      const onlineUser = cachedUsers.find((candidate) => Number(candidate?.userId) === numericUserId);
+      return {
+        type: 'user',
+        id: socketId || numericUserId,
+        label: onlineUser?.name || entry.fromName || String(numericUserId),
+      };
+    }
+
+    return null;
+  }
+
+  function applyIncomingTalkState() {
+    if (session.kind !== 'user') return;
+
+    const nextSpeaking = new Set();
+    incomingTalkState.addressedNow.forEach((entry) => {
+      const targetKey = targetKeyFromIncomingAddressedEntry(entry);
+      if (targetKey) {
+        nextSpeaking.add(targetKey);
+      }
+    });
+
+    for (const targetKey of Array.from(speakingPeers)) {
+      if (!nextSpeaking.has(targetKey)) {
+        speakingPeers.delete(targetKey);
+        updateSpeakerHighlight(targetKey, false);
+      }
+    }
+
+    speakingPeers.clear();
+    for (const targetKey of Array.from(nextSpeaking)) {
+      speakingPeers.add(targetKey);
+      updateSpeakerHighlight(targetKey, true);
+    }
+
+    const replyTarget = resolveReplyTargetFromIncomingEntry(incomingTalkState.replyTarget);
+    if (replyTarget) {
+      lastTarget = replyTarget;
+      const replyUserSocketId = replyTarget.type === 'user'
+        ? resolveUserSocketId(replyTarget.id)
+          || cachedUsers.find((entry) => String(entry?.socketId) === String(replyTarget.id))?.socketId
+          || null
+        : null;
+      btnReply.disabled = replyTarget.type === 'user' ? !replyUserSocketId : false;
+      renderReplyButtonLabel();
+    } else {
+      clearReplyTarget();
+    }
+
+    applyFeedDucking();
+  }
 
   function applySessionUI() {
     const isFeed = session.kind === 'feed';
@@ -2096,7 +2277,7 @@ let cachedUsers = [];
   function applyFeedDucking() {
     if (session.kind !== 'user') return;
     const shouldDimSelf = feedDimSelf && isTalking;
-    const shouldDuck = activeTalkersForMe.size > 0 || shouldDimSelf;
+    const shouldDuck = speakingPeers.size > 0 || shouldDimSelf;
     const stateChanged = shouldDuck !== feedDuckingActive;
     feedDuckingActive = shouldDuck;
 
@@ -2131,46 +2312,6 @@ let cachedUsers = [];
     }
   }
 
-  function trackTalkerForMe(key, consumerId) {
-    let set = talkerConsumersForMe.get(key);
-    if (!set) {
-      set = new Set();
-      talkerConsumersForMe.set(key, set);
-    }
-
-    const hadEntries = set.size > 0;
-    set.add(consumerId);
-    if (!hadEntries) {
-      activeTalkersForMe.add(key);
-      if (session.kind === 'user') {
-        applyFeedDucking();
-      }
-    }
-  }
-
-  function untrackTalkerForMe(key, consumerId) {
-    const set = talkerConsumersForMe.get(key);
-    if (!set) return;
-
-    if (!set.delete(consumerId)) {
-      return;
-    }
-
-    if (set.size === 0) {
-      talkerConsumersForMe.delete(key);
-      if (activeTalkersForMe.delete(key) && session.kind === 'user') {
-        applyFeedDucking();
-      }
-    }
-  }
-
-  function clearTalkersForKey(key) {
-    talkerConsumersForMe.delete(key);
-    if (activeTalkersForMe.delete(key) && session.kind === 'user') {
-      applyFeedDucking();
-    }
-  }
-
   async function startFeedStream({ manual = false } = {}) {
     if (session.kind !== 'feed') return;
     if (feedStreaming) return;
@@ -2187,7 +2328,7 @@ let cachedUsers = [];
 
     const feedKey = session.feedId != null ? `feed-${session.feedId}` : null;
     if (feedKey) {
-      speakingPeers.delete(feedKey);
+      activeFeedKeys.delete(feedKey);
       updateSpeakerHighlight(feedKey, false);
       forEachStreamKey(feedKey, (streamKey) => {
         const consumers = peerConsumers.get(streamKey);
@@ -2306,11 +2447,7 @@ let cachedUsers = [];
     const feedKey = session.feedId != null ? `feed-${session.feedId}` : null;
 
     if (producer) {
-      try {
-        socket.emit('producer-close', { producerId: producer.id });
-      } catch (err) {
-        console.warn('Error notifying server about feed stop:', err);
-      }
+      notifyServerProducerClosed(producer.id, { context: 'feed-stop' });
       try {
         producer.close();
       } catch (err) {
@@ -2324,7 +2461,7 @@ let cachedUsers = [];
       shouldStartFeedWhenReady = false;
     }
     if (feedKey) {
-      speakingPeers.delete(feedKey);
+      activeFeedKeys.delete(feedKey);
       updateSpeakerHighlight(feedKey, false);
     }
     cleanupMicTrack();
@@ -2350,6 +2487,15 @@ let cachedUsers = [];
       throw err;
     } finally {
       initializingMediaPromise = null;
+    }
+  }
+
+  function notifyServerProducerClosed(producerId, { context = 'producer-close' } = {}) {
+    if (!producerId) return;
+    try {
+      socket.emit('producer-close', { producerId });
+    } catch (err) {
+      console.warn(`Error notifying server about ${context}:`, err);
     }
   }
 
@@ -2682,6 +2828,9 @@ let cachedUsers = [];
   socket.on("disconnect", () => {
     console.log("Disconnected from server");
     myIdEl.textContent = "Disconnected";
+    incomingTalkState = { addressedNow: [], replyTarget: null };
+    speakingPeers.clear();
+    activeFeedKeys.clear();
     clearReplyTarget();
     setReplyButtonActive(false);
     // Disable all user buttons
@@ -2692,10 +2841,11 @@ let cachedUsers = [];
     stopTalkingSafely();
     clearLockState();
 
-    if (speakingPruneInterval) {
-      clearInterval(speakingPruneInterval);
-      speakingPruneInterval = null;
+    if (streamPruneInterval) {
+      clearInterval(streamPruneInterval);
+      streamPruneInterval = null;
     }
+    stopActiveProducerSync();
     activeProducersSyncInFlight = false;
     cleanupAllIncomingStreams({ suppressUi: true });
     document.querySelectorAll('#targets-list li.target-item').forEach(li => {
@@ -2727,8 +2877,28 @@ let cachedUsers = [];
     cachedUsers = users;
     if (session.kind === 'user') {
       await renderTargetList(users);
+      applyIncomingTalkState();
       requestActiveProducers().catch(() => {});
     }
+  });
+
+  socket.on("conference-list", (conferences = []) => {
+    conferenceLabels.clear();
+    if (Array.isArray(conferences)) {
+      conferences.forEach((conference) => {
+        const id = Number(conference?.id);
+        if (!Number.isFinite(id)) return;
+        conferenceLabels.set(id, conference?.name || String(id));
+      });
+    }
+    refreshLastTargetLabel();
+    applyIncomingTalkState();
+  });
+
+  socket.on('incoming-talk-state', ({ state } = {}) => {
+    if (session.kind !== 'user') return;
+    incomingTalkState = normalizeIncomingTalkState(state);
+    applyIncomingTalkState();
   });
 
   socket.on('user-targets-updated', async () => {
@@ -3108,6 +3278,7 @@ let cachedUsers = [];
       .filter(t => t.targetType === 'conference')
       .forEach(t => {
         conferenceNames.set(Number(t.targetId), t.name);
+        conferenceLabels.set(Number(t.targetId), t.name);
         targetLabels.set(`conf-${t.targetId}`, t.name);
       });
 
@@ -3678,7 +3849,7 @@ let cachedUsers = [];
       }
       unregisterStreamKey(feedKey, mapKey);
       if (!hasActiveStreams(feedKey)) {
-        speakingPeers.delete(feedKey);
+        activeFeedKeys.delete(feedKey);
         updateSpeakerHighlight(feedKey, false);
       }
       mutedPeers.delete(feedKey);
@@ -3705,18 +3876,7 @@ let cachedUsers = [];
       handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
     }
 
-    pruneSpeakingState();
-
-    for (const targetKey of Array.from(speakingPeers)) {
-      if (!hasActiveStreams(targetKey)) {
-        speakingPeers.delete(targetKey);
-      }
-    }
-    for (const [targetKey, streams] of targetStreamMap.entries()) {
-      if (streams && streams.size) {
-        speakingPeers.add(targetKey);
-      }
-    }
+    pruneIncomingStreamBookkeeping();
 
     document.querySelectorAll('.target-item').forEach(li => {
       const key = li.id;
@@ -3724,11 +3884,11 @@ let cachedUsers = [];
         ? li.querySelector('.user-icon')
         : key.startsWith('conf-')
           ? li.querySelector('.conf-icon')
-          : key.startsWith('feed-')
+        : key.startsWith('feed-')
             ? li.querySelector('.feed-icon')
             : null;
 
-      const isSpeaking = speakingPeers.has(key);
+      const isSpeaking = isTargetSpeaking(key);
       li.classList.toggle('speaking', isSpeaking);
       if (icon) icon.classList.toggle('speaking', isSpeaking);
 
@@ -3737,16 +3897,8 @@ let cachedUsers = [];
       if (icon) icon.classList.toggle('muted', isMuted);
     });
 
-    if (lastTarget) {
-      const key = lastTarget.type === 'conference'
-        ? `conf-${lastTarget.id}`
-        : `user-${lastTarget.id}`;
-      const updatedLabel = targetLabels.get(key);
-      if (updatedLabel && updatedLabel !== lastTarget.label) {
-        lastTarget = { ...lastTarget, label: updatedLabel };
-        renderReplyButtonLabel();
-      }
-    }
+    refreshLastTargetLabel();
+    applyIncomingTalkState();
 
     schedulePttButtonSizing();
     if (!pttSizingListenerBound) {
@@ -3801,8 +3953,6 @@ let cachedUsers = [];
     const streamKey = makeStreamKey(targetKey, effectiveProducerId);
 
     try {
-      const shouldTrackForMe = !isFeed;
-
       const { error, ...consumeParams } = await new Promise((resolve) =>
         socket.emit('consume', {
           producerId,
@@ -3820,9 +3970,6 @@ let cachedUsers = [];
       if (!peerConsumers.has(streamKey)) peerConsumers.set(streamKey, new Set());
       peerConsumers.get(streamKey).add(consumer);
       if (mutedPeers.has(targetKey) && !isFeedKey(targetKey)) consumer.pause();
-      if (shouldTrackForMe) {
-        trackTalkerForMe(targetKey, consumer.id);
-      }
 
       const stream = new MediaStream([consumer.track]);
       const shouldUseWebAudioLevelControl = isFeed || isiOS;
@@ -3878,6 +4025,7 @@ let cachedUsers = [];
         volume: initVol,
         key: targetKey,
         streamKey,
+        consumerId: consumer.id,
         type: normalizedAppData.type || 'user',
         gainNode,
         mediaSource,
@@ -3887,8 +4035,8 @@ let cachedUsers = [];
       audioElements.set(streamKey, entry);
       audioEntryMap.set(audio, entry);
       registerStreamKey(targetKey, streamKey);
-      if (!speakingPeers.has(targetKey)) {
-        speakingPeers.add(targetKey);
+      if (isFeed) {
+        activeFeedKeys.add(targetKey);
         updateSpeakerHighlight(targetKey, true);
       }
 
@@ -3947,10 +4095,6 @@ let cachedUsers = [];
         consumerClosed = true;
         console.log(`Producer closed for consumer ${consumer.id}`);
 
-        if (shouldTrackForMe) {
-          untrackTalkerForMe(targetKey, consumer.id);
-        }
-
         const consumersSet = peerConsumers.get(streamKey);
         if (consumersSet) {
           consumersSet.delete(consumer);
@@ -3960,8 +4104,8 @@ let cachedUsers = [];
         }
 
         unregisterStreamKey(targetKey, streamKey);
-        if (!hasActiveStreams(targetKey)) {
-          speakingPeers.delete(targetKey);
+        if (isFeed && !hasActiveStreams(targetKey)) {
+          activeFeedKeys.delete(targetKey);
           updateSpeakerHighlight(targetKey, false);
         }
 
@@ -4002,28 +4146,13 @@ let cachedUsers = [];
   async function processPendingProducers() {
     if (!device || !recvTransport) return;
 
-    const seenDuringFlush = new Set();
     while (pendingProducerQueue.length) {
       const payload = pendingProducerQueue.shift();
-      if (payload?.appData?.type === 'conference' && payload.appData.id != null) {
-        seenDuringFlush.add(Number(payload.appData.id));
-      }
       try {
         await consumeProducerPayload(payload);
       } catch (err) {
         console.error('Failed to consume queued producer', err);
       }
-    }
-    if (seenDuringFlush.size) {
-      document.querySelectorAll('.target-item.conf-target').forEach(li => {
-        const confId = Number(li.dataset.id);
-        if (!Number.isFinite(confId)) return;
-        const key = `conf-${confId}`;
-        if (!seenDuringFlush.has(confId) && !hasActiveStreams(key)) {
-          speakingPeers.delete(key);
-          updateSpeakerHighlight(key, false);
-        }
-      });
     }
   }
 
@@ -4076,6 +4205,23 @@ let cachedUsers = [];
     } finally {
       activeProducersSyncInFlight = false;
     }
+  }
+
+  function startActiveProducerSync() {
+    if (activeProducerSyncInterval) return;
+    activeProducerSyncInterval = setInterval(() => {
+      if (!mediaInitialized) return;
+      if (session.kind !== 'user') return;
+      if (document.visibilityState === 'hidden') return;
+      if (!socket.connected) return;
+      requestActiveProducers().catch(() => {});
+    }, ACTIVE_PRODUCERS_SYNC_INTERVAL_MS);
+  }
+
+  function stopActiveProducerSync() {
+    if (!activeProducerSyncInterval) return;
+    clearInterval(activeProducerSyncInterval);
+    activeProducerSyncInterval = null;
   }
 
 
@@ -4216,9 +4362,10 @@ let cachedUsers = [];
 
       await processPendingProducers();
       await requestActiveProducers();
-      if (!speakingPruneInterval) {
-        speakingPruneInterval = setInterval(pruneSpeakingState, 2000);
+      if (!streamPruneInterval) {
+        streamPruneInterval = setInterval(pruneIncomingStreamBookkeeping, 2000);
       }
+      startActiveProducerSync();
       if (session.kind === 'feed') {
         updateFeedControls();
         if (!feedManualStop && (feedStreaming || shouldStartFeedWhenReady)) {
@@ -4242,6 +4389,13 @@ let cachedUsers = [];
     handleIncomingProducer(payload).catch(err => console.error('Failed to handle producer', err));
   });
 
+  socket.on('consumer-closed', ({ consumerId } = {}) => {
+    const cleaned = cleanupConsumerById(consumerId);
+    if (!cleaned && mediaInitialized && session.kind === 'user') {
+      requestActiveProducers().catch(() => {});
+    }
+  });
+
 
   socket.on("producer-closed", ({ peerId, producerId, appData }) => {
     // 1️⃣ Compute the key like always
@@ -4260,24 +4414,21 @@ let cachedUsers = [];
     const consumersSet = peerConsumers.get(streamKey);
     if (!consumersSet || consumersSet.size === 0) {
       unregisterStreamKey(key, streamKey);
-      if (!hasActiveStreams(key)) {
-        speakingPeers.delete(key);
+      if (isFeedKey(key) && !hasActiveStreams(key)) {
+        activeFeedKeys.delete(key);
         updateSpeakerHighlight(key, false);
       }
       return;
     }
 
     consumersSet.forEach(c => {
-      if (appData?.type !== 'feed') {
-        untrackTalkerForMe(key, c.id);
-      }
       try { c.close(); } catch {}
     });
     peerConsumers.delete(streamKey);
     unregisterStreamKey(key, streamKey);
 
-    if (!hasActiveStreams(key)) {
-      speakingPeers.delete(key);
+    if (isFeedKey(key) && !hasActiveStreams(key)) {
+      activeFeedKeys.delete(key);
       updateSpeakerHighlight(key, false);
     }
 
@@ -4319,6 +4470,12 @@ let cachedUsers = [];
     if (targetLabels.has(targetKey)) {
       return targetLabels.get(targetKey) ?? "";
     }
+    if (targetKey.startsWith("conf-")) {
+      const confId = Number(targetKey.slice(5));
+      if (Number.isFinite(confId) && conferenceLabels.has(confId)) {
+        return conferenceLabels.get(confId) ?? "";
+      }
+    }
     const separatorIndex = targetKey.indexOf("-");
     const fallback = separatorIndex >= 0 ? targetKey.slice(separatorIndex + 1) : targetKey;
     return fallback || "";
@@ -4344,42 +4501,15 @@ let cachedUsers = [];
       lockTargetMatches = isSameTarget(activeLockTarget, candidate);
     }
 
-    const lastTargetMatchesKey =
-      lastTarget &&
-      (lastTarget.type === "conference"
-        ? `conf-${lastTarget.id}` === targetKey
-        : lastTarget.type === "user"
-          ? `user-${lastTarget.id}` === targetKey
-          : false);
-
     if (isSpeaking) {
       el?.classList.add("speaking");
       icon?.classList.add("speaking");
-
-      // Update reply target immediately when someone starts speaking so the
-      // user can reply even if the speaker is on talk lock (never "stops").
-      if (session.kind === 'user' && !isFeed && (isConference || isUser)) {
-        const targetData = {
-          type: isConference ? "conference" : "user",
-          id: rawId,
-          label: labelText || rawId,
-        };
-
-        if (!(targetData.type === "user" && targetData.id === socket.id)) {
-          lastTarget = targetData;
-          btnReply.disabled = false;
-          renderReplyButtonLabel();
-        }
-      }
 
       applyFeedDucking();
       return;
     }
 
     if (!el) {
-      if (!isFeed && lastTargetMatchesKey) {
-        clearReplyTarget();
-      }
       applyFeedDucking();
       return;
     }
@@ -4389,29 +4519,6 @@ let cachedUsers = [];
     if (lockTargetMatches) {
       el?.classList.add("talking-to");
     }
-
-    if (isFeed) {
-      return;
-    }
-
-    if (!isConference && !isUser) {
-      clearReplyTarget();
-    } else {
-      const targetData = {
-        type: isConference ? "conference" : "user",
-        id: rawId,
-        label: labelText || rawId,
-      };
-
-      if (targetData.type === "user" && targetData.id === socket.id) {
-        lastTarget = null;
-      } else {
-        lastTarget = targetData;
-      }
-    }
-
-    btnReply.disabled = !lastTarget;
-    renderReplyButtonLabel();
 
     applyFeedDucking();
   }
@@ -4657,7 +4764,18 @@ let cachedUsers = [];
     if (session.kind !== 'user') return;
     if (producer || pendingTalkStart) return;
     if (!target) return;
-    const normalizedTarget = { type: target.type, id: target.id };
+    let normalizedTarget = { type: target.type, id: target.id };
+    let resolvedTargetPeer = null;
+    if (normalizedTarget.type === 'user') {
+      resolvedTargetPeer = resolveUserSocketId(normalizedTarget.id)
+        || cachedUsers.find((entry) => String(entry?.socketId) === String(normalizedTarget.id))?.socketId
+        || null;
+      if (!resolvedTargetPeer) {
+        console.warn('Talk target is not currently available', normalizedTarget);
+        return;
+      }
+      normalizedTarget = { type: 'user', id: resolvedTargetPeer };
+    }
     const targetKey = keyFromTarget(normalizedTarget);
     if (!slideHintShown && targetKey && !targetKey.startsWith('feed-')) {
       const li = document.getElementById(targetKey);
@@ -4671,7 +4789,7 @@ let cachedUsers = [];
     const pendingStart = {
       canceled: false,
       target: normalizedTarget,
-      targetPeer: normalizedTarget.type === 'user' ? normalizedTarget.id : null,
+      targetPeer: normalizedTarget.type === 'user' ? resolvedTargetPeer : null,
     };
     pendingTalkStart = pendingStart;
     if (feedDimSelf) {
@@ -4740,6 +4858,11 @@ let cachedUsers = [];
         if (pendingTalkStart === pendingStart) {
           pendingTalkStart = null;
         }
+        // The server-side producer already exists once `produce()` resolves.
+        // If the user released PTT during that async window, we still must
+        // explicitly tell the server to close it or remote peers keep a stale
+        // "speaking" state.
+        notifyServerProducerClosed(newProducer.id, { context: 'talk-start-cancel' });
         newProducer.close();
         finalTrack.enabled = false;
         if (processedTrack && processedTrack !== track) {
@@ -4844,7 +4967,7 @@ let cachedUsers = [];
     clearLockState();
 
     if (producer) {
-      socket.emit("producer-close", { producerId: producer.id });
+      notifyServerProducerClosed(producer.id, { context: 'talk-stop' });
       producer.close();
       producer = null;
     }
@@ -4885,7 +5008,7 @@ let cachedUsers = [];
       return;
     }
     if (document.visibilityState === 'visible') {
-      pruneSpeakingState();
+      pruneIncomingStreamBookkeeping();
       if (mediaInitialized) {
         requestActiveProducers().catch(() => {});
       }
@@ -4896,7 +5019,7 @@ let cachedUsers = [];
   window.addEventListener('pagehide', () => stopTalkingSafely());
   window.addEventListener('blur', () => stopTalkingSafely({ respectLock: true }));
   window.addEventListener('focus', () => {
-    pruneSpeakingState();
+    pruneIncomingStreamBookkeeping();
     if (mediaInitialized) {
       requestActiveProducers().catch(() => {});
     }
