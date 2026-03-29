@@ -210,6 +210,7 @@ const UI_ICONS = {
 };
 const pendingAutoplayAudios = new Set();
 let sharedAudioContext = null;
+let feedProcessingAudioContext = null;
 let onAudioContextRunning = null;
 let audioContextPrimed = false;
 let feedProcessingChain = null;
@@ -267,25 +268,66 @@ function syncDimAmountSelect(value) {
   }
 }
 
-function ensureAudioContext() {
+function createManagedAudioContext({ label = 'AudioContext', onRunning = null } = {}) {
   if (typeof window === 'undefined') return null;
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
   if (!AudioCtx) return null;
-  if (!sharedAudioContext) {
-    try {
-      sharedAudioContext = new AudioCtx({ latencyHint: 'interactive', sampleRate: 48000 });
-      sharedAudioContext.addEventListener('statechange', () => {
-        if (sharedAudioContext.state === 'running' && typeof onAudioContextRunning === 'function') {
-          onAudioContextRunning();
+  try {
+    const ctx = new AudioCtx({ latencyHint: 'interactive', sampleRate: 48000 });
+    if (typeof onRunning === 'function' && typeof ctx.addEventListener === 'function') {
+      ctx.addEventListener('statechange', () => {
+        if (ctx.state === 'running') {
+          onRunning();
         }
       });
-    } catch (err) {
-      console.warn('Failed to create AudioContext:', err);
-      sharedAudioContext = null;
-      return null;
     }
+    return ctx;
+  } catch (err) {
+    console.warn(`Failed to create ${label}:`, err);
+    return null;
   }
+}
+
+async function resumeAudioContextIfNeeded(ctx, { label = 'AudioContext', onRunning = null } = {}) {
+  if (!ctx) return;
+  if (ctx.state === 'running') {
+    if (typeof onRunning === 'function') {
+      onRunning();
+    }
+    return;
+  }
+  if (ctx.state !== 'suspended' || typeof ctx.resume !== 'function') {
+    return;
+  }
+  try {
+    await ctx.resume();
+  } catch (err) {
+    console.warn(`Failed to resume ${label}:`, err);
+  }
+}
+
+function ensureAudioContext() {
+  if (sharedAudioContext && sharedAudioContext.state !== 'closed') {
+    return sharedAudioContext;
+  }
+  sharedAudioContext = createManagedAudioContext({
+    label: 'shared AudioContext',
+    onRunning: () => {
+      if (typeof onAudioContextRunning === 'function') {
+        onAudioContextRunning();
+      }
+    }
+  });
   return sharedAudioContext;
+}
+
+function ensureFeedProcessingAudioContext() {
+  if (feedProcessingAudioContext && feedProcessingAudioContext.state !== 'closed') {
+    return feedProcessingAudioContext;
+  }
+  // Keep the feed ingest graph isolated from playback state so feed uplink stays stable.
+  feedProcessingAudioContext = createManagedAudioContext({ label: 'feed ingest AudioContext' });
+  return feedProcessingAudioContext;
 }
 
 function ensureFeedPlaybackBus() {
@@ -561,7 +603,7 @@ function updateFeedMeterFromAnalyser() {
 
 // Builds an AudioContext processing graph for the feed to apply gain and drive the meter.
 function ensureFeedProcessingChain(track) {
-  const ctx = ensureAudioContext();
+  const ctx = ensureFeedProcessingAudioContext();
   if (!ctx) {
     console.warn('AudioContext unavailable; feed input gain disabled.');
     return null;
@@ -1101,22 +1143,13 @@ function attemptPendingAutoplay() {
 function handleUserActivation() {
   attemptPendingAutoplay();
   primeVoiceProcessingMode().catch(() => {});
-  const ctx = ensureAudioContext();
-  if (!ctx) return;
-  if (ctx.state === 'running') {
-    if (typeof onAudioContextRunning === 'function') {
-      onAudioContextRunning();
-    }
-    return;
-  }
-  if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
-    ctx.resume().then(() => {
-      if (typeof onAudioContextRunning === 'function') {
-        onAudioContextRunning();
-      }
-    }).catch(err => {
-      console.warn('Failed to resume AudioContext:', err);
-    });
+  const sharedCtx = ensureAudioContext();
+  resumeAudioContextIfNeeded(sharedCtx, {
+    label: 'shared AudioContext',
+    onRunning: typeof onAudioContextRunning === 'function' ? onAudioContextRunning : null,
+  });
+  if (feedProcessingAudioContext) {
+    resumeAudioContextIfNeeded(feedProcessingAudioContext, { label: 'feed ingest AudioContext' });
   }
 }
 
@@ -2439,6 +2472,9 @@ let cachedUsers = [];
       track.enabled = true;
 
       const processing = ensureFeedProcessingChain(track);
+      if (processing?.ctx) {
+        await resumeAudioContextIfNeeded(processing.ctx, { label: 'feed ingest AudioContext' });
+      }
       const processedTrack = processing?.outputTrack || track;
       try { processedTrack.contentHint = 'music'; } catch {}
       try { await processedTrack.applyConstraints?.({ channelCount: 2 }); } catch {}
