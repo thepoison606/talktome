@@ -1196,16 +1196,6 @@
     });
   </script>
   <script src="/mediasoup-client.js"></script>
-  <script>
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices
-        .getUserMedia({ audio: true })
-        .then((stream) => stream.getTracks().forEach((track) => track.stop()))
-        .catch((error) =>
-          console.warn("Microphone access denied or error:", error)
-        );
-    }
-  </script>
   <script src="client.js"></script>
   <script>
     (function () {

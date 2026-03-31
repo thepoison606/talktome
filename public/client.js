@@ -160,10 +160,70 @@ const FEED_PROFILE = {
     opusPtime: 20,
   },
   encodings: [{ dtx: false, maxBitrate: 128000, priority: 'high' }],
-  constraints: { channelCount: 2, sampleRate: 48000 },
+  constraints: {
+    channelCount: { ideal: 2 },
+    sampleRate: { ideal: 48000 },
+  },
 };
 
 let session = { kind: 'guest', userId: null, feedId: null, name: null };
+let device = null;
+let sendTransport = null;
+let recvTransport = null;
+let producer = null;
+
+function installMediaConstraintDiagnostics() {
+  if (typeof window === 'undefined') return;
+  if (window.__talkToMeMediaConstraintDiagnosticsInstalled) return;
+  window.__talkToMeMediaConstraintDiagnosticsInstalled = true;
+
+  if (navigator.mediaDevices?.getUserMedia) {
+    const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async (constraints) => {
+      try {
+        return await originalGetUserMedia(constraints);
+      } catch (error) {
+        if (error?.name === 'OverconstrainedError') {
+          console.error('[media] getUserMedia OverconstrainedError', {
+            constraints,
+            constraint: error?.constraint,
+            message: error?.message || String(error),
+            sessionKind: session?.kind || 'unknown',
+            sessionName: session?.name || null,
+            stack: new Error().stack,
+          });
+        }
+        throw error;
+      }
+    };
+  }
+
+  if (typeof MediaStreamTrack !== 'undefined' && MediaStreamTrack.prototype?.applyConstraints) {
+    const originalApplyConstraints = MediaStreamTrack.prototype.applyConstraints;
+    MediaStreamTrack.prototype.applyConstraints = async function patchedApplyConstraints(constraints) {
+      try {
+        return await originalApplyConstraints.call(this, constraints);
+      } catch (error) {
+        if (error?.name === 'OverconstrainedError') {
+          console.error('[media] applyConstraints OverconstrainedError', {
+            constraints,
+            constraint: error?.constraint,
+            message: error?.message || String(error),
+            trackLabel: this?.label || null,
+            trackKind: this?.kind || null,
+            readyState: this?.readyState || null,
+            sessionKind: session?.kind || 'unknown',
+            sessionName: session?.name || null,
+            stack: new Error().stack,
+          });
+        }
+        throw error;
+      }
+    };
+  }
+}
+
+installMediaConstraintDiagnostics();
 let inputSelect;
 let qualitySelect;
 let dimAmountSelect;
@@ -201,6 +261,8 @@ let micPrimingPromise = null;
 let feedStreaming = false;
 let feedManualStop = false;
 let shouldStartFeedWhenReady = false;
+let isTalking = false;
+let pendingTalkStart = null;
 const USER_ACTIVATION_EVENTS = ['pointerdown', 'mousedown', 'click', 'touchstart', 'keydown'];
 const ACTIVE_PRODUCERS_SYNC_INTERVAL_MS = 10000;
 const UI_ICONS = {
@@ -683,8 +745,6 @@ function ensureFeedProcessingChain(track) {
   outputTrack.enabled = track.enabled;
   // For program feeds we want full-bandwidth stereo, not speech processing
   try { outputTrack.contentHint = 'music'; } catch {}
-  // Make a best effort to keep stereo through the WebAudio pipe
-  try { outputTrack.applyConstraints?.({ channelCount: 2 }); } catch {}
 
   const meterData = new Float32Array(analyser.fftSize);
   const meterDataL = new Float32Array(analyserL.fftSize);
@@ -1301,6 +1361,24 @@ function scheduleMicCleanup() {
   }, 60000);
 }
 
+function buildRelaxedAudioConstraints(audioConstraints, { dropDeviceId = false } = {}) {
+  if (!audioConstraints || typeof audioConstraints !== 'object') {
+    return audioConstraints;
+  }
+
+  const relaxed = { ...audioConstraints };
+  if (dropDeviceId) {
+    delete relaxed.deviceId;
+  }
+  if ('channelCount' in relaxed) {
+    delete relaxed.channelCount;
+  }
+  if ('sampleRate' in relaxed) {
+    delete relaxed.sampleRate;
+  }
+  return relaxed;
+}
+
 async function ensureMicTrack(audioConstraints, selectedDeviceId) {
   if (micTrack && micTrack.readyState === 'live') {
     if (!selectedDeviceId || selectedDeviceId === micDeviceId) {
@@ -1320,7 +1398,39 @@ async function ensureMicTrack(audioConstraints, selectedDeviceId) {
     cleanupMicTrack();
   }
 
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+  let stream;
+  const openMic = (constraints) => navigator.mediaDevices.getUserMedia({ audio: constraints });
+  try {
+    stream = await openMic(audioConstraints);
+  } catch (error) {
+    const shouldRetryRelaxed = error?.name === 'OverconstrainedError' || error?.name === 'NotFoundError';
+    if (!shouldRetryRelaxed) {
+      throw error;
+    }
+
+    const relaxedConstraints = buildRelaxedAudioConstraints(audioConstraints, {
+      dropDeviceId: !!selectedDeviceId,
+    });
+    console.warn('Retrying microphone access with relaxed constraints:', {
+      original: audioConstraints,
+      relaxed: relaxedConstraints,
+      error: error?.message || error,
+    });
+    try {
+      stream = await openMic(relaxedConstraints);
+    } catch (retryError) {
+      const shouldRetryPlain = retryError?.name === 'OverconstrainedError' || retryError?.name === 'NotFoundError';
+      if (!shouldRetryPlain) {
+        throw retryError;
+      }
+      console.warn('Retrying microphone access with plain audio constraints:', {
+        original: audioConstraints,
+        relaxed: relaxedConstraints,
+        error: retryError?.message || retryError,
+      });
+      stream = await openMic(true);
+    }
+  }
   const [track] = stream.getAudioTracks();
 
   micStream = stream;
@@ -1633,8 +1743,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const targetLabels = new Map();
   const conferenceLabels = new Map();
 
-  // mediasoup variables
-  let device, sendTransport, recvTransport, producer;
   const audioElements = new Map();
   const audioEntryMap = new WeakMap();
   const confAudioElements = new Map();
@@ -1648,9 +1756,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const pendingProducerQueue = [];
 let currentTargetPeer = null;
 let lastTarget = null;
-let isTalking = false;
 let currentTarget = null;
-let pendingTalkStart = null;
 let selfTalkingKey = null;
 let cachedUsers = [];
   let incomingTalkState = { addressedNow: [], replyTarget: null };
@@ -1664,6 +1770,7 @@ let cachedUsers = [];
   let streamPruneInterval = null;
   let activeProducerSyncInterval = null;
   let activeProducersSyncInFlight = false;
+  let pendingIncomingConsumeKeys = new Set();
   let slideHintShown = false;
 
   function normalizePttTarget(target) {
@@ -1787,9 +1894,21 @@ let cachedUsers = [];
   }
 
   function forEachStreamKey(targetKey, callback) {
+    const seen = new Set();
     const set = targetStreamMap.get(targetKey);
-    if (!set) return;
-    Array.from(set).forEach(callback);
+    if (set) {
+      Array.from(set).forEach((streamKey) => {
+        seen.add(streamKey);
+        callback(streamKey);
+      });
+    }
+
+    for (const [streamKey, entry] of audioElements.entries()) {
+      if (!entry || entry.key !== targetKey || seen.has(streamKey)) continue;
+      registerStreamKey(targetKey, streamKey);
+      seen.add(streamKey);
+      callback(streamKey);
+    }
   }
 
   function forEachStreamEntry(targetKey, callback) {
@@ -1835,6 +1954,11 @@ let cachedUsers = [];
         const track = audioEl?.srcObject?.getTracks?.()?.[0] || null;
         const trackLive = !!(track && track.readyState === 'live');
         const audioInDom = !!(audioEl && document.body.contains(audioEl));
+        const keepLiveEntryMapped = !!(entry && audioInDom && trackLive);
+
+        if (keepLiveEntryMapped) {
+          continue;
+        }
 
         if (!entry || !hasConsumers || !audioInDom || !trackLive) {
           unregisterStreamKey(targetKey, streamKey);
@@ -2468,7 +2592,7 @@ let cachedUsers = [];
       const track = await ensureMicTrack(audioConstraints, selectedDeviceId);
       // Hint the browser that this is program audio, not speech
       try { track.contentHint = 'music'; } catch {}
-      try { await track.applyConstraints?.({ channelCount: 2 }); } catch {}
+      try { await track.applyConstraints?.({ channelCount: { ideal: 2 }, sampleRate: { ideal: 48000 } }); } catch {}
       track.enabled = true;
 
       const processing = ensureFeedProcessingChain(track);
@@ -2477,7 +2601,6 @@ let cachedUsers = [];
       }
       const processedTrack = processing?.outputTrack || track;
       try { processedTrack.contentHint = 'music'; } catch {}
-      try { await processedTrack.applyConstraints?.({ channelCount: 2 }); } catch {}
       processedTrack.enabled = true;
 
       const newProducer = await sendTransport.produce({
@@ -2734,6 +2857,9 @@ let cachedUsers = [];
     });
   }
 
+  let activeRegistrationPromise = null;
+  let activeRegistrationKey = null;
+
   async function registerUserWithConflictPrompt({ id, name, kind, allowPrompt = true } = {}) {
     const first = await emitRegisterUser({ id, name, kind, force: false });
     if (first?.conflict && kind === 'user') {
@@ -2745,6 +2871,53 @@ let cachedUsers = [];
       return forced?.ok ? { ok: true } : forced;
     }
     return first?.ok ? { ok: true } : first;
+  }
+
+  function buildRegistrationKey({ id, name, kind, allowPrompt = true } = {}) {
+    return JSON.stringify({
+      id: id ?? null,
+      name: name ?? null,
+      kind: kind ?? null,
+      allowPrompt: !!allowPrompt,
+    });
+  }
+
+  async function registerIdentity({ id, name, kind, allowPrompt = true } = {}) {
+    const key = buildRegistrationKey({ id, name, kind, allowPrompt });
+    if (activeRegistrationPromise && activeRegistrationKey === key) {
+      return activeRegistrationPromise;
+    }
+
+    const promise = (async () => {
+      if (kind === 'user') {
+        return registerUserWithConflictPrompt({ id, name, kind, allowPrompt });
+      }
+      const result = await emitRegisterUser({ id, name, kind, force: false });
+      return result?.ok ? { ok: true } : result;
+    })();
+
+    activeRegistrationKey = key;
+    activeRegistrationPromise = promise;
+
+    try {
+      return await promise;
+    } finally {
+      if (activeRegistrationPromise === promise) {
+        activeRegistrationPromise = null;
+        activeRegistrationKey = null;
+      }
+    }
+  }
+
+  async function registerCurrentSession({ allowPromptForUser = true } = {}) {
+    if (!session?.name || session.kind === 'guest') return { skipped: true };
+    const id = session.kind === 'feed' ? session.feedId : session.userId;
+    return registerIdentity({
+      id,
+      name: session.name,
+      kind: session.kind,
+      allowPrompt: allowPromptForUser,
+    });
   }
 
   // Check Auto-Login
@@ -2761,7 +2934,7 @@ let cachedUsers = [];
       loginContainer.style.display = "none";
       intercomApp.style.display = "flex";
       myIdEl.textContent = storedName;
-      registerUserWithConflictPrompt({ id: storedId, name: storedName, kind: "user", allowPrompt: true })
+      registerCurrentSession()
         .then((res) => {
           if (res?.ok) return;
           hardLogoutAndReload("Login cancelled or session already in use.");
@@ -2779,7 +2952,7 @@ let cachedUsers = [];
       myIdEl.textContent = storedName;
       feedManualStop = false;
       shouldStartFeedWhenReady = true;
-      emitRegisterUser({ id: storedFeedId, name: storedName, kind: "feed", force: false }).catch(() => {});
+      registerCurrentSession().catch(() => {});
       applySessionUI();
       initializeMediaIfPossible();
     }
@@ -2820,21 +2993,13 @@ let cachedUsers = [];
       feedManualStop = false;
       shouldStartFeedWhenReady = kind === 'feed';
 
-      const identityId = kind === 'feed' ? session.feedId : session.userId;
-      if (kind === 'user') {
-        const reg = await registerUserWithConflictPrompt({ id: identityId, name: user.name, kind, allowPrompt: true });
-        if (!reg?.ok) {
-          loginError.textContent = reg?.cancelled ? "Login cancelled" : "Unable to sign in";
-          session = { kind: "guest", userId: null, feedId: null, name: null };
-          return;
-        }
-      } else {
-        const reg = await emitRegisterUser({ id: identityId, name: user.name, kind, force: false });
-        if (!reg?.ok) {
-          loginError.textContent = "Unable to sign in";
-          session = { kind: "guest", userId: null, feedId: null, name: null };
-          return;
-        }
+      const reg = await registerCurrentSession();
+      if (!reg?.ok) {
+        loginError.textContent = kind === 'user'
+          ? (reg?.cancelled ? "Login cancelled" : "Unable to sign in")
+          : "Unable to sign in";
+        session = { kind: "guest", userId: null, feedId: null, name: null };
+        return;
       }
 
       localStorage.setItem("userName", user.name);
@@ -2884,14 +3049,14 @@ let cachedUsers = [];
   socket.on("connect", async () => {
     console.log("Connected to signaling server as", socket.id);
     if (session.name) {
-      if (session.kind === 'user' && session.userId) {
-        const reg = await registerUserWithConflictPrompt({ id: session.userId, name: session.name, kind: "user", allowPrompt: true });
+      if ((session.kind === 'user' && session.userId) || (session.kind === 'feed' && session.feedId)) {
+        const reg = await registerCurrentSession();
         if (!reg?.ok) {
-          hardLogoutAndReload("You are already signed in on another device.");
+          if (session.kind === 'user') {
+            hardLogoutAndReload("You are already signed in on another device.");
+          }
           return;
         }
-      } else if (session.kind === 'feed' && session.feedId) {
-        await emitRegisterUser({ id: session.feedId, name: session.name, kind: "feed", force: false });
       }
       myIdEl.textContent = session.name;
     }
@@ -4038,6 +4203,13 @@ let cachedUsers = [];
 
     const effectiveProducerId = producerId || normalizedAppData.producerId || `${peerId}-${Date.now()}`;
     const streamKey = makeStreamKey(targetKey, effectiveProducerId);
+    const alreadyTracked = audioElements.has(streamKey)
+      || peerConsumers.has(streamKey)
+      || (targetStreamMap.get(targetKey)?.has(streamKey) ?? false);
+    if (alreadyTracked || pendingIncomingConsumeKeys.has(streamKey)) {
+      return;
+    }
+    pendingIncomingConsumeKeys.add(streamKey);
 
     try {
       const { error, ...consumeParams } = await new Promise((resolve) =>
@@ -4049,6 +4221,13 @@ let cachedUsers = [];
       if (error) throw new Error(error);
 
       const consumer = await recvTransport.consume(consumeParams);
+      const nowTracked = audioElements.has(streamKey)
+        || peerConsumers.has(streamKey)
+        || (targetStreamMap.get(targetKey)?.has(streamKey) ?? false);
+      if (nowTracked) {
+        try { consumer.close(); } catch {}
+        return;
+      }
       const receiver = consumer?.rtpReceiver;
       if (receiver && 'playoutDelayHint' in receiver) {
         try { receiver.playoutDelayHint = 0.1; } catch (err) { console.debug('playoutDelayHint set failed', err); }
@@ -4236,6 +4415,8 @@ let cachedUsers = [];
       consumer.on('transportclose', handleConsumerClosed);
     } catch (err) {
       console.error('Error consuming:', err);
+    } finally {
+      pendingIncomingConsumeKeys.delete(streamKey);
     }
   }
 

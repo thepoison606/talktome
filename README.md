@@ -6,11 +6,9 @@ A local WebRTC Intercom app built with Node.js and mediasoup.
 
 ## What it does
 - Web client with per-target and conference talk buttons, reply, and “talk lock”.
-- [Bitfocus Companion module](https://github.com/thepoison606/companion-module-talktome-intercom)
-- Button control via Keyboard shortcuts.
+- Button control via Keyboard shortcuts, [Bitfocus Companion module](https://github.com/bitfocus/companion-module-talktome-intercom.git) and HTTP API
 - Admin UI to manage users, conferences, feeds, and target order.
-- Tally for camera operators via HTTP API.
-- Button control via HTTP API.
+- Tally for camera operators via [Bitfocus Companion module](https://github.com/bitfocus/companion-module-talktome-intercom.git) and HTTP API.
 - Feeds for program audio injection (experimental).
 
 ## Quick start
@@ -30,15 +28,17 @@ npm install
 node server.js            # defaults to Port 443
 ```
 Visit `https://localhost:443/` (accept the self-signed cert warning) or `https://<IP>:<PORT>/`.
-- Admin UI: `/admin.html`
+- Admin UI: `/admin` (redirects to `/admin.html`)
 
 Ports:
 - Override with `PORT=8443 node server.js` (or `HTTPS_PORT`) or `node server.js 8080`.
 - HTTP redirect listener defaults to port 80 when mDNS is on; change via `HTTP_PORT=8080` or disable with `HTTP_PORT=off`.
 - mDNS hostname defaults to `intercom.local`; override with `MDNS_HOST=myalias.local`.
+- For internet hosting, set `PUBLIC_IP=<your.public.ip>` so mediasoup announces the correct address.
+- mediasoup uses RTC ports `40000-49999` (UDP and, if needed, TCP). Open them on your firewall/router for external clients (be careful!).
 
 TLS:
-- If `certs/key.pem` and `certs/cert.pem` are missing, the server generates a self-signed pair in `./certs`.
+- If no certificate exists yet, the server generates a self-signed pair in `certs/` inside the app data directory (`TALKTOME_DATA_DIR` or the default per-user data path).
 
 Data:
 - All state lives in `app.db` (SQLite) stored in the per-user app data directory:
@@ -112,6 +112,7 @@ Core endpoints:
 - `GET /api/v1/companion/feeds`
 - `GET /api/v1/companion/users/:id/targets`
 - `POST /api/v1/companion/users/:id/talk` (command + ack/result)
+- `POST /api/v1/companion/users/:id/target-audio` (mute/volume for user, conference, or feed targets)
 
 Legacy endpoint:
 - `POST /users/:id/talk`

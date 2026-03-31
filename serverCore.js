@@ -2691,6 +2691,18 @@ async function sendApplePttServiceUpdate({ recipientUserIds, reason }) {
   });
 }
 
+function emitUserListToOperators() {
+  const userList = getUserList();
+  for (const peer of peers.values()) {
+    if (!peer || peer.kind !== "user") continue;
+    try {
+      peer.socket.emit("user-list", userList);
+    } catch (err) {
+      console.warn("[SIGNAL] Failed to emit user-list to operator:", err?.message || err);
+    }
+  }
+}
+
 io.on("connection", (socket) => {
   console.log(`[CONN] Client connected: ${socket.id}`);
   peers.set(socket.id, {
@@ -2704,7 +2716,6 @@ io.on("connection", (socket) => {
   });
 
   // Emit lists
-  io.emit("user-list", getUserList());
   socket.emit("conference-list", getAllConferences());
 
   socket.on("register-user", ({ id, name, kind = "user", force = false } = {}, callback) => {
@@ -2766,7 +2777,7 @@ io.on("connection", (socket) => {
       console.log(`[USER] Registered feed ${name} (${effectiveId}) on socket ${socket.id}`);
     }
 
-    io.emit("user-list", getUserList());
+    emitUserListToOperators();
 
     if (normalizedKind === "user" && peer.userId !== null && peer.userId !== undefined) {
       updateCompanionUserState(peer.userId, {
@@ -3067,7 +3078,7 @@ io.on("connection", (socket) => {
       }
 
       // Send the updated list afterwards
-      io.emit("user-list", getUserList());
+      emitUserListToOperators();
       if (peer.kind === "user" && peer.userId !== null && peer.userId !== undefined) {
         broadcastRuntimeUserStates("register-name");
       }
@@ -3514,7 +3525,7 @@ io.on("connection", (socket) => {
       failPendingCommandsForUser(disconnectedUserId, "user-disconnected");
     }
 
-    io.emit("user-list", getUserList());
+    emitUserListToOperators();
     broadcastRuntimeUserStates("user-disconnected");
   });
 });
