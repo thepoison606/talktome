@@ -2770,6 +2770,26 @@ io.on("connection", (socket) => {
       console.log(`[USER] Registered operator ${name} (${effectiveId}) on socket ${socket.id}`);
       socket.emit("cut-camera", name === cutCameraUser);
     } else {
+      const existingFeed = Array.from(peers.entries()).find(([sid, p]) => (
+        sid !== socket.id
+        && p?.kind === "feed"
+        && p?.feedId != null
+        && String(p.feedId) === String(effectiveId)
+      ));
+
+      if (existingFeed) {
+        const [, existingPeer] = existingFeed;
+        try {
+          existingPeer?.socket?.emit("session-kicked", {
+            reason: "duplicate-feed-login",
+            bySocketId: socket.id,
+          });
+        } catch {}
+        try {
+          existingPeer?.socket?.disconnect(true);
+        } catch {}
+      }
+
       peer.name = name;
       peer.kind = normalizedKind;
       peer.feedId = effectiveId;
@@ -3283,6 +3303,20 @@ io.on("connection", (socket) => {
           if (!transport) {
             console.warn(`[PRODUCE] No send transport for peer ${socket.id}`);
             return callback({ error: "Send transport not ready" });
+          }
+
+          if (type === "feed") {
+            const existingFeedProducers = Array.from(peer.producers.values()).filter((existingProducer) => (
+              existingProducer?.appData?.type === "feed"
+              && String(existingProducer?.appData?.id) === String(targetId)
+            ));
+            for (const existingProducer of existingFeedProducers) {
+              try {
+                existingProducer.close();
+              } catch (closeError) {
+                console.warn(`[PRODUCE] Failed to close previous feed producer ${existingProducer?.id}:`, closeError);
+              }
+            }
           }
 
           const producer = await transport.produce({

@@ -57,7 +57,10 @@ let warnedVolumeStorageWrite = false;
 const IDENTITY_KIND_KEY = 'identityKind';
 const FEED_ID_STORAGE_KEY = 'feedId';
 const FEED_DUCKING_DB_STORAGE_KEY = 'feedDimDb';
+const FEED_INPUT_PROCESSING_STORAGE_KEY = 'feedInputProcessingEnabled';
+const FEED_PTIME_STORAGE_KEY = 'feedPtimeMs';
 const DEFAULT_FEED_DUCKING_DB = -14;
+const DEFAULT_FEED_PTIME_MS = 20;
 const FEED_DUCKING_DB_MIN = -60;
 const FEED_DUCKING_DB_MAX = -6;
 const FEED_DIM_SELF_STORAGE_KEY = 'feedDimSelf';
@@ -75,6 +78,11 @@ const USER_CLIP_THRESHOLD_DB = -0.5;
 const FEED_METER_TEXT_UPDATE_INTERVAL_MS = 160;
 const USER_METER_TEXT_UPDATE_INTERVAL_MS = 160;
 const METER_TEXT_DB_THRESHOLD = 0.5;
+const FEED_PTIME_OPTIONS = Object.freeze({
+  5: { label: '5 ms (lowest latency, highest load)' },
+  10: { label: '10 ms (balanced latency/load)' },
+  20: { label: '20 ms (highest resilience, lowest load)' },
+});
 
 const TARGET_HOTKEY_DIGITS = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 const targetHotkeys = new Map();
@@ -84,6 +92,8 @@ let feedDuckingDb = DEFAULT_FEED_DUCKING_DB;
 let feedDuckingFactor = dbToLinear(feedDuckingDb);
 let feedDimSelf = false;
 let audioProcessingEnabled = false;
+let feedInputProcessingEnabled = false;
+let feedPtimeMs = DEFAULT_FEED_PTIME_MS;
 const audioProcessingOptions = {
   echoCancellation: true,
   noiseSuppression: true,
@@ -107,6 +117,17 @@ if (typeof window !== 'undefined') {
     const storedSelfDim = window.localStorage?.getItem(FEED_DIM_SELF_STORAGE_KEY);
     if (storedSelfDim !== null) {
       feedDimSelf = storedSelfDim === 'true';
+    }
+    const storedFeedInputProcessing = window.localStorage?.getItem(FEED_INPUT_PROCESSING_STORAGE_KEY);
+    if (storedFeedInputProcessing !== null) {
+      feedInputProcessingEnabled = storedFeedInputProcessing === 'true';
+    }
+    const storedFeedPtime = window.localStorage?.getItem(FEED_PTIME_STORAGE_KEY);
+    if (storedFeedPtime !== null) {
+      const parsedFeedPtime = parseInt(storedFeedPtime, 10);
+      if (!Number.isNaN(parsedFeedPtime)) {
+        feedPtimeMs = clampFeedPtimeMs(parsedFeedPtime);
+      }
     }
     const storedProcessing = window.localStorage?.getItem(AUDIO_PROCESSING_STORAGE_KEY);
     if (storedProcessing !== null) {
@@ -225,6 +246,7 @@ function installMediaConstraintDiagnostics() {
 
 installMediaConstraintDiagnostics();
 let inputSelect;
+let feedInputSelect;
 let qualitySelect;
 let dimAmountSelect;
 let dimWhileSpeakingToggle;
@@ -237,6 +259,9 @@ let userMeterClipEl;
 let userMeterValueEl;
 let feedInputGainSlider;
 let feedInputGainValueDisplay;
+let feedInputProcessingToggle;
+let feedPtimeSelect;
+let feedLevelControls;
 // Feed meters: stereo (L/R)
 let feedMeterBarLEl;
 let feedMeterClipLEl;
@@ -290,6 +315,11 @@ function clampFeedDuckingDb(value) {
 function clampFeedInputGainDb(value) {
   if (!Number.isFinite(value)) return 0;
   return Math.min(FEED_INPUT_GAIN_DB_MAX, Math.max(FEED_INPUT_GAIN_DB_MIN, value));
+}
+
+function clampFeedPtimeMs(value) {
+  const numeric = Number(value);
+  return FEED_PTIME_OPTIONS[numeric] ? numeric : DEFAULT_FEED_PTIME_MS;
 }
 
 function clampUserInputGainDb(value) {
@@ -472,6 +502,65 @@ function updateFeedGainUI() {
   }
   if (feedInputGainValueDisplay) {
     feedInputGainValueDisplay.textContent = formatDbDisplay(feedInputGainDb);
+  }
+}
+
+function updateFeedProcessingUI() {
+  if (feedInputProcessingToggle) {
+    feedInputProcessingToggle.checked = feedInputProcessingEnabled;
+  }
+  if (feedLevelControls) {
+    feedLevelControls.classList.toggle('is-disabled', !feedInputProcessingEnabled);
+  }
+  if (feedInputGainSlider) {
+    feedInputGainSlider.disabled = !feedInputProcessingEnabled;
+  }
+  if (!feedInputProcessingEnabled) {
+    setFeedMeterDisplayFor(feedMeterBarLEl, feedMeterValueLEl, feedMeterClipLEl, feedMeterStateL, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
+    setFeedMeterDisplayFor(feedMeterBarREl, feedMeterValueREl, feedMeterClipREl, feedMeterStateR, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
+  } else if (feedProcessingChain) {
+    scheduleFeedMeterUpdate();
+  }
+}
+
+function setFeedInputProcessingEnabled(enabled, { persist = true } = {}) {
+  feedInputProcessingEnabled = !!enabled;
+  updateFeedProcessingUI();
+
+  if (persist && typeof window !== 'undefined') {
+    try {
+      window.localStorage?.setItem(FEED_INPUT_PROCESSING_STORAGE_KEY, String(feedInputProcessingEnabled));
+    } catch (err) {
+      console.warn('Unable to persist feed input processing preference:', err);
+    }
+  }
+
+  if (!feedInputProcessingEnabled) {
+    destroyFeedProcessing();
+    return;
+  }
+
+  if (session.kind === 'feed' && micTrack && !feedStreaming) {
+    ensureFeedProcessingChain(micTrack);
+  }
+}
+
+function updateFeedPtimeUI() {
+  if (feedPtimeSelect) {
+    feedPtimeSelect.value = String(feedPtimeMs);
+  }
+}
+
+function setFeedPtimeMs(value, { persist = true } = {}) {
+  feedPtimeMs = clampFeedPtimeMs(value);
+  updateFeedPtimeUI();
+
+  if (persist && typeof window !== 'undefined') {
+    try {
+      window.localStorage?.setItem(FEED_PTIME_STORAGE_KEY, String(feedPtimeMs));
+    } catch (err) {
+      console.warn('Unable to persist feed ptime preference:', err);
+    }
   }
 }
 
@@ -665,6 +754,10 @@ function updateFeedMeterFromAnalyser() {
 
 // Builds an AudioContext processing graph for the feed to apply gain and drive the meter.
 function ensureFeedProcessingChain(track) {
+  if (!feedInputProcessingEnabled) {
+    destroyFeedProcessing();
+    return null;
+  }
   const ctx = ensureFeedProcessingAudioContext();
   if (!ctx) {
     console.warn('AudioContext unavailable; feed input gain disabled.');
@@ -792,8 +885,45 @@ function ensureFeedProcessingChain(track) {
   return feedProcessingChain;
 }
 
+function getFeedProfile() {
+  return {
+    ...FEED_PROFILE,
+    codecOptions: FEED_PROFILE.codecOptions
+      ? { ...FEED_PROFILE.codecOptions, opusPtime: feedPtimeMs }
+      : undefined,
+    encodings: FEED_PROFILE.encodings ? FEED_PROFILE.encodings.map(enc => ({ ...enc })) : undefined,
+  };
+}
+
+function getManagedInputSelects() {
+  return [inputSelect, feedInputSelect].filter(Boolean);
+}
+
+function syncManagedInputSelects(deviceId) {
+  const nextValue = deviceId || '';
+  getManagedInputSelects().forEach((selectEl) => {
+    selectEl.value = nextValue;
+    if (nextValue && selectEl.value !== nextValue) {
+      const match = Array.from(selectEl.options || []).find(opt => opt.value === nextValue);
+      if (match) {
+        match.selected = true;
+      }
+    }
+  });
+}
+
+function setPreferredInputDeviceId(deviceId) {
+  const normalized = deviceId || '';
+  if (normalized) {
+    localStorage.setItem(MIC_DEVICE_STORAGE_KEY, normalized);
+  } else {
+    localStorage.removeItem(MIC_DEVICE_STORAGE_KEY);
+  }
+  syncManagedInputSelects(normalized);
+}
+
 function getSelectedDeviceId() {
-  const selected = inputSelect?.value;
+  const selected = inputSelect?.value || feedInputSelect?.value;
   if (selected && selected !== '') return selected;
   try {
     const stored = window.localStorage?.getItem(MIC_DEVICE_STORAGE_KEY);
@@ -819,11 +949,12 @@ function buildUserAudioConstraints(selectedDeviceId) {
 }
 
 function buildFeedAudioConstraints(selectedDeviceId) {
+  const profile = getFeedProfile();
   const constraints = {
     echoCancellation: false,
     noiseSuppression: false,
     autoGainControl: false,
-    ...(FEED_PROFILE.constraints || {}),
+    ...(profile.constraints || {}),
   };
   if (selectedDeviceId) {
     constraints.deviceId = { exact: selectedDeviceId };
@@ -864,8 +995,15 @@ async function startInputMonitor() {
       if (session.kind !== 'feed' && !audioProcessingEnabled) {
         ensureUserProcessingChain(track);
       }
-      if (session.kind === 'feed' && feedProcessingChain) {
-        scheduleFeedMeterUpdate();
+      if (session.kind === 'feed') {
+        if (feedInputProcessingEnabled) {
+          ensureFeedProcessingChain(track);
+          if (feedProcessingChain) {
+            scheduleFeedMeterUpdate();
+          }
+        } else {
+          destroyFeedProcessing();
+        }
       }
       if (!audioProcessingEnabled && userProcessingChain) {
         scheduleUserMeterUpdate();
@@ -1284,16 +1422,18 @@ async function updateDeviceList() {
   const devices = await navigator.mediaDevices.enumerateDevices();
   const inputs  = devices.filter(d => d.kind === "audioinput");
 
-  // Populate the input dropdown
-  if (inputSelect) {
-    inputSelect.innerHTML = `<option value="">Select device</option>`;
-    inputs.forEach(d => {
+  const selectors = getManagedInputSelects();
+  selectors.forEach((selectEl) => {
+    selectEl.innerHTML = `<option value="">Select device</option>`;
+    inputs.forEach((d, index) => {
       const opt = document.createElement("option");
-      opt.value       = d.deviceId;
-      opt.textContent = d.label || `Microphone ${inputSelect.length}`;
-      inputSelect.append(opt);
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `Microphone ${index + 1}`;
+      selectEl.append(opt);
     });
+  });
 
+  if (selectors.length > 0) {
     const storedDeviceId = localStorage.getItem(MIC_DEVICE_STORAGE_KEY);
     const availableIds = new Set(inputs.map(d => d.deviceId));
     let desiredDeviceId = null;
@@ -1307,16 +1447,9 @@ async function updateDeviceList() {
     }
 
     if (desiredDeviceId) {
-      inputSelect.value = desiredDeviceId;
-      if (inputSelect.value !== desiredDeviceId) {
-        const match = Array.from(inputSelect.options).find(opt => opt.value === desiredDeviceId);
-        if (match) {
-          match.selected = true;
-        }
-      }
-      localStorage.setItem(MIC_DEVICE_STORAGE_KEY, desiredDeviceId);
+      setPreferredInputDeviceId(desiredDeviceId);
     } else {
-      inputSelect.value = '';
+      syncManagedInputSelects('');
     }
   }
 }
@@ -1439,13 +1572,7 @@ async function ensureMicTrack(audioConstraints, selectedDeviceId) {
   micPrimed = true;
 
   if (micDeviceId) {
-    localStorage.setItem(MIC_DEVICE_STORAGE_KEY, micDeviceId);
-    if (inputSelect && inputSelect.value !== micDeviceId) {
-      const match = Array.from(inputSelect.options || []).find(opt => opt.value === micDeviceId);
-      if (match) {
-        match.selected = true;
-      }
-    }
+    setPreferredInputDeviceId(micDeviceId);
   }
 
   track.onended = () => {
@@ -1548,6 +1675,7 @@ document.addEventListener("DOMContentLoaded", () => {
   console.log("DOM loaded, initializing...");
 
   inputSelect  = document.getElementById("input-select");
+  feedInputSelect = document.getElementById("feed-input-select");
   qualitySelect = document.getElementById("quality-select");
   dimAmountSelect = document.getElementById('dim-amount-select');
   dimWhileSpeakingToggle = document.getElementById('toggle-self-dim');
@@ -1558,6 +1686,9 @@ document.addEventListener("DOMContentLoaded", () => {
   userMeterBarEl = document.getElementById('user-meter-bar');
   userMeterClipEl = document.getElementById('user-meter-clip');
   userMeterValueEl = document.getElementById('user-meter-value');
+  feedInputProcessingToggle = document.getElementById('toggle-feed-input-processing');
+  feedPtimeSelect = document.getElementById('feed-ptime-select');
+  feedLevelControls = document.getElementById('feed-level-controls');
   feedInputGainSlider = document.getElementById('feed-input-gain');
   feedInputGainValueDisplay = document.getElementById('feed-input-gain-value');
   feedMeterBarLEl = document.getElementById('feed-meter-bar-L');
@@ -1570,9 +1701,35 @@ document.addEventListener("DOMContentLoaded", () => {
   updateUserGainUI();
   setUserMeterDisplay(0, formatDbDisplay(-Infinity), false, null, { forceText: true });
   updateFeedGainUI();
+  updateFeedProcessingUI();
+  updateFeedPtimeUI();
   setFeedMeterDisplayFor(feedMeterBarLEl, feedMeterValueLEl, feedMeterClipLEl, feedMeterStateL, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
   setFeedMeterDisplayFor(feedMeterBarREl, feedMeterValueREl, feedMeterClipREl, feedMeterStateR, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
   applyUserGainControlState();
+
+  if (feedInputProcessingToggle) {
+    feedInputProcessingToggle.checked = feedInputProcessingEnabled;
+    feedInputProcessingToggle.addEventListener('change', () => {
+      setFeedInputProcessingEnabled(feedInputProcessingToggle.checked);
+      if (session.kind === 'feed' && feedStreaming) {
+        restartFeedStreamForSettingsChange('feed input processing').catch(err => {
+          console.error('Failed to restart feed after input processing change', err);
+        });
+      }
+    });
+  }
+
+  if (feedPtimeSelect) {
+    feedPtimeSelect.value = String(feedPtimeMs);
+    feedPtimeSelect.addEventListener('change', () => {
+      setFeedPtimeMs(feedPtimeSelect.value);
+      if (session.kind === 'feed' && feedStreaming) {
+        restartFeedStreamForSettingsChange('packet time').catch(err => {
+          console.error('Failed to restart feed after packet time change', err);
+        });
+      }
+    });
+  }
 
   if (feedInputGainSlider) {
     feedInputGainSlider.addEventListener('input', () => {
@@ -1692,13 +1849,8 @@ document.addEventListener("DOMContentLoaded", () => {
       updateDeviceList().catch(err => console.error(err))
   );
 
-  inputSelect?.addEventListener('change', () => {
-    const selected = inputSelect.value;
-    if (selected) {
-      localStorage.setItem(MIC_DEVICE_STORAGE_KEY, selected);
-    } else {
-      localStorage.removeItem(MIC_DEVICE_STORAGE_KEY);
-    }
+  const handleInputDeviceSelectionChange = (selected) => {
+    setPreferredInputDeviceId(selected);
     if (session.kind === 'feed') {
       const wasStreaming = feedStreaming;
       if (feedStreaming) {
@@ -1712,6 +1864,14 @@ document.addEventListener("DOMContentLoaded", () => {
     } else {
       cleanupMicTrack();
     }
+  };
+
+  inputSelect?.addEventListener('change', () => {
+    handleInputDeviceSelectionChange(inputSelect.value);
+  });
+
+  feedInputSelect?.addEventListener('change', () => {
+    handleInputDeviceSelectionChange(feedInputSelect.value);
   });
 
 
@@ -1729,6 +1889,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const intercomApp = document.getElementById("intercom-app");
   const loginError = document.getElementById("login-error");
   const logoutBtn = document.getElementById("logout-btn");
+  const feedLogoutBtn = document.getElementById("feed-logout-btn");
 
   const myIdEl = document.getElementById("my-id");
   const btnReply = document.getElementById("reply");
@@ -2477,6 +2638,8 @@ let cachedUsers = [];
       }
     }
 
+    updateFeedProcessingUI();
+    updateFeedPtimeUI();
     applyUserGainControlState();
     updateFeedControls();
   }
@@ -2508,6 +2671,14 @@ let cachedUsers = [];
       feedStreamToggle.textContent = feedStreaming ? 'Stop Feed' : 'Start Feed';
       feedStreamToggle.disabled = !transportReady;
     }
+  }
+
+  async function restartFeedStreamForSettingsChange(reason) {
+    if (session.kind !== 'feed') return;
+    if (!feedStreaming) return;
+    console.log(`Restarting feed stream after ${reason} change`);
+    stopFeedStream({ manual: false });
+    await startFeedStream({ manual: false });
   }
 
   function applyFeedDucking() {
@@ -2546,6 +2717,7 @@ let cachedUsers = [];
     if (session.kind !== 'feed') return;
     if (feedStreaming) return;
     if (!session.feedId) return;
+    const feedProfile = getFeedProfile();
 
     if (!sendTransport || sendTransport.closed) {
       shouldStartFeedWhenReady = true;
@@ -2580,12 +2752,12 @@ let cachedUsers = [];
     shouldStartFeedWhenReady = false;
 
     try {
-      const selectedDeviceId = inputSelect?.value;
+      const selectedDeviceId = getSelectedDeviceId();
       const audioConstraints = {
         echoCancellation: false,
         noiseSuppression: false,
         autoGainControl: false,
-        ...(FEED_PROFILE.constraints || {}),
+        ...(feedProfile.constraints || {}),
         ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {})
       };
 
@@ -2595,7 +2767,10 @@ let cachedUsers = [];
       try { await track.applyConstraints?.({ channelCount: { ideal: 2 }, sampleRate: { ideal: 48000 } }); } catch {}
       track.enabled = true;
 
-      const processing = ensureFeedProcessingChain(track);
+      const processing = feedInputProcessingEnabled ? ensureFeedProcessingChain(track) : null;
+      if (!feedInputProcessingEnabled) {
+        destroyFeedProcessing();
+      }
       if (processing?.ctx) {
         await resumeAudioContextIfNeeded(processing.ctx, { label: 'feed ingest AudioContext' });
       }
@@ -2606,8 +2781,8 @@ let cachedUsers = [];
       const newProducer = await sendTransport.produce({
         track: processedTrack,
         appData: { type: 'feed', id: session.feedId },
-        codecOptions: FEED_PROFILE.codecOptions ? { ...FEED_PROFILE.codecOptions } : undefined,
-        encodings: FEED_PROFILE.encodings ? FEED_PROFILE.encodings.map(enc => ({ ...enc })) : undefined,
+        codecOptions: feedProfile.codecOptions ? { ...feedProfile.codecOptions } : undefined,
+        encodings: feedProfile.encodings ? feedProfile.encodings.map(enc => ({ ...enc })) : undefined,
         stopTracks: false,
       });
 
@@ -3023,17 +3198,18 @@ let cachedUsers = [];
     }
   });
 
-  // Logout Handler
-  if (logoutBtn) {
-    logoutBtn.addEventListener("click", async () => {
-      if (session.kind === 'feed') {
-        stopFeedStream({ manual: true });
-      }
-      await notifyServerLogoutAndDisconnect();
-      clearStoredIdentity();
-      location.reload();
-    });
+  async function handleLogoutClick() {
+    if (session.kind === 'feed') {
+      stopFeedStream({ manual: true });
+    }
+    await notifyServerLogoutAndDisconnect();
+    clearStoredIdentity();
+    location.reload();
   }
+
+  // Logout Handler
+  logoutBtn?.addEventListener("click", handleLogoutClick);
+  feedLogoutBtn?.addEventListener("click", handleLogoutClick);
 
   feedStreamToggle?.addEventListener('click', () => {
     if (session.kind !== 'feed') return;
@@ -5060,8 +5236,7 @@ let cachedUsers = [];
       const profile = QUALITY_PROFILES[qualityKey] || QUALITY_PROFILES['low-latency'];
 
       // 1️⃣ Read the selected microphone from the dropdown
-      const inputSelect = document.getElementById("input-select");
-      const selectedDeviceId = inputSelect?.value;
+      const selectedDeviceId = getSelectedDeviceId();
 
       // 2️⃣ Assemble the audio constraints
       const audioConstraints = {

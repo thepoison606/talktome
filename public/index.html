@@ -57,7 +57,7 @@
         justify-content: space-between;
         gap: 0.5rem;
         flex-wrap: wrap;
-        padding: 0.2rem 0.6rem;
+        padding: 0.45rem 0.6rem;
         background: rgba(59, 130, 246, 0.08);
         border-radius: 4px;
         border-left: 3px solid rgba(59, 130, 246, 0.5);
@@ -86,6 +86,10 @@
         padding: 0.4rem 0.85rem;
         font-size: 0.85rem;
         min-width: auto;
+      }
+
+      .feed-session-logout {
+        display: none;
       }
 
       .reply-bar {
@@ -873,6 +877,28 @@
         color: #f87171;
       }
 
+      .feed-banner__settings {
+        display: grid;
+        gap: 0.75rem;
+        margin-top: 0.75rem;
+      }
+
+      .feed-banner__settings .device-selector {
+        align-items: center;
+      }
+
+      .feed-banner__settings .device-selector select {
+        flex: 0 1 18rem;
+        width: 18rem;
+        max-width: 100%;
+      }
+
+      .feed-banner__note {
+        margin: 0;
+        font-size: 0.75rem;
+        color: #94a3b8;
+      }
+
       .processing-options label {
         display: flex;
         flex-direction: column;
@@ -902,7 +928,16 @@
         pointer-events: none;
       }
 
+      .feed-level-controls.is-disabled input[type="range"] {
+        opacity: 0.4;
+        pointer-events: none;
+      }
+
       .user-level-controls.is-disabled .user-meter__bar {
+        opacity: 0.35;
+      }
+
+      .feed-level-controls.is-disabled .feed-meter__bar {
         opacity: 0.35;
       }
 
@@ -910,7 +945,15 @@
         opacity: 0 !important;
       }
 
+      .feed-level-controls.is-disabled .feed-meter__clip {
+        opacity: 0 !important;
+      }
+
       .user-level-controls.is-disabled .user-meter__readout span {
+        color: rgba(148, 163, 184, 0.85);
+      }
+
+      .feed-level-controls.is-disabled .feed-meter__readout span {
         color: rgba(148, 163, 184, 0.85);
       }
 
@@ -921,6 +964,15 @@
 
       body.feed-mode .feed-optional {
         display: none !important;
+      }
+
+      body.feed-mode .settings-trigger,
+      body.feed-mode .settings-body {
+        display: none !important;
+      }
+
+      body.feed-mode .feed-session-logout {
+        display: inline-flex;
       }
 
       body.feed-mode #feed-banner {
@@ -980,10 +1032,10 @@
     </div>
 
     <!-- Intercom App (initially hidden until login) -->
-    <div id="intercom-app" style="display: none;">
-      <div class="session-bar">
-        <div class="session-info">Logged in as <span id="my-id">Connecting...</span></div>
-        <div class="settings-panel">
+      <div id="intercom-app" style="display: none;">
+        <div class="session-bar">
+          <div class="session-info">Logged in as <span id="my-id">Connecting...</span></div>
+          <div class="settings-panel">
           <button
             type="button"
             class="settings-trigger"
@@ -994,8 +1046,9 @@
           >
             <span class="settings-icon" aria-hidden="true">&#8942;</span>
           </button>
+          <button id="feed-logout-btn" type="button" class="logout-btn feed-session-logout">Logout</button>
           <div class="settings-body" id="settings-menu" hidden>
-            <div class="device-selector">
+            <div class="device-selector feed-optional">
               <label for="input-select">Microphone</label>
               <select id="input-select">
                 <option value="">select device</option>
@@ -1076,10 +1129,33 @@
       <div id="feed-banner" class="feed-banner" hidden>
         <div class="feed-banner__row">
           <span id="feed-stream-status">Feed ready</span>
-          <p class="feed-banner__hint">Select your audio input in the menu.</p>
           <button type="button" id="feed-stream-toggle">Start Feed</button>
         </div>
-        <div class="feed-level-controls">
+        <div class="feed-banner__settings">
+          <div class="device-selector">
+            <label for="feed-input-select">Source</label>
+            <select id="feed-input-select">
+              <option value="">Select device</option>
+            </select>
+          </div>
+          <div class="device-selector">
+            <label for="feed-ptime-select">Packet time</label>
+            <select id="feed-ptime-select">
+              <option value="5">5 ms (lowest latency, highest load)</option>
+              <option value="10">10 ms (balanced latency/load)</option>
+              <option value="20">20 ms (highest resilience, lowest load)</option>
+            </select>
+          </div>
+          <div class="processing-options">
+            <label>
+              <span class="processing-inline">
+                <input type="checkbox" id="toggle-feed-input-processing" />
+                Enable input gain processing
+              </span>
+            </label>
+          </div>
+        </div>
+        <div class="feed-level-controls" id="feed-level-controls">
           <label for="feed-input-gain">
             Input gain
             <output id="feed-input-gain-value" for="feed-input-gain">+0.0 dB</output>
