@@ -1229,6 +1229,9 @@
 
       if (settingsPanel && settingsTrigger && settingsBody) {
         const openSettings = () => {
+          if (settingsPanel.classList.contains("is-open")) {
+            return;
+          }
           settingsPanel.classList.add("is-open");
           settingsBody.hidden = false;
           settingsTrigger.setAttribute("aria-expanded", "true");
@@ -1236,6 +1239,9 @@
         };
 
         const closeSettings = () => {
+          if (!settingsPanel.classList.contains("is-open")) {
+            return;
+          }
           settingsPanel.classList.remove("is-open");
           settingsBody.hidden = true;
           settingsTrigger.setAttribute("aria-expanded", "false");
