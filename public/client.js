@@ -484,7 +484,7 @@ function setAudioProcessingEnabled(enabled, { persist = true, updateUI = true, r
   }
 
   if (reinitialize) {
-    cleanupMicTrack('setAudioProcessingEnabled.reinitialize');
+    cleanupMicTrack();
     if (settingsMenuOpen) {
       startInputMonitor();
     }
@@ -589,106 +589,6 @@ function nowMs() {
     return performance.now();
   }
   return Date.now();
-}
-
-const PTT_START_DIAGNOSTICS_ENABLED = true;
-let pttStartAttemptCounter = 0;
-
-function roundMs(value) {
-  return Math.round((Number(value) || 0) * 10) / 10;
-}
-
-function summarizeAudioConstraints(constraints) {
-  if (!constraints || constraints === true) {
-    return constraints;
-  }
-  return {
-    deviceId: constraints.deviceId?.exact || constraints.deviceId?.ideal || constraints.deviceId || null,
-    echoCancellation: constraints.echoCancellation ?? null,
-    noiseSuppression: constraints.noiseSuppression ?? null,
-    autoGainControl: constraints.autoGainControl ?? null,
-    channelCount: constraints.channelCount?.exact || constraints.channelCount?.ideal || constraints.channelCount || null,
-    sampleRate: constraints.sampleRate?.exact || constraints.sampleRate?.ideal || constraints.sampleRate || null,
-  };
-}
-
-function describeTalkInputSource(event) {
-  if (!event) return 'unknown';
-  if (event.type === 'pointerdown') {
-    return `pointer:${event.pointerType || 'unknown'}`;
-  }
-  if (event.type === 'keydown' || event.type === 'keyup') {
-    return `keyboard:${event.code || event.key || 'unknown'}`;
-  }
-  return event.type || 'unknown';
-}
-
-function createPttStartDiagnostics({ event, targetKey, target } = {}) {
-  if (!PTT_START_DIAGNOSTICS_ENABLED) return null;
-  const id = ++pttStartAttemptCounter;
-  const startedAt = nowMs();
-  const inputSource = describeTalkInputSource(event);
-  const prefix = `[ptt-start #${id}]`;
-  const baseMeta = {
-    input: inputSource,
-    targetKey: targetKey || null,
-    targetType: target?.type || null,
-    targetId: target?.id ?? null,
-  };
-  const logWithLevel = (level, stage, details = {}) => {
-    console[level](`${prefix} ${stage}`, {
-      dtMs: roundMs(nowMs() - startedAt),
-      ...baseMeta,
-      ...details,
-    });
-  };
-
-  return {
-    mark(stage, details) {
-      logWithLevel('log', stage, details);
-    },
-    warn(stage, details) {
-      logWithLevel('warn', stage, details);
-    },
-    error(stage, details) {
-      logWithLevel('error', stage, details);
-    },
-  };
-}
-
-function describeMicTrackState(track = micTrack) {
-  if (!track) {
-    return {
-      exists: false,
-      readyState: null,
-      enabled: null,
-      muted: null,
-      label: null,
-    };
-  }
-  return {
-    exists: true,
-    readyState: track.readyState || null,
-    enabled: Boolean(track.enabled),
-    muted: Boolean(track.muted),
-    label: track.label || null,
-  };
-}
-
-function logMicLifecycle(stage, details = {}) {
-  if (!PTT_START_DIAGNOSTICS_ENABLED) return;
-  console.log(`[mic-lifecycle] ${stage}`, {
-    dtMs: roundMs(nowMs()),
-    sessionKind: session?.kind || 'unknown',
-    sessionName: session?.name || null,
-    settingsMenuOpen,
-    producerActive: Boolean(producer),
-    feedStreaming: Boolean(feedStreaming),
-    isTalking: Boolean(isTalking),
-    micDeviceId: micDeviceId || null,
-    micTrack: describeMicTrackState(),
-    ...details,
-  });
 }
 
 function textToDbValue(text) {
@@ -1131,12 +1031,10 @@ function stopInputMonitor() {
   settingsMonitorActive = false;
 
   if (producer || feedStreaming || isTalking) {
-    logMicLifecycle('stopInputMonitor.skip', { reason: 'active-media-session' });
     return;
   }
 
-  logMicLifecycle('stopInputMonitor.cleanup', { reason: 'settings-menu-closed' });
-  cleanupMicTrack('stopInputMonitor');
+  cleanupMicTrack();
 }
 
 function handleSettingsMenuOpened() {
@@ -1558,8 +1456,7 @@ async function updateDeviceList() {
   }
 }
 
-function cleanupMicTrack(reason = 'cleanupMicTrack') {
-  logMicLifecycle('cleanupMicTrack.start', { reason });
+function cleanupMicTrack() {
   if (micCleanupTimer) {
     clearTimeout(micCleanupTimer);
     micCleanupTimer = null;
@@ -1585,21 +1482,16 @@ function cleanupMicTrack(reason = 'cleanupMicTrack') {
   }
 
   micDeviceId = null;
-  logMicLifecycle('cleanupMicTrack.done', { reason });
 }
 
-function scheduleMicCleanup(reason = 'scheduleMicCleanup') {
+function scheduleMicCleanup() {
   if (micCleanupTimer) {
     clearTimeout(micCleanupTimer);
   }
 
-  logMicLifecycle('scheduleMicCleanup.set', { reason, delayMs: 60000 });
   micCleanupTimer = setTimeout(() => {
     if (!producer) {
-      logMicLifecycle('scheduleMicCleanup.fire', { reason });
-      cleanupMicTrack(`${reason}:timer`);
-    } else {
-      logMicLifecycle('scheduleMicCleanup.skip', { reason });
+      cleanupMicTrack();
     }
   }, 60000);
 }
@@ -1622,7 +1514,7 @@ function buildRelaxedAudioConstraints(audioConstraints, { dropDeviceId = false }
   return relaxed;
 }
 
-async function ensureMicTrack(audioConstraints, selectedDeviceId, diagnostics = null) {
+async function ensureMicTrack(audioConstraints, selectedDeviceId) {
   if (micTrack && micTrack.readyState === 'live') {
     if (!selectedDeviceId || selectedDeviceId === micDeviceId) {
       if (micCleanupTimer) {
@@ -1636,39 +1528,17 @@ async function ensureMicTrack(audioConstraints, selectedDeviceId, diagnostics = 
           destroyUserProcessing();
         }
       }
-      diagnostics?.mark('ensureMicTrack.reuse-live-track', {
-        selectedDeviceId: selectedDeviceId || null,
-        micDeviceId: micDeviceId || null,
-        trackLabel: micTrack?.label || null,
-      });
       return micTrack;
     }
-    diagnostics?.mark('ensureMicTrack.switch-device', {
-      previousDeviceId: micDeviceId || null,
-      selectedDeviceId: selectedDeviceId || null,
-    });
-    cleanupMicTrack('ensureMicTrack.switch-device');
+    cleanupMicTrack();
   }
 
   let stream;
   const openMic = (constraints) => navigator.mediaDevices.getUserMedia({ audio: constraints });
   try {
-    diagnostics?.mark('ensureMicTrack.getUserMedia.start', {
-      attempt: 'primary',
-      constraints: summarizeAudioConstraints(audioConstraints),
-    });
     stream = await openMic(audioConstraints);
-    diagnostics?.mark('ensureMicTrack.getUserMedia.success', {
-      attempt: 'primary',
-    });
   } catch (error) {
     const shouldRetryRelaxed = error?.name === 'OverconstrainedError' || error?.name === 'NotFoundError';
-    diagnostics?.warn('ensureMicTrack.getUserMedia.error', {
-      attempt: 'primary',
-      errorName: error?.name || 'Error',
-      message: error?.message || String(error),
-      willRetryRelaxed: shouldRetryRelaxed,
-    });
     if (!shouldRetryRelaxed) {
       throw error;
     }
@@ -1682,22 +1552,9 @@ async function ensureMicTrack(audioConstraints, selectedDeviceId, diagnostics = 
       error: error?.message || error,
     });
     try {
-      diagnostics?.mark('ensureMicTrack.getUserMedia.start', {
-        attempt: 'relaxed',
-        constraints: summarizeAudioConstraints(relaxedConstraints),
-      });
       stream = await openMic(relaxedConstraints);
-      diagnostics?.mark('ensureMicTrack.getUserMedia.success', {
-        attempt: 'relaxed',
-      });
     } catch (retryError) {
       const shouldRetryPlain = retryError?.name === 'OverconstrainedError' || retryError?.name === 'NotFoundError';
-      diagnostics?.warn('ensureMicTrack.getUserMedia.error', {
-        attempt: 'relaxed',
-        errorName: retryError?.name || 'Error',
-        message: retryError?.message || String(retryError),
-        willRetryPlain: shouldRetryPlain,
-      });
       if (!shouldRetryPlain) {
         throw retryError;
       }
@@ -1706,14 +1563,7 @@ async function ensureMicTrack(audioConstraints, selectedDeviceId, diagnostics = 
         relaxed: relaxedConstraints,
         error: retryError?.message || retryError,
       });
-      diagnostics?.mark('ensureMicTrack.getUserMedia.start', {
-        attempt: 'plain',
-        constraints: true,
-      });
       stream = await openMic(true);
-      diagnostics?.mark('ensureMicTrack.getUserMedia.success', {
-        attempt: 'plain',
-      });
     }
   }
   const [track] = stream.getAudioTracks();
@@ -1727,18 +1577,7 @@ async function ensureMicTrack(audioConstraints, selectedDeviceId, diagnostics = 
     setPreferredInputDeviceId(micDeviceId);
   }
 
-  diagnostics?.mark('ensureMicTrack.ready', {
-    resolvedDeviceId: micDeviceId || null,
-    trackLabel: track?.label || null,
-    trackState: track?.readyState || null,
-    trackEnabled: Boolean(track?.enabled),
-  });
-
   track.onended = () => {
-    logMicLifecycle('micTrack.onended', {
-      trackState: describeMicTrackState(track),
-      selectedDeviceId: selectedDeviceId || null,
-    });
     micTrack = null;
     micStream = null;
     micDeviceId = null;
@@ -1946,7 +1785,7 @@ document.addEventListener("DOMContentLoaded", () => {
         qualitySelect.value = 'ultra-low';
       }
       localStorage.setItem('audioQualityProfile', qualitySelect.value);
-      cleanupMicTrack('qualitySelect.change');
+      cleanupMicTrack();
     });
   } else if (!storedQuality || !QUALITY_PROFILES[storedQuality]) {
     localStorage.setItem('audioQualityProfile', 'ultra-low');
@@ -2019,13 +1858,13 @@ document.addEventListener("DOMContentLoaded", () => {
       if (feedStreaming) {
         stopFeedStream();
       } else {
-        cleanupMicTrack('inputDevice.change.feed-idle');
+        cleanupMicTrack();
       }
       if (wasStreaming) {
         startFeedStream().catch(err => console.error('Failed to restart feed after device change', err));
       }
     } else {
-      cleanupMicTrack('inputDevice.change.user');
+      cleanupMicTrack();
     }
   };
 
@@ -2966,7 +2805,7 @@ let cachedUsers = [];
         feedStreaming = false;
         updateFeedControls();
         if (!feedManualStop) {
-          scheduleMicCleanup('feed.producer.close');
+          scheduleMicCleanup();
           shouldStartFeedWhenReady = true;
         }
         if (processedTrack && processedTrack !== track) {
@@ -3022,7 +2861,7 @@ let cachedUsers = [];
       activeFeedKeys.delete(feedKey);
       updateSpeakerHighlight(feedKey, false);
     }
-    cleanupMicTrack(manual ? 'feed.stop.manual' : 'feed.stop.auto');
+    cleanupMicTrack();
     updateFeedControls();
     applyFeedDucking();
   }
@@ -5375,17 +5214,6 @@ let cachedUsers = [];
       normalizedTarget = { type: 'user', id: resolvedTargetPeer };
     }
     const targetKey = keyFromTarget(normalizedTarget);
-    const talkDiagnostics = createPttStartDiagnostics({
-      event: e,
-      targetKey,
-      target: normalizedTarget,
-    });
-    talkDiagnostics?.mark('handleTalk.start', {
-      sendTransportReady: Boolean(sendTransport),
-      recvTransportReady: Boolean(recvTransport),
-      micTrackLive: Boolean(micTrack && micTrack.readyState === 'live'),
-      browser: typeof navigator !== 'undefined' ? navigator.userAgent : null,
-    });
     if (!slideHintShown && targetKey && !targetKey.startsWith('feed-')) {
       const li = document.getElementById(targetKey);
       if (li) {
@@ -5420,28 +5248,15 @@ let cachedUsers = [];
         ...(profile?.constraints || {}),
         ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {})
       };
-      talkDiagnostics?.mark('handleTalk.constraints-ready', {
-        qualityKey,
-        selectedDeviceId: selectedDeviceId || null,
-        constraints: summarizeAudioConstraints(audioConstraints),
-      });
 
       // 3️⃣ Ensure the microphone stream is ready and enabled
-      talkDiagnostics?.mark('handleTalk.ensureMicTrack.start');
-      const track = await ensureMicTrack(audioConstraints, selectedDeviceId, talkDiagnostics);
-      talkDiagnostics?.mark('handleTalk.ensureMicTrack.done', {
-        trackLabel: track?.label || null,
-        trackState: track?.readyState || null,
-      });
+      const track = await ensureMicTrack(audioConstraints, selectedDeviceId);
       if (pendingTalkStart !== pendingStart || pendingStart.canceled) {
         if (pendingTalkStart === pendingStart) {
           pendingTalkStart = null;
         }
-        talkDiagnostics?.warn('handleTalk.canceled-before-produce', {
-          reason: 'pending-start-changed',
-        });
         track.enabled = false;
-        scheduleMicCleanup('talk.start-canceled-before-produce');
+        scheduleMicCleanup();
         applyFeedDucking();
         return;
       }
@@ -5472,15 +5287,7 @@ let cachedUsers = [];
       };
 
       // ◆ Start producing
-      talkDiagnostics?.mark('handleTalk.produce.start', {
-        trackLabel: finalTrack?.label || null,
-        trackState: finalTrack?.readyState || null,
-        processedTrack: Boolean(processedTrack && processedTrack !== track),
-      });
       const newProducer = await sendTransport.produce(params);
-      talkDiagnostics?.mark('handleTalk.produce.done', {
-        producerId: newProducer?.id || null,
-      });
 
       // ◆ If the button was released in the meantime
       if (!isTalking || pendingTalkStart !== pendingStart || pendingStart.canceled) {
@@ -5498,10 +5305,7 @@ let cachedUsers = [];
           processedTrack.enabled = false;
         }
         track.enabled = false;
-        scheduleMicCleanup('talk.start-canceled-after-produce');
-        talkDiagnostics?.warn('handleTalk.produce-finished-after-release', {
-          producerId: newProducer?.id || null,
-        });
+        scheduleMicCleanup();
         return;
       }
 
@@ -5518,7 +5322,7 @@ let cachedUsers = [];
         if (processedTrack && processedTrack !== micTrack) {
           processedTrack.enabled = false;
         }
-        scheduleMicCleanup('talk.producer.close');
+        scheduleMicCleanup();
         if (targetKey && selfTalkingKey === targetKey) {
           setSelfTalkingKey(null);
         }
@@ -5527,26 +5331,15 @@ let cachedUsers = [];
       // ◆ Visual feedback only for targeted recipients
       updateOutgoingTalkHighlight(normalizedTarget, true);
       emitPttState('talk-started', { talking: true, target: normalizedTarget });
-      talkDiagnostics?.mark('handleTalk.complete', {
-        producerId: newProducer?.id || null,
-      });
     } catch (err) {
       const talkStartCanceled = pendingTalkStart === pendingStart && pendingStart.canceled;
       if (pendingTalkStart === pendingStart) {
         pendingTalkStart = null;
       }
       if (talkStartCanceled) {
-        talkDiagnostics?.warn('handleTalk.canceled-during-error', {
-          errorName: err?.name || 'Error',
-          message: err?.message || String(err),
-        });
         applyFeedDucking();
         return;
       }
-      talkDiagnostics?.error('handleTalk.failed', {
-        errorName: err?.name || 'Error',
-        message: err?.message || String(err),
-      });
       console.error("Microphone error:", err);
       alert("Failed to start the microphone: " + err.message);
       setReplyButtonActive(false);
@@ -5559,7 +5352,7 @@ let cachedUsers = [];
       if (userProcessingChain?.outputTrack) {
         userProcessingChain.outputTrack.enabled = false;
       }
-      scheduleMicCleanup('talk.start-failed');
+      scheduleMicCleanup();
       applyFeedDucking();
 
       updateOutgoingTalkHighlight(currentTarget, false);
@@ -5622,7 +5415,7 @@ let cachedUsers = [];
       userProcessingChain.outputTrack.enabled = false;
     }
 
-    scheduleMicCleanup('talk.stop');
+    scheduleMicCleanup();
 
     // Remove the purple highlight from the <li>
     updateOutgoingTalkHighlight(currentTarget || pendingTarget, false);
