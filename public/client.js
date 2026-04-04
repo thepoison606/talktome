@@ -66,6 +66,7 @@ const FEED_DUCKING_DB_MAX = -6;
 const FEED_DIM_SELF_STORAGE_KEY = 'feedDimSelf';
 const AUDIO_PROCESSING_STORAGE_KEY = 'audioProcessingEnabled';
 const FEED_INPUT_GAIN_DB_STORAGE_KEY = 'feedInputGainDb';
+const OUTPUT_DEVICE_STORAGE_KEY = 'preferredAudioOutputDeviceId';
 const FEED_INPUT_GAIN_DB_MIN = -30;
 const FEED_INPUT_GAIN_DB_MAX = 40;
 const FEED_METER_MIN_DB = -60;
@@ -103,6 +104,13 @@ let feedInputGainDb = 0;
 let feedInputGainLinear = dbToLinear(feedInputGainDb);
 let userInputGainDb = 18;
 let userInputGainLinear = dbToLinear(userInputGainDb);
+let preferredOutputDeviceId = '';
+const USER_AGENT = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+const isTouchMacUA = typeof navigator !== 'undefined'
+  ? navigator.maxTouchPoints > 1 && /Macintosh/.test(USER_AGENT)
+  : false;
+const isMobileBrowser = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobi/i.test(USER_AGENT)
+  || isTouchMacUA;
 
 if (typeof window !== 'undefined') {
   try {
@@ -122,6 +130,10 @@ if (typeof window !== 'undefined') {
     if (storedFeedInputProcessing !== null) {
       feedInputProcessingEnabled = storedFeedInputProcessing === 'true';
     }
+    const storedOutputDeviceId = window.localStorage?.getItem(OUTPUT_DEVICE_STORAGE_KEY);
+    if (storedOutputDeviceId !== null) {
+      preferredOutputDeviceId = storedOutputDeviceId;
+    }
     const storedFeedPtime = window.localStorage?.getItem(FEED_PTIME_STORAGE_KEY);
     if (storedFeedPtime !== null) {
       const parsedFeedPtime = parseInt(storedFeedPtime, 10);
@@ -135,10 +147,7 @@ if (typeof window !== 'undefined') {
     } else {
       // Default: enable processing on mobile, disable on desktop
       try {
-        const ua = navigator?.userAgent || '';
-        const isIpadDesktopUA = (navigator?.maxTouchPoints > 1) && /Macintosh/.test(ua);
-        const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobi/i.test(ua);
-        audioProcessingEnabled = !!(isMobileUA || isIpadDesktopUA);
+        audioProcessingEnabled = !!isMobileBrowser;
       } catch (err) {
         // If detection fails, fall back to desktop default (off)
         audioProcessingEnabled = false;
@@ -166,8 +175,7 @@ if (typeof window !== 'undefined') {
 }
 syncAudioProcessingOptions();
 const isiOS = typeof navigator !== 'undefined'
-  ? /iPad|iPhone|iPod/.test(navigator.userAgent || '') ||
-    (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent || ''))
+  ? /iPad|iPhone|iPod/.test(USER_AGENT) || isTouchMacUA
   : false;
 
 const FEED_PROFILE = {
@@ -247,6 +255,8 @@ function installMediaConstraintDiagnostics() {
 installMediaConstraintDiagnostics();
 let inputSelect;
 let feedInputSelect;
+let outputDeviceSelector;
+let outputSelect;
 let qualitySelect;
 let dimAmountSelect;
 let dimWhileSpeakingToggle;
@@ -371,6 +381,11 @@ function createManagedAudioContext({ label = 'AudioContext', onRunning = null } 
         if (ctx.state === 'running') {
           onRunning();
         }
+      });
+    }
+    if (supportsAudioOutputSelection() && preferredOutputDeviceId && typeof ctx.setSinkId === 'function') {
+      ctx.setSinkId(preferredOutputDeviceId).catch(err => {
+        console.warn('Failed to restore audio output device on AudioContext:', err);
       });
     }
     return ctx;
@@ -899,6 +914,32 @@ function getManagedInputSelects() {
   return [inputSelect, feedInputSelect].filter(Boolean);
 }
 
+function supportsAudioOutputSelection() {
+  if (typeof window === 'undefined') return false;
+  if (isMobileBrowser) return false;
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  return !!(navigator.mediaDevices?.enumerateDevices
+    && AudioCtx?.prototype
+    && typeof AudioCtx.prototype.setSinkId === 'function');
+}
+
+function syncOutputSelectorVisibility() {
+  if (!outputDeviceSelector) return;
+  outputDeviceSelector.hidden = !supportsAudioOutputSelection();
+}
+
+function syncManagedOutputSelects(deviceId) {
+  if (!outputSelect) return;
+  const nextValue = deviceId || '';
+  outputSelect.value = nextValue;
+  if (nextValue && outputSelect.value !== nextValue) {
+    const match = Array.from(outputSelect.options || []).find(opt => opt.value === nextValue);
+    if (match) {
+      match.selected = true;
+    }
+  }
+}
+
 function syncManagedInputSelects(deviceId) {
   const nextValue = deviceId || '';
   getManagedInputSelects().forEach((selectEl) => {
@@ -920,6 +961,16 @@ function setPreferredInputDeviceId(deviceId) {
     localStorage.removeItem(MIC_DEVICE_STORAGE_KEY);
   }
   syncManagedInputSelects(normalized);
+}
+
+function persistPreferredOutputDeviceId(deviceId) {
+  const normalized = deviceId || '';
+  preferredOutputDeviceId = normalized;
+  if (normalized) {
+    localStorage.setItem(OUTPUT_DEVICE_STORAGE_KEY, normalized);
+  } else {
+    localStorage.removeItem(OUTPUT_DEVICE_STORAGE_KEY);
+  }
 }
 
 function getSelectedDeviceId() {
@@ -1423,6 +1474,7 @@ async function updateDeviceList() {
 
   const devices = await navigator.mediaDevices.enumerateDevices();
   const inputs  = devices.filter(d => d.kind === "audioinput");
+  const outputs = devices.filter(d => d.kind === "audiooutput");
 
   const selectors = getManagedInputSelects();
   selectors.forEach((selectEl) => {
@@ -1452,6 +1504,38 @@ async function updateDeviceList() {
       setPreferredInputDeviceId(desiredDeviceId);
     } else {
       syncManagedInputSelects('');
+    }
+  }
+
+  if (outputSelect) {
+    outputSelect.innerHTML = `<option value="">System default</option>`;
+    const concreteOutputs = outputs.filter((d) =>
+      d?.deviceId
+      && d.deviceId !== 'default'
+      && d.deviceId !== 'communications'
+    );
+    concreteOutputs.forEach((d, index) => {
+      const opt = document.createElement("option");
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `Output ${index + 1}`;
+      outputSelect.append(opt);
+    });
+
+    const hasSelectableOutputs = supportsAudioOutputSelection() && concreteOutputs.length > 0;
+    if (outputDeviceSelector) {
+      outputDeviceSelector.hidden = !hasSelectableOutputs;
+    }
+
+    if (hasSelectableOutputs) {
+      const availableIds = new Set(concreteOutputs.map(d => d.deviceId));
+      const desiredOutputId = preferredOutputDeviceId && availableIds.has(preferredOutputDeviceId)
+        ? preferredOutputDeviceId
+        : '';
+      syncManagedOutputSelects(desiredOutputId);
+      outputSelect.disabled = false;
+    } else {
+      syncManagedOutputSelects('');
+      outputSelect.disabled = true;
     }
   }
 }
@@ -1678,6 +1762,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   inputSelect  = document.getElementById("input-select");
   feedInputSelect = document.getElementById("feed-input-select");
+  outputDeviceSelector = document.getElementById("output-device-selector");
+  outputSelect = document.getElementById("output-select");
   qualitySelect = document.getElementById("quality-select");
   dimAmountSelect = document.getElementById('dim-amount-select');
   dimWhileSpeakingToggle = document.getElementById('toggle-self-dim');
@@ -1699,6 +1785,8 @@ document.addEventListener("DOMContentLoaded", () => {
   feedMeterBarREl = document.getElementById('feed-meter-bar-R');
   feedMeterClipREl = document.getElementById('feed-meter-clip-R');
   feedMeterValueREl = document.getElementById('feed-meter-value-R');
+  syncOutputSelectorVisibility();
+  syncManagedOutputSelects(preferredOutputDeviceId);
 
   updateUserGainUI();
   setUserMeterDisplay(0, formatDbDisplay(-Infinity), false, null, { forceText: true });
@@ -1937,6 +2025,80 @@ let cachedUsers = [];
   let activeProducersSyncInFlight = false;
   let pendingIncomingConsumeKeys = new Set();
   let slideHintShown = false;
+
+  async function applyOutputDeviceSelection(deviceId, { persist = true, sync = true, requestPermission = false } = {}) {
+    const normalized = deviceId || '';
+    if (!supportsAudioOutputSelection()) {
+      if (sync) syncManagedOutputSelects('');
+      if (persist) persistPreferredOutputDeviceId('');
+      return false;
+    }
+
+    let resolvedDeviceId = normalized;
+    if (requestPermission && resolvedDeviceId && typeof navigator.mediaDevices?.selectAudioOutput === 'function') {
+      try {
+        const grantedDevice = await navigator.mediaDevices.selectAudioOutput({ deviceId: resolvedDeviceId });
+        resolvedDeviceId = grantedDevice?.deviceId || resolvedDeviceId;
+      } catch (err) {
+        console.warn('Audio output device selection was not granted:', err);
+        if (sync) syncManagedOutputSelects(preferredOutputDeviceId);
+        return false;
+      }
+    }
+
+    if (sharedAudioContext && sharedAudioContext.state !== 'closed' && typeof sharedAudioContext.setSinkId === 'function') {
+      try {
+        await sharedAudioContext.setSinkId(resolvedDeviceId);
+      } catch (err) {
+        console.warn('Failed to apply audio output device to AudioContext:', err);
+        if (sync) syncManagedOutputSelects(preferredOutputDeviceId);
+        return false;
+      }
+    }
+
+    const sinkPromises = [];
+    audioElements.forEach((entry) => {
+      const audioEl = entry?.audio;
+      if (audioEl && typeof audioEl.setSinkId === 'function') {
+        sinkPromises.push(
+          audioEl.setSinkId(resolvedDeviceId).catch(err => {
+            console.warn('Failed to apply audio output device to audio element:', err);
+          })
+        );
+      }
+    });
+    await Promise.allSettled(sinkPromises);
+
+    if (persist) {
+      persistPreferredOutputDeviceId(resolvedDeviceId);
+    } else {
+      preferredOutputDeviceId = resolvedDeviceId;
+    }
+    if (sync) {
+      syncManagedOutputSelects(resolvedDeviceId);
+    }
+    return true;
+  }
+
+  outputSelect?.addEventListener('change', async () => {
+    const selected = outputSelect.value;
+    outputSelect.disabled = true;
+    try {
+      await applyOutputDeviceSelection(selected, { requestPermission: !!selected });
+    } finally {
+      outputSelect.disabled = !supportsAudioOutputSelection();
+    }
+  });
+
+  if (supportsAudioOutputSelection()) {
+    applyOutputDeviceSelection(preferredOutputDeviceId, {
+      persist: false,
+      sync: true,
+      requestPermission: false
+    }).catch(err => {
+      console.warn('Failed to restore preferred audio output device:', err);
+    });
+  }
 
   function normalizePttTarget(target) {
     if (!target || typeof target !== 'object') return null;
@@ -4448,6 +4610,11 @@ let cachedUsers = [];
       audio.setAttribute('playsinline', 'true');
       audio.setAttribute('autoplay', 'true');
       enforcePitchLock(audio);
+      if (supportsAudioOutputSelection() && preferredOutputDeviceId && typeof audio.setSinkId === 'function') {
+        audio.setSinkId(preferredOutputDeviceId).catch(err => {
+          console.warn('Failed to apply audio output device to new audio element:', err);
+        });
+      }
 
       let gainNode = null;
       let mediaSource = null;
