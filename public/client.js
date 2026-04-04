@@ -1928,6 +1928,8 @@ let cachedUsers = [];
   let shouldInitializeAfterConnect = false;
   let activeLockButton = null;
   let activeLockTarget = null;
+  let suspendedLockState = null;
+  let suspendedLockRestoreTimer = null;
   let pendingPttSizingRaf = null;
   let pttSizingListenerBound = false;
   let streamPruneInterval = null;
@@ -3816,7 +3818,8 @@ let cachedUsers = [];
               handleStopTalking({ preventDefault() {}, currentTarget: talkBtn });
               return;
             }
-            handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
+            suspendActiveLockState();
+            handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
           }
 
           const startX = e.clientX;
@@ -3924,7 +3927,14 @@ let cachedUsers = [];
                 return;
               }
               if (activeLockButton && !isSameTarget(activeLockTarget, targetData)) {
-                toggleTalkLock(targetData);
+                suspendActiveLockState();
+                handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
+                rowPttGestureActive = true;
+                rowPttLockedByGesture = false;
+                rowPttStartX = e.clientX;
+                li.classList.add('ptt-pressing');
+                try { li.setPointerCapture(e.pointerId); } catch {}
+                handleTalk(e, targetData);
                 return;
               }
 
@@ -4023,7 +4033,8 @@ let cachedUsers = [];
             handleStopTalking({ preventDefault() {}, currentTarget: talkBtn });
             return;
           }
-          handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
+          suspendActiveLockState();
+          handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
         }
 
         const startX = e.clientX;
@@ -4114,7 +4125,14 @@ let cachedUsers = [];
               return;
             }
             if (activeLockButton && !isSameTarget(activeLockTarget, targetData)) {
-              toggleTalkLock(targetData);
+              suspendActiveLockState();
+              handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
+              rowPttGestureActive = true;
+              rowPttLockedByGesture = false;
+              rowPttStartX = e.clientX;
+              li.classList.add('ptt-pressing');
+              try { li.setPointerCapture(e.pointerId); } catch {}
+              handleTalk(e, targetData);
               return;
             }
 
@@ -5140,9 +5158,21 @@ let cachedUsers = [];
     }
   }
 
+  function cancelSuspendedLockRestore() {
+    if (!suspendedLockRestoreTimer) return;
+    clearTimeout(suspendedLockRestoreTimer);
+    suspendedLockRestoreTimer = null;
+  }
+
+  function clearSuspendedLockState() {
+    cancelSuspendedLockRestore();
+    suspendedLockState = null;
+  }
+
   function activateTalkLock(target, button) {
     if (session.kind !== 'user') return;
     if (!target || !button) return;
+    clearSuspendedLockState();
     activeLockButton = button;
     activeLockTarget = { type: target.type, id: target.id };
     setTalkButtonLocked(button, true);
@@ -5158,6 +5188,45 @@ let cachedUsers = [];
       return document.querySelector(`#conf-${target.id} .talk-btn`);
     }
     return null;
+  }
+
+  function suspendActiveLockState() {
+    if (session.kind !== 'user') return null;
+    if (!activeLockButton || !activeLockTarget) return null;
+    suspendedLockState = {
+      target: { type: activeLockTarget.type, id: activeLockTarget.id },
+      button: activeLockButton,
+    };
+    clearLockState();
+    return suspendedLockState;
+  }
+
+  function scheduleRestoreSuspendedLock() {
+    if (session.kind !== 'user') return;
+    if (!suspendedLockState) return;
+    cancelSuspendedLockRestore();
+    suspendedLockRestoreTimer = setTimeout(() => {
+      suspendedLockRestoreTimer = null;
+      if (!suspendedLockState) return;
+      if (producer || pendingTalkStart) {
+        scheduleRestoreSuspendedLock();
+        return;
+      }
+
+      const lockState = suspendedLockState;
+      suspendedLockState = null;
+      const target = lockState?.target || null;
+      const button = lockState?.button && document.body.contains(lockState.button)
+        ? lockState.button
+        : findTalkButtonForTarget(target);
+
+      if (!target || !button || button.disabled) {
+        return;
+      }
+
+      activateTalkLock(target, button);
+      handleTalk({ preventDefault() {} }, { type: target.type, id: target.id });
+    }, 0);
   }
 
   function toggleTalkLock(target) {
@@ -5386,6 +5455,7 @@ let cachedUsers = [];
   function handleStopTalking(e) {
     e.preventDefault();
     if (session.kind !== 'user') return;
+    const shouldRestoreSuspendedLock = Boolean(suspendedLockState) && !e?.suppressLockRestore;
 
     if (activeLockButton && e.currentTarget && e.currentTarget !== activeLockButton) {
       return;
@@ -5425,6 +5495,10 @@ let cachedUsers = [];
     clearHotkeyActiveStyles();
     pressedHotkeyDigits.clear();
     emitPttState('talk-stopped', { talking: false, lockActive: false, target: null });
+
+    if (shouldRestoreSuspendedLock) {
+      scheduleRestoreSuspendedLock();
+    }
   }
 
   // Safety stop so PTT can't get stuck on iOS/background transitions.
