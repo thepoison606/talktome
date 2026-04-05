@@ -68,6 +68,7 @@ const FEED_DIM_SELF_STORAGE_KEY = 'feedDimSelf';
 const AUDIO_PROCESSING_STORAGE_KEY = 'audioProcessingEnabled';
 const FEED_INPUT_GAIN_DB_STORAGE_KEY = 'feedInputGainDb';
 const OUTPUT_DEVICE_STORAGE_KEY = 'preferredAudioOutputDeviceId';
+const MIC_DEVICE_EXPLICIT_STORAGE_KEY = 'preferredAudioInputDeviceExplicit';
 const FEED_INPUT_GAIN_DB_MIN = -30;
 const FEED_INPUT_GAIN_DB_MAX = 40;
 const FEED_METER_MIN_DB = -60;
@@ -106,6 +107,8 @@ let feedInputGainDb = 0;
 let feedInputGainLinear = dbToLinear(feedInputGainDb);
 let userInputGainDb = 18;
 let userInputGainLinear = dbToLinear(userInputGainDb);
+let preferredInputDeviceId = '';
+let preferredInputDeviceExplicit = false;
 let preferredOutputDeviceId = '';
 const USER_AGENT = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
 const isTouchMacUA = typeof navigator !== 'undefined'
@@ -131,6 +134,14 @@ if (typeof window !== 'undefined') {
     const storedFeedInputProcessing = window.localStorage?.getItem(FEED_INPUT_PROCESSING_STORAGE_KEY);
     if (storedFeedInputProcessing !== null) {
       feedInputProcessingEnabled = storedFeedInputProcessing === 'true';
+    }
+    const storedInputDeviceId = window.localStorage?.getItem(MIC_DEVICE_STORAGE_KEY);
+    if (storedInputDeviceId !== null) {
+      preferredInputDeviceId = storedInputDeviceId;
+    }
+    const storedInputDeviceExplicit = window.localStorage?.getItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY);
+    if (storedInputDeviceExplicit !== null) {
+      preferredInputDeviceExplicit = storedInputDeviceExplicit === 'true';
     }
     const storedOutputDeviceId = window.localStorage?.getItem(OUTPUT_DEVICE_STORAGE_KEY);
     if (storedOutputDeviceId !== null) {
@@ -955,12 +966,18 @@ function syncManagedInputSelects(deviceId) {
   });
 }
 
-function setPreferredInputDeviceId(deviceId) {
+function setPreferredInputDeviceId(deviceId, { persist = true, explicit = preferredInputDeviceExplicit } = {}) {
   const normalized = deviceId || '';
-  if (normalized) {
-    localStorage.setItem(MIC_DEVICE_STORAGE_KEY, normalized);
-  } else {
-    localStorage.removeItem(MIC_DEVICE_STORAGE_KEY);
+  preferredInputDeviceId = normalized;
+  preferredInputDeviceExplicit = Boolean(normalized && explicit);
+  if (persist) {
+    if (preferredInputDeviceExplicit) {
+      localStorage.setItem(MIC_DEVICE_STORAGE_KEY, normalized);
+      localStorage.setItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY, 'true');
+    } else {
+      localStorage.removeItem(MIC_DEVICE_STORAGE_KEY);
+      localStorage.removeItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY);
+    }
   }
   syncManagedInputSelects(normalized);
 }
@@ -976,14 +993,8 @@ function persistPreferredOutputDeviceId(deviceId) {
 }
 
 function getSelectedDeviceId() {
-  const selected = inputSelect?.value || feedInputSelect?.value;
-  if (selected && selected !== '') return selected;
-  try {
-    const stored = window.localStorage?.getItem(MIC_DEVICE_STORAGE_KEY);
-    return stored || null;
-  } catch {
-    return null;
-  }
+  if (!preferredInputDeviceExplicit) return null;
+  return preferredInputDeviceId || null;
 }
 
 function buildUserAudioConstraints(selectedDeviceId) {
@@ -1467,13 +1478,6 @@ function storeVolume(key, value) {
 }
 
 async function updateDeviceList() {
-  // Request microphone access first (labels are often empty otherwise)
-  try {
-    await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (e) {
-    console.warn("No microphone access; device labels may be empty", e);
-  }
-
   const devices = await navigator.mediaDevices.enumerateDevices();
   const inputs  = devices.filter(d => d.kind === "audioinput");
   const outputs = devices.filter(d => d.kind === "audiooutput");
@@ -1490,21 +1494,32 @@ async function updateDeviceList() {
   });
 
   if (selectors.length > 0) {
-    const storedDeviceId = localStorage.getItem(MIC_DEVICE_STORAGE_KEY);
     const availableIds = new Set(inputs.map(d => d.deviceId));
     let desiredDeviceId = null;
 
     if (micDeviceId && availableIds.has(micDeviceId)) {
       desiredDeviceId = micDeviceId;
-    } else if (storedDeviceId && availableIds.has(storedDeviceId)) {
-      desiredDeviceId = storedDeviceId;
+    } else if (preferredInputDeviceExplicit && preferredInputDeviceId && availableIds.has(preferredInputDeviceId)) {
+      desiredDeviceId = preferredInputDeviceId;
     } else if (inputs[0]) {
       desiredDeviceId = inputs[0].deviceId;
     }
 
     if (desiredDeviceId) {
-      setPreferredInputDeviceId(desiredDeviceId);
+      if (preferredInputDeviceExplicit && desiredDeviceId === preferredInputDeviceId) {
+        setPreferredInputDeviceId(desiredDeviceId, { persist: true, explicit: true });
+      } else {
+        preferredInputDeviceExplicit = false;
+        try {
+          localStorage.removeItem(MIC_DEVICE_STORAGE_KEY);
+          localStorage.removeItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY);
+        } catch {}
+        preferredInputDeviceId = desiredDeviceId;
+        syncManagedInputSelects(desiredDeviceId);
+      }
     } else {
+      preferredInputDeviceId = '';
+      preferredInputDeviceExplicit = false;
       syncManagedInputSelects('');
     }
   }
@@ -1660,7 +1675,10 @@ async function ensureMicTrack(audioConstraints, selectedDeviceId) {
   micPrimed = true;
 
   if (micDeviceId) {
-    setPreferredInputDeviceId(micDeviceId);
+    setPreferredInputDeviceId(micDeviceId, {
+      persist: preferredInputDeviceExplicit,
+      explicit: preferredInputDeviceExplicit && !!selectedDeviceId,
+    });
   }
 
   track.onended = () => {
@@ -1681,6 +1699,10 @@ async function ensureMicTrack(audioConstraints, selectedDeviceId) {
       destroyUserProcessing();
     }
   }
+
+  updateDeviceList().catch((error) => {
+    console.warn('Failed to refresh device list after microphone access:', error);
+  });
 
   return micTrack;
 }
@@ -1942,7 +1964,7 @@ document.addEventListener("DOMContentLoaded", () => {
   );
 
   const handleInputDeviceSelectionChange = (selected) => {
-    setPreferredInputDeviceId(selected);
+    setPreferredInputDeviceId(selected, { persist: true, explicit: Boolean(selected) });
     if (session.kind === 'feed') {
       const wasStreaming = feedStreaming;
       if (feedStreaming) {
@@ -2002,6 +2024,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const feedAudioElements = new Map();
   const targetStreamMap = new Map();
   const feedDimmingDisabled = new Set();
+  const listenOnlyConferenceKeys = new Set();
+  const listenOnlyConferenceDimmingDisabled = new Set();
   const activeFeedKeys = new Set();
   // Server-authoritative set of user/conference targets that are currently addressing us.
   const speakingPeers = new Set();
@@ -2573,6 +2597,16 @@ let cachedUsers = [];
     return !feedDimmingDisabled.has(String(feedId));
   }
 
+  function shouldDimListenOnlyConferenceEntry(entry) {
+    if (session.kind !== 'user') return false;
+    if (!feedDuckingActive || feedDuckingFactor >= 0.999) return false;
+    const key = String(entry?.key || '');
+    if (!listenOnlyConferenceKeys.has(key) || !key.startsWith('conf-')) return false;
+    const conferenceId = Number(key.slice(5));
+    if (!Number.isFinite(conferenceId)) return false;
+    return !listenOnlyConferenceDimmingDisabled.has(String(conferenceId));
+  }
+
   function getFeedEntryLevel(entry, value) {
     const base = Math.max(0, Math.min(1, Number(value) || 0));
     if (entry?.feedDuckingNode) {
@@ -2652,7 +2686,10 @@ let cachedUsers = [];
 
   function setPlaybackEntryLevel(entry, value) {
     if (!entry || !entry.audio) return;
-    const applied = Math.max(0, Math.min(1, value));
+    const base = Math.max(0, Math.min(1, value));
+    const applied = shouldDimListenOnlyConferenceEntry(entry)
+      ? Math.max(0, Math.min(1, base * feedDuckingFactor))
+      : base;
     if (entry.gainNode) {
       entry.audio.muted = true;
       entry.audio.volume = 0;
@@ -2852,10 +2889,23 @@ let cachedUsers = [];
     if (entry.targetType === 'conference') {
       const conferenceId = Number(entry.targetId);
       if (!Number.isFinite(conferenceId)) return null;
+      const conferenceKey = `conf-${conferenceId}`;
+      if (listenOnlyConferenceKeys.has(conferenceKey)) {
+        const numericFromUserId = Number(entry.fromUserId);
+        if (Number.isFinite(numericFromUserId)) {
+          const socketId = resolveUserSocketId(numericFromUserId);
+          const onlineUser = cachedUsers.find((candidate) => Number(candidate?.userId) === numericFromUserId);
+          return {
+            type: 'user',
+            id: socketId || numericFromUserId,
+            label: onlineUser?.name || entry.fromName || String(numericFromUserId),
+          };
+        }
+      }
       return {
         type: 'conference',
         id: conferenceId,
-        label: conferenceLabels.get(conferenceId) || targetLabels.get(`conf-${conferenceId}`) || String(conferenceId),
+        label: conferenceLabels.get(conferenceId) || targetLabels.get(conferenceKey) || String(conferenceId),
       };
     }
 
@@ -3025,6 +3075,22 @@ let cachedUsers = [];
 
         setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
       }
+    }
+
+    for (const key of listenOnlyConferenceKeys) {
+      const conferenceId = Number(String(key).slice(5));
+      const tile = document.getElementById(key);
+      const dimDisabled = listenOnlyConferenceDimmingDisabled.has(String(conferenceId));
+      const shouldDim = shouldDuck && !dimDisabled && feedDuckingFactor < 0.999;
+      tile?.classList.toggle('monitor-dimmed', shouldDim);
+
+      forEachStreamEntry(key, (entry) => {
+        if (mutedPeers.has(key)) {
+          mutePlaybackEntry(entry);
+        } else {
+          setPlaybackEntryLevel(entry, entry.volume ?? defaultVolume);
+        }
+      });
     }
   }
 
@@ -3999,7 +4065,7 @@ let cachedUsers = [];
 
     let targets;
     try {
-      targets = await fetchJSON(`/users/${dbUserId}/targets`);
+      targets = await fetchJSON(`/users/${dbUserId}/targets?includeMemberships=1`);
     } catch (err) {
       console.error('Failed to fetch targets', err);
       return;
@@ -4030,6 +4096,7 @@ let cachedUsers = [];
     };
 
     targetLabels.clear();
+    listenOnlyConferenceKeys.clear();
 
     const usersById = new Map();
     users.forEach(u => {
@@ -4302,19 +4369,17 @@ let cachedUsers = [];
       const id = Number(target.targetId);
       const name = conferenceNames.get(id) || target.name;
       const key = `conf-${id}`;
+      const canTalk = target.canTalk !== false;
 
       const li = document.createElement('li');
       li.id = key;
       li.classList.add('target-item', 'conf-target');
+      if (!canTalk) {
+        li.classList.add('monitor-only-target');
+        listenOnlyConferenceKeys.add(key);
+      }
       li.dataset.type = 'conference';
       li.dataset.id = String(id);
-      li.dataset.type = 'conference';
-      li.dataset.id = String(id);
-
-      const hint = document.createElement('div');
-      hint.className = 'slide-to-lock-hint';
-      hint.textContent = '← Slide to lock';
-      hint.setAttribute('aria-hidden', 'true');
 
       const icon = document.createElement('div');
       icon.className = 'conf-icon';
@@ -4350,6 +4415,62 @@ let cachedUsers = [];
         });
       });
       info.appendChild(confSlider);
+
+      const muteBtn = document.createElement('button');
+      muteBtn.className = 'mute-btn';
+      const muted = persistedConfState?.muted || mutedPeers.has(key);
+      muteBtn.type = 'button';
+      muteBtn.title = muted ? 'Unmute' : 'Mute';
+      if (muted) muteBtn.classList.add('muted');
+      const muteIcon = document.createElement('img');
+      muteIcon.className = 'btn-icon';
+      muteIcon.src = muted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
+      muteIcon.alt = '';
+      muteIcon.setAttribute('aria-hidden', 'true');
+      muteBtn.appendChild(muteIcon);
+      muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
+      muteBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        toggleMute(id);
+      });
+
+      const actions = document.createElement('div');
+      actions.className = 'target-actions';
+      actions.classList.add('ptt-actions');
+
+      if (!canTalk) {
+        const dimKeyId = String(id);
+        const dimBtn = document.createElement('button');
+        dimBtn.className = 'lock-btn dim-btn';
+        const dimDisabled = listenOnlyConferenceDimmingDisabled.has(dimKeyId);
+        dimBtn.textContent = 'Dim';
+        dimBtn.type = 'button';
+        dimBtn.setAttribute('aria-pressed', dimDisabled ? 'true' : 'false');
+        dimBtn.classList.toggle('dim-off', dimDisabled);
+        dimBtn.addEventListener('pointerdown', e => e.stopPropagation());
+        dimBtn.addEventListener('click', e => {
+          e.stopPropagation();
+          if (listenOnlyConferenceDimmingDisabled.has(dimKeyId)) {
+            listenOnlyConferenceDimmingDisabled.delete(dimKeyId);
+            dimBtn.setAttribute('aria-pressed', 'false');
+            dimBtn.classList.remove('dim-off');
+          } else {
+            listenOnlyConferenceDimmingDisabled.add(dimKeyId);
+            dimBtn.setAttribute('aria-pressed', 'true');
+            dimBtn.classList.add('dim-off');
+          }
+          applyFeedDucking();
+        });
+        actions.append(muteBtn, dimBtn);
+        li.append(icon, info, actions);
+        list.appendChild(li);
+        return;
+      }
+
+      const hint = document.createElement('div');
+      hint.className = 'slide-to-lock-hint';
+      hint.textContent = '← Slide to lock';
+      hint.setAttribute('aria-hidden', 'true');
 
       const talkBtn = document.createElement('button');
       talkBtn.className = 'talk-btn';
@@ -4411,26 +4532,6 @@ let cachedUsers = [];
         handleTalk(e, normalizedTarget);
       });
 
-      const muteBtn = document.createElement('button');
-      muteBtn.className = 'mute-btn';
-      const muted = persistedConfState?.muted || mutedPeers.has(key);
-      muteBtn.type = 'button';
-      muteBtn.title = muted ? 'Unmute' : 'Mute';
-      if (muted) muteBtn.classList.add('muted');
-      const muteIcon = document.createElement('img');
-      muteIcon.className = 'btn-icon';
-      muteIcon.src = muted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
-      muteIcon.alt = '';
-      muteIcon.setAttribute('aria-hidden', 'true');
-      muteBtn.appendChild(muteIcon);
-      muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
-      muteBtn.addEventListener('click', e => {
-        e.stopPropagation();
-        toggleMute(id);
-      });
-      const actions = document.createElement('div');
-      actions.className = 'target-actions';
-      actions.classList.add('ptt-actions');
       actions.append(muteBtn, talkBtn);
 
       if (isSameTarget(activeLockTarget, { type: 'conference', id })) {

@@ -707,7 +707,6 @@ function ensureDefaultAdmin() {
   const allConference = db.prepare('SELECT id FROM conferences WHERE name = ?').get(ALL_CONFERENCE_NAME);
   if (allConference) {
     addUserToConference(userId, allConference.id);
-    addUserTargetToConference(userId, allConference.id);
   }
   return userId;
 }

@@ -1061,6 +1061,61 @@ function buildCompanionUserState(userId, fallbackName = null, incomingSnapshot =
   };
 }
 
+function buildOperatorTargetsForUser(userId) {
+  const allConferenceId = getAllConferenceId();
+  const explicitTargets = getUserTargets(userId) || [];
+  const conferenceMemberships = getConferencesForUser(userId) || [];
+  const explicitConferenceIds = new Set();
+  const mergedTargets = [];
+
+  explicitTargets.forEach((target) => {
+    if (target?.targetType === "conference") {
+      const conferenceId = Number(target.targetId);
+      if (allConferenceId !== null && Number.isFinite(conferenceId) && conferenceId === Number(allConferenceId)) {
+        return;
+      }
+      if (Number.isFinite(conferenceId)) {
+        explicitConferenceIds.add(conferenceId);
+      }
+      mergedTargets.push({
+        ...target,
+        canTalk: true,
+      });
+      return;
+    }
+    mergedTargets.push(target);
+  });
+
+  conferenceMemberships
+    .map((conference) => ({
+      targetType: "conference",
+      targetId: Number(conference?.id),
+      name: conference?.name || null,
+      canTalk: false,
+      membershipOnly: true,
+    }))
+    .filter((conference) => (
+      Number.isFinite(conference.targetId)
+      && !explicitConferenceIds.has(conference.targetId)
+      && (allConferenceId === null || conference.targetId !== Number(allConferenceId))
+    ))
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base" }))
+    .forEach((conference) => {
+      mergedTargets.push(conference);
+    });
+
+  return mergedTargets;
+}
+
+function filterSystemInternalTargets(targets = []) {
+  const allConferenceId = getAllConferenceId();
+  if (allConferenceId === null) return Array.isArray(targets) ? targets : [];
+  return (Array.isArray(targets) ? targets : []).filter((target) => !(
+    target?.targetType === "conference"
+    && Number(target?.targetId) === Number(allConferenceId)
+  ));
+}
+
 function isCompanionAddressableUser(user) {
   return Boolean(user && !user.is_superadmin);
 }
@@ -1356,7 +1411,12 @@ app.get('/conferences/:id/users', requireAdmin, (req, res) => {
 
 app.get('/users/:id/targets', (req, res) => {
   try {
-    const targets = getUserTargets(req.params.id);
+    const includeMemberships = ["1", "true", "yes", "on"].includes(
+      String(req.query?.includeMemberships || "").trim().toLowerCase()
+    );
+    const targets = includeMemberships
+      ? buildOperatorTargetsForUser(req.params.id)
+      : filterSystemInternalTargets(getUserTargets(req.params.id));
     res.json(targets);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1704,6 +1764,7 @@ app.post("/feeds", requireAdmin, (req, res) => {
 
 app.post('/conferences/:conferenceId/users/:userId', requireAdmin, (req, res) => {
   addUserToConference(req.params.userId, req.params.conferenceId);
+  notifyTargetChange(req.params.userId);
   broadcastRuntimeUserStates("conference-membership-added");
   res.sendStatus(204);
 });
@@ -1726,6 +1787,10 @@ app.post('/users/:id/targets', requireAdmin, (req, res) => {
       }
       addUserTargetToUser(req.params.id, targetId);
     } else if (targetType === 'conference') {
+      const allId = getAllConferenceId();
+      if (allId !== null && Number(targetId) === Number(allId)) {
+        return res.status(400).json({ error: 'The All conference is system-internal and cannot be added as a target' });
+      }
       addUserTargetToConference(req.params.id, targetId);
     } else if (targetType === 'feed') {
       addUserTargetToFeed(req.params.id, targetId);
@@ -1832,7 +1897,7 @@ app.get("/api/v1/companion/users/:id/targets", requireCompanionApiKey, (req, res
     return res.status(404).json({ error: "User not found" });
   }
   try {
-    const targets = getUserTargets(userId);
+    const targets = filterSystemInternalTargets(getUserTargets(userId));
     res.json(targets);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2134,6 +2199,7 @@ app.put('/feeds/:id/password', requireAdmin, (req, res) => {
 app.delete("/conferences/:conferenceId/users/:userId", requireAdmin, (req, res) => {
   try {
     removeUserFromConference(req.params.userId, req.params.conferenceId);
+    notifyTargetChange(req.params.userId);
     broadcastRuntimeUserStates("conference-membership-removed");
     res.sendStatus(204);
   } catch (err) {
@@ -2186,10 +2252,6 @@ app.delete("/conferences/:id", requireAdmin, (req, res) => {
 });
 
 app.delete("/users/:id/targets/:type/:tid", requireAdmin, (req, res) => {
-  const allId = getAllConferenceId();
-  if (req.params.type === 'conference' && allId !== null && Number(req.params.tid) === Number(allId)) {
-    return res.status(400).json({ error: "Cannot remove the All conference from targets" });
-  }
   try {
     removeUserTarget(req.params.id, req.params.type, req.params.tid);
     notifyTargetChange(req.params.id);
