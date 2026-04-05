@@ -62,6 +62,11 @@ function exportDatabaseSnapshot() {
       FROM user_target_order
       ORDER BY user_id, position, target_type, target_id
     `).all(),
+    userTargetAudioState: db.prepare(`
+      SELECT user_id, target_type, target_id, muted, volume, updated_at
+      FROM user_target_audio_state
+      ORDER BY user_id, target_type, target_id
+    `).all(),
     applePttChannels: db.prepare(`
       SELECT user_id, channel_uuid, channel_name, updated_at
       FROM apple_ptt_channels
@@ -88,6 +93,7 @@ function importDatabaseSnapshot(snapshot) {
   const userConfTargets = Array.isArray(snapshot.userConfTargets) ? snapshot.userConfTargets : [];
   const userFeedTargets = Array.isArray(snapshot.userFeedTargets) ? snapshot.userFeedTargets : [];
   const userTargetOrder = Array.isArray(snapshot.userTargetOrder) ? snapshot.userTargetOrder : [];
+  const userTargetAudioState = Array.isArray(snapshot.userTargetAudioState) ? snapshot.userTargetAudioState : [];
   const applePttChannels = Array.isArray(snapshot.applePttChannels) ? snapshot.applePttChannels : [];
   const applePttRegistrations = Array.isArray(snapshot.applePttRegistrations) ? snapshot.applePttRegistrations : [];
 
@@ -103,6 +109,7 @@ function importDatabaseSnapshot(snapshot) {
     db.prepare('DELETE FROM user_conf_targets').run();
     db.prepare('DELETE FROM user_feed_targets').run();
     db.prepare('DELETE FROM user_conference').run();
+    db.prepare('DELETE FROM user_target_audio_state').run();
     db.prepare('DELETE FROM feeds').run();
     db.prepare('DELETE FROM conferences').run();
     db.prepare('DELETE FROM users').run();
@@ -144,6 +151,10 @@ function importDatabaseSnapshot(snapshot) {
     const insertTargetOrder = db.prepare(`
       INSERT INTO user_target_order (user_id, target_type, target_id, position)
       VALUES (?, ?, ?, ?)
+    `);
+    const insertTargetAudioState = db.prepare(`
+      INSERT INTO user_target_audio_state (user_id, target_type, target_id, muted, volume, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
     const insertApplePttChannel = db.prepare(`
       INSERT INTO apple_ptt_channels (user_id, channel_uuid, channel_name, updated_at)
@@ -195,6 +206,17 @@ function importDatabaseSnapshot(snapshot) {
         String(row.target_type),
         Number(row.target_id),
         Number(row.position)
+      );
+    });
+
+    userTargetAudioState.forEach((row) => {
+      insertTargetAudioState.run(
+        Number(row.user_id),
+        String(row.target_type),
+        Number(row.target_id),
+        row.muted ? 1 : 0,
+        Number(row.volume),
+        String(row.updated_at)
       );
     });
 
@@ -690,6 +712,83 @@ function ensureDefaultAdmin() {
   return userId;
 }
 
+function normalizeUserTargetAudioStates(states = []) {
+  if (!Array.isArray(states)) return [];
+  const seen = new Set();
+  const normalized = [];
+
+  for (const rawState of states) {
+    const targetType = typeof rawState?.targetType === 'string'
+      ? rawState.targetType.trim().toLowerCase()
+      : '';
+    if (!['user', 'conference', 'feed'].includes(targetType)) continue;
+
+    const targetId = Number(rawState?.targetId);
+    if (!Number.isFinite(targetId)) continue;
+
+    const rawVolume = Number(rawState?.volume);
+    const volume = Number.isFinite(rawVolume)
+      ? Math.max(0, Math.min(1, rawVolume))
+      : 0.9;
+
+    const dedupeKey = `${targetType}:${targetId}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    normalized.push({
+      targetType,
+      targetId,
+      muted: Boolean(rawState?.muted),
+      volume,
+    });
+  }
+
+  return normalized;
+}
+
+function getUserTargetAudioStates(userId) {
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId)) return [];
+  return db.prepare(`
+    SELECT target_type AS targetType, target_id AS targetId, muted, volume
+    FROM user_target_audio_state
+    WHERE user_id = ?
+    ORDER BY target_type, target_id
+  `).all(numericUserId).map((row) => ({
+    targetType: row.targetType,
+    targetId: Number(row.targetId),
+    muted: Boolean(row.muted),
+    volume: Number(row.volume),
+  }));
+}
+
+function replaceUserTargetAudioStates(userId, states = []) {
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId)) return;
+  const normalizedStates = normalizeUserTargetAudioStates(states);
+  const now = new Date().toISOString();
+
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM user_target_audio_state WHERE user_id = ?').run(numericUserId);
+    const insert = db.prepare(`
+      INSERT INTO user_target_audio_state (user_id, target_type, target_id, muted, volume, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    normalizedStates.forEach((state) => {
+      insert.run(
+        numericUserId,
+        state.targetType,
+        state.targetId,
+        state.muted ? 1 : 0,
+        state.volume,
+        now
+      );
+    });
+  });
+
+  tx();
+}
+
 ensureAllConference();
 ensureDefaultAdmin();
 
@@ -727,6 +826,8 @@ module.exports = {
   addUserTargetToFeed,
   removeUserTarget,
   updateUserTargetOrder,
+  getUserTargetAudioStates,
+  replaceUserTargetAudioStates,
   getAllConferenceId,
   getFeedIdsForUser,
   getUsersForFeed,

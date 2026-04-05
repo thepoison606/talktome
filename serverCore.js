@@ -95,6 +95,8 @@ const {
   addUserTargetToFeed,
   removeUserTarget,
   updateUserTargetOrder,
+  getUserTargetAudioStates,
+  replaceUserTargetAudioStates,
   getAllConferenceId,
   getFeedIdsForUser,
   getUsersForFeed,
@@ -1003,6 +1005,7 @@ function ensureCompanionUserState(userId, fallbackName = null) {
   const key = String(userId);
   let state = companionUserState.get(key);
   if (!state) {
+    const persistedTargetAudioStates = getUserTargetAudioStates(userId);
     state = {
       userId,
       userName: fallbackName || null,
@@ -1013,7 +1016,7 @@ function ensureCompanionUserState(userId, fallbackName = null) {
       currentTarget: null,
       lastTarget: null,
       lastIncomingReplyEntry: null,
-      targetAudioStates: [],
+      targetAudioStates: persistedTargetAudioStates,
       lastSpokeAt: null,
       lastCommandId: null,
       lastCommandResult: null,
@@ -2800,11 +2803,12 @@ io.on("connection", (socket) => {
     emitUserListToOperators();
 
     if (normalizedKind === "user" && peer.userId !== null && peer.userId !== undefined) {
+      const persistedTargetAudioStates = getUserTargetAudioStates(peer.userId);
       updateCompanionUserState(peer.userId, {
         userName: peer.name || null,
         online: true,
         socketId: socket.id,
-        targetAudioStates: [],
+        targetAudioStates: persistedTargetAudioStates,
       }, {
         reason: "user-online",
         fallbackName: peer.name || null,
@@ -2820,7 +2824,14 @@ io.on("connection", (socket) => {
       socket.emit("conference-list", []);
     }
 
-    if (typeof callback === "function") callback({ ok: true });
+    if (typeof callback === "function") {
+      callback({
+        ok: true,
+        targetAudioStates: normalizedKind === "user" && peer.userId != null
+          ? getUserTargetAudioStates(peer.userId)
+          : [],
+      });
+    }
   });
 
   socket.on("request-apple-ptt-bootstrap", (callback = () => {}) => {
@@ -2881,9 +2892,10 @@ io.on("connection", (socket) => {
       return;
     }
 
+    replaceUserTargetAudioStates(peer.userId, states);
     updateCompanionUserState(peer.userId, {
       userName: peer.name || null,
-      targetAudioStates: states,
+      targetAudioStates: getUserTargetAudioStates(peer.userId),
     }, {
       reason,
       fallbackName: peer.name || null,

@@ -90,6 +90,16 @@ db.exec(`
                                                       PRIMARY KEY (user_id, feed_id)
     );
 
+    CREATE TABLE IF NOT EXISTS user_target_audio_state (
+                                                           user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                                                           target_type TEXT    NOT NULL,
+                                                           target_id   INTEGER NOT NULL,
+                                                           muted       INTEGER NOT NULL DEFAULT 0,
+                                                           volume      REAL    NOT NULL DEFAULT 0.9,
+                                                           updated_at  TEXT    NOT NULL,
+                                                           PRIMARY KEY (user_id, target_type, target_id)
+    );
+
     CREATE TABLE IF NOT EXISTS apple_ptt_channels (
                                                       user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                                                       channel_uuid TEXT    NOT NULL UNIQUE,

@@ -54,6 +54,7 @@ const defaultVolume = 0.9;
 const volumeMemoryStore = new Map();
 let warnedVolumeStorageRead = false;
 let warnedVolumeStorageWrite = false;
+const TARGET_AUDIO_VOLUME_STORAGE_PREFIXES = ['volume_user_', 'volume_conf_', 'volume_feed_'];
 const IDENTITY_KIND_KEY = 'identityKind';
 const FEED_ID_STORAGE_KEY = 'feedId';
 const FEED_DUCKING_DB_STORAGE_KEY = 'feedDimDb';
@@ -88,6 +89,7 @@ const FEED_PTIME_OPTIONS = Object.freeze({
 const TARGET_HOTKEY_DIGITS = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 const targetHotkeys = new Map();
 const pressedHotkeyDigits = new Set();
+const persistedTargetAudioStateMap = new Map();
 
 let feedDuckingDb = DEFAULT_FEED_DUCKING_DB;
 let feedDuckingFactor = dbToLinear(feedDuckingDb);
@@ -2026,6 +2028,147 @@ let cachedUsers = [];
   let pendingIncomingConsumeKeys = new Set();
   let slideHintShown = false;
 
+  function makePersistedTargetAudioStateKey(targetType, targetId) {
+    const normalizedType = typeof targetType === 'string' ? targetType.trim().toLowerCase() : '';
+    const numericId = Number(targetId);
+    if (!['user', 'conference', 'feed'].includes(normalizedType)) return null;
+    if (!Number.isFinite(numericId)) return null;
+    return `${normalizedType}:${numericId}`;
+  }
+
+  function buildVolumeStorageKeyForTargetState(targetType, targetId) {
+    const normalizedType = typeof targetType === 'string' ? targetType.trim().toLowerCase() : '';
+    const numericId = Number(targetId);
+    if (!Number.isFinite(numericId)) return null;
+    if (normalizedType === 'user') return `volume_user_${numericId}`;
+    if (normalizedType === 'conference') return `volume_conf_${numericId}`;
+    if (normalizedType === 'feed') return `volume_feed_${numericId}`;
+    return null;
+  }
+
+  function normalizePersistedTargetAudioState(rawState) {
+    const targetType = typeof rawState?.targetType === 'string'
+      ? rawState.targetType.trim().toLowerCase()
+      : '';
+    const targetId = Number(rawState?.targetId);
+    const rawVolume = Number(rawState?.volume);
+    if (!['user', 'conference', 'feed'].includes(targetType)) return null;
+    if (!Number.isFinite(targetId)) return null;
+    return {
+      targetType,
+      targetId,
+      muted: Boolean(rawState?.muted),
+      volume: Math.max(0, Math.min(1, Number.isFinite(rawVolume) ? rawVolume : defaultVolume)),
+    };
+  }
+
+  function getPersistedTargetAudioState(targetType, targetId) {
+    const key = makePersistedTargetAudioStateKey(targetType, targetId);
+    return key ? persistedTargetAudioStateMap.get(key) || null : null;
+  }
+
+  function persistTargetAudioStateLocally(state) {
+    const normalized = normalizePersistedTargetAudioState(state);
+    if (!normalized) return null;
+    const persistedKey = makePersistedTargetAudioStateKey(normalized.targetType, normalized.targetId);
+    const volumeStorageKey = buildVolumeStorageKeyForTargetState(normalized.targetType, normalized.targetId);
+    if (!persistedKey || !volumeStorageKey) return null;
+    persistedTargetAudioStateMap.set(persistedKey, normalized);
+    storeVolume(volumeStorageKey, normalized.volume);
+    return normalized;
+  }
+
+  function clearStoredTargetAudioPreferences() {
+    persistedTargetAudioStateMap.clear();
+    volumeMemoryStore.forEach((_, key) => {
+      if (TARGET_AUDIO_VOLUME_STORAGE_PREFIXES.some(prefix => String(key).startsWith(prefix))) {
+        volumeMemoryStore.delete(key);
+      }
+    });
+    try {
+      for (let i = sessionStorage.length - 1; i >= 0; i -= 1) {
+        const key = sessionStorage.key(i);
+        if (key && TARGET_AUDIO_VOLUME_STORAGE_PREFIXES.some(prefix => key.startsWith(prefix))) {
+          sessionStorage.removeItem(key);
+        }
+      }
+    } catch (error) {
+      console.warn('Session storage unavailable while clearing target audio preferences:', error);
+    }
+  }
+
+  function syncRenderedTargetAudioPreferences() {
+    const visibleTargetEls = Array.from(document.querySelectorAll('li.target-item'));
+    const visibleTargetKeys = new Set();
+    const nextMutedKeys = new Set();
+
+    visibleTargetEls.forEach((targetEl) => {
+      const targetKey = targetEl?.id;
+      const targetType = targetEl?.dataset?.type;
+      const targetId = Number(targetEl?.dataset?.id);
+      if (!targetKey || !targetType || !Number.isFinite(targetId)) return;
+
+      visibleTargetKeys.add(targetKey);
+      const persistedState = getPersistedTargetAudioState(targetType, targetId);
+      const volumeStorageKey = buildVolumeStorageKeyForTargetState(targetType, targetId);
+      if (volumeStorageKey) {
+        const volume = persistedState?.volume ?? getStoredVolume(volumeStorageKey);
+        applyVolumeToTarget(targetKey, volume);
+        updateTargetVolumeSliderUi(targetKey, volume);
+      }
+      if (persistedState?.muted) {
+        nextMutedKeys.add(targetKey);
+      }
+    });
+
+    visibleTargetKeys.forEach((targetKey) => {
+      const shouldBeMuted = nextMutedKeys.has(targetKey);
+      if (shouldBeMuted) mutedPeers.add(targetKey);
+      else mutedPeers.delete(targetKey);
+
+      if (isFeedKey(targetKey)) {
+        forEachStreamEntry(targetKey, (entry) => {
+          if (shouldBeMuted) {
+            muteFeedEntry(entry);
+          } else {
+            setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
+          }
+        });
+        return;
+      }
+
+      const consumers = collectConsumersForTarget(targetKey);
+      consumers.forEach((consumer) => {
+        if (!consumer?.pause || !consumer?.resume) return;
+        shouldBeMuted ? consumer.pause() : consumer.resume();
+      });
+      forEachStreamEntry(targetKey, (entry) => {
+        if (shouldBeMuted) {
+          mutePlaybackEntry(entry);
+        } else {
+          setPlaybackEntryLevel(entry, entry.volume ?? defaultVolume);
+        }
+      });
+      updateMuteUiForTarget(targetKey, shouldBeMuted);
+    });
+
+    if (session.kind === 'user') {
+      applyFeedDucking();
+    }
+  }
+
+  function applyPersistedTargetAudioStates(states, { replace = true } = {}) {
+    if (replace) {
+      clearStoredTargetAudioPreferences();
+    }
+    if (Array.isArray(states)) {
+      states.forEach((state) => {
+        persistTargetAudioStateLocally(state);
+      });
+    }
+    syncRenderedTargetAudioPreferences();
+  }
+
   async function applyOutputDeviceSelection(deviceId, { persist = true, sync = true, requestPermission = false } = {}) {
     const normalized = deviceId || '';
     if (!supportsAudioOutputSelection()) {
@@ -2469,10 +2612,16 @@ let cachedUsers = [];
     }
   }
 
-  function setTargetVolumeAndPersist(targetKey, volumeStorageKey, volume) {
+  function setTargetVolumeAndPersist(targetKey, volumeStorageKey, volume, persistedState = null) {
     const clamped = Math.max(0, Math.min(1, Number(volume) || 0));
     applyVolumeToTarget(targetKey, clamped);
     storeVolume(volumeStorageKey, clamped);
+    if (persistedState) {
+      persistTargetAudioStateLocally({
+        ...persistedState,
+        volume: clamped,
+      });
+    }
     updateTargetVolumeSliderUi(targetKey, clamped);
     if (targetKey.startsWith('feed-') && session.kind === 'user') {
       applyFeedDucking();
@@ -3074,6 +3223,7 @@ let cachedUsers = [];
     localStorage.removeItem(FEED_ID_STORAGE_KEY);
     localStorage.removeItem("userName");
     localStorage.removeItem(IDENTITY_KIND_KEY);
+    clearStoredTargetAudioPreferences();
   }
 
   function sendLogoutBeacon() {
@@ -3209,9 +3359,9 @@ let cachedUsers = [];
       const ok = confirm(`This user is already signed in${existingName}. Sign out the other session?`);
       if (!ok) return { cancelled: true };
       const forced = await emitRegisterUser({ id, name, kind, force: true });
-      return forced?.ok ? { ok: true } : forced;
+      return forced?.ok ? forced : forced;
     }
-    return first?.ok ? { ok: true } : first;
+    return first?.ok ? first : first;
   }
 
   function buildRegistrationKey({ id, name, kind, allowPrompt = true } = {}) {
@@ -3234,7 +3384,7 @@ let cachedUsers = [];
         return registerUserWithConflictPrompt({ id, name, kind, allowPrompt });
       }
       const result = await emitRegisterUser({ id, name, kind, force: false });
-      return result?.ok ? { ok: true } : result;
+      return result?.ok ? result : result;
     })();
 
     activeRegistrationKey = key;
@@ -3275,11 +3425,14 @@ let cachedUsers = [];
       loginContainer.style.display = "none";
       intercomApp.style.display = "flex";
       myIdEl.textContent = storedName;
-      registerCurrentSession()
-        .then((res) => {
-          if (res?.ok) return;
-          hardLogoutAndReload("Login cancelled or session already in use.");
-        });
+	      registerCurrentSession()
+	        .then((res) => {
+	          if (res?.ok && session.kind === 'user') {
+	            applyPersistedTargetAudioStates(res.targetAudioStates || []);
+	          }
+	          if (res?.ok) return;
+	          hardLogoutAndReload("Login cancelled or session already in use.");
+	        });
       applySessionUI();
       initializeMediaIfPossible();
     }
@@ -3334,16 +3487,19 @@ let cachedUsers = [];
       feedManualStop = false;
       shouldStartFeedWhenReady = kind === 'feed';
 
-      const reg = await registerCurrentSession();
-      if (!reg?.ok) {
+	      const reg = await registerCurrentSession();
+	      if (!reg?.ok) {
         loginError.textContent = kind === 'user'
           ? (reg?.cancelled ? "Login cancelled" : "Unable to sign in")
           : "Unable to sign in";
         session = { kind: "guest", userId: null, feedId: null, name: null };
         return;
-      }
+	      }
+	      if (kind === 'user') {
+	        applyPersistedTargetAudioStates(reg.targetAudioStates || []);
+	      }
 
-      localStorage.setItem("userName", user.name);
+	      localStorage.setItem("userName", user.name);
       localStorage.setItem(IDENTITY_KIND_KEY, kind);
       if (kind === 'user') {
         localStorage.setItem("userId", session.userId);
@@ -3398,6 +3554,9 @@ let cachedUsers = [];
             hardLogoutAndReload("You are already signed in on another device.");
           }
           return;
+        }
+        if (session.kind === 'user') {
+          applyPersistedTargetAudioStates(reg.targetAudioStates || []);
         }
       }
       myIdEl.textContent = session.name;
@@ -3560,7 +3719,7 @@ let cachedUsers = [];
         return null;
       }
       targetKey = `user-${socketId}`;
-      volumeStorageKey = `volume_user_${socketId}`;
+      volumeStorageKey = `volume_user_${numericId}`;
     } else if (normalizedType === 'conference' && Number.isFinite(numericId)) {
       targetKey = `conf-${numericId}`;
       volumeStorageKey = `volume_conf_${numericId}`;
@@ -3576,7 +3735,7 @@ let cachedUsers = [];
       return null;
     }
 
-    return { targetKey, volumeStorageKey };
+    return { targetKey, volumeStorageKey, targetType: normalizedType, targetId: numericId };
   }
 
   function resolveCompanionTargetAudioStateFromKey(key) {
@@ -3626,7 +3785,7 @@ let cachedUsers = [];
         targetType: 'user',
         targetId,
         muted: mutedPeers.has(key),
-        volume: readVisibleTargetVolume(key, `volume_user_${rawUserKey}`),
+        volume: readVisibleTargetVolume(key, `volume_user_${targetId}`),
       };
     }
 
@@ -3673,7 +3832,11 @@ let cachedUsers = [];
       const signedStep = action === 'volume-up' ? volumeStep : -volumeStep;
       const currentVolume = getStoredVolume(targetConfig.volumeStorageKey);
       const nextVolume = Math.max(0, Math.min(1, currentVolume + signedStep));
-      setTargetVolumeAndPersist(targetConfig.targetKey, targetConfig.volumeStorageKey, nextVolume);
+      setTargetVolumeAndPersist(targetConfig.targetKey, targetConfig.volumeStorageKey, nextVolume, {
+        targetType: targetConfig.targetType,
+        targetId: targetConfig.targetId,
+        muted: mutedPeers.has(targetConfig.targetKey),
+      });
       return { ok: true };
     }
 
@@ -3909,6 +4072,8 @@ let cachedUsers = [];
       const targetKey = `user-${keyId}`;
       li.id = targetKey;
       li.classList.add('target-item', 'user-target');
+      li.dataset.type = 'user';
+      li.dataset.id = String(targetIdNum);
       if (!isOnline) {
         li.classList.add('is-offline');
       }
@@ -3933,19 +4098,24 @@ let cachedUsers = [];
       labelRow.appendChild(label);
       info.appendChild(labelRow);
 
-      const userKey = isOnline ? `volume_user_${socketId}` : null;
+      const persistedUserState = getPersistedTargetAudioState('user', targetIdNum);
+      const userKey = `volume_user_${targetIdNum}`;
       const volSlider = document.createElement('input');
       volSlider.type = 'range';
       volSlider.min = '0';
       volSlider.max = '1';
       volSlider.step = '0.01';
-      volSlider.value = isOnline && userKey ? getStoredVolume(userKey).toString() : '1';
+      volSlider.value = getStoredVolume(userKey).toString();
       volSlider.className = 'volume-slider';
       volSlider.title = 'Source Volume';
-      if (isOnline && userKey) {
+      if (isOnline) {
         volSlider.addEventListener('input', e => {
           const vol = parseFloat(e.target.value);
-          setTargetVolumeAndPersist(targetKey, userKey, vol);
+          setTargetVolumeAndPersist(targetKey, userKey, vol, {
+            targetType: 'user',
+            targetId: targetIdNum,
+            muted: mutedPeers.has(targetKey),
+          });
         });
       } else {
         volSlider.disabled = true;
@@ -4022,7 +4192,10 @@ let cachedUsers = [];
       const muteBtn = document.createElement('button');
       muteBtn.className = 'mute-btn';
       muteBtn.type = 'button';
-      const initialMuted = isOnline && mutedPeers.has(targetKey);
+      const initialMuted = isOnline && (
+        persistedUserState?.muted
+        || mutedPeers.has(targetKey)
+      );
       muteBtn.title = initialMuted ? 'Unmute' : 'Mute';
       const muteIcon = document.createElement('img');
       muteIcon.className = 'btn-icon';
@@ -4135,6 +4308,8 @@ let cachedUsers = [];
       li.classList.add('target-item', 'conf-target');
       li.dataset.type = 'conference';
       li.dataset.id = String(id);
+      li.dataset.type = 'conference';
+      li.dataset.id = String(id);
 
       const hint = document.createElement('div');
       hint.className = 'slide-to-lock-hint';
@@ -4156,6 +4331,7 @@ let cachedUsers = [];
       labelRow.appendChild(label);
       info.appendChild(labelRow);
 
+      const persistedConfState = getPersistedTargetAudioState('conference', id);
       const confKey = `volume_conf_${id}`;
       const confSlider = document.createElement('input');
       confSlider.type = 'range';
@@ -4167,7 +4343,11 @@ let cachedUsers = [];
       confSlider.title = 'Conference Volume';
       confSlider.addEventListener('input', e => {
         const vol = parseFloat(e.target.value);
-        setTargetVolumeAndPersist(key, confKey, vol);
+        setTargetVolumeAndPersist(key, confKey, vol, {
+          targetType: 'conference',
+          targetId: id,
+          muted: mutedPeers.has(key),
+        });
       });
       info.appendChild(confSlider);
 
@@ -4233,7 +4413,7 @@ let cachedUsers = [];
 
       const muteBtn = document.createElement('button');
       muteBtn.className = 'mute-btn';
-      const muted = mutedPeers.has(key);
+      const muted = persistedConfState?.muted || mutedPeers.has(key);
       muteBtn.type = 'button';
       muteBtn.title = muted ? 'Unmute' : 'Mute';
       if (muted) muteBtn.classList.add('muted');
@@ -4374,6 +4554,7 @@ let cachedUsers = [];
 
       info.appendChild(labelWrap);
 
+      const persistedFeedState = getPersistedTargetAudioState('feed', id);
       const feedKey = `volume_feed_${id}`;
       const feedSlider = document.createElement('input');
       feedSlider.type = 'range';
@@ -4385,13 +4566,17 @@ let cachedUsers = [];
       feedSlider.title = 'Feed Volume';
       feedSlider.addEventListener('input', e => {
         const vol = Math.max(0, Math.min(1, parseFloat(e.target.value)));
-        setTargetVolumeAndPersist(key, feedKey, vol);
+        setTargetVolumeAndPersist(key, feedKey, vol, {
+          targetType: 'feed',
+          targetId: id,
+          muted: mutedPeers.has(key),
+        });
       });
       info.appendChild(feedSlider);
 
       const muteBtn = document.createElement('button');
       muteBtn.className = 'mute-btn';
-      const muted = mutedPeers.has(key);
+      const muted = persistedFeedState?.muted || mutedPeers.has(key);
       muteBtn.type = 'button';
       muteBtn.classList.toggle('muted', muted);
       muteBtn.title = muted ? 'Unmute' : 'Mute';
@@ -4488,8 +4673,8 @@ let cachedUsers = [];
 
     pruneIncomingStreamBookkeeping();
 
-    document.querySelectorAll('.target-item').forEach(li => {
-      const key = li.id;
+	    document.querySelectorAll('.target-item').forEach(li => {
+	      const key = li.id;
       const icon = key.startsWith('user-')
         ? li.querySelector('.user-icon')
         : key.startsWith('conf-')
@@ -4504,11 +4689,12 @@ let cachedUsers = [];
 
       const isMuted = mutedPeers.has(key);
       li.classList.toggle('muted', isMuted);
-      if (icon) icon.classList.toggle('muted', isMuted);
-    });
+	      if (icon) icon.classList.toggle('muted', isMuted);
+	    });
 
-    refreshLastTargetLabel();
-    applyIncomingTalkState();
+	    syncRenderedTargetAudioPreferences();
+	    refreshLastTargetLabel();
+	    applyIncomingTalkState();
 
     schedulePttButtonSizing();
     if (!pttSizingListenerBound) {
@@ -4537,18 +4723,23 @@ let cachedUsers = [];
     const isConference = normalizedAppData.type === 'conference';
     const isFeed = normalizedAppData.type === 'feed';
 
-    let targetKey;
-    let volumeStorageKey;
-    if (isConference) {
-      targetKey = `conf-${normalizedAppData.id}`;
-      volumeStorageKey = `volume_conf_${normalizedAppData.id}`;
-    } else if (isFeed) {
-      targetKey = `feed-${normalizedAppData.id}`;
-      volumeStorageKey = `volume_feed_${normalizedAppData.id}`;
-    } else {
-      targetKey = `user-${peerId}`;
-      volumeStorageKey = `volume_user_${peerId}`;
-    }
+	    let targetKey;
+	    let volumeStorageKey;
+	    if (isConference) {
+	      targetKey = `conf-${normalizedAppData.id}`;
+	      volumeStorageKey = `volume_conf_${normalizedAppData.id}`;
+	    } else if (isFeed) {
+	      targetKey = `feed-${normalizedAppData.id}`;
+	      volumeStorageKey = `volume_feed_${normalizedAppData.id}`;
+	    } else {
+	      const stableUserId = Number(
+	        cachedUsers.find((entry) => String(entry?.socketId) === String(peerId))?.userId ?? peerId
+	      );
+	      targetKey = `user-${peerId}`;
+	      volumeStorageKey = Number.isFinite(stableUserId)
+	        ? `volume_user_${stableUserId}`
+	        : `volume_user_${peerId}`;
+	    }
 
     // ignore our own streams
     if (peerId === socket.id) return;
@@ -5243,9 +5434,11 @@ let cachedUsers = [];
 
   function setMuteState(rawId) {
     const key = toKey(rawId);
+    const targetEl = document.getElementById(key);
+    const persistedTargetType = targetEl?.dataset?.type || null;
+    const persistedTargetId = Number(targetEl?.dataset?.id);
 
     const consumers = collectConsumersForTarget(key);
-    console.log("[DEBUG] toggleMute with key:", key, "Consumers:", consumers.length);
 
     const wasMuted = mutedPeers.has(key);
     const nowMuted = !wasMuted;
@@ -5284,6 +5477,15 @@ let cachedUsers = [];
     }
 
     updateMuteUiForTarget(key, nowMuted);
+    if (persistedTargetType && Number.isFinite(persistedTargetId)) {
+      const volumeStorageKey = buildVolumeStorageKeyForTargetState(persistedTargetType, persistedTargetId);
+      persistTargetAudioStateLocally({
+        targetType: persistedTargetType,
+        targetId: persistedTargetId,
+        muted: nowMuted,
+        volume: volumeStorageKey ? getStoredVolume(volumeStorageKey) : defaultVolume,
+      });
+    }
     emitTargetAudioStateSnapshot('target-audio-mute');
     return nowMuted;
   }
