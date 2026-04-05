@@ -4350,12 +4350,11 @@ let cachedUsers = [];
             }
 
             if (ev === 'up' || ev === 'leave' || ev === 'cancel') {
-              if (rowPttGestureActive) {
-                rowPttGestureActive = false;
-                li.classList.remove('ptt-pressing');
-                try { li.releasePointerCapture(e.pointerId); } catch {}
-                if (activeLockButton === talkBtn) return;
-              }
+              if (!rowPttGestureActive) return;
+              rowPttGestureActive = false;
+              li.classList.remove('ptt-pressing');
+              try { li.releasePointerCapture(e.pointerId); } catch {}
+              if (activeLockButton === talkBtn) return;
             }
             handleStopTalking(e);
           });
@@ -4589,12 +4588,11 @@ let cachedUsers = [];
           }
 
           if (ev === 'up' || ev === 'leave' || ev === 'cancel') {
-            if (rowPttGestureActive) {
-              rowPttGestureActive = false;
-              li.classList.remove('ptt-pressing');
-              try { li.releasePointerCapture(e.pointerId); } catch {}
-              if (activeLockButton === talkBtn) return;
-            }
+            if (!rowPttGestureActive) return;
+            rowPttGestureActive = false;
+            li.classList.remove('ptt-pressing');
+            try { li.releasePointerCapture(e.pointerId); } catch {}
+            if (activeLockButton === talkBtn) return;
           }
           handleStopTalking(e);
         });
@@ -5915,12 +5913,17 @@ let cachedUsers = [];
     if (session.kind !== 'user') return;
     if (!lastTarget) return;
     setReplyButtonActive(true);
+    try { btnReply.setPointerCapture(e.pointerId); } catch {}
     handleTalk(e, { type: lastTarget.type, id: lastTarget.id });
   });
 
-  btnReply.addEventListener("pointerup", handleStopTalking);
-  btnReply.addEventListener("pointerleave", handleStopTalking);
-  btnReply.addEventListener("pointercancel", handleStopTalking);
+  const handleReplyPointerEnd = (e) => {
+    try { btnReply.releasePointerCapture(e.pointerId); } catch {}
+    handleStopTalking(e);
+  };
+
+  btnReply.addEventListener("pointerup", handleReplyPointerEnd);
+  btnReply.addEventListener("pointercancel", handleReplyPointerEnd);
 
   function handleStopTalking(e) {
     e.preventDefault();
