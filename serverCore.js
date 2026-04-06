@@ -665,6 +665,7 @@ function getPeerActiveTalkInfo(peer) {
 
   let latest = null;
   for (const producer of peer.producers.values()) {
+    if (!producer || producer.paused) continue;
     const appData = producer?.appData;
     if (!appData || typeof appData !== "object") continue;
     if (appData.type !== "user" && appData.type !== "conference") continue;
@@ -2691,9 +2692,9 @@ function resolveApplePttRecipientUserIds({ type, targetId, speakerSocketId }) {
   const speakerUserId = speakerPeer?.userId != null ? Number(speakerPeer.userId) : null;
 
   if (type === "user") {
-    const targetPeer = peers.get(targetId);
-    if (targetPeer?.userId != null) {
-      recipientUserIds.add(Number(targetPeer.userId));
+    const targetUserId = resolveUserIdFromTargetIdentity(targetId);
+    if (Number.isFinite(targetUserId)) {
+      recipientUserIds.add(Number(targetUserId));
     }
   } else if (type === "conference") {
     const members = getUsersForConference(targetId) || [];
@@ -2718,6 +2719,82 @@ function resolveApplePttSpeakerName(socketId) {
   const peer = peers.get(socketId);
   const trimmed = typeof peer?.name === "string" ? peer.name.trim() : "";
   return trimmed || "TalkToMe";
+}
+
+function resolveProducerRecipientSocketIds({ appData, speakerSocketId }) {
+  const recipientSocketIds = new Set();
+  const type = appData?.type;
+  const targetId = appData?.id;
+
+  if (type === "user") {
+    const hintedPeerId = typeof appData?.targetPeer === "string" ? appData.targetPeer : null;
+    const targetUserId = resolveUserIdFromTargetIdentity(targetId) ?? resolveUserIdFromTargetIdentity(hintedPeerId);
+    if (hintedPeerId && hintedPeerId !== speakerSocketId) {
+      const hintedPeer = peers.get(hintedPeerId);
+      if (
+        hintedPeer
+        && (
+          !Number.isFinite(targetUserId)
+          || String(hintedPeer.userId) === String(targetUserId)
+        )
+      ) {
+        recipientSocketIds.add(hintedPeerId);
+      }
+    }
+
+    if (Number.isFinite(targetUserId)) {
+      const found = findUserPeerByUserId(targetUserId);
+      if (found?.socketId && found.socketId !== speakerSocketId) {
+        recipientSocketIds.add(found.socketId);
+      }
+    } else if (typeof targetId === "string" && targetId !== speakerSocketId && peers.has(targetId)) {
+      recipientSocketIds.add(targetId);
+    }
+
+    return Array.from(recipientSocketIds);
+  }
+
+  if (type === "conference") {
+    const members = getUsersForConference(targetId) || [];
+    for (const member of members) {
+      for (const [sid, peer] of peers) {
+        if (sid === speakerSocketId) continue;
+        if (String(peer?.userId) === String(member?.id)) {
+          recipientSocketIds.add(sid);
+        }
+      }
+    }
+    return Array.from(recipientSocketIds);
+  }
+
+  if (type === "feed") {
+    const listeners = getUsersForFeed(targetId) || [];
+    const listenerIds = new Set(listeners.map((row) => String(row.user_id)));
+    for (const [sid, peer] of peers) {
+      if (sid === speakerSocketId) continue;
+      if (peer?.kind !== "user" || peer?.userId === null) continue;
+      if (listenerIds.has(String(peer.userId))) {
+        recipientSocketIds.add(sid);
+      }
+    }
+    return Array.from(recipientSocketIds);
+  }
+
+  return [];
+}
+
+function announceProducerToRecipients({ producerId, appData, speakerSocketId }) {
+  const recipientSocketIds = resolveProducerRecipientSocketIds({ appData, speakerSocketId });
+  for (const recipientSocketId of recipientSocketIds) {
+    const recipientPeer = peers.get(recipientSocketId);
+    if (!recipientPeer?.socket) continue;
+    recipientPeer.socket.emit("new-producer", {
+      peerId: speakerSocketId,
+      producerId,
+      appData,
+    });
+  }
+  return recipientSocketIds;
 }
 
 async function sendApplePttSpeakerStarted({ type, targetId, speakerSocketId, reason }) {
@@ -3080,6 +3157,7 @@ io.on("connection", (socket) => {
       if (otherSocketId === socket.id) continue;
 
       for (const [producerId, producer] of otherPeer.producers) {
+        if (!producer || producer.paused) continue;
         const appData = producer?.appData;
         if (!appData || typeof appData !== "object") continue;
 
@@ -3105,7 +3183,11 @@ io.on("connection", (socket) => {
 
         if (appData.type === "user") {
           const targetPeerId = appData.targetPeer || appData.id;
-          if (targetPeerId && targetPeerId === socket.id) {
+          const targetUserId = resolveUserIdFromTargetIdentity(appData.id) ?? resolveUserIdFromTargetIdentity(targetPeerId);
+          if (
+            (targetPeerId && targetPeerId === socket.id)
+            || (Number.isFinite(targetUserId) && String(peer.userId) === String(targetUserId))
+          ) {
             response.push({ peerId: otherSocketId, producerId, appData });
           }
         }
@@ -3415,52 +3497,12 @@ io.on("connection", (socket) => {
           //----------------------------------------------------------------
           // 3️⃣  Routing
           //----------------------------------------------------------------
-          if (type === "user") {
-            // 🎯 Direct target (socket ID)
-            const targetPeer = peers.get(targetId);
-            if (targetPeer?.userId) {
-              targetPeer.socket.emit("new-producer", {
-                peerId: socket.id,
-                producerId: producer.id,
-                appData,
-              });
-              console.log(`[ROUTE] Sent to user ${targetId}`);
-            } else {
-              console.warn(`[ROUTE] User ${targetId} not connected`);
-            }
-          } else if (type === "conference") {
-            // 👥 Conference: notify every participant
-            const members = getUsersForConference(targetId); // [{ id, name }, …]
-
-            for (const member of members) {
-              for (const [sid, p] of peers) {
-                if (String(p.userId) === String(member.id) && sid !== socket.id) {
-                  p.socket.emit("new-producer", {
-                    peerId: socket.id,
-                    producerId: producer.id,
-                    appData,
-                  });
-                }
-              }
-            }
-            console.log(`[ROUTE] Sent to conference ${targetId}`);
-          } else if (type === "feed") {
-            const listeners = getUsersForFeed(targetId) || [];
-            const listenerIds = new Set(listeners.map((row) => String(row.user_id)));
-
-            for (const [sid, p] of peers) {
-              if (sid === socket.id) continue;
-              if (p.kind !== "user" || p.userId === null) continue;
-              if (!listenerIds.has(String(p.userId))) continue;
-
-              p.socket.emit("new-producer", {
-                peerId: socket.id,
-                producerId: producer.id,
-                appData,
-              });
-            }
-            console.log(`[ROUTE] Sent to feed listeners of ${targetId}`);
-          }
+          announceProducerToRecipients({
+            producerId: producer.id,
+            appData,
+            speakerSocketId: socket.id,
+          });
+          console.log(`[ROUTE] Announced producer ${producer.id} for ${type} ${targetId}`);
 
           const applePttRecipientUserIds = await sendApplePttSpeakerStarted({
             type,
@@ -3473,6 +3515,30 @@ io.on("connection", (socket) => {
           //----------------------------------------------------------------
           producer.appData = appData;  // store once
           producer.__applePttRecipientUserIds = applePttRecipientUserIds;
+          producer.observer.on("pause", () => {
+            syncPeerCompanionState(peer, { reason: "produce-paused" });
+            broadcastRuntimeUserStates("produce-paused");
+          });
+          producer.observer.on("resume", () => {
+            producer.__startedAt = Date.now();
+            syncPeerCompanionState(peer, { reason: "produce-resumed" });
+            broadcastRuntimeUserStates("produce-resumed");
+            announceProducerToRecipients({
+              producerId: producer.id,
+              appData,
+              speakerSocketId: socket.id,
+            });
+            void sendApplePttSpeakerStarted({
+              type,
+              targetId,
+              speakerSocketId: socket.id,
+              reason: "producer-resumed",
+            }).then((recipientUserIds) => {
+              producer.__applePttRecipientUserIds = recipientUserIds;
+            }).catch((error) => {
+              console.warn("[PRODUCE] Failed to send Apple PTT resume update:", error?.message || error);
+            });
+          });
 
           producer.on("close", () => {
             peer.producers.delete(producer.id);

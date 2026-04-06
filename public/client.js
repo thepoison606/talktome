@@ -7,35 +7,35 @@ socket.on("cut-camera", (value) => {
 const BASE_REPLY_LABEL = "REPLY";
 const QUALITY_PROFILES = {
   "ultra-low": {
-    label: "Ultra low (5 ms, DTX on)",
+    label: "Ultra low (5 ms frame)",
     codecLabel: "opus 48k",
     codecOptions: {
       opusStereo: 0,
       opusFec: 0,
-      opusDtx: 1,
+      opusDtx: 0,
       opusMaxAverageBitrate: 48000,
       opusPtime: 5,
     },
-    encodings: [{ dtx: true, maxBitrate: 48000, priority: 'high' }],
+    encodings: [{ dtx: false, maxBitrate: 48000, priority: 'high' }],
     constraints: { channelCount: 1, sampleRate: 48000 },
     note: "minimal latency, best on stable networks",
   },
   low: {
-    label: "Low (10 ms, DTX on)",
+    label: "Low (10 ms frame)",
     codecLabel: "opus 48k",
     codecOptions: {
       opusStereo: 0,
       opusFec: 0,
-      opusDtx: 1,
+      opusDtx: 0,
       opusMaxAverageBitrate: 64000,
       opusPtime: 10,
     },
-    encodings: [{ dtx: true, maxBitrate: 64000, priority: 'high' }],
+    encodings: [{ dtx: false, maxBitrate: 64000, priority: 'high' }],
     constraints: { channelCount: 1, sampleRate: 48000 },
     note: "balanced latency vs. robustness",
   },
   standard: {
-    label: "Standard (20 ms, DTX off)",
+    label: "Standard (20 ms frame)",
     codecLabel: "opus 48k",
     codecOptions: {
       opusStereo: 0,
