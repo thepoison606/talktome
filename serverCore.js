@@ -1072,9 +1072,6 @@ function buildOperatorTargetsForUser(userId) {
   explicitTargets.forEach((target) => {
     if (target?.targetType === "conference") {
       const conferenceId = Number(target.targetId);
-      if (allConferenceId !== null && Number.isFinite(conferenceId) && conferenceId === Number(allConferenceId)) {
-        return;
-      }
       if (Number.isFinite(conferenceId)) {
         explicitConferenceIds.add(conferenceId);
       }
@@ -1417,7 +1414,7 @@ app.get('/users/:id/targets', (req, res) => {
     );
     const targets = includeMemberships
       ? buildOperatorTargetsForUser(req.params.id)
-      : filterSystemInternalTargets(getUserTargets(req.params.id));
+      : getUserTargets(req.params.id);
     res.json(targets);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1788,10 +1785,6 @@ app.post('/users/:id/targets', requireAdmin, (req, res) => {
       }
       addUserTargetToUser(req.params.id, targetId);
     } else if (targetType === 'conference') {
-      const allId = getAllConferenceId();
-      if (allId !== null && Number(targetId) === Number(allId)) {
-        return res.status(400).json({ error: 'The All conference is system-internal and cannot be added as a target' });
-      }
       addUserTargetToConference(req.params.id, targetId);
     } else if (targetType === 'feed') {
       addUserTargetToFeed(req.params.id, targetId);
@@ -1898,7 +1891,7 @@ app.get("/api/v1/companion/users/:id/targets", requireCompanionApiKey, (req, res
     return res.status(404).json({ error: "User not found" });
   }
   try {
-    const targets = filterSystemInternalTargets(getUserTargets(userId));
+    const targets = getUserTargets(userId);
     res.json(targets);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3233,6 +3226,40 @@ io.on("connection", (socket) => {
     });
 
     console.log(`[SIGNAL] producer-closed an alle anderen gesendet`);
+  });
+
+  socket.on("pause-producer", async ({ producerId } = {}, callback = () => {}) => {
+    const peer = peers.get(socket.id);
+    const producer = peer?.producers.get(producerId);
+    if (!producer) {
+      callback({ error: "Producer not found" });
+      return;
+    }
+
+    try {
+      await producer.pause();
+      callback({ ok: true });
+    } catch (error) {
+      console.error("[SIGNAL] pause-producer failed:", error);
+      callback({ error: error?.message || "pause-producer failed" });
+    }
+  });
+
+  socket.on("resume-producer", async ({ producerId } = {}, callback = () => {}) => {
+    const peer = peers.get(socket.id);
+    const producer = peer?.producers.get(producerId);
+    if (!producer) {
+      callback({ error: "Producer not found" });
+      return;
+    }
+
+    try {
+      await producer.resume();
+      callback({ ok: true });
+    } catch (error) {
+      console.error("[SIGNAL] resume-producer failed:", error);
+      callback({ error: error?.message || "resume-producer failed" });
+    }
   });
 
 

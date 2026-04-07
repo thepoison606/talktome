@@ -429,7 +429,6 @@ async function updateConferenceParticipantOptions(confId, allUsers, previousInde
 // Fetch and render targets + rebuild the “type → id” dropdown
 async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
   const targets = await fetchJSON(`/users/${userId}/targets`);
-  const visibleConfs = (allConfs || []).filter(conf => String(conf.name || '').trim().toLowerCase() !== 'all');
   const usedByType = targets.reduce((acc, target) => {
     const type = String(target.targetType || '');
     const id = String(target.targetId || '');
@@ -467,7 +466,7 @@ async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
         .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
     } else if (type === 'conference') {
       const used = usedByType.conference || new Set();
-      options = visibleConfs
+      options = (allConfs || [])
         .filter(item => !used.has(String(item.id)))
         .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
     } else if (type === 'feed') {
