@@ -3447,9 +3447,10 @@ let cachedUsers = [];
     }
   }
 
-  async function hardLogoutAndReload(message = null) {
+  async function hardLogoutAndReload(message = null, { silent = false } = {}) {
+    sessionResetInProgress = true;
     try {
-      if (message) alert(message);
+      if (!silent && message) alert(message);
     } catch {}
     try {
       if (session?.kind === 'feed') {
@@ -3493,6 +3494,7 @@ let cachedUsers = [];
 
   let activeRegistrationPromise = null;
   let activeRegistrationKey = null;
+  let sessionResetInProgress = false;
 
   async function registerUserWithConflictPrompt({ id, name, kind, allowPrompt = true } = {}) {
     const first = await emitRegisterUser({ id, name, kind, force: false });
@@ -3574,7 +3576,7 @@ let cachedUsers = [];
 	            applyPersistedTargetAudioStates(res.targetAudioStates || []);
 	          }
 	          if (res?.ok) return;
-	          hardLogoutAndReload("Login cancelled or session already in use.");
+	          hardLogoutAndReload(null, { silent: true });
 	        });
       applySessionUI();
       initializeMediaIfPossible();
@@ -3632,9 +3634,11 @@ let cachedUsers = [];
 
 	      const reg = await registerCurrentSession();
 	      if (!reg?.ok) {
-        loginError.textContent = kind === 'user'
-          ? (reg?.cancelled ? "Login cancelled" : "Unable to sign in")
-          : "Unable to sign in";
+        if (reg?.cancelled) {
+          await hardLogoutAndReload(null, { silent: true });
+          return;
+        }
+        loginError.textContent = "Unable to sign in";
         session = { kind: "guest", userId: null, feedId: null, name: null };
         return;
 	      }
@@ -3689,12 +3693,17 @@ let cachedUsers = [];
   // Signaling Events
   socket.on("connect", async () => {
     console.log("Connected to signaling server as", socket.id);
+    if (sessionResetInProgress) {
+      return;
+    }
     if (session.name) {
       if ((session.kind === 'user' && session.userId) || (session.kind === 'feed' && session.feedId)) {
         const reg = await registerCurrentSession();
         if (!reg?.ok) {
           if (session.kind === 'user') {
-            hardLogoutAndReload("You are already signed in on another device.");
+            hardLogoutAndReload(reg?.cancelled ? null : "You are already signed in on another device.", {
+              silent: !!reg?.cancelled,
+            });
           }
           return;
         }
