@@ -19,9 +19,14 @@ If you don't want to install Node, grab the matching binary from the GitHub Rele
 ### Docker:
 ```bash
 docker pull thepoison606/talktome:latest
-docker run --rm -p 8443:8443 -p 8080:8080 -v talktome_data:/data thepoison606/talktome:latest
+docker run -d --restart unless-stopped --name talktome \
+  -p 8443:8443 -p 8080:8080 \
+  -v talktome_data:/data \
+  thepoison606/talktome:latest
 ```
 Then open `https://<HOST-IP>:8443` in the browser.
+- Logs: `docker logs -f talktome`
+- Stop: `docker stop talktome`
 
 ### Setup:
 Prerequisites: **Node.js 18+** (with `npm`) and a build toolchain for mediasoup.
