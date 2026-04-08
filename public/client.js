@@ -114,6 +114,7 @@ const USER_AGENT = typeof navigator !== 'undefined' ? navigator.userAgent || '' 
 const isTouchMacUA = typeof navigator !== 'undefined'
   ? navigator.maxTouchPoints > 1 && /Macintosh/.test(USER_AGENT)
   : false;
+const isAndroidBrowser = /Android/i.test(USER_AGENT);
 const isMobileBrowser = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobi/i.test(USER_AGENT)
   || isTouchMacUA;
 
@@ -478,6 +479,41 @@ function ensureFeedPlaybackBus() {
   }
 
   return feedPlaybackBus;
+}
+
+function shouldUseFeedPlaybackBus() {
+  // Android browsers have been the least reliable path for the shared WebAudio
+  // feed bus. Keep feeds on plain <audio> playback there.
+  return !isAndroidBrowser;
+}
+
+function logRemoteAudioPlaybackDecision({
+  streamKey,
+  targetKey,
+  isFeed = false,
+  path = 'element',
+  audio = null,
+  context = null,
+  reason = '',
+} = {}) {
+  const track = audio?.srcObject?.getAudioTracks?.()?.[0] || null;
+  console.info('[audio][remote-playback]', {
+    streamKey,
+    targetKey,
+    isFeed,
+    path,
+    reason,
+    isAndroidBrowser,
+    isMobileBrowser,
+    isiOS,
+    audioPaused: audio?.paused ?? null,
+    audioMuted: audio?.muted ?? null,
+    audioVolume: audio?.volume ?? null,
+    trackEnabled: track?.enabled ?? null,
+    trackMuted: track?.muted ?? null,
+    trackReadyState: track?.readyState ?? null,
+    contextState: context?.state ?? null,
+  });
 }
 
 function syncAudioProcessingOptions() {
@@ -2027,6 +2063,39 @@ document.addEventListener("DOMContentLoaded", () => {
   const listenOnlyConferenceKeys = new Set();
   const listenOnlyConferenceDimmingDisabled = new Set();
   const activeFeedKeys = new Set();
+  if (typeof window !== 'undefined') {
+    window.talktomeDumpAudioState = () => {
+      const sharedCtx = sharedAudioContext && sharedAudioContext.state !== 'closed'
+        ? sharedAudioContext
+        : null;
+      const entries = Array.from(audioElements.entries()).map(([streamKey, entry]) => {
+        const track = entry?.audio?.srcObject?.getAudioTracks?.()?.[0] || null;
+        return {
+          streamKey,
+          targetKey: entry?.key || null,
+          type: entry?.type || null,
+          paused: entry?.audio?.paused ?? null,
+          muted: entry?.audio?.muted ?? null,
+          volume: entry?.audio?.volume ?? null,
+          gainNode: !!entry?.gainNode,
+          feedDuckingNode: !!entry?.feedDuckingNode,
+          trackMuted: track?.muted ?? null,
+          trackReadyState: track?.readyState ?? null,
+        };
+      });
+      const snapshot = {
+        userAgent: USER_AGENT,
+        isAndroidBrowser,
+        isMobileBrowser,
+        isiOS,
+        sharedAudioContextState: sharedCtx?.state || null,
+        pendingAutoplayCount: pendingAutoplayAudios.size,
+        entries,
+      };
+      console.info('[audio][dump]', snapshot);
+      return snapshot;
+    };
+  }
   // Server-authoritative set of user/conference targets that are currently addressing us.
   const speakingPeers = new Set();
   const mutedPeers = new Set();
@@ -2746,6 +2815,14 @@ let cachedUsers = [];
         return maybePromise
           .then(() => {
             pendingAutoplayAudios.delete(audioEl);
+            const track = audioEl.srcObject?.getAudioTracks?.()?.[0] || null;
+            console.info('[audio][playback-started]', {
+              paused: audioEl.paused,
+              muted: audioEl.muted,
+              volume: audioEl.volume,
+              trackMuted: track?.muted ?? null,
+              trackReadyState: track?.readyState ?? null,
+            });
           })
           .catch(err => {
             pendingAutoplayAudios.add(audioEl);
@@ -4395,6 +4472,10 @@ let cachedUsers = [];
       labelRow.appendChild(label);
       info.appendChild(labelRow);
 
+      const status = document.createElement('div');
+      status.className = 'target-status';
+      info.appendChild(status);
+
       const persistedConfState = getPersistedTargetAudioState('conference', id);
       const confKey = `volume_conf_${id}`;
       const confSlider = document.createElement('input');
@@ -4653,6 +4734,10 @@ let cachedUsers = [];
 
       info.appendChild(labelWrap);
 
+      const status = document.createElement('div');
+      status.className = 'target-status';
+      info.appendChild(status);
+
       const persistedFeedState = getPersistedTargetAudioState('feed', id);
       const feedKey = `volume_feed_${id}`;
       const feedSlider = document.createElement('input');
@@ -4886,7 +4971,7 @@ let cachedUsers = [];
       if (mutedPeers.has(targetKey) && !isFeedKey(targetKey)) consumer.pause();
 
       const stream = new MediaStream([consumer.track]);
-      const feedPlayback = isFeed ? ensureFeedPlaybackBus() : null;
+      const feedPlayback = isFeed && shouldUseFeedPlaybackBus() ? ensureFeedPlaybackBus() : null;
       const shouldUseWebAudioLevelControl = !isFeed && isiOS;
       const ctxForPlayback = shouldUseWebAudioLevelControl ? ensureAudioContext() : null;
 
@@ -4957,6 +5042,26 @@ let cachedUsers = [];
           audio.volume = applied;
         }
       }
+
+      logRemoteAudioPlaybackDecision({
+        streamKey,
+        targetKey,
+        isFeed,
+        path: feedPlayback
+          ? 'feed-web-audio-bus'
+          : ctxForPlayback
+            ? 'web-audio-gain'
+            : 'plain-audio-element',
+        audio,
+        context: feedPlayback?.ctx || ctxForPlayback || null,
+        reason: feedPlayback
+          ? 'feed bus enabled'
+          : isFeed && isAndroidBrowser
+            ? 'android feed fallback'
+            : ctxForPlayback
+              ? 'ios remote gain control'
+              : 'default direct playback',
+      });
 
       audioStreamsDiv.appendChild(audio);
       const entry = {
@@ -5397,16 +5502,48 @@ let cachedUsers = [];
     return fallback || "";
   }
 
+  function getConferenceSpeakerStatusText(targetKey) {
+    if (!targetKey.startsWith('conf-')) return '';
+    const conferenceId = Number(targetKey.slice(5));
+    if (!Number.isFinite(conferenceId)) return '';
+
+    const matchingEntry = incomingTalkState.addressedNow.find((entry) => (
+      entry?.targetType === 'conference'
+      && Number(entry?.targetId) === conferenceId
+    ));
+    if (!matchingEntry) return '';
+
+    const numericFromUserId = Number(matchingEntry.fromUserId);
+    if (Number.isFinite(numericFromUserId)) {
+      const onlineUser = cachedUsers.find((candidate) => Number(candidate?.userId) === numericFromUserId);
+      const speakerName = onlineUser?.name || matchingEntry.fromName || String(numericFromUserId);
+      return speakerName ? `${speakerName} speaking` : 'Speaking';
+    }
+
+    return matchingEntry.fromName ? `${matchingEntry.fromName} speaking` : 'Speaking';
+  }
+
+  function getSpeakerStatusText(targetKey, isSpeaking) {
+    if (!isSpeaking) return '';
+    if (targetKey.startsWith('feed-')) {
+      return 'Streaming';
+    }
+    if (targetKey.startsWith('conf-')) {
+      return getConferenceSpeakerStatusText(targetKey);
+    }
+    return '';
+  }
+
   function updateSpeakerHighlight(targetKey, isSpeaking) {
     const el = document.getElementById(targetKey);
     const iconCls = targetKey.startsWith("conf-") ? ".conf-icon" : targetKey.startsWith("feed-") ? ".feed-icon" : ".user-icon";
     const icon    = el?.querySelector(iconCls);
+    const statusEl = el?.querySelector('.target-status');
     const separatorIndex = targetKey.indexOf("-");
     const rawId = separatorIndex >= 0 ? targetKey.slice(separatorIndex + 1) : targetKey;
     const isConference = targetKey.startsWith("conf-");
     const isUser = targetKey.startsWith("user-");
     const isFeed = targetKey.startsWith("feed-");
-    const labelText = getTargetLabel(targetKey);
 
     let lockTargetMatches = false;
     if (activeLockButton && !isFeed && (isConference || isUser)) {
@@ -5420,6 +5557,9 @@ let cachedUsers = [];
     if (isSpeaking) {
       el?.classList.add("speaking");
       icon?.classList.add("speaking");
+      if (statusEl) {
+        statusEl.textContent = getSpeakerStatusText(targetKey, true);
+      }
 
       applyFeedDucking();
       return;
@@ -5432,6 +5572,9 @@ let cachedUsers = [];
 
     el?.classList.remove("speaking");
     icon?.classList.remove("speaking");
+    if (statusEl) {
+      statusEl.textContent = '';
+    }
     if (lockTargetMatches) {
       el?.classList.add("talking-to");
     }
