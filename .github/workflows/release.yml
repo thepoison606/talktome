@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
@@ -95,8 +96,16 @@ jobs:
             ${{ env.RELEASE_DIR }}.sha256
 
   docker:
-    name: Build Docker image
+    name: Build Docker image (${{ matrix.arch }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: linux-amd64
+          - platform: linux/arm64
+            arch: linux-arm64
 
     steps:
       - name: Checkout
@@ -111,19 +120,75 @@ jobs:
             echo "IMAGE_TAG=sha-${GITHUB_SHA}" >> "$GITHUB_ENV"
           fi
 
+      - name: Enable QEMU for cross-platform container builds
+        shell: bash
+        run: docker run --privileged --rm tonistiigi/binfmt --install all
+
+      - name: Create buildx builder
+        shell: bash
+        run: |
+          docker buildx create --name talktome-builder --use
+          docker buildx inspect --bootstrap
+
       - name: Build Docker image
-        run: docker build --tag talktome:${{ env.IMAGE_TAG }} .
+        shell: bash
+        run: |
+          docker buildx build \
+            --platform "${{ matrix.platform }}" \
+            --tag "talktome:${IMAGE_TAG}-${{ matrix.arch }}" \
+            --output "type=docker,dest=talktome_docker_${IMAGE_TAG}_${{ matrix.arch }}.tar" \
+            .
 
       - name: Export Docker image artifact
         shell: bash
         run: |
-          docker save talktome:${IMAGE_TAG} | gzip > "talktome_docker_${IMAGE_TAG}.tar.gz"
+          gzip -f "talktome_docker_${IMAGE_TAG}_${{ matrix.arch }}.tar"
 
       - name: Upload Docker image artifact
         uses: actions/upload-artifact@v6
         with:
-          name: talktome_docker_${{ env.IMAGE_TAG }}
-          path: talktome_docker_${{ env.IMAGE_TAG }}.tar.gz
+          name: talktome_docker_${{ env.IMAGE_TAG }}_${{ matrix.arch }}
+          path: talktome_docker_${{ env.IMAGE_TAG }}_${{ matrix.arch }}.tar.gz
+
+  docker-publish:
+    name: Publish Docker image
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/talktome
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
   publish-release:
     name: Publish draft release
@@ -132,6 +197,7 @@ jobs:
     needs:
       - build
       - docker
+      - docker-publish
 
     steps:
       - name: Download release payload artifacts
