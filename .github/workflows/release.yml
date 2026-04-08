@@ -1,0 +1,92 @@
+name: Release Builds
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            build_script: build:win64
+            executable_name: talktome_win64.exe
+            worker_name: mediasoup-worker.exe
+            artifact_prefix: talktome_windows_x64
+          - name: macOS arm64
+            os: macos-14
+            build_script: build:mac_arm64
+            executable_name: talktome_arm64
+            worker_name: mediasoup-worker
+            artifact_prefix: talktome_macos_arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18.20.4
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build package
+        run: npm run ${{ matrix.build_script }}
+
+      - name: Prepare release directory
+        shell: bash
+        run: |
+          TS="$(date +%Y%m%d-%H%M%S)"
+          RELEASE_DIR="${{ matrix.artifact_prefix }}_release_${TS}"
+          echo "RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
+          echo "ZIP_NAME=${RELEASE_DIR}.zip" >> "$GITHUB_ENV"
+          node scripts/create-release-dir.js "$RELEASE_DIR" "${{ matrix.executable_name }}" "${{ matrix.worker_name }}"
+
+      - name: Create zip and checksum
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          import pathlib
+          import zipfile
+
+          release_dir = pathlib.Path(os.environ["RELEASE_DIR"])
+          zip_name = pathlib.Path(os.environ["ZIP_NAME"])
+
+          with zipfile.ZipFile(zip_name, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+              for path in release_dir.rglob("*"):
+                  zf.write(path, path.relative_to(release_dir.parent))
+
+          digest = hashlib.sha256(zip_name.read_bytes()).hexdigest()
+          checksum_path = zip_name.with_suffix(".sha256")
+          checksum_path.write_text(f"{digest}  {zip_name.name}\n", encoding="utf-8")
+          PY
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.RELEASE_DIR }}
+          path: |
+            ${{ env.ZIP_NAME }}
+            ${{ env.RELEASE_DIR }}.sha256
+
+      - name: Upload GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP_NAME }}
+            ${{ env.RELEASE_DIR }}.sha256
