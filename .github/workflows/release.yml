@@ -68,7 +68,7 @@ jobs:
 
           with zipfile.ZipFile(zip_name, "w", compression=zipfile.ZIP_DEFLATED) as zf:
               for path in release_dir.rglob("*"):
-                  zf.write(path, path.relative_to(release_dir.parent))
+                  zf.write(path, path.relative_to(release_dir))
 
           digest = hashlib.sha256(zip_name.read_bytes()).hexdigest()
           checksum_path = zip_name.with_suffix(".sha256")
@@ -80,8 +80,7 @@ jobs:
         with:
           name: ${{ env.RELEASE_DIR }}
           path: |
-            ${{ env.ZIP_NAME }}
-            ${{ env.RELEASE_DIR }}.sha256
+            ${{ env.RELEASE_DIR }}/
 
       - name: Upload GitHub release assets
         if: startsWith(github.ref, 'refs/tags/')
