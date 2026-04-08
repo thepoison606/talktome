@@ -351,9 +351,11 @@ async function loadMdnsSettings() {
   const savedHostEl = document.getElementById('mdns-saved-host');
   const inputEl = document.getElementById('mdns-host');
   const restartHintEl = document.getElementById('mdns-restart-hint');
+  const containerHintEl = document.getElementById('mdns-container-hint');
 
   const activeHost = payload?.activeMdnsHost || 'off';
   const savedHost = payload?.mdnsHost || 'off';
+  const runningInContainer = Boolean(payload?.runningInContainer);
 
   if (activeHostEl) activeHostEl.textContent = activeHost;
   if (savedHostEl) savedHostEl.textContent = savedHost;
@@ -362,6 +364,9 @@ async function loadMdnsSettings() {
     restartHintEl.textContent = payload?.restartRequired
       ? 'Saved. Restart the server to apply the new mDNS alias.'
       : 'Current server alias matches the saved setting.';
+  }
+  if (containerHintEl) {
+    containerHintEl.classList.toggle('is-hidden', !runningInContainer);
   }
 }
 

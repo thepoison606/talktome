@@ -1526,7 +1526,8 @@ app.get("/admin/api-key", requireAdmin, (req, res) => {
 
 app.get("/admin/settings/mdns", requireAdmin, (req, res) => {
   const config = loadRuntimeConfig() || {};
-  const configuredHost = normalizeMdnsSetting(config.mdnsHost) || "intercom.local";
+  const defaultHost = isRunningInContainer() ? "off" : "intercom.local";
+  const configuredHost = normalizeMdnsSetting(config.mdnsHost) || defaultHost;
   const activeHost = mdnsHostname || "off";
 
   res.json({
@@ -1534,6 +1535,7 @@ app.get("/admin/settings/mdns", requireAdmin, (req, res) => {
     activeMdnsHost: activeHost,
     restartRequired: configuredHost !== activeHost,
     configPath: getConfigPath(),
+    runningInContainer: isRunningInContainer(),
   });
 });
 
@@ -1555,6 +1557,7 @@ app.put("/admin/settings/mdns", requireAdmin, (req, res) => {
       activeMdnsHost: mdnsHostname || "off",
       restartRequired: nextHost !== (mdnsHostname || "off"),
       configPath,
+      runningInContainer: isRunningInContainer(),
     });
   } catch (err) {
     console.error("Error saving mDNS setting:", err);
@@ -2418,7 +2421,23 @@ function getStartupHosts() {
     return [configuredPublicIp];
   }
 
+  if (isRunningInContainer()) {
+    return [];
+  }
+
   return Array.from(new Set(getLocalIPv4Addresses()));
+}
+
+function isRunningInContainer() {
+  if (process.env.TALKTOME_RUNNING_IN_CONTAINER === "1") return true;
+  if (fs.existsSync("/.dockerenv")) return true;
+
+  try {
+    const cgroup = fs.readFileSync("/proc/1/cgroup", "utf8");
+    return /docker|containerd|kubepods|podman/i.test(cgroup);
+  } catch {
+    return false;
+  }
 }
 
 function encodeDnsName(name) {
@@ -3746,15 +3765,32 @@ server.on("error", (err) => {
 
 server.listen(HTTPS_PORT, () => {
   const startupHosts = getStartupHosts();
+  const configuredPublicIp = typeof process.env.PUBLIC_IP === "string"
+    ? process.env.PUBLIC_IP.trim()
+    : "";
+  const runningInContainer = isRunningInContainer();
   console.log(`🔒 HTTPS Server running on port ${HTTPS_PORT}`);
-  console.log("📍 Access via:");
-  startupHosts.forEach((host) => {
-    console.log(`   https://${host}:${HTTPS_PORT}`);
-  });
-  console.log("🛠️ Administration via:");
-  startupHosts.forEach((host) => {
-    console.log(`   https://${host}:${HTTPS_PORT}/admin`);
-  });
+  if (startupHosts.length > 0) {
+    console.log("📍 Access via:");
+    startupHosts.forEach((host) => {
+      console.log(`   https://${host}:${HTTPS_PORT}`);
+    });
+    console.log("🛠️ Administration via:");
+    startupHosts.forEach((host) => {
+      console.log(`   https://${host}:${HTTPS_PORT}/admin`);
+    });
+  }
+  if (runningInContainer) {
+    console.log("");
+    console.log("🐳 Docker note:");
+    console.log("   Open the Docker host address in your browser, not the container IP.");
+    if (configuredPublicIp) {
+      console.log(`   From other devices: use https://${configuredPublicIp}:${HTTPS_PORT}`);
+    } else {
+      console.log("   Use the LAN IP or DNS name of the host machine.");
+      console.log("   Set PUBLIC_IP to print an explicit access URL here.");
+    }
+  }
   console.log("");
   console.log("⚠️  Browsers will show a certificate warning.");
   console.log('   Click "Advanced" → "Proceed to site" to continue.');
