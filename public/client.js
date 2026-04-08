@@ -3158,7 +3158,7 @@ let cachedUsers = [];
       const conferenceId = Number(String(key).slice(5));
       const tile = document.getElementById(key);
       const dimDisabled = listenOnlyConferenceDimmingDisabled.has(String(conferenceId));
-      const shouldDim = shouldDuck && !dimDisabled && feedDuckingFactor < 0.999;
+      const shouldDim = shouldDimSelf && !dimDisabled && feedDuckingFactor < 0.999;
       tile?.classList.toggle('monitor-dimmed', shouldDim);
 
       forEachStreamEntry(key, (entry) => {
@@ -4383,10 +4383,10 @@ let cachedUsers = [];
 
       if (isOnline) {
         li.append(icon, info, actions, hint);
-        applyHotkeyToTarget(li, labelRow, { type: 'user', id: socketId });
       } else {
         li.append(icon, info, actions);
       }
+      applyHotkeyToTarget(li, labelRow, { type: 'user', id: targetIdNum });
 
       if (isOnline) {
         let rowPttGestureActive = false;
@@ -4479,11 +4479,11 @@ let cachedUsers = [];
       const labelRow = document.createElement('div');
       labelRow.className = 'target-label-row';
       labelRow.appendChild(label);
-      info.appendChild(labelRow);
 
       const status = document.createElement('div');
-      status.className = 'target-status';
-      info.appendChild(status);
+      status.className = 'target-status target-status-inline';
+      labelRow.appendChild(status);
+      info.appendChild(labelRow);
 
       const persistedConfState = getPersistedTargetAudioState('conference', id);
       const confKey = `volume_conf_${id}`;

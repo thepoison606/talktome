@@ -115,13 +115,11 @@ jobs:
         run: docker build --tag talktome:${{ env.IMAGE_TAG }} .
 
       - name: Export Docker image artifact
-        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           docker save talktome:${IMAGE_TAG} | gzip > "talktome_docker_${IMAGE_TAG}.tar.gz"
 
       - name: Upload Docker image artifact
-        if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v6
         with:
           name: talktome_docker_${{ env.IMAGE_TAG }}
