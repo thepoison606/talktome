@@ -14,7 +14,14 @@ A local WebRTC Intercom app built with Node.js and mediasoup.
 ## Quick start
 
 ### macOS / Windows binaries:
-If you don't want to install Node, grab the matching binary from the GitHub Releases page.
+If you don't want to install Node, grab the matching binary from the GitHub Releases page or run via docker.
+
+### Docker:
+```bash
+docker pull thepoison606/talktome:latest
+docker run --rm -p 8443:8443 -p 8080:8080 -v talktome_data:/data thepoison606/talktome:latest
+```
+Then open `https://<HOST-IP>:8443` in the browser.
 
 ### Setup:
 Prerequisites: **Node.js 18+** (with `npm`) and a build toolchain for mediasoup.
