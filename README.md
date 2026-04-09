@@ -13,25 +13,32 @@ A local WebRTC Intercom app built with Node.js and mediasoup.
 
 ## Quick start
 
-### macOS / Windows binaries:
-If you don't want to install Node, grab the matching binary from the GitHub Releases page or run via docker.
+Choose one of these three ways to run Talk To Me:
+- Download a prebuilt executable (macOS / Windows) from GitHub Releases
+- Run the published Docker image
+- Build and run from source
 
 ### Docker:
-Linux host networking is the simplest and most reliable option for mediasoup:
+Replace `<HOST-IP>` below with the IP address that other devices use to reach this machine.
+
+Use one of these two options:
+
+Option A: if your Docker setup supports `--network host`, use this simpler command:
 ```bash
 docker pull thepoison606/talktome:latest
 docker run -d --restart unless-stopped --name talktome --network host -e PUBLIC_IP=<HOST-IP> -v talktome_data:/data thepoison606/talktome:latest
 ```
 Then open `https://<HOST-IP>:8443` in the browser.
 
-If you do not use `--network host`, you must also publish the mediasoup RTC range:
+Option B: if you do not use `--network host`, publish the HTTPS, HTTP, and mediasoup RTC ports explicitly:
 ```bash
 docker run -d --restart unless-stopped --name talktome -e PUBLIC_IP=<HOST-IP> -p 8443:8443 -p 8080:8080 -p 40000-49999:40000-49999/udp -p 40000-49999:40000-49999/tcp -v talktome_data:/data thepoison606/talktome:latest
 ```
+Make sure the host firewall or any cloud/network security rules allow inbound traffic to the published ports. At minimum, `8443/tcp` must be reachable for the web UI, and mediasoup audio requires the RTC range `40000-49999` (`udp`, and optionally `tcp`) to be reachable from clients.
 - Logs: `docker logs -f talktome`
 - Stop: `docker stop talktome`
 
-### Setup:
+### Run from source:
 Prerequisites: **Node.js 18+** (with `npm`) and a build toolchain for mediasoup.
 - macOS: `xcode-select --install`
 - Debian/Ubuntu: `sudo apt install build-essential python3 make`
