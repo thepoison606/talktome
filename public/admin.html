@@ -23,6 +23,7 @@
         --success: #22c55e;
         --danger: #ef4444;
         --radius: 12px;
+        --control-height: 2.95rem;
       }
 
       * {
@@ -185,8 +186,9 @@
         font: inherit;
       }
 
-      input,
+      input:not([type='file']),
       select {
+        height: var(--control-height);
         padding: 0.6rem 0.75rem;
         border-radius: 8px;
         border: 1px solid var(--border);
@@ -199,6 +201,10 @@
         color: var(--muted);
       }
 
+      input[type='file'] {
+        min-height: 0;
+      }
+
       input:focus,
       select:focus {
         outline: none;
@@ -207,6 +213,10 @@
       }
 
       button {
+        min-height: var(--control-height);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         cursor: pointer;
         border-radius: 8px;
         border: none;
@@ -229,6 +239,7 @@
       }
 
       button.small {
+        min-height: 0;
         padding: 0.4rem 0.75rem;
         font-size: 0.8rem;
         background: rgba(37, 99, 235, 0.18);
@@ -394,6 +405,55 @@
 
       .config-panel form.inline-form {
         margin-bottom: 0;
+        align-items: flex-end;
+      }
+
+      #media-network-form {
+        display: grid;
+        grid-template-columns: minmax(12rem, 18rem) minmax(14rem, 24rem) auto;
+        gap: 0.9rem 1rem;
+        align-items: end;
+      }
+
+      #media-network-form .field-group {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0;
+        min-width: 0;
+      }
+
+      #media-network-form .field-group label {
+        margin-bottom: 0.35rem;
+        white-space: normal;
+      }
+
+      #media-network-form .field-group--stacked {
+        flex: 0 1 auto;
+      }
+
+      #media-network-mode-group {
+        grid-column: 1;
+      }
+
+      #media-interface-group,
+      #media-announced-address-group {
+        grid-column: 2;
+      }
+
+      #media-network-form .field-group input,
+      #media-network-form .field-group select {
+        width: 100%;
+      }
+
+      #media-network-actions {
+        grid-column: 3;
+        display: flex;
+        align-items: flex-end;
+        justify-content: flex-end;
+      }
+
+      #media-network-form button {
+        min-width: 14rem;
       }
 
       .config-transfer-grid {
@@ -469,6 +529,25 @@
 
         .config-transfer-grid {
           grid-template-columns: 1fr;
+        }
+
+        #media-network-form {
+          grid-template-columns: 1fr;
+        }
+
+        #media-network-mode-group,
+        #media-interface-group,
+        #media-announced-address-group,
+        #media-network-actions {
+          grid-column: 1;
+        }
+
+        #media-network-actions {
+          justify-content: stretch;
+        }
+
+        #media-network-form button {
+          width: 100%;
         }
 
         .config-import-actions {
@@ -616,6 +695,45 @@
         </div>
 
         <div class="config-layout">
+          <section class="config-panel" aria-labelledby="config-media-network-heading">
+            <h3 id="config-media-network-heading">Media network</h3>
+
+            <div class="setting-meta">
+              <div>Active media network: <strong id="media-network-active-mode">Loading...</strong></div>
+              <div>Active announced address: <strong id="media-network-active-address">Loading...</strong></div>
+              <div>Saved media network: <strong id="media-network-saved-mode">Loading...</strong></div>
+              <div id="media-network-restart-hint">Changes require a server restart to take effect.</div>
+              <div id="media-network-override-hint" class="is-hidden">An environment override is active. Saved changes will only apply after restart without `PUBLIC_IP` or `TALKTOME_MEDIA_INTERFACE` overrides.</div>
+            </div>
+
+            <form id="media-network-form" class="inline-form" autocomplete="off">
+              <div class="field-group field-group--stacked" id="media-network-mode-group">
+                <label for="media-network-mode">Mode</label>
+                <select id="media-network-mode" required>
+                  <option value="auto">Automatic</option>
+                  <option value="interface">Preferred network adapter</option>
+                  <option value="manual">Manual announced IP / hostname</option>
+                </select>
+              </div>
+
+              <div class="field-group field-group--stacked" id="media-interface-group">
+                <label for="media-interface-name">Network adapter</label>
+                <select id="media-interface-name">
+                  <option value="">Select adapter</option>
+                </select>
+              </div>
+
+              <div class="field-group field-group--stacked" id="media-announced-address-group">
+                <label for="media-announced-address">Announced IP / hostname</label>
+                <input type="text" id="media-announced-address" placeholder="e.g. 192.168.178.197" />
+              </div>
+
+              <div id="media-network-actions">
+                <button type="submit">Save media network</button>
+              </div>
+            </form>
+          </section>
+
           <section class="config-panel" aria-labelledby="config-network-heading">
             <h3 id="config-network-heading">Network alias</h3>
 

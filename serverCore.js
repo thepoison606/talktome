@@ -216,6 +216,102 @@ function normalizeMdnsSetting(value) {
   return normalized;
 }
 
+function normalizeMediaNetworkMode(value) {
+  const trimmed = String(value ?? "").trim().toLowerCase();
+  if (!trimmed || trimmed === "auto") return "auto";
+  if (trimmed === "interface") return "interface";
+  if (trimmed === "manual") return "manual";
+  return null;
+}
+
+function normalizeMediaInterfaceName(value) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || "";
+}
+
+function normalizeMediaAnnouncedAddress(value) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || "";
+}
+
+function resolveSavedMediaNetworkConfig(config) {
+  const mode = normalizeMediaNetworkMode(config?.mediaNetworkMode)
+    || (normalizeMediaInterfaceName(config?.mediaInterfaceName) ? "interface" : null)
+    || (normalizeMediaAnnouncedAddress(config?.mediaAnnouncedAddress) ? "manual" : null)
+    || "auto";
+
+  return {
+    mode,
+    interfaceName: mode === "interface" ? normalizeMediaInterfaceName(config?.mediaInterfaceName) : "",
+    announcedAddress: mode === "manual" ? normalizeMediaAnnouncedAddress(config?.mediaAnnouncedAddress) : "",
+  };
+}
+
+function getAvailableMediaNetworkInterfaces() {
+  const interfaces = os.networkInterfaces();
+  const entries = [];
+  for (const [name, candidates] of Object.entries(interfaces)) {
+    for (const iface of candidates || []) {
+      if (!iface || iface.internal || iface.family !== "IPv4") continue;
+      entries.push({
+        name,
+        address: iface.address,
+        label: `${name} - ${iface.address}`,
+      });
+    }
+  }
+  return entries;
+}
+
+function resolveTransportAnnouncedAddress() {
+  const explicitPublicIp = typeof process.env.PUBLIC_IP === "string"
+    ? process.env.PUBLIC_IP.trim()
+    : "";
+  if (explicitPublicIp) {
+    return {
+      announcedAddress: explicitPublicIp,
+      mode: "manual",
+      interfaceName: "",
+      source: process.env.TALKTOME_MEDIA_NETWORK_SOURCE || "env",
+      error: null,
+    };
+  }
+
+  const preferredInterfaceName = typeof process.env.TALKTOME_MEDIA_INTERFACE === "string"
+    ? process.env.TALKTOME_MEDIA_INTERFACE.trim()
+    : "";
+  const availableInterfaces = getAvailableMediaNetworkInterfaces();
+
+  if (preferredInterfaceName) {
+    const match = availableInterfaces.find((entry) => entry.name === preferredInterfaceName);
+    if (match) {
+      return {
+        announcedAddress: match.address,
+        mode: "interface",
+        interfaceName: preferredInterfaceName,
+        source: process.env.TALKTOME_MEDIA_NETWORK_SOURCE || "config",
+        error: null,
+      };
+    }
+    return {
+      announcedAddress: null,
+      mode: "interface",
+      interfaceName: preferredInterfaceName,
+      source: process.env.TALKTOME_MEDIA_NETWORK_SOURCE || "config",
+      error: `Configured media interface "${preferredInterfaceName}" has no usable IPv4 address`,
+    };
+  }
+
+  const first = availableInterfaces[0] || null;
+  return {
+    announcedAddress: first?.address || null,
+    mode: "auto",
+    interfaceName: first?.name || "",
+    source: process.env.TALKTOME_MEDIA_NETWORK_SOURCE || "auto",
+    error: first ? null : "No usable non-internal IPv4 interface found",
+  };
+}
+
 app.get("/", (req, res) => {
   const indexPath = path.join(publicDir, "index.html");
   if (!fs.existsSync(indexPath)) {
@@ -1556,6 +1652,35 @@ app.get("/admin/settings/mdns", requireAdmin, (req, res) => {
   });
 });
 
+app.get("/admin/settings/media-network", requireAdmin, (req, res) => {
+  const config = loadRuntimeConfig() || {};
+  const saved = resolveSavedMediaNetworkConfig(config);
+  const active = resolveTransportAnnouncedAddress();
+  const environmentOverride = active.source === "env";
+  const restartRequired = environmentOverride
+    ? false
+    : (
+      saved.mode !== active.mode
+      || saved.interfaceName !== active.interfaceName
+      || (saved.mode === "manual" ? saved.announcedAddress : "") !== (active.mode === "manual" ? (active.announcedAddress || "") : "")
+    );
+
+  res.json({
+    mediaNetworkMode: saved.mode,
+    mediaInterfaceName: saved.interfaceName,
+    mediaAnnouncedAddress: saved.announcedAddress,
+    activeMediaNetworkMode: active.mode,
+    activeMediaInterfaceName: active.interfaceName,
+    activeAnnouncedAddress: active.announcedAddress,
+    activeResolutionError: active.error,
+    availableInterfaces: getAvailableMediaNetworkInterfaces(),
+    restartRequired,
+    environmentOverride,
+    runningInContainer: isRunningInContainer(),
+    configPath: getConfigPath(),
+  });
+});
+
 app.put("/admin/settings/mdns", requireAdmin, (req, res) => {
   const nextHost = normalizeMdnsSetting(req.body?.mdnsHost);
   if (!nextHost) {
@@ -1579,6 +1704,61 @@ app.put("/admin/settings/mdns", requireAdmin, (req, res) => {
   } catch (err) {
     console.error("Error saving mDNS setting:", err);
     return res.status(500).json({ error: "Failed to save mDNS setting" });
+  }
+});
+
+app.put("/admin/settings/media-network", requireAdmin, (req, res) => {
+  const nextMode = normalizeMediaNetworkMode(req.body?.mediaNetworkMode);
+  if (!nextMode) {
+    return res.status(400).json({ error: "Invalid media network mode" });
+  }
+
+  const nextInterfaceName = normalizeMediaInterfaceName(req.body?.mediaInterfaceName);
+  const nextAnnouncedAddress = normalizeMediaAnnouncedAddress(req.body?.mediaAnnouncedAddress);
+  if (nextMode === "interface" && !nextInterfaceName) {
+    return res.status(400).json({ error: "Please choose a network adapter" });
+  }
+  if (nextMode === "manual" && !nextAnnouncedAddress) {
+    return res.status(400).json({ error: "Please enter a manual IP address or hostname" });
+  }
+
+  const currentConfig = loadRuntimeConfig() || {};
+  const updatedConfig = {
+    ...currentConfig,
+    mediaNetworkMode: nextMode,
+  };
+  if (nextMode === "interface") {
+    updatedConfig.mediaInterfaceName = nextInterfaceName;
+    delete updatedConfig.mediaAnnouncedAddress;
+  } else if (nextMode === "manual") {
+    updatedConfig.mediaAnnouncedAddress = nextAnnouncedAddress;
+    delete updatedConfig.mediaInterfaceName;
+  } else {
+    delete updatedConfig.mediaInterfaceName;
+    delete updatedConfig.mediaAnnouncedAddress;
+  }
+
+  try {
+    const configPath = saveRuntimeConfig(updatedConfig);
+    const active = resolveTransportAnnouncedAddress();
+    const environmentOverride = active.source === "env";
+    return res.json({
+      mediaNetworkMode: nextMode,
+      mediaInterfaceName: nextMode === "interface" ? nextInterfaceName : "",
+      mediaAnnouncedAddress: nextMode === "manual" ? nextAnnouncedAddress : "",
+      activeMediaNetworkMode: active.mode,
+      activeMediaInterfaceName: active.interfaceName,
+      activeAnnouncedAddress: active.announcedAddress,
+      activeResolutionError: active.error,
+      availableInterfaces: getAvailableMediaNetworkInterfaces(),
+      restartRequired: !environmentOverride,
+      environmentOverride,
+      runningInContainer: isRunningInContainer(),
+      configPath,
+    });
+  } catch (err) {
+    console.error("Error saving media network setting:", err);
+    return res.status(500).json({ error: "Failed to save media network setting" });
   }
 });
 
@@ -1634,6 +1814,25 @@ app.post("/admin/config/import", requireAdmin, (req, res) => {
           return res.status(400).json({ error: "Config file contains an invalid mDNS name" });
         }
         nextConfig.mdnsHost = mdnsHost;
+      }
+
+      if (
+        Object.prototype.hasOwnProperty.call(bundle.serverConfig, "mediaNetworkMode")
+        || Object.prototype.hasOwnProperty.call(bundle.serverConfig, "mediaInterfaceName")
+        || Object.prototype.hasOwnProperty.call(bundle.serverConfig, "mediaAnnouncedAddress")
+      ) {
+        const importedMediaConfig = resolveSavedMediaNetworkConfig(bundle.serverConfig);
+        nextConfig.mediaNetworkMode = importedMediaConfig.mode;
+        if (importedMediaConfig.mode === "interface") {
+          nextConfig.mediaInterfaceName = importedMediaConfig.interfaceName;
+          delete nextConfig.mediaAnnouncedAddress;
+        } else if (importedMediaConfig.mode === "manual") {
+          nextConfig.mediaAnnouncedAddress = importedMediaConfig.announcedAddress;
+          delete nextConfig.mediaInterfaceName;
+        } else {
+          delete nextConfig.mediaInterfaceName;
+          delete nextConfig.mediaAnnouncedAddress;
+        }
       }
     }
 
@@ -2499,6 +2698,11 @@ function getStartupHosts() {
 
   if (configuredPublicIp) {
     return [configuredPublicIp];
+  }
+
+  const preferredTransportAddress = resolveTransportAnnouncedAddress();
+  if (preferredTransportAddress.mode === "interface" && preferredTransportAddress.announcedAddress) {
+    return [preferredTransportAddress.announcedAddress];
   }
 
   if (isRunningInContainer()) {
@@ -3412,34 +3616,25 @@ io.on("connection", (socket) => {
   socket.on("create-send-transport", async (_, callback) => {
     console.log(`[TRANSPORT] Client ${socket.id} requests send transport`);
     try {
-      // Auto-detect network interfaces if PUBLIC_IP not set
-      const os = require("os");
-      let announcedIp = process.env.PUBLIC_IP;
-
-      if (!announcedIp) {
-        const networkInterfaces = os.networkInterfaces();
-        for (const name of Object.keys(networkInterfaces)) {
-          for (const iface of networkInterfaces[name]) {
-            if (iface.family === "IPv4" && !iface.internal) {
-              announcedIp = iface.address;
-              console.log(
-                `[TRANSPORT] Auto-detected IP: ${announcedIp} (${name})`
-              );
-              break;
-            }
-          }
-          if (announcedIp) break;
-        }
+      const mediaRoute = resolveTransportAnnouncedAddress();
+      if (mediaRoute.error || !mediaRoute.announcedAddress) {
+        console.error("[TRANSPORT] No usable announced IP:", mediaRoute.error || "unknown media network error");
+        return callback({ error: mediaRoute.error || "No usable announced IP available" });
       }
 
-      console.log(`[TRANSPORT] Using announced IP: ${announcedIp}`);
-      warnIfDockerAnnouncedIpLooksInternal(announcedIp);
+      if (mediaRoute.mode === "auto" && mediaRoute.interfaceName) {
+        console.log(`[TRANSPORT] Auto-detected IP: ${mediaRoute.announcedAddress} (${mediaRoute.interfaceName})`);
+      } else if (mediaRoute.mode === "interface") {
+        console.log(`[TRANSPORT] Using configured interface: ${mediaRoute.interfaceName}`);
+      }
+      console.log(`[TRANSPORT] Using announced IP: ${mediaRoute.announcedAddress}`);
+      warnIfDockerAnnouncedIpLooksInternal(mediaRoute.announcedAddress);
 
       const transport = await router.createWebRtcTransport({
         listenIps: [
           {
             ip: "0.0.0.0",
-            announcedIp: announcedIp,
+            announcedIp: mediaRoute.announcedAddress,
           },
         ],
         enableUdp: true,
@@ -3470,31 +3665,25 @@ io.on("connection", (socket) => {
   socket.on("create-recv-transport", async (_, callback) => {
     console.log(`[TRANSPORT] Client ${socket.id} requests recv transport`);
     try {
-      // Use same IP detection as send transport
-      const os = require("os");
-      let announcedIp = process.env.PUBLIC_IP;
-
-      if (!announcedIp) {
-        const networkInterfaces = os.networkInterfaces();
-        for (const name of Object.keys(networkInterfaces)) {
-          for (const iface of networkInterfaces[name]) {
-            if (iface.family === "IPv4" && !iface.internal) {
-              announcedIp = iface.address;
-              break;
-            }
-          }
-          if (announcedIp) break;
-        }
+      const mediaRoute = resolveTransportAnnouncedAddress();
+      if (mediaRoute.error || !mediaRoute.announcedAddress) {
+        console.error("[TRANSPORT] No usable announced IP:", mediaRoute.error || "unknown media network error");
+        return callback({ error: mediaRoute.error || "No usable announced IP available" });
       }
 
-      console.log(`[TRANSPORT] Using announced IP: ${announcedIp}`);
-      warnIfDockerAnnouncedIpLooksInternal(announcedIp);
+      if (mediaRoute.mode === "auto" && mediaRoute.interfaceName) {
+        console.log(`[TRANSPORT] Auto-detected IP: ${mediaRoute.announcedAddress} (${mediaRoute.interfaceName})`);
+      } else if (mediaRoute.mode === "interface") {
+        console.log(`[TRANSPORT] Using configured interface: ${mediaRoute.interfaceName}`);
+      }
+      console.log(`[TRANSPORT] Using announced IP: ${mediaRoute.announcedAddress}`);
+      warnIfDockerAnnouncedIpLooksInternal(mediaRoute.announcedAddress);
 
       const transport = await router.createWebRtcTransport({
         listenIps: [
           {
             ip: "0.0.0.0",
-            announcedIp: announcedIp,
+            announcedIp: mediaRoute.announcedAddress,
           },
         ],
         enableUdp: true,
@@ -3864,6 +4053,7 @@ server.listen(HTTPS_PORT, () => {
     ? process.env.PUBLIC_IP.trim()
     : "";
   const runningInContainer = isRunningInContainer();
+  const mediaRoute = resolveTransportAnnouncedAddress();
   console.log(`🔒 HTTPS Server running on port ${HTTPS_PORT}`);
   if (startupHosts.length > 0) {
     console.log("📍 Access via:");
@@ -3885,6 +4075,16 @@ server.listen(HTTPS_PORT, () => {
       console.log("   Use the LAN IP or DNS name of the host machine.");
       console.log("   Set PUBLIC_IP to print an explicit access URL here.");
     }
+  }
+  console.log("");
+  if (mediaRoute.error) {
+    console.warn(`🎛️ Media network: ${mediaRoute.error}`);
+  } else if (mediaRoute.mode === "interface") {
+    console.log(`🎛️ Media network: ${mediaRoute.interfaceName} → ${mediaRoute.announcedAddress}`);
+  } else if (mediaRoute.mode === "manual") {
+    console.log(`🎛️ Media network: manual → ${mediaRoute.announcedAddress}`);
+  } else if (mediaRoute.announcedAddress) {
+    console.log(`🎛️ Media network: automatic → ${mediaRoute.interfaceName || "auto"} (${mediaRoute.announcedAddress})`);
   }
   console.log("");
   console.log("⚠️  Browsers will show a certificate warning.");

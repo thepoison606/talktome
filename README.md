@@ -74,13 +74,22 @@ Data:
 On first interactive start, the server asks for:
 - HTTPS port
 - mDNS hostname (use `off` to disable)
+- Media network for WebRTC
+  - `Automatic`
+  - `Preferred network adapter`
+  - `Manual announced IP / hostname`
 
 The answers are saved to `config.json` in the per-user app data directory:
 - macOS: `~/Library/Application Support/talktome/config.json`
 - Windows: `%LOCALAPPDATA%\\talktome\\config.json`
 - Linux: `$XDG_DATA_HOME/talktome/config.json` (fallback: `~/.local/share/talktome/config.json`)
 Environment variables still override the config.
+- `PUBLIC_IP` forces a manual announced address.
+- `TALKTOME_MEDIA_INTERFACE` forces a specific network adapter.
 Delete `config.json` to re-run the setup.
+
+You can also change the saved media network later in the Admin UI under `Config`.
+Changing the media network requires a server restart before new WebRTC transports use it.
 
 
 ## Admin accounts & passwords

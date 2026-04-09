@@ -214,6 +214,7 @@ async function loadData() {
   const conferences = await fetchJSON('/conferences');
   const feeds       = await fetchJSON('/feeds');
   await loadMdnsSettings();
+  await loadMediaNetworkSettings();
 
   // 2) Container referenzieren und leeren
   const userList   = document.getElementById('user-list');
@@ -367,6 +368,96 @@ async function loadMdnsSettings() {
   }
   if (containerHintEl) {
     containerHintEl.classList.toggle('is-hidden', !runningInContainer);
+  }
+}
+
+function describeMediaNetworkMode(mode, detail = '') {
+  if (mode === 'interface') {
+    return detail ? `Preferred adapter (${detail})` : 'Preferred adapter';
+  }
+  if (mode === 'manual') {
+    return detail ? `Manual (${detail})` : 'Manual';
+  }
+  return 'Automatic';
+}
+
+function updateMediaNetworkFormVisibility() {
+  const modeEl = document.getElementById('media-network-mode');
+  const interfaceGroupEl = document.getElementById('media-interface-group');
+  const manualGroupEl = document.getElementById('media-announced-address-group');
+  const mode = modeEl?.value || 'auto';
+
+  if (interfaceGroupEl) {
+    interfaceGroupEl.classList.toggle('is-hidden', mode !== 'interface');
+  }
+  if (manualGroupEl) {
+    manualGroupEl.classList.toggle('is-hidden', mode !== 'manual');
+  }
+}
+
+async function loadMediaNetworkSettings() {
+  const payload = await fetchJSON('/admin/settings/media-network');
+  const activeModeEl = document.getElementById('media-network-active-mode');
+  const activeAddressEl = document.getElementById('media-network-active-address');
+  const savedModeEl = document.getElementById('media-network-saved-mode');
+  const modeEl = document.getElementById('media-network-mode');
+  const interfaceEl = document.getElementById('media-interface-name');
+  const addressEl = document.getElementById('media-announced-address');
+  const restartHintEl = document.getElementById('media-network-restart-hint');
+  const overrideHintEl = document.getElementById('media-network-override-hint');
+
+  const activeMode = payload?.activeMediaNetworkMode || 'auto';
+  const activeInterfaceName = payload?.activeMediaInterfaceName || '';
+  const activeAddress = payload?.activeAnnouncedAddress || 'Unavailable';
+  const savedMode = payload?.mediaNetworkMode || 'auto';
+  const savedInterfaceName = payload?.mediaInterfaceName || '';
+  const savedAddress = payload?.mediaAnnouncedAddress || '';
+  const availableInterfaces = Array.isArray(payload?.availableInterfaces) ? payload.availableInterfaces : [];
+  const activeDetail = activeMode === 'interface'
+    ? activeInterfaceName
+    : activeMode === 'manual'
+      ? activeAddress
+      : activeInterfaceName || activeAddress;
+  const savedDetail = savedMode === 'interface'
+    ? savedInterfaceName
+    : savedMode === 'manual'
+      ? savedAddress
+      : '';
+
+  if (activeModeEl) activeModeEl.textContent = describeMediaNetworkMode(activeMode, activeDetail);
+  if (activeAddressEl) activeAddressEl.textContent = payload?.activeResolutionError || activeAddress;
+  if (savedModeEl) savedModeEl.textContent = describeMediaNetworkMode(savedMode, savedDetail);
+
+  if (modeEl) {
+    modeEl.value = savedMode;
+  }
+  if (interfaceEl) {
+    interfaceEl.innerHTML = '<option value="">Select adapter</option>';
+    availableInterfaces.forEach((entry) => {
+      const option = document.createElement('option');
+      option.value = entry.name;
+      option.textContent = entry.label || `${entry.name} - ${entry.address}`;
+      interfaceEl.appendChild(option);
+    });
+    interfaceEl.value = savedInterfaceName || '';
+  }
+  if (addressEl) {
+    addressEl.value = savedAddress;
+  }
+
+  updateMediaNetworkFormVisibility();
+
+  if (restartHintEl) {
+    if (payload?.environmentOverride) {
+      restartHintEl.textContent = 'An environment override is currently active for media routing.';
+    } else {
+      restartHintEl.textContent = payload?.restartRequired
+        ? 'Saved. Restart the server to apply the new media network.'
+        : 'Current media network matches the saved setting.';
+    }
+  }
+  if (overrideHintEl) {
+    overrideHintEl.classList.toggle('is-hidden', !payload?.environmentOverride);
   }
 }
 
@@ -998,6 +1089,50 @@ document.getElementById('mdns-form').addEventListener('submit', async (e) => {
   } catch (err) {
     console.error('Failed to save mDNS setting:', err);
     showMessage('❌ Failed to save mDNS name', 'error', 'config');
+  }
+});
+
+document.getElementById('media-network-mode')?.addEventListener('change', () => {
+  updateMediaNetworkFormVisibility();
+});
+
+document.getElementById('media-network-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const mode = document.getElementById('media-network-mode')?.value || 'auto';
+  const mediaInterfaceName = document.getElementById('media-interface-name')?.value || '';
+  const mediaAnnouncedAddress = document.getElementById('media-announced-address')?.value?.trim() || '';
+
+  try {
+    const res = await authedFetch('/admin/settings/media-network', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mediaNetworkMode: mode,
+        mediaInterfaceName,
+        mediaAnnouncedAddress,
+      }),
+    });
+
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      showMessage(payload.error || 'Failed to save media network', 'error', 'config');
+      return;
+    }
+
+    const payload = await res.json();
+    await loadMediaNetworkSettings();
+    showMessage(
+      payload.environmentOverride
+        ? '✅ Media network setting saved. An environment override is currently active.'
+        : payload.restartRequired
+          ? '✅ Media network saved. Restart the server to apply it.'
+          : '✅ Media network saved.',
+      'success',
+      'config'
+    );
+  } catch (err) {
+    console.error('Failed to save media network setting:', err);
+    showMessage('❌ Failed to save media network', 'error', 'config');
   }
 });
 

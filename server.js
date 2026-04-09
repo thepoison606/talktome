@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const net = require("net");
+const os = require("os");
 const readline = require("readline");
 const { getDataDir } = require("./dataPaths");
 
@@ -88,6 +89,67 @@ function normalizeMdnsInput(value) {
   return trimmed;
 }
 
+function normalizeMediaNetworkMode(value) {
+  const trimmed = String(value ?? "").trim().toLowerCase();
+  if (!trimmed || trimmed === "auto") return "auto";
+  if (trimmed === "interface") return "interface";
+  if (trimmed === "manual") return "manual";
+  return null;
+}
+
+function normalizeMediaInterfaceName(value) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || "";
+}
+
+function normalizeMediaAnnouncedAddress(value) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || "";
+}
+
+function getAvailableMediaNetworkInterfaces() {
+  const interfaces = os.networkInterfaces();
+  const entries = [];
+  for (const [name, candidates] of Object.entries(interfaces)) {
+    for (const iface of candidates || []) {
+      if (!iface || iface.internal || iface.family !== "IPv4") continue;
+      entries.push({
+        name,
+        address: iface.address,
+        label: `${name} - ${iface.address}`,
+      });
+    }
+  }
+  return entries;
+}
+
+function resolveSavedMediaNetworkConfig(config) {
+  const mode = normalizeMediaNetworkMode(config?.mediaNetworkMode)
+    || (normalizeMediaInterfaceName(config?.mediaInterfaceName) ? "interface" : null)
+    || (normalizeMediaAnnouncedAddress(config?.mediaAnnouncedAddress) ? "manual" : null)
+    || "auto";
+
+  return {
+    mode,
+    interfaceName: mode === "interface" ? normalizeMediaInterfaceName(config?.mediaInterfaceName) : "",
+    announcedAddress: mode === "manual" ? normalizeMediaAnnouncedAddress(config?.mediaAnnouncedAddress) : "",
+  };
+}
+
+function describeMediaNetworkSelection(selection, availableInterfaces) {
+  if (!selection || selection.mode === "auto") {
+    return "automatic";
+  }
+  if (selection.mode === "interface") {
+    const match = availableInterfaces.find((entry) => entry.name === selection.interfaceName);
+    return match?.label || selection.interfaceName || "selected interface";
+  }
+  if (selection.mode === "manual") {
+    return selection.announcedAddress || "manual address";
+  }
+  return "automatic";
+}
+
 function hasEnvConfig() {
   return Boolean(
     process.env.PORT ||
@@ -95,7 +157,9 @@ function hasEnvConfig() {
       process.env.MDNS_HOST ||
       process.env.MDNS_NAME ||
       process.env.INTERCOM_HOSTNAME ||
-      process.env.HTTP_PORT
+      process.env.HTTP_PORT ||
+      process.env.PUBLIC_IP ||
+      process.env.TALKTOME_MEDIA_INTERFACE
   );
 }
 
@@ -191,6 +255,59 @@ async function promptForHttpPort(rl, defaultValue, httpsPort) {
   }
 }
 
+async function promptForMediaNetwork(rl, existingConfig = null) {
+  const availableInterfaces = getAvailableMediaNetworkInterfaces();
+  const savedSelection = resolveSavedMediaNetworkConfig(existingConfig);
+  const defaultLabel = describeMediaNetworkSelection(savedSelection, availableInterfaces);
+
+  console.log("");
+  console.log("Media network for WebRTC audio/video:");
+  console.log("  0) Automatic");
+  availableInterfaces.forEach((entry, index) => {
+    console.log(`  ${index + 1}) ${entry.label}`);
+  });
+  console.log("  m) Manual IP or hostname");
+
+  while (true) {
+    const answer = await new Promise((resolve) =>
+      rl.question(`Selection [press Enter to use ${defaultLabel}]: `, resolve)
+    );
+    const trimmed = answer.trim();
+
+    if (!trimmed) {
+      return savedSelection;
+    }
+
+    if (trimmed === "0" || trimmed.toLowerCase() === "auto") {
+      return { mode: "auto", interfaceName: "", announcedAddress: "" };
+    }
+
+    if (trimmed.toLowerCase() === "m" || trimmed.toLowerCase() === "manual") {
+      const manualDefault = savedSelection.mode === "manual" ? savedSelection.announcedAddress : "";
+      const manualInput = await new Promise((resolve) =>
+        rl.question(
+          `Manual announced IP or hostname${manualDefault ? ` [press Enter to use ${manualDefault}]` : ""}: `,
+          resolve
+        )
+      );
+      const announcedAddress = normalizeMediaAnnouncedAddress(manualInput || manualDefault);
+      if (!announcedAddress) {
+        console.log("Please enter an IP address or hostname.");
+        continue;
+      }
+      return { mode: "manual", interfaceName: "", announcedAddress };
+    }
+
+    const numericChoice = Number(trimmed);
+    if (Number.isInteger(numericChoice) && numericChoice >= 1 && numericChoice <= availableInterfaces.length) {
+      const selected = availableInterfaces[numericChoice - 1];
+      return { mode: "interface", interfaceName: selected.name, announcedAddress: "" };
+    }
+
+    console.log("Invalid selection. Choose 0, one of the listed interface numbers, or m for manual.");
+  }
+}
+
 async function runWizard(existingConfig = null) {
   console.log("\nTalk To Me - first-time setup\n");
   console.log(`Hint: delete ${configPath} to run this setup again.\n`);
@@ -219,9 +336,25 @@ async function runWizard(existingConfig = null) {
       httpPort = selection;
     }
 
-    const config = { httpsPort, mdnsHost };
+    const mediaNetwork = await promptForMediaNetwork(rl, existingConfig);
+
+    const config = {
+      httpsPort,
+      mdnsHost,
+      mediaNetworkMode: mediaNetwork.mode,
+    };
     if (httpPort !== undefined) {
       config.httpPort = httpPort;
+    }
+    if (mediaNetwork.mode === "interface" && mediaNetwork.interfaceName) {
+      config.mediaInterfaceName = mediaNetwork.interfaceName;
+      delete config.mediaAnnouncedAddress;
+    } else if (mediaNetwork.mode === "manual" && mediaNetwork.announcedAddress) {
+      config.mediaAnnouncedAddress = mediaNetwork.announcedAddress;
+      delete config.mediaInterfaceName;
+    } else {
+      delete config.mediaInterfaceName;
+      delete config.mediaAnnouncedAddress;
     }
 
     saveConfig(config);
@@ -256,6 +389,28 @@ function applyConfig(config) {
   if (!process.env.HTTP_PORT && Object.prototype.hasOwnProperty.call(config, "httpPort")) {
     process.env.HTTP_PORT = String(config.httpPort);
   }
+
+  const explicitPublicIp = typeof process.env.PUBLIC_IP === "string" && process.env.PUBLIC_IP.trim();
+  const explicitMediaInterface = typeof process.env.TALKTOME_MEDIA_INTERFACE === "string" && process.env.TALKTOME_MEDIA_INTERFACE.trim();
+  if (explicitPublicIp || explicitMediaInterface) {
+    process.env.TALKTOME_MEDIA_NETWORK_SOURCE = "env";
+    return;
+  }
+
+  const mediaConfig = resolveSavedMediaNetworkConfig(config);
+  if (mediaConfig.mode === "manual" && mediaConfig.announcedAddress) {
+    process.env.PUBLIC_IP = mediaConfig.announcedAddress;
+    process.env.TALKTOME_MEDIA_NETWORK_SOURCE = "config";
+    return;
+  }
+
+  if (mediaConfig.mode === "interface" && mediaConfig.interfaceName) {
+    process.env.TALKTOME_MEDIA_INTERFACE = mediaConfig.interfaceName;
+    process.env.TALKTOME_MEDIA_NETWORK_SOURCE = "config";
+    return;
+  }
+
+  process.env.TALKTOME_MEDIA_NETWORK_SOURCE = "auto";
 }
 
 (async () => {
