@@ -3316,7 +3316,10 @@ let cachedOperatorTargets = null;
     entries.forEach((rawEntry) => {
       const entry = normalizeIncomingAddressedEntry(rawEntry);
       if (!entry) return;
-      const key = `${entry.targetType}:${entry.targetId}`;
+      const speakerKey = Number.isFinite(Number(entry.fromUserId))
+        ? Number(entry.fromUserId)
+        : String(entry.fromName || '').trim().toLowerCase();
+      const key = `${entry.targetType}:${entry.targetId}:${speakerKey}`;
       if (seen.has(key)) return;
       seen.add(key);
       normalizedEntries.push(entry);
@@ -6357,20 +6360,34 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     const conferenceId = Number(targetKey.slice(5));
     if (!Number.isFinite(conferenceId)) return '';
 
-    const matchingEntry = incomingTalkState.addressedNow.find((entry) => (
+    const matchingEntries = incomingTalkState.addressedNow.filter((entry) => (
       entry?.targetType === 'conference'
       && Number(entry?.targetId) === conferenceId
     ));
-    if (!matchingEntry) return '';
+    if (!matchingEntries.length) return '';
 
-    const numericFromUserId = Number(matchingEntry.fromUserId);
-    if (Number.isFinite(numericFromUserId)) {
-      const onlineUser = cachedUsers.find((candidate) => Number(candidate?.userId) === numericFromUserId);
-      const speakerName = onlineUser?.name || matchingEntry.fromName || String(numericFromUserId);
-      return speakerName ? `${speakerName} speaking` : 'Speaking';
-    }
+    const speakerNames = [];
+    const seenNames = new Set();
 
-    return matchingEntry.fromName ? `${matchingEntry.fromName} speaking` : 'Speaking';
+    matchingEntries.forEach((entry) => {
+      const numericFromUserId = Number(entry?.fromUserId);
+      let speakerName = '';
+
+      if (Number.isFinite(numericFromUserId)) {
+        const onlineUser = cachedUsers.find((candidate) => Number(candidate?.userId) === numericFromUserId);
+        speakerName = onlineUser?.name || entry?.fromName || String(numericFromUserId);
+      } else {
+        speakerName = entry?.fromName || '';
+      }
+
+      const normalizedName = String(speakerName || '').trim();
+      if (!normalizedName || seenNames.has(normalizedName)) return;
+      seenNames.add(normalizedName);
+      speakerNames.push(normalizedName);
+    });
+
+    if (!speakerNames.length) return 'Speaking';
+    return `${speakerNames.join(', ')} speaking`;
   }
 
   function getSpeakerStatusText(targetKey, isSpeaking) {

@@ -871,9 +871,16 @@ function mergeAddressedNowEntry(targetMap, targetUserId, entry) {
     targetMap.set(userId, list);
   }
 
-  const entryKey = `${entry.targetType}:${entry.targetId}`;
+  const speakerKey = Number.isFinite(Number(entry.fromUserId))
+    ? Number(entry.fromUserId)
+    : String(entry.fromName || "").trim().toLowerCase();
+  const entryKey = `${entry.targetType}:${entry.targetId}:${speakerKey}`;
   const existingIndex = list.findIndex((candidate) => (
-    `${candidate.targetType}:${candidate.targetId}` === entryKey
+    `${candidate.targetType}:${candidate.targetId}:${
+      Number.isFinite(Number(candidate?.fromUserId))
+        ? Number(candidate.fromUserId)
+        : String(candidate?.fromName || "").trim().toLowerCase()
+    }` === entryKey
   ));
 
   if (existingIndex === -1) {

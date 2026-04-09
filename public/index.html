@@ -550,7 +550,10 @@
 
       #targets-list .target-label {
         font-weight: 600;
-        word-break: break-word;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       #targets-list .target-status {
@@ -567,6 +570,8 @@
         min-height: 0;
         white-space: nowrap;
         flex-shrink: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       #targets-list .target-status:empty {
@@ -577,6 +582,8 @@
         display: flex;
         align-items: center;
         gap: 0.5rem;
+        min-width: 0;
+        flex-wrap: nowrap;
       }
 
       #targets-list .volume-slider {
