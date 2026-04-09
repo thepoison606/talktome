@@ -2299,9 +2299,72 @@ if (!fs.existsSync(certDir)) {
   fs.mkdirSync(certDir, { recursive: true });
 }
 
+function isLikelyIPv4Address(value) {
+  return typeof value === "string" && /^(?:\d{1,3}\.){3}\d{1,3}$/.test(value.trim());
+}
+
+function buildSelfSignedTlsCertificate() {
+  const configuredPublicIp = typeof process.env.PUBLIC_IP === "string"
+    ? process.env.PUBLIC_IP.trim()
+    : "";
+  const hostnames = new Set(["localhost"]);
+  const ipAddresses = new Set(["127.0.0.1"]);
+
+  const maybeAddHostOrIp = (value) => {
+    if (typeof value !== "string") return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    if (isLikelyIPv4Address(trimmed)) {
+      ipAddresses.add(trimmed);
+      return;
+    }
+    hostnames.add(trimmed);
+  };
+
+  maybeAddHostOrIp(mdnsHostname);
+  maybeAddHostOrIp(os.hostname());
+  maybeAddHostOrIp(configuredPublicIp);
+  getLocalIPv4Addresses().forEach((address) => maybeAddHostOrIp(address));
+
+  const preferredCommonName =
+    (configuredPublicIp && configuredPublicIp.trim()) ||
+    mdnsHostname ||
+    os.hostname() ||
+    "localhost";
+
+  const altNames = [
+    ...Array.from(hostnames).map((value) => ({ type: 2, value })),
+    ...Array.from(ipAddresses).map((ip) => ({ type: 7, ip })),
+  ];
+
+  return selfsigned.generate(
+    [{ name: "commonName", value: preferredCommonName }],
+    {
+      keySize: 4096,
+      days: 365,
+      algorithm: "sha256",
+      extensions: [
+        { name: "basicConstraints", cA: false },
+        {
+          name: "keyUsage",
+          digitalSignature: true,
+          keyEncipherment: true,
+        },
+        {
+          name: "extKeyUsage",
+          serverAuth: true,
+        },
+        {
+          name: "subjectAltName",
+          altNames,
+        },
+      ],
+    }
+  );
+}
+
 if (!fs.existsSync(keyPath) || !fs.existsSync(certPath)) {
-  const attrs = [{ name: "commonName", value: mdnsHostname || os.hostname() }];
-  const pems = selfsigned.generate(attrs, { keySize: 4096, days: 365 });
+  const pems = buildSelfSignedTlsCertificate();
   fs.writeFileSync(keyPath, pems.private, { mode: 0o600 });
   fs.writeFileSync(certPath, pems.cert, { mode: 0o600 });
   console.log("ℹ️  Generated self-signed TLS certificate in ./certs");
