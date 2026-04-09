@@ -95,6 +95,8 @@ const targetHotkeys = new Map();
 const pressedHotkeyDigits = new Set();
 const persistedTargetAudioStateMap = new Map();
 const pendingOfflineUserTimers = new Map();
+let recoverExistingIncomingPlayback = () => {};
+let attemptPlayAudio = () => Promise.resolve();
 
 let feedDuckingDb = DEFAULT_FEED_DUCKING_DB;
 let feedDuckingFactor = dbToLinear(feedDuckingDb);
@@ -124,6 +126,45 @@ const isMobileBrowser = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Oper
 const isiOS = typeof navigator !== 'undefined'
   ? /iPad|iPhone|iPod/.test(USER_AGENT) || isTouchMacUA
   : false;
+const isSafariBrowser = typeof navigator !== 'undefined'
+  ? /Safari/i.test(USER_AGENT) && !/Chrome|CriOS|Edg|OPR|Firefox|FxiOS/i.test(USER_AGENT)
+  : false;
+
+function logReceiveDiagnostic(event, details = {}) {
+  if (!(isiOS || isSafariBrowser)) return;
+  const sharedCtx = sharedAudioContext && sharedAudioContext.state !== 'closed'
+    ? sharedAudioContext
+    : null;
+  console.info(`[audio][recv][${event}]`, {
+    at: typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? Math.round(performance.now())
+      : Date.now(),
+    sharedAudioContextState: sharedCtx?.state || null,
+    pendingAutoplayCount: pendingAutoplayAudios.size,
+    ...details,
+  });
+}
+
+function enforcePitchLock(audioEl) {
+  if (!audioEl) return;
+  audioEl.defaultPlaybackRate = 1;
+  audioEl.playbackRate = 1;
+  ['preservesPitch', 'mozPreservesPitch', 'webkitPreservesPitch'].forEach(prop => {
+    if (prop in audioEl) {
+      try { audioEl[prop] = true; } catch {}
+    }
+  });
+}
+
+function appendPlaybackAudioElement(audioEl) {
+  if (!audioEl || typeof document === 'undefined') return false;
+  const host = document.getElementById('audio-streams');
+  if (!host) return false;
+  if (audioEl.parentNode !== host) {
+    host.appendChild(audioEl);
+  }
+  return true;
+}
 
 if (typeof window !== 'undefined') {
   try {
@@ -325,12 +366,16 @@ const UI_ICONS = {
   speakerMuted: '/images/speaker-muted.png',
 };
 const pendingAutoplayAudios = new Set();
+const pendingAudioPlayPromises = new WeakMap();
 let sharedAudioContext = null;
 let feedProcessingAudioContext = null;
 let onAudioContextRunning = null;
 let audioContextPrimed = false;
 let feedProcessingChain = null;
 let feedPlaybackBus = null;
+let targetPlaybackBuses = new Map();
+let remotePlaybackBus = null;
+let targetHasActiveStreams = () => false;
 let userProcessingChain = null;
 let settingsMonitorActive = false;
 let settingsMonitorPromise = null;
@@ -417,17 +462,30 @@ function createManagedAudioContext({ label = 'AudioContext', onRunning = null } 
 async function resumeAudioContextIfNeeded(ctx, { label = 'AudioContext', onRunning = null } = {}) {
   if (!ctx) return;
   if (ctx.state === 'running') {
+    logReceiveDiagnostic('context-already-running', { label });
     if (typeof onRunning === 'function') {
       onRunning();
     }
     return;
   }
   if (ctx.state !== 'suspended' || typeof ctx.resume !== 'function') {
+    logReceiveDiagnostic('context-resume-skipped', {
+      label,
+      state: ctx.state,
+      canResume: typeof ctx.resume === 'function',
+    });
     return;
   }
   try {
+    logReceiveDiagnostic('context-resume-start', { label, state: ctx.state });
     await ctx.resume();
+    logReceiveDiagnostic('context-resume-done', { label, state: ctx.state });
   } catch (err) {
+    logReceiveDiagnostic('context-resume-failed', {
+      label,
+      state: ctx.state,
+      error: err?.message || String(err),
+    });
     console.warn(`Failed to resume ${label}:`, err);
   }
 }
@@ -484,6 +542,170 @@ function ensureFeedPlaybackBus() {
   }
 
   return feedPlaybackBus;
+}
+
+function shouldUsePersistentRemotePlaybackBus() {
+  return isiOS || isSafariBrowser;
+}
+
+function disposeRemotePlaybackBus() {
+  if (!remotePlaybackBus) return;
+  pendingAutoplayAudios.delete(remotePlaybackBus.audio);
+  pendingAudioPlayPromises.delete(remotePlaybackBus.audio);
+  try { remotePlaybackBus.mixNode?.disconnect(); } catch {}
+  try { remotePlaybackBus.destinationNode?.disconnect?.(); } catch {}
+  try { remotePlaybackBus.audio?.pause?.(); } catch {}
+  try {
+    if (remotePlaybackBus.audio) {
+      remotePlaybackBus.audio.srcObject = null;
+      remotePlaybackBus.audio.remove();
+    }
+  } catch {}
+  remotePlaybackBus = null;
+}
+
+function ensureRemotePlaybackBus() {
+  const ctx = ensureAudioContext();
+  if (!ctx || !shouldUsePersistentRemotePlaybackBus()) return null;
+
+  if (remotePlaybackBus?.ctx === ctx && remotePlaybackBus.audio && remotePlaybackBus.mixNode && remotePlaybackBus.destinationNode) {
+    return remotePlaybackBus;
+  }
+  if (remotePlaybackBus) {
+    disposeRemotePlaybackBus();
+  }
+
+  try {
+    const mixNode = ctx.createGain();
+    const destinationNode = ctx.createMediaStreamDestination();
+    mixNode.gain.value = 1;
+    mixNode.connect(destinationNode);
+
+    const audio = document.createElement('audio');
+    audio.srcObject = destinationNode.stream;
+    audio.autoplay = true;
+    audio.playsInline = true;
+    audio.setAttribute('playsinline', 'true');
+    audio.setAttribute('autoplay', 'true');
+    audio.dataset.remotePlaybackBus = 'true';
+    enforcePitchLock(audio);
+    if (supportsAudioOutputSelection() && preferredOutputDeviceId && typeof audio.setSinkId === 'function') {
+      audio.setSinkId(preferredOutputDeviceId).catch(err => {
+        console.warn('Failed to apply audio output device to remote playback bus:', err);
+      });
+    }
+    appendPlaybackAudioElement(audio);
+
+    remotePlaybackBus = {
+      ctx,
+      mixNode,
+      destinationNode,
+      audio,
+    };
+    return remotePlaybackBus;
+  } catch (err) {
+    console.warn('Failed to initialize remote playback bus:', err);
+    return null;
+  }
+}
+
+function disposeTargetPlaybackBus(bus) {
+  if (!bus) return;
+  try { bus.inputNode?.disconnect(); } catch {}
+  try { bus.levelNode?.disconnect(); } catch {}
+}
+
+function ensureTargetPlaybackBus(targetKey, { type = 'user' } = {}) {
+  const remoteBus = ensureRemotePlaybackBus();
+  const ctx = remoteBus?.ctx || null;
+  if (!ctx || !shouldUsePersistentRemotePlaybackBus()) return null;
+
+  const existing = targetPlaybackBuses.get(targetKey);
+  if (existing?.ctx === ctx && existing.inputNode && existing.levelNode && existing.outputNode) {
+    return existing;
+  }
+  if (existing) {
+    disposeTargetPlaybackBus(existing);
+    targetPlaybackBuses.delete(targetKey);
+  }
+
+  try {
+    const inputNode = ctx.createGain();
+    const levelNode = ctx.createGain();
+    inputNode.gain.value = 1;
+    levelNode.gain.value = 1;
+    inputNode.connect(levelNode);
+    levelNode.connect(remoteBus.mixNode);
+
+    const bus = {
+      key: targetKey,
+      type,
+      ctx,
+      inputNode,
+      levelNode,
+      outputNode: remoteBus.mixNode,
+    };
+    targetPlaybackBuses.set(targetKey, bus);
+    return bus;
+  } catch (err) {
+    console.warn('Failed to initialize target playback bus:', err);
+    return null;
+  }
+}
+
+function primeTargetPlaybackBus(targetKey, { type = 'user', forceRetry = false, reason = 'prime-playback-bus' } = {}) {
+  ensureTargetPlaybackBus(targetKey, { type });
+  const busAudio = ensureRemotePlaybackBus()?.audio || null;
+  if (!busAudio) return;
+  const shouldRetry = forceRetry || busAudio.paused || pendingAutoplayAudios.has(busAudio);
+  if (!shouldRetry) return;
+  attemptPlayAudio(busAudio, {
+    reason,
+    streamKey: 'bus::remote',
+    targetKey,
+    type,
+    persistentBus: true,
+  }).catch(() => {});
+}
+
+function collectVisibleRemoteTargetKeys() {
+  const keys = new Map();
+  document.querySelectorAll('#targets-list li.target-item').forEach((targetEl) => {
+    const targetKey = targetEl?.id;
+    const type = targetEl?.dataset?.type;
+    if (!targetKey || !type || type === 'feed') return;
+    keys.set(targetKey, type);
+  });
+  return keys;
+}
+
+function primeVisibleRemotePlaybackBuses({ forceRetry = false } = {}) {
+  if (!shouldUsePersistentRemotePlaybackBus()) return;
+  collectVisibleRemoteTargetKeys().forEach((type, targetKey) => {
+    primeTargetPlaybackBus(targetKey, {
+      type,
+      forceRetry,
+      reason: forceRetry ? 'prime-visible-playback-bus-force' : 'prime-visible-playback-bus',
+    });
+  });
+}
+
+function pruneTargetPlaybackBuses(allowedTargetKeys = null) {
+  if (!targetPlaybackBuses.size) return;
+  const visibleKeys = allowedTargetKeys || collectVisibleRemoteTargetKeys();
+  targetPlaybackBuses.forEach((bus, targetKey) => {
+    const keepVisible = visibleKeys instanceof Map
+      ? visibleKeys.has(targetKey)
+      : visibleKeys instanceof Set
+      ? visibleKeys.has(targetKey)
+      : false;
+    if (keepVisible || targetHasActiveStreams(targetKey)) return;
+    disposeTargetPlaybackBus(bus);
+    targetPlaybackBuses.delete(targetKey);
+  });
+  if (!targetPlaybackBuses.size && remotePlaybackBus) {
+    disposeRemotePlaybackBus();
+  }
 }
 
 function shouldUseFeedPlaybackBus() {
@@ -1457,15 +1679,7 @@ function ensureUserProcessingChain(track) {
 
 function attemptPendingAutoplay() {
   pendingAutoplayAudios.forEach(audio => {
-    const playPromise = audio.play?.();
-    if (!playPromise || typeof playPromise.then !== 'function') {
-      if (!audio.paused) {
-        pendingAutoplayAudios.delete(audio);
-      }
-      return;
-    }
-    playPromise
-      .then(() => pendingAutoplayAudios.delete(audio))
+    attemptPlayAudio(audio, { reason: 'pending-autoplay-retry' })
       .catch(err => console.warn('Autoplay retry failed:', err));
   });
 }
@@ -1480,6 +1694,17 @@ function handleUserActivation() {
   if (feedProcessingAudioContext) {
     resumeAudioContextIfNeeded(feedProcessingAudioContext, { label: 'feed ingest AudioContext' });
   }
+  const remoteBusAudio = ensureRemotePlaybackBus()?.audio || null;
+  if (remoteBusAudio) {
+    attemptPlayAudio(remoteBusAudio, {
+      reason: 'user-activation-prime-remote-bus',
+      streamKey: 'bus::remote',
+      targetKey: 'remote-bus',
+      type: 'remote-bus',
+      persistentBus: true,
+    }).catch(() => {});
+  }
+  primeVisibleRemotePlaybackBuses({ forceRetry: true });
   attemptPendingAutoplay();
   recoverExistingIncomingPlayback({ forceRetryAll: true });
 }
@@ -2094,8 +2319,27 @@ document.addEventListener("DOMContentLoaded", () => {
   const listenOnlyConferenceKeys = new Set();
   const listenOnlyConferenceDimmingDisabled = new Set();
   const activeFeedKeys = new Set();
-  function recoverExistingIncomingPlayback({ forceRetryAll = false } = {}) {
-    audioElements.forEach((entry) => {
+  recoverExistingIncomingPlayback = ({ forceRetryAll = false } = {}) => {
+    const remoteBusAudio = remotePlaybackBus?.audio || null;
+    if (remoteBusAudio && typeof remoteBusAudio.play === 'function') {
+      const track = remoteBusAudio.srcObject?.getAudioTracks?.()?.[0] || null;
+      const hasLiveTrack = !track || track.readyState === 'live';
+      if (hasLiveTrack) {
+        const shouldRetry = forceRetryAll || remoteBusAudio.paused || pendingAutoplayAudios.has(remoteBusAudio);
+        if (shouldRetry) {
+          attemptPlayAudio(remoteBusAudio, {
+            reason: forceRetryAll ? 'recover-force-retry-playback-bus' : 'recover-retry-playback-bus',
+            streamKey: 'bus::remote',
+            targetKey: 'remote-bus',
+            type: 'remote-bus',
+            persistentBus: true,
+          }).catch(() => {});
+        }
+      }
+    }
+
+    audioElements.forEach((entry, streamKey) => {
+      if (entry?.usesSharedAudioElement) return;
       const audioEl = entry?.audio;
       if (!audioEl || typeof audioEl.play !== 'function') return;
 
@@ -2106,9 +2350,14 @@ document.addEventListener("DOMContentLoaded", () => {
       const shouldRetry = forceRetryAll || audioEl.paused || pendingAutoplayAudios.has(audioEl);
       if (!shouldRetry) return;
 
-      attemptPlayAudio(audioEl).catch(() => {});
+      attemptPlayAudio(audioEl, {
+        reason: forceRetryAll ? 'recover-force-retry' : 'recover-retry',
+        streamKey,
+        targetKey: entry?.key || null,
+        type: entry?.type || null,
+      }).catch(() => {});
     });
-  }
+  };
   if (typeof window !== 'undefined') {
     window.talktomeDumpAudioState = () => {
       const sharedCtx = sharedAudioContext && sharedAudioContext.state !== 'closed'
@@ -2136,6 +2385,17 @@ document.addEventListener("DOMContentLoaded", () => {
         isiOS,
         sharedAudioContextState: sharedCtx?.state || null,
         pendingAutoplayCount: pendingAutoplayAudios.size,
+        remotePlaybackBus: {
+          paused: remotePlaybackBus?.audio?.paused ?? null,
+          muted: remotePlaybackBus?.audio?.muted ?? null,
+          volume: remotePlaybackBus?.audio?.volume ?? null,
+          trackReadyState: remotePlaybackBus?.audio?.srcObject?.getAudioTracks?.()?.[0]?.readyState ?? null,
+        },
+        playbackBuses: Array.from(targetPlaybackBuses.entries()).map(([targetKey, bus]) => ({
+          targetKey,
+          type: bus?.type || null,
+          levelGain: bus?.levelNode?.gain?.value ?? null,
+        })),
         entries,
       };
       console.info('[audio][dump]', snapshot);
@@ -2342,6 +2602,7 @@ let cachedOperatorTargets = null;
 
     const sinkPromises = [];
     audioElements.forEach((entry) => {
+      if (entry?.usesSharedAudioElement) return;
       const audioEl = entry?.audio;
       if (audioEl && typeof audioEl.setSinkId === 'function') {
         sinkPromises.push(
@@ -2351,6 +2612,14 @@ let cachedOperatorTargets = null;
         );
       }
     });
+    const remoteBusAudio = remotePlaybackBus?.audio || null;
+    if (remoteBusAudio && typeof remoteBusAudio.setSinkId === 'function') {
+      sinkPromises.push(
+        remoteBusAudio.setSinkId(resolvedDeviceId).catch(err => {
+          console.warn('Failed to apply audio output device to remote playback bus:', err);
+        })
+      );
+    }
     await Promise.allSettled(sinkPromises);
 
     if (persist) {
@@ -2499,6 +2768,7 @@ let cachedOperatorTargets = null;
     const set = targetStreamMap.get(targetKey);
     return !!(set && set.size);
   }
+  targetHasActiveStreams = hasActiveStreams;
 
   function isTargetSpeaking(targetKey) {
     return speakingPeers.has(targetKey) || activeFeedKeys.has(targetKey);
@@ -2678,6 +2948,9 @@ let cachedOperatorTargets = null;
     activeFeedKeys.clear();
     confAudioElements.clear();
     feedAudioElements.clear();
+    targetPlaybackBuses.forEach((bus) => disposeTargetPlaybackBus(bus));
+    targetPlaybackBuses.clear();
+    disposeRemotePlaybackBus();
   }
 
   function disconnectPlaybackNodes(entry) {
@@ -2697,9 +2970,14 @@ let cachedOperatorTargets = null;
   }
 
   function disposePlaybackEntry(entry) {
-    if (!entry?.audio) return;
-    pendingAutoplayAudios.delete(entry.audio);
+    if (!entry) return;
     disconnectPlaybackNodes(entry);
+    if (entry.usesSharedAudioElement) {
+      return;
+    }
+    if (!entry.audio) return;
+    pendingAutoplayAudios.delete(entry.audio);
+    pendingAudioPlayPromises.delete(entry.audio);
     try { entry.audio.pause?.(); } catch {}
     try { entry.audio.srcObject = null; } catch {}
     entry.audio.remove();
@@ -2786,6 +3064,17 @@ let cachedOperatorTargets = null;
       audioContextPrimed = true;
       primeVoiceProcessingMode().catch(() => {});
     }
+    const remoteBusAudio = ensureRemotePlaybackBus()?.audio || null;
+    if (remoteBusAudio) {
+      attemptPlayAudio(remoteBusAudio, {
+        reason: 'audio-context-running-remote-bus',
+        streamKey: 'bus::remote',
+        targetKey: 'remote-bus',
+        type: 'remote-bus',
+        persistentBus: true,
+      }).catch(() => {});
+    }
+    primeVisibleRemotePlaybackBuses({ forceRetry: true });
     attemptPendingAutoplay();
     audioElements.forEach((entry) => {
       if (!entry?.gainNode || !entry.audio) return;
@@ -2802,31 +3091,45 @@ let cachedOperatorTargets = null;
   };
 
   function setPlaybackEntryLevel(entry, value) {
-    if (!entry || !entry.audio) return;
+    if (!entry || (!entry.audio && !entry.playbackBus?.audio)) return;
+    const audioEl = entry.audio || entry.playbackBus?.audio || null;
+    const playbackGainNode = entry.playbackGainNode || entry.gainNode || null;
     const base = Math.max(0, Math.min(1, value));
     const applied = shouldDimListenOnlyConferenceEntry(entry)
       ? Math.max(0, Math.min(1, base * feedDuckingFactor))
       : base;
-    if (entry.gainNode) {
-      entry.audio.muted = true;
-      entry.audio.volume = 0;
-      entry.gainNode.gain.value = applied;
+    if (playbackGainNode) {
+      if (entry.usesMediaElementSource || entry.usesSharedAudioElement) {
+        audioEl.muted = false;
+        audioEl.volume = 1;
+      } else {
+        audioEl.muted = true;
+        audioEl.volume = 0;
+      }
+      playbackGainNode.gain.value = applied;
     } else {
-      entry.audio.muted = applied === 0;
-      entry.audio.volume = applied;
+      audioEl.muted = applied === 0;
+      audioEl.volume = applied;
     }
     entry.lastAppliedLevel = applied;
   }
 
   function mutePlaybackEntry(entry) {
-    if (!entry || !entry.audio) return;
-    if (entry.gainNode) {
-      entry.audio.muted = true;
-      entry.audio.volume = 0;
-      entry.gainNode.gain.value = 0;
+    if (!entry || (!entry.audio && !entry.playbackBus?.audio)) return;
+    const audioEl = entry.audio || entry.playbackBus?.audio || null;
+    const playbackGainNode = entry.playbackGainNode || entry.gainNode || null;
+    if (playbackGainNode) {
+      if (entry.usesMediaElementSource || entry.usesSharedAudioElement) {
+        audioEl.muted = false;
+        audioEl.volume = 1;
+      } else {
+        audioEl.muted = true;
+        audioEl.volume = 0;
+      }
+      playbackGainNode.gain.value = 0;
     } else {
-      entry.audio.muted = true;
-      entry.audio.volume = 0;
+      audioEl.muted = true;
+      audioEl.volume = 0;
     }
     entry.lastAppliedLevel = 0;
   }
@@ -2844,48 +3147,85 @@ let cachedOperatorTargets = null;
     return typeof key === 'string' && key.startsWith('feed-');
   }
 
-  function enforcePitchLock(audioEl) {
-    if (!audioEl) return;
-    audioEl.defaultPlaybackRate = 1;
-    audioEl.playbackRate = 1;
-    ['preservesPitch', 'mozPreservesPitch', 'webkitPreservesPitch'].forEach(prop => {
-      if (prop in audioEl) {
-        try { audioEl[prop] = true; } catch {}
-      }
-    });
-  }
-
-  function attemptPlayAudio(audioEl) {
+  attemptPlayAudio = (audioEl, meta = {}) => {
     if (!audioEl || typeof audioEl.play !== 'function') return Promise.resolve();
+    const inFlightPlay = pendingAudioPlayPromises.get(audioEl);
+    if (inFlightPlay) {
+      return inFlightPlay;
+    }
+    const track = audioEl.srcObject?.getAudioTracks?.()?.[0] || null;
+    logReceiveDiagnostic('play-attempt', {
+      paused: audioEl.paused,
+      muted: audioEl.muted,
+      volume: audioEl.volume,
+      trackMuted: track?.muted ?? null,
+      trackReadyState: track?.readyState ?? null,
+      ...meta,
+    });
     try {
       const maybePromise = audioEl.play();
       if (maybePromise && typeof maybePromise.then === 'function') {
-        return maybePromise
+        const trackedPromise = maybePromise
           .then(() => {
             pendingAutoplayAudios.delete(audioEl);
-            const track = audioEl.srcObject?.getAudioTracks?.()?.[0] || null;
+            const startedTrack = audioEl.srcObject?.getAudioTracks?.()?.[0] || null;
+            logReceiveDiagnostic('play-started', {
+              paused: audioEl.paused,
+              muted: audioEl.muted,
+              volume: audioEl.volume,
+              trackMuted: startedTrack?.muted ?? null,
+              trackReadyState: startedTrack?.readyState ?? null,
+              ...meta,
+            });
             console.info('[audio][playback-started]', {
+              paused: audioEl.paused,
+              muted: audioEl.muted,
+              volume: audioEl.volume,
+              trackMuted: startedTrack?.muted ?? null,
+              trackReadyState: startedTrack?.readyState ?? null,
+            });
+          })
+          .catch(err => {
+            pendingAutoplayAudios.add(audioEl);
+            logReceiveDiagnostic('play-blocked', {
+              error: err?.message || String(err),
               paused: audioEl.paused,
               muted: audioEl.muted,
               volume: audioEl.volume,
               trackMuted: track?.muted ?? null,
               trackReadyState: track?.readyState ?? null,
+              ...meta,
             });
-          })
-          .catch(err => {
-            pendingAutoplayAudios.add(audioEl);
             console.warn('Autoplay blocked, queued for retry:', err);
             throw err;
+          })
+          .finally(() => {
+            if (pendingAudioPlayPromises.get(audioEl) === trackedPromise) {
+              pendingAudioPlayPromises.delete(audioEl);
+            }
           });
+        pendingAudioPlayPromises.set(audioEl, trackedPromise);
+        return trackedPromise;
       }
       pendingAutoplayAudios.delete(audioEl);
+      pendingAudioPlayPromises.delete(audioEl);
       return Promise.resolve();
     } catch (err) {
       pendingAutoplayAudios.add(audioEl);
+      pendingAudioPlayPromises.delete(audioEl);
+      logReceiveDiagnostic('play-failed', {
+        error: err?.message || String(err),
+        paused: audioEl.paused,
+        muted: audioEl.muted,
+        volume: audioEl.volume,
+        trackMuted: track?.muted ?? null,
+        trackReadyState: track?.readyState ?? null,
+        ...meta,
+      });
       console.warn('Autoplay attempt failed, queued for retry:', err);
       return Promise.reject(err);
     }
-  }
+  };
 
   function renderReplyButtonLabel() {
     const suffix = lastTarget?.label ? ` (${lastTarget.label})` : "";
@@ -3865,6 +4205,14 @@ let cachedOperatorTargets = null;
     if (session.kind !== 'user') return;
     incomingTalkState = normalizeIncomingTalkState(state);
     applyIncomingTalkState();
+    const addressedNow = Array.isArray(incomingTalkState.addressedNow)
+      ? incomingTalkState.addressedNow
+      : [];
+    if (mediaInitialized && socket.connected && addressedNow.length > 0) {
+      requestActiveProducers()
+        .then(() => recoverExistingIncomingPlayback())
+        .catch((err) => console.error('Failed to sync active producers after incoming talk state', err));
+    }
   });
 
   socket.on('user-targets-updated', async () => {
@@ -4250,6 +4598,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       await refreshRenderedUserTargets(users);
     }
     applyIncomingTalkState();
+    primeVisibleRemotePlaybackBuses();
     requestActiveProducers().catch(() => {});
   }
 
@@ -4714,6 +5063,8 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     syncRenderedTargetAudioPreferences();
     refreshLastTargetLabel();
     updateCompactSessionBarMode(list.childElementCount);
+    primeVisibleRemotePlaybackBuses();
+    pruneTargetPlaybackBuses();
     return true;
   }
 
@@ -5212,6 +5563,8 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
 	    syncRenderedTargetAudioPreferences();
 	    refreshLastTargetLabel();
+    primeVisibleRemotePlaybackBuses();
+    pruneTargetPlaybackBuses(collectVisibleRemoteTargetKeys());
 
     schedulePttButtonSizing();
     if (!pttSizingListenerBound) {
@@ -5230,6 +5583,12 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     if (!payload || typeof payload !== 'object') return;
 
     if (!device || !recvTransport) {
+      logReceiveDiagnostic('new-producer-queued', {
+        producerId: payload.producerId || null,
+        peerId: payload.peerId || null,
+        type: payload.appData?.type || null,
+        targetId: payload.appData?.id ?? null,
+      });
       pendingProducerQueue.push(payload);
       return;
     }
@@ -5238,6 +5597,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   async function consumeProducerPayload({ peerId, producerId, appData }) {
+    const consumeStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
     const normalizedAppData = appData && typeof appData === 'object' ? appData : {};
     const isConference = normalizedAppData.type === 'conference';
     const isFeed = normalizedAppData.type === 'feed';
@@ -5287,15 +5649,34 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
     const effectiveProducerId = producerId || normalizedAppData.producerId || `${peerId}-${Date.now()}`;
     const streamKey = makeStreamKey(targetKey, effectiveProducerId);
+    logReceiveDiagnostic('consume-start', {
+      producerId: effectiveProducerId,
+      peerId,
+      streamKey,
+      targetKey,
+      type: normalizedAppData.type || null,
+      targetId: normalizedAppData.id ?? null,
+    });
     const alreadyTracked = audioElements.has(streamKey)
       || peerConsumers.has(streamKey)
       || (targetStreamMap.get(targetKey)?.has(streamKey) ?? false);
     if (alreadyTracked || pendingIncomingConsumeKeys.has(streamKey)) {
+      logReceiveDiagnostic('consume-skipped-duplicate', {
+        producerId: effectiveProducerId,
+        streamKey,
+        targetKey,
+      });
       return;
     }
     pendingIncomingConsumeKeys.add(streamKey);
 
     try {
+      logReceiveDiagnostic('consume-request', {
+        producerId: effectiveProducerId,
+        peerId,
+        streamKey,
+        targetKey,
+      });
       const { error, ...consumeParams } = await new Promise((resolve) =>
         socket.emit('consume', {
           producerId,
@@ -5303,13 +5684,35 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         }, resolve)
       );
       if (error) throw new Error(error);
+      logReceiveDiagnostic('consume-response', {
+        producerId: effectiveProducerId,
+        peerId,
+        streamKey,
+        targetKey,
+        elapsedMs: Math.round(((typeof performance !== 'undefined' && typeof performance.now === 'function')
+          ? performance.now()
+          : Date.now()) - consumeStartedAt),
+      });
 
       const consumer = await recvTransport.consume(consumeParams);
+      logReceiveDiagnostic('consumer-created', {
+        producerId: effectiveProducerId,
+        consumerId: consumer?.id || null,
+        peerId,
+        streamKey,
+        targetKey,
+      });
       const nowTracked = audioElements.has(streamKey)
         || peerConsumers.has(streamKey)
         || (targetStreamMap.get(targetKey)?.has(streamKey) ?? false);
       if (nowTracked) {
         try { consumer.close(); } catch {}
+        logReceiveDiagnostic('consumer-closed-duplicate', {
+          producerId: effectiveProducerId,
+          consumerId: consumer?.id || null,
+          streamKey,
+          targetKey,
+        });
         return;
       }
       const receiver = consumer?.rtpReceiver;
@@ -5323,28 +5726,39 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
       const stream = new MediaStream([consumer.track]);
       const feedPlayback = isFeed && shouldUseFeedPlaybackBus() ? ensureFeedPlaybackBus() : null;
-      const shouldUseWebAudioLevelControl = !isFeed && isiOS;
-      const ctxForPlayback = shouldUseWebAudioLevelControl ? ensureAudioContext() : null;
+      let persistentPlaybackBus = !isFeed && shouldUsePersistentRemotePlaybackBus()
+        ? ensureTargetPlaybackBus(targetKey, { type: normalizedAppData.type || 'user' })
+        : null;
+      const shouldUseWebAudioLevelControl = !isFeed && !persistentPlaybackBus && (isiOS || isSafariBrowser);
+      const ctxForPlayback = (persistentPlaybackBus || shouldUseWebAudioLevelControl) ? ensureAudioContext() : null;
 
       const initVolRaw = getStoredVolume(volumeStorageKey);
       const initVol = Math.max(0, Math.min(1, initVolRaw));
 
-      const audio = document.createElement('audio');
-      audio.srcObject = stream;
-      audio.autoplay = true;
-      audio.playsInline = true;
-      audio.setAttribute('playsinline', 'true');
-      audio.setAttribute('autoplay', 'true');
-      enforcePitchLock(audio);
-      if (supportsAudioOutputSelection() && preferredOutputDeviceId && typeof audio.setSinkId === 'function') {
-        audio.setSinkId(preferredOutputDeviceId).catch(err => {
-          console.warn('Failed to apply audio output device to new audio element:', err);
-        });
-      }
+      const createIncomingAudioElement = () => {
+        const nextAudio = document.createElement('audio');
+        nextAudio.srcObject = stream;
+        nextAudio.autoplay = true;
+        nextAudio.playsInline = true;
+        nextAudio.setAttribute('playsinline', 'true');
+        nextAudio.setAttribute('autoplay', 'true');
+        enforcePitchLock(nextAudio);
+        if (supportsAudioOutputSelection() && preferredOutputDeviceId && typeof nextAudio.setSinkId === 'function') {
+          nextAudio.setSinkId(preferredOutputDeviceId).catch(err => {
+            console.warn('Failed to apply audio output device to new audio element:', err);
+          });
+        }
+        return nextAudio;
+      };
+
+      let audio = persistentPlaybackBus?.audio || createIncomingAudioElement();
 
       let gainNode = null;
       let mediaSource = null;
       let feedDuckingNode = null;
+      let usesMediaElementSource = false;
+      let playbackGainNode = null;
+      let usesSharedAudioElement = false;
 
       if (feedPlayback) {
         try {
@@ -5358,21 +5772,58 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           feedDuckingNode.connect(feedPlayback.inputNode);
           audio.muted = true;
           audio.volume = 0;
+          playbackGainNode = gainNode;
         } catch (err) {
           console.warn('Failed to initialize feed playback bus path:', err);
           gainNode = null;
           mediaSource = null;
           feedDuckingNode = null;
         }
-      } else if (ctxForPlayback) {
+      } else if (persistentPlaybackBus && ctxForPlayback) {
         try {
           mediaSource = ctxForPlayback.createMediaStreamSource(stream);
+          gainNode = ctxForPlayback.createGain();
+          gainNode.gain.value = 1;
+          mediaSource.connect(gainNode);
+          gainNode.connect(persistentPlaybackBus.inputNode);
+          playbackGainNode = persistentPlaybackBus.levelNode;
+          usesSharedAudioElement = true;
+          audio.muted = false;
+          audio.volume = 1;
+          if (ctxForPlayback.state !== 'running' && typeof ctxForPlayback.resume === 'function') {
+            ctxForPlayback.resume().catch(err => console.warn('Failed to resume AudioContext:', err));
+          }
+        } catch (err) {
+          console.warn('Failed to initialize persistent target playback bus:', err);
+          gainNode = null;
+          mediaSource = null;
+          playbackGainNode = null;
+          usesSharedAudioElement = false;
+          persistentPlaybackBus = null;
+          audio = createIncomingAudioElement();
+        }
+      }
+
+      if (!gainNode && ctxForPlayback && !feedPlayback && !persistentPlaybackBus) {
+        try {
+          if (isSafariBrowser && typeof ctxForPlayback.createMediaElementSource === 'function') {
+            mediaSource = ctxForPlayback.createMediaElementSource(audio);
+            usesMediaElementSource = true;
+          } else {
+            mediaSource = ctxForPlayback.createMediaStreamSource(stream);
+          }
           gainNode = ctxForPlayback.createGain();
           gainNode.gain.value = 0;
           mediaSource.connect(gainNode);
           gainNode.connect(ctxForPlayback.destination);
-          audio.muted = true;
-          audio.volume = 0;
+          playbackGainNode = gainNode;
+          if (usesMediaElementSource) {
+            audio.muted = false;
+            audio.volume = 1;
+          } else {
+            audio.muted = true;
+            audio.volume = 0;
+          }
           if (ctxForPlayback.state !== 'running' && typeof ctxForPlayback.resume === 'function') {
             ctxForPlayback.resume().catch(err => console.warn('Failed to resume AudioContext:', err));
           }
@@ -5400,6 +5851,8 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         isFeed,
         path: feedPlayback
           ? 'feed-web-audio-bus'
+          : usesSharedAudioElement
+            ? 'persistent-target-playback-bus'
           : ctxForPlayback
             ? 'web-audio-gain'
             : 'plain-audio-element',
@@ -5409,12 +5862,18 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           ? 'feed bus enabled'
           : isFeed && isAndroidBrowser
             ? 'android feed fallback'
+            : usesSharedAudioElement
+              ? 'persistent target playback bus'
             : ctxForPlayback
-              ? 'ios remote gain control'
+              ? usesMediaElementSource
+                ? 'safari media element gain'
+                : 'ios remote gain control'
               : 'default direct playback',
       });
 
-      audioStreamsDiv.appendChild(audio);
+      if (!usesSharedAudioElement) {
+        appendPlaybackAudioElement(audio);
+      }
       const entry = {
         audio,
         volume: initVol,
@@ -5424,12 +5883,18 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         type: normalizedAppData.type || 'user',
         gainNode,
         mediaSource,
+        playbackGainNode,
+        playbackBus: persistentPlaybackBus,
+        usesMediaElementSource,
+        usesSharedAudioElement,
         feedDuckingNode,
         lastAppliedLevel: null,
         producerId: effectiveProducerId,
       };
       audioElements.set(streamKey, entry);
-      audioEntryMap.set(audio, entry);
+      if (!usesSharedAudioElement) {
+        audioEntryMap.set(audio, entry);
+      }
       registerStreamKey(targetKey, streamKey);
       if (isFeed) {
         activeFeedKeys.add(targetKey);
@@ -5476,14 +5941,42 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         }
       }
 
-      await attemptPlayAudio(audio).catch(() => {});
+      if (usesSharedAudioElement) {
+        primeTargetPlaybackBus(targetKey, {
+          type: entry.type,
+          reason: 'incoming-producer-playback-bus',
+        });
+      } else {
+        await attemptPlayAudio(audio, {
+          producerId: effectiveProducerId,
+          consumerId: consumer.id,
+          streamKey,
+          targetKey,
+          type: entry.type,
+        }).catch(() => {});
+      }
       if (isFeed && session.kind === 'user') {
         applyFeedDucking();
       }
 
+      logReceiveDiagnostic('resume-consumer-start', {
+        producerId: effectiveProducerId,
+        consumerId: consumer.id,
+        streamKey,
+        targetKey,
+      });
       await new Promise((res) =>
         socket.emit('resume-consumer', { consumerId: consumer.id }, res)
       );
+      logReceiveDiagnostic('resume-consumer-done', {
+        producerId: effectiveProducerId,
+        consumerId: consumer.id,
+        streamKey,
+        targetKey,
+        elapsedMs: Math.round(((typeof performance !== 'undefined' && typeof performance.now === 'function')
+          ? performance.now()
+          : Date.now()) - consumeStartedAt),
+      });
 
       let consumerClosed = false;
       const handleConsumerClosed = () => {
@@ -5598,7 +6091,6 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     activeProducerSyncInterval = setInterval(() => {
       if (!mediaInitialized) return;
       if (session.kind !== 'user') return;
-      if (document.visibilityState === 'hidden') return;
       if (!socket.connected) return;
       requestActiveProducers().catch(() => {});
     }, ACTIVE_PRODUCERS_SYNC_INTERVAL_MS);
@@ -5771,6 +6263,13 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   socket.on('new-producer', (payload) => {
     if (payload && typeof payload === 'object') {
       console.log(`New producer ${payload.producerId} from peer ${payload.peerId}`, payload.appData);
+      logReceiveDiagnostic('new-producer-received', {
+        producerId: payload.producerId || null,
+        peerId: payload.peerId || null,
+        type: payload.appData?.type || null,
+        targetId: payload.appData?.id ?? null,
+        hintedTargetPeer: payload.appData?.targetPeer || null,
+      });
     }
     handleIncomingProducer(payload).catch(err => console.error('Failed to handle producer', err));
   });
@@ -6485,6 +6984,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     }
     if (document.visibilityState === 'visible') {
       pruneIncomingStreamBookkeeping();
+      primeVisibleRemotePlaybackBuses({ forceRetry: true });
       const sharedCtx = sharedAudioContext && sharedAudioContext.state !== 'closed'
         ? sharedAudioContext
         : null;
