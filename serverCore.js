@@ -216,8 +216,6 @@ function normalizeMdnsSetting(value) {
   return normalized;
 }
 
-app.use(express.static(publicDir));
-
 app.get("/", (req, res) => {
   const indexPath = path.join(publicDir, "index.html");
   if (!fs.existsSync(indexPath)) {
@@ -245,13 +243,30 @@ function findSocketIoClientPath() {
   return fs.existsSync(candidate) ? candidate : null;
 }
 
+function stripSocketIoSourceMapReference(source) {
+  if (typeof source !== "string") return source;
+  return source.replace(/\n\/\/# sourceMappingURL=socket\.io\.js\.map\s*$/, "\n");
+}
+
 const socketIoClientPath = findSocketIoClientPath();
+const socketIoClientContents = (() => {
+  if (!socketIoClientPath) return null;
+  try {
+    return stripSocketIoSourceMapReference(
+      fs.readFileSync(socketIoClientPath, "utf8")
+    );
+  } catch (err) {
+    console.warn(`[SOCKET.IO] Failed to read client script: ${err.message}`);
+    return null;
+  }
+})();
+
 if (process.pkg) {
-  if (socketIoClientPath) {
+  if (socketIoClientContents) {
     const destPath = path.join(execPublicDir, "socket.io.js");
     try {
       if (!fs.existsSync(destPath)) {
-        fs.copyFileSync(socketIoClientPath, destPath);
+        fs.writeFileSync(destPath, socketIoClientContents, "utf8");
       }
     } catch (err) {
       console.warn(`[SOCKET.IO] Failed to copy client script: ${err.message}`);
@@ -259,9 +274,9 @@ if (process.pkg) {
   } else {
     console.warn("[SOCKET.IO] client script not found; /socket.io.js will 404");
   }
-} else if (socketIoClientPath) {
+} else if (socketIoClientContents) {
   app.get("/socket.io.js", (req, res) => {
-    res.sendFile(socketIoClientPath);
+    res.type("application/javascript").send(socketIoClientContents);
   });
 } else {
   console.warn("[SOCKET.IO] client script not found; /socket.io.js will 404");
@@ -273,12 +288,14 @@ if (process.pkg) {
     if (fs.existsSync(diskPath)) {
       return res.sendFile(diskPath);
     }
-    if (socketIoClientPath) {
-      return res.sendFile(socketIoClientPath);
+    if (socketIoClientContents) {
+      return res.type("application/javascript").send(socketIoClientContents);
     }
     res.sendStatus(404);
   });
 }
+
+app.use(express.static(publicDir));
 
 const nodeModulesDir = path.join(__dirname, "node_modules");
 if (fs.existsSync(nodeModulesDir)) {

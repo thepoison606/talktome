@@ -66,7 +66,9 @@ const FEED_DUCKING_DB_MIN = -60;
 const FEED_DUCKING_DB_MAX = -6;
 const FEED_DIM_SELF_STORAGE_KEY = 'feedDimSelf';
 const AUDIO_PROCESSING_STORAGE_KEY = 'audioProcessingEnabled';
+const AUDIO_PROCESSING_EXPLICIT_STORAGE_KEY = 'audioProcessingEnabledExplicit';
 const FEED_INPUT_GAIN_DB_STORAGE_KEY = 'feedInputGainDb';
+const MIC_DEVICE_STORAGE_KEY = 'preferredAudioInputDeviceId';
 const OUTPUT_DEVICE_STORAGE_KEY = 'preferredAudioOutputDeviceId';
 const MIC_DEVICE_EXPLICIT_STORAGE_KEY = 'preferredAudioInputDeviceExplicit';
 const FEED_INPUT_GAIN_DB_MIN = -30;
@@ -117,6 +119,9 @@ const isTouchMacUA = typeof navigator !== 'undefined'
 const isAndroidBrowser = /Android/i.test(USER_AGENT);
 const isMobileBrowser = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobi/i.test(USER_AGENT)
   || isTouchMacUA;
+const isiOS = typeof navigator !== 'undefined'
+  ? /iPad|iPhone|iPod/.test(USER_AGENT) || isTouchMacUA
+  : false;
 
 if (typeof window !== 'undefined') {
   try {
@@ -155,15 +160,17 @@ if (typeof window !== 'undefined') {
         feedPtimeMs = clampFeedPtimeMs(parsedFeedPtime);
       }
     }
+    const storedProcessingExplicit = window.localStorage?.getItem(AUDIO_PROCESSING_EXPLICIT_STORAGE_KEY);
     const storedProcessing = window.localStorage?.getItem(AUDIO_PROCESSING_STORAGE_KEY);
-    if (storedProcessing !== null) {
+    if (storedProcessingExplicit !== null && storedProcessing !== null) {
       audioProcessingEnabled = storedProcessing === 'true';
     } else {
-      // Default: enable processing on mobile, disable on desktop
+      // Default: enable processing on mobile/tablet browsers, disable on desktop.
+      // Legacy stored values without an explicit marker should not keep mobile
+      // devices stuck on the old desktop-style default.
       try {
         audioProcessingEnabled = !!isMobileBrowser;
       } catch (err) {
-        // If detection fails, fall back to desktop default (off)
         audioProcessingEnabled = false;
       }
     }
@@ -188,9 +195,6 @@ if (typeof window !== 'undefined') {
   }
 }
 syncAudioProcessingOptions();
-const isiOS = typeof navigator !== 'undefined'
-  ? /iPad|iPhone|iPod/.test(USER_AGENT) || isTouchMacUA
-  : false;
 
 const FEED_PROFILE = {
   label: 'Feed (raw stream)',
@@ -298,14 +302,13 @@ const feedMeterStateR = { lastText: '-inf dB', lastTextTime: 0, lastDb: -Infinit
 let userMeterLastText = '-inf dB';
 let userMeterLastTextTime = 0;
 let userMeterLastDb = -Infinity;
-const MIC_DEVICE_STORAGE_KEY = 'preferredAudioInputDeviceId';
-
 let micStream = null;
 let micTrack = null;
 let micDeviceId = null;
 let micCleanupTimer = null;
 let micPrimed = false;
 let micPrimingPromise = null;
+let initialMicAccessRequested = false;
 
 let feedStreaming = false;
 let feedManualStop = false;
@@ -542,6 +545,7 @@ function setAudioProcessingEnabled(enabled, { persist = true, updateUI = true, r
   if (persist && typeof window !== 'undefined') {
     try {
       window.localStorage?.setItem(AUDIO_PROCESSING_STORAGE_KEY, String(applied));
+      window.localStorage?.setItem(AUDIO_PROCESSING_EXPLICIT_STORAGE_KEY, 'true');
     } catch (err) {
       console.warn('Unable to persist audio processing preference:', err);
     }
@@ -1068,6 +1072,30 @@ function getCurrentAudioConstraints() {
     ? buildFeedAudioConstraints(selectedDeviceId)
     : buildUserAudioConstraints(selectedDeviceId);
   return { constraints, selectedDeviceId };
+}
+
+async function requestInitialMicrophoneAccess({ reason = 'startup' } = {}) {
+  if (initialMicAccessRequested) return null;
+  if (session.kind === 'guest') return null;
+  if (!navigator.mediaDevices?.getUserMedia) return null;
+
+  initialMicAccessRequested = true;
+
+  try {
+    const { constraints, selectedDeviceId } = getCurrentAudioConstraints();
+    const track = await ensureMicTrack(constraints, selectedDeviceId);
+    if (!track) return null;
+
+    if (!settingsMenuOpen && !producer && !feedStreaming && !isTalking) {
+      try { track.enabled = false; } catch {}
+      scheduleMicCleanup();
+    }
+
+    return track;
+  } catch (err) {
+    console.warn(`Initial microphone access request failed (${reason}):`, err);
+    return null;
+  }
 }
 
 async function startInputMonitor() {
@@ -1912,7 +1940,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   if (audioProcessingToggle) {
-    audioProcessingToggle.checked = audioProcessingEnabled;
+    audioProcessingToggle.checked = syncAudioProcessingOptions();
     audioProcessingToggle.addEventListener('change', () => {
       setAudioProcessingEnabled(audioProcessingToggle.checked);
     });
@@ -3051,8 +3079,8 @@ let cachedUsers = [];
         audioProcessingOptions.noiseSuppression = false;
         audioProcessingOptions.autoGainControl = false;
       } else {
-        audioProcessingToggle.checked = audioProcessingEnabled;
-        syncAudioProcessingOptions();
+        const applied = syncAudioProcessingOptions();
+        audioProcessingToggle.checked = applied;
       }
     } else {
       if (!isFeed) {
@@ -3580,6 +3608,7 @@ let cachedUsers = [];
 	        });
       applySessionUI();
       initializeMediaIfPossible();
+      requestInitialMicrophoneAccess({ reason: 'auto-login-user' });
     }
   } else if (storedKind === "feed") {
     const storedFeedId = localStorage.getItem(FEED_ID_STORAGE_KEY);
@@ -3594,6 +3623,7 @@ let cachedUsers = [];
       registerCurrentSession().catch(() => {});
       applySessionUI();
       initializeMediaIfPossible();
+      requestInitialMicrophoneAccess({ reason: 'auto-login-feed' });
     }
   }
 
@@ -3660,6 +3690,7 @@ let cachedUsers = [];
       intercomApp.style.display = "flex";
       myIdEl.textContent = user.name;
       applySessionUI();
+      requestInitialMicrophoneAccess({ reason: `login-${kind}` });
       initializeMediaIfPossible();
     } catch (err) {
       loginError.textContent = "Error logging in";
@@ -3944,9 +3975,9 @@ let cachedUsers = [];
     return null;
   }
 
-  function collectVisibleTargetAudioStates() {
-    const list = document.getElementById('targets-list');
-    if (!list) return [];
+function collectVisibleTargetAudioStates() {
+  const list = document.getElementById('targets-list');
+  if (!list) return [];
 
     const seen = new Set();
     const states = [];
@@ -3959,12 +3990,24 @@ let cachedUsers = [];
       seen.add(dedupeKey);
       states.push(state);
     });
-    return states;
-  }
+  return states;
+}
 
-  function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
-    if (session.kind !== 'user') return;
-    if (!socket.connected) return;
+function updateCompactSessionBarMode(targetCount = null) {
+  if (typeof document === 'undefined') return;
+  const count = Number.isFinite(targetCount)
+    ? targetCount
+    : document.querySelectorAll('#targets-list li.target-item').length;
+  const isSmallViewport = typeof window !== 'undefined'
+    ? (window.innerWidth <= 430 || window.innerHeight <= 720)
+    : false;
+  const shouldCompact = session.kind === 'user' && isSmallViewport && count >= 6;
+  document.body.classList.toggle('compact-session-bar', shouldCompact);
+}
+
+function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
+  if (session.kind !== 'user') return;
+  if (!socket.connected) return;
     socket.emit('target-audio-state-snapshot', {
       reason,
       states: collectVisibleTargetAudioStates(),
@@ -4892,8 +4935,10 @@ let cachedUsers = [];
     schedulePttButtonSizing();
     if (!pttSizingListenerBound) {
       window.addEventListener('resize', schedulePttButtonSizing, { passive: true });
+      window.addEventListener('resize', () => updateCompactSessionBarMode(), { passive: true });
       pttSizingListenerBound = true;
     }
+    updateCompactSessionBarMode(list.childElementCount);
     emitTargetAudioStateSnapshot('target-audio-render');
   }
 

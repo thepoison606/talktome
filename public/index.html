@@ -82,6 +82,25 @@
         flex-shrink: 0;
       }
 
+      body.compact-session-bar .session-bar {
+        gap: 0.35rem;
+        padding: 0.28rem 0.45rem;
+      }
+
+      body.compact-session-bar .session-info {
+        font-size: 0.84rem;
+      }
+
+      body.compact-session-bar .settings-trigger {
+        width: 2.2rem;
+        height: 2.2rem;
+      }
+
+      body.compact-session-bar .logout-btn {
+        padding: 0.32rem 0.72rem;
+        font-size: 0.78rem;
+      }
+
       .logout-btn {
         padding: 0.4rem 0.85rem;
         font-size: 0.85rem;
@@ -160,6 +179,10 @@
         gap: 0.9rem;
         padding: 1rem 1.25rem;
         min-width: 320px;
+        width: min(360px, calc(100vw - 1rem));
+        max-height: min(calc(100dvh - 5rem), 40rem);
+        overflow-y: auto;
+        overscroll-behavior: contain;
         border: 1px solid rgba(148, 163, 184, 0.2);
         border-radius: 10px;
         background: #1f2937;
@@ -176,8 +199,12 @@
       .settings-actions {
         display: flex;
         justify-content: flex-end;
+        position: sticky;
+        bottom: -1rem;
         padding-top: 0.5rem;
+        padding-bottom: 0.1rem;
         border-top: 1px solid rgba(148, 163, 184, 0.2);
+        background: #1f2937;
       }
 
       .device-selector {
@@ -189,6 +216,16 @@
 
       .device-selector[hidden] {
         display: none !important;
+      }
+
+      @media (max-width: 520px) {
+        .settings-body {
+          right: -0.25rem;
+          min-width: 0;
+          width: min(360px, calc(100vw - 0.75rem));
+          max-height: calc(100dvh - 4.5rem);
+          padding: 0.95rem 1rem;
+        }
       }
 
       .device-selector select {
@@ -724,6 +761,10 @@
         .container {
           width: calc(100% - 0.75rem);
           margin: 0.4rem auto;
+        }
+
+        body.compact-session-bar .session-info {
+          font-size: 0.8rem;
         }
 
         .reply-bar button {
