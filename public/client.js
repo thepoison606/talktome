@@ -88,11 +88,13 @@ const FEED_PTIME_OPTIONS = Object.freeze({
   10: { label: '10 ms (balanced latency/load)' },
   20: { label: '20 ms (highest resilience, lowest load)' },
 });
+const USER_OFFLINE_GRACE_MS = 1500;
 
 const TARGET_HOTKEY_DIGITS = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 const targetHotkeys = new Map();
 const pressedHotkeyDigits = new Set();
 const persistedTargetAudioStateMap = new Map();
+const pendingOfflineUserTimers = new Map();
 
 let feedDuckingDb = DEFAULT_FEED_DUCKING_DB;
 let feedDuckingFactor = dbToLinear(feedDuckingDb);
@@ -1469,7 +1471,6 @@ function attemptPendingAutoplay() {
 }
 
 function handleUserActivation() {
-  attemptPendingAutoplay();
   primeVoiceProcessingMode().catch(() => {});
   const sharedCtx = ensureAudioContext();
   resumeAudioContextIfNeeded(sharedCtx, {
@@ -1479,6 +1480,8 @@ function handleUserActivation() {
   if (feedProcessingAudioContext) {
     resumeAudioContextIfNeeded(feedProcessingAudioContext, { label: 'feed ingest AudioContext' });
   }
+  attemptPendingAutoplay();
+  recoverExistingIncomingPlayback({ forceRetryAll: true });
 }
 
 USER_ACTIVATION_EVENTS.forEach(event => {
@@ -2091,6 +2094,21 @@ document.addEventListener("DOMContentLoaded", () => {
   const listenOnlyConferenceKeys = new Set();
   const listenOnlyConferenceDimmingDisabled = new Set();
   const activeFeedKeys = new Set();
+  function recoverExistingIncomingPlayback({ forceRetryAll = false } = {}) {
+    audioElements.forEach((entry) => {
+      const audioEl = entry?.audio;
+      if (!audioEl || typeof audioEl.play !== 'function') return;
+
+      const track = audioEl.srcObject?.getAudioTracks?.()?.[0] || null;
+      const hasLiveTrack = !track || track.readyState === 'live';
+      if (!hasLiveTrack) return;
+
+      const shouldRetry = forceRetryAll || audioEl.paused || pendingAutoplayAudios.has(audioEl);
+      if (!shouldRetry) return;
+
+      attemptPlayAudio(audioEl).catch(() => {});
+    });
+  }
   if (typeof window !== 'undefined') {
     window.talktomeDumpAudioState = () => {
       const sharedCtx = sharedAudioContext && sharedAudioContext.state !== 'closed'
@@ -2133,6 +2151,8 @@ let lastTarget = null;
 let currentTarget = null;
 let selfTalkingKey = null;
 let cachedUsers = [];
+let latestServerUsers = [];
+let cachedOperatorTargets = null;
   let incomingTalkState = { addressedNow: [], replyTarget: null };
   let mediaInitialized = false;
   let initializingMediaPromise = null;
@@ -3774,6 +3794,9 @@ let cachedUsers = [];
   socket.on("disconnect", () => {
     console.log("Disconnected from server");
     myIdEl.textContent = "Disconnected";
+    pendingOfflineUserTimers.forEach((timerId) => clearTimeout(timerId));
+    pendingOfflineUserTimers.clear();
+    latestServerUsers = [];
     incomingTalkState = { addressedNow: [], replyTarget: null };
     speakingPeers.clear();
     activeFeedKeys.clear();
@@ -3820,11 +3843,8 @@ let cachedUsers = [];
   });
 
   socket.on("user-list", async users => {
-    cachedUsers = users;
     if (session.kind === 'user') {
-      await renderTargetList(users);
-      applyIncomingTalkState();
-      requestActiveProducers().catch(() => {});
+      await applyUserListToUi(prepareDisplayUsersWithOfflineGrace(users));
     }
   });
 
@@ -4187,6 +4207,516 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     }
   });
 
+  function rebuildUserTargetLabels(users) {
+    Array.from(targetLabels.keys()).forEach((key) => {
+      if (key.startsWith('user-')) {
+        targetLabels.delete(key);
+      }
+    });
+    users.forEach((u) => {
+      if (u?.userId != null) {
+        targetLabels.set(`user-${u.userId}`, u.name || String(u.userId));
+      }
+      if (u?.socketId) {
+        targetLabels.set(`user-${u.socketId}`, u.name || u.socketId);
+      }
+    });
+  }
+
+  function shouldRenderUserTargetRow(targetIdNum, usersById = null) {
+    if (!Number.isFinite(targetIdNum)) return false;
+    if (session.userId && Number(session.userId) === targetIdNum) return false;
+    const onlineUser = usersById?.get(targetIdNum);
+    const targetSocketId = onlineUser?.socketId || null;
+    if (targetSocketId && targetSocketId === socket.id) return false;
+    return true;
+  }
+
+  function clearPendingOfflineUserTimer(userId) {
+    const key = String(userId);
+    const timerId = pendingOfflineUserTimers.get(key);
+    if (!timerId) return;
+    clearTimeout(timerId);
+    pendingOfflineUserTimers.delete(key);
+  }
+
+  async function applyUserListToUi(users) {
+    cachedUsers = users;
+    const list = document.getElementById('targets-list');
+    const hasRenderedTargets = Boolean(list?.querySelector('li.target-item'));
+    if (!hasRenderedTargets || !Array.isArray(cachedOperatorTargets) || !cachedOperatorTargets.length) {
+      await renderTargetList(users);
+    } else {
+      await refreshRenderedUserTargets(users);
+    }
+    applyIncomingTalkState();
+    requestActiveProducers().catch(() => {});
+  }
+
+  function buildDisplayUsersFromLatestServerState() {
+    const latestById = new Map();
+    latestServerUsers.forEach((user) => {
+      if (user?.userId == null) return;
+      latestById.set(String(user.userId), user);
+    });
+
+    const displayUsers = [...latestServerUsers];
+    const previousUsers = Array.isArray(cachedUsers) ? cachedUsers : [];
+    previousUsers.forEach((user) => {
+      const key = String(user?.userId ?? '');
+      if (!key || latestById.has(key) || !user?.socketId) return;
+      if (!pendingOfflineUserTimers.has(key)) return;
+      displayUsers.push(user);
+    });
+
+    return displayUsers;
+  }
+
+  function scheduleOfflineGraceTimer(userId) {
+    const key = String(userId);
+    if (!key || pendingOfflineUserTimers.has(key)) return;
+    const timerId = setTimeout(() => {
+      pendingOfflineUserTimers.delete(key);
+      if (session.kind !== 'user') return;
+      applyUserListToUi(buildDisplayUsersFromLatestServerState()).catch((err) => {
+        console.error('Failed to apply delayed user offline state', err);
+      });
+    }, USER_OFFLINE_GRACE_MS);
+    pendingOfflineUserTimers.set(key, timerId);
+  }
+
+  function prepareDisplayUsersWithOfflineGrace(users) {
+    latestServerUsers = Array.isArray(users) ? users.map((user) => ({ ...user })) : [];
+    const latestById = new Map();
+    latestServerUsers.forEach((user) => {
+      if (user?.userId == null) return;
+      latestById.set(String(user.userId), user);
+      clearPendingOfflineUserTimer(user.userId);
+    });
+
+    const previousUsers = Array.isArray(cachedUsers) ? cachedUsers : [];
+    previousUsers.forEach((user) => {
+      const key = String(user?.userId ?? '');
+      if (!key || latestById.has(key) || !user?.socketId) return;
+      scheduleOfflineGraceTimer(key);
+    });
+
+    return buildDisplayUsersFromLatestServerState();
+  }
+
+  function syncRenderedTargetStateUi() {
+	    document.querySelectorAll('.target-item').forEach(li => {
+	      const key = li.id;
+      const icon = key.startsWith('user-')
+        ? li.querySelector('.user-icon')
+        : key.startsWith('conf-')
+          ? li.querySelector('.conf-icon')
+        : key.startsWith('feed-')
+            ? li.querySelector('.feed-icon')
+            : null;
+      const statusEl = li.querySelector('.target-status');
+
+      const isSpeaking = isTargetSpeaking(key);
+      li.classList.toggle('speaking', isSpeaking);
+      if (icon) icon.classList.toggle('speaking', isSpeaking);
+      if (statusEl) {
+        statusEl.textContent = getSpeakerStatusText(key, isSpeaking);
+      }
+
+      const isMuted = mutedPeers.has(key);
+      li.classList.toggle('muted', isMuted);
+	      if (icon) icon.classList.toggle('muted', isMuted);
+	    });
+  }
+
+  function buildUserTargetElement(target, usersById, hotkeyDigit = null) {
+      const targetIdNum = Number(target.targetId);
+      if (!shouldRenderUserTargetRow(targetIdNum, usersById)) return null;
+
+      const onlineUser = usersById.get(targetIdNum);
+      const socketId = onlineUser?.socketId || null;
+      const isOnline = !!socketId;
+      const displayName = target.name || onlineUser?.name || `User ${targetIdNum}`;
+      const keyId = isOnline ? socketId : String(targetIdNum);
+
+      const li = document.createElement('li');
+      const targetKey = `user-${keyId}`;
+      li.id = targetKey;
+      li.classList.add('target-item', 'user-target');
+      li.dataset.type = 'user';
+      li.dataset.id = String(targetIdNum);
+      li.dataset.socketId = socketId || '';
+      if (hotkeyDigit) {
+        li.dataset.hotkey = hotkeyDigit;
+      }
+      if (!isOnline) {
+        li.classList.add('is-offline');
+      }
+
+      const hint = document.createElement('div');
+      hint.className = 'slide-to-lock-hint';
+      hint.textContent = '← Slide to lock';
+      hint.setAttribute('aria-hidden', 'true');
+
+      const icon = document.createElement('div');
+      icon.className = 'user-icon';
+      icon.textContent = displayName ? displayName.charAt(0).toUpperCase() : String(targetIdNum).slice(0, 2);
+
+      const info = document.createElement('div');
+      info.className = 'target-info';
+
+      const resolveCurrentUserSocketId = () => li.dataset.socketId || resolveUserSocketId(targetIdNum) || null;
+      const getCurrentTargetKey = () => {
+        const currentSocketId = resolveCurrentUserSocketId();
+        return `user-${currentSocketId || targetIdNum}`;
+      };
+
+      const label = document.createElement('span');
+      label.className = 'target-label';
+      label.textContent = displayName;
+      const labelRow = document.createElement('div');
+      labelRow.className = 'target-label-row';
+      labelRow.appendChild(label);
+      info.appendChild(labelRow);
+
+      const persistedUserState = getPersistedTargetAudioState('user', targetIdNum);
+      const userKey = `volume_user_${targetIdNum}`;
+      const volSlider = document.createElement('input');
+      volSlider.type = 'range';
+      volSlider.min = '0';
+      volSlider.max = '1';
+      volSlider.step = '0.01';
+      volSlider.value = getStoredVolume(userKey).toString();
+      volSlider.className = 'volume-slider';
+      volSlider.title = 'Source Volume';
+      volSlider.addEventListener('input', e => {
+        const vol = parseFloat(e.target.value);
+        const currentTargetKey = getCurrentTargetKey();
+        setTargetVolumeAndPersist(currentTargetKey, userKey, vol, {
+          targetType: 'user',
+          targetId: targetIdNum,
+          muted: mutedPeers.has(currentTargetKey),
+        });
+      });
+      if (!isOnline) {
+        volSlider.disabled = true;
+      }
+      info.appendChild(volSlider);
+
+      const talkBtn = document.createElement('button');
+      talkBtn.className = 'talk-btn';
+      talkBtn.type = 'button';
+      talkBtn.setAttribute('aria-pressed', 'false');
+      talkBtn.setAttribute(
+        'aria-label',
+        isOnline ? `Hold to talk to ${displayName}` : `${displayName} is offline`
+      );
+      talkBtn.title = isOnline ? 'Hold to talk' : 'Offline';
+      const talkIcon = document.createElement('img');
+      talkIcon.className = 'btn-icon';
+      talkIcon.src = UI_ICONS.talk;
+      talkIcon.alt = '';
+      talkIcon.setAttribute('aria-hidden', 'true');
+      talkBtn.appendChild(talkIcon);
+      talkBtn.addEventListener('pointerdown', e => {
+        const currentSocketId = resolveCurrentUserSocketId();
+        if (!currentSocketId) return;
+        e.stopPropagation();
+        li.classList.add('ptt-pressing');
+
+        const normalizedTarget = { type: 'user', id: currentSocketId };
+
+        if (activeLockButton) {
+          if (activeLockButton === talkBtn) {
+            li.classList.remove('ptt-pressing');
+            handleStopTalking({ preventDefault() {}, currentTarget: talkBtn });
+            return;
+          }
+          suspendActiveLockState();
+          handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
+        }
+
+        const startX = e.clientX;
+        let lockedByGesture = false;
+
+        const onMove = (ev) => {
+          if (lockedByGesture || activeLockButton === talkBtn) return;
+          if (ev.clientX - startX <= -42) {
+            lockedByGesture = true;
+            activateTalkLock(normalizedTarget, talkBtn);
+          }
+        };
+
+        const cleanup = () => {
+          talkBtn.removeEventListener('pointermove', onMove);
+          talkBtn.removeEventListener('pointerup', onEnd);
+          talkBtn.removeEventListener('pointercancel', onEnd);
+          try { talkBtn.releasePointerCapture(e.pointerId); } catch {}
+        };
+
+        const onEnd = (ev) => {
+          cleanup();
+          li.classList.remove('ptt-pressing');
+          if (activeLockButton === talkBtn) return;
+          handleStopTalking(ev);
+        };
+
+        try { talkBtn.setPointerCapture(e.pointerId); } catch {}
+        talkBtn.addEventListener('pointermove', onMove);
+        talkBtn.addEventListener('pointerup', onEnd);
+        talkBtn.addEventListener('pointercancel', onEnd);
+        handleTalk(e, normalizedTarget);
+      });
+      if (!isOnline) {
+        talkBtn.disabled = true;
+      }
+
+      const muteBtn = document.createElement('button');
+      muteBtn.className = 'mute-btn';
+      muteBtn.type = 'button';
+      const initialMuted = isOnline && (
+        persistedUserState?.muted
+        || mutedPeers.has(getCurrentTargetKey())
+      );
+      muteBtn.title = initialMuted ? 'Unmute' : 'Mute';
+      const muteIcon = document.createElement('img');
+      muteIcon.className = 'btn-icon';
+      muteIcon.src = initialMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
+      muteIcon.alt = '';
+      muteIcon.setAttribute('aria-hidden', 'true');
+      muteBtn.appendChild(muteIcon);
+      muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
+      muteBtn.addEventListener('click', e => {
+        const currentSocketId = resolveCurrentUserSocketId();
+        if (!currentSocketId) return;
+        e.stopPropagation();
+        toggleMute(currentSocketId);
+      });
+      if (isOnline) {
+        muteBtn.classList.toggle('muted', mutedPeers.has(getCurrentTargetKey()));
+      } else {
+        muteBtn.disabled = true;
+        muteBtn.title = 'Offline';
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'target-actions';
+      actions.classList.add('ptt-actions');
+      actions.append(muteBtn, talkBtn);
+
+      if (isOnline) {
+        const isLocked = isSameTarget(activeLockTarget, { type: 'user', id: socketId });
+        if (isLocked) {
+          activeLockButton = talkBtn;
+          setTalkButtonLocked(talkBtn, true);
+        }
+      }
+
+      if (isOnline) {
+        li.append(icon, info, actions, hint);
+      } else {
+        li.append(icon, info, actions);
+      }
+
+      let rowPttGestureActive = false;
+      let rowPttStartX = 0;
+      let rowPttLockedByGesture = false;
+      li.addEventListener('pointermove', (e) => {
+        if (!rowPttGestureActive) return;
+        if (rowPttLockedByGesture || activeLockButton === talkBtn) return;
+        if (e.clientX - rowPttStartX <= -42) {
+          const currentSocketId = resolveCurrentUserSocketId();
+          if (!currentSocketId) return;
+          rowPttLockedByGesture = true;
+          activateTalkLock({ type: 'user', id: currentSocketId }, talkBtn);
+        }
+      });
+
+      ['down', 'up', 'leave', 'cancel'].forEach(ev => {
+        li.addEventListener(`pointer${ev}`, e => {
+          if (
+            e.target.closest('.talk-btn') ||
+            e.target.closest('.mute-btn') ||
+            e.target.closest('.volume-slider')
+          ) return;
+          if (ev === 'down') {
+            const currentSocketId = resolveCurrentUserSocketId();
+            if (!currentSocketId) return;
+            const targetData = { type: 'user', id: currentSocketId };
+            if (activeLockButton && isSameTarget(activeLockTarget, targetData)) {
+              handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
+              return;
+            }
+            if (activeLockButton && !isSameTarget(activeLockTarget, targetData)) {
+              suspendActiveLockState();
+              handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
+              rowPttGestureActive = true;
+              rowPttLockedByGesture = false;
+              rowPttStartX = e.clientX;
+              li.classList.add('ptt-pressing');
+              try { li.setPointerCapture(e.pointerId); } catch {}
+              handleTalk(e, targetData);
+              return;
+            }
+
+            rowPttGestureActive = true;
+            rowPttLockedByGesture = false;
+            rowPttStartX = e.clientX;
+            li.classList.add('ptt-pressing');
+            try { li.setPointerCapture(e.pointerId); } catch {}
+            handleTalk(e, targetData);
+            return;
+          }
+
+          if (ev === 'up' || ev === 'leave' || ev === 'cancel') {
+            if (!rowPttGestureActive) return;
+            rowPttGestureActive = false;
+            li.classList.remove('ptt-pressing');
+            try { li.releasePointerCapture(e.pointerId); } catch {}
+            if (activeLockButton === talkBtn) return;
+          }
+          handleStopTalking(e);
+        });
+      });
+
+      return li;
+  }
+
+  function patchUserTargetElement(existingRow, target, usersById) {
+    const targetIdNum = Number(target?.targetId);
+    if (!Number.isFinite(targetIdNum) || !existingRow) return false;
+
+    const onlineUser = usersById.get(targetIdNum);
+    const socketId = onlineUser?.socketId || null;
+    const isOnline = Boolean(socketId);
+    const displayName = target.name || onlineUser?.name || `User ${targetIdNum}`;
+    const targetKey = `user-${socketId || targetIdNum}`;
+    const userKey = `volume_user_${targetIdNum}`;
+    const currentMuted = isOnline && mutedPeers.has(targetKey);
+
+    existingRow.id = targetKey;
+    existingRow.dataset.type = 'user';
+    existingRow.dataset.id = String(targetIdNum);
+    existingRow.dataset.socketId = socketId || '';
+    existingRow.classList.toggle('is-offline', !isOnline);
+
+    const icon = existingRow.querySelector('.user-icon');
+    if (icon) {
+      icon.textContent = displayName ? displayName.charAt(0).toUpperCase() : String(targetIdNum).slice(0, 2);
+      icon.classList.toggle('muted', currentMuted);
+    }
+
+    const label = existingRow.querySelector('.target-label');
+    if (label) {
+      label.textContent = displayName;
+    }
+
+    let hint = existingRow.querySelector('.slide-to-lock-hint');
+    if (isOnline) {
+      if (!hint) {
+        hint = document.createElement('div');
+        hint.className = 'slide-to-lock-hint';
+        hint.textContent = '← Slide to lock';
+        hint.setAttribute('aria-hidden', 'true');
+        existingRow.appendChild(hint);
+      }
+      hint.hidden = false;
+    } else if (hint) {
+      hint.hidden = true;
+    }
+
+    const volSlider = existingRow.querySelector('.volume-slider');
+    if (volSlider) {
+      volSlider.disabled = !isOnline;
+      volSlider.title = 'Source Volume';
+      if (!document.activeElement || document.activeElement !== volSlider) {
+        volSlider.value = getStoredVolume(userKey).toString();
+      }
+    }
+
+    const talkBtn = existingRow.querySelector('.talk-btn');
+    if (talkBtn) {
+      talkBtn.disabled = !isOnline;
+      talkBtn.title = isOnline ? (talkBtn.dataset.locked === 'true' ? 'Locked (tap to unlock)' : 'Hold to talk') : 'Offline';
+      talkBtn.setAttribute(
+        'aria-label',
+        isOnline ? `Hold to talk to ${displayName}` : `${displayName} is offline`
+      );
+    }
+
+    const muteBtn = existingRow.querySelector('.mute-btn');
+    if (muteBtn) {
+      muteBtn.disabled = !isOnline;
+      muteBtn.classList.toggle('muted', currentMuted);
+      muteBtn.title = isOnline ? (currentMuted ? 'Unmute' : 'Mute') : 'Offline';
+      const muteIcon = muteBtn.querySelector('.btn-icon');
+      if (muteIcon) {
+        muteIcon.src = currentMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
+      }
+    }
+
+    existingRow.classList.toggle('muted', currentMuted);
+    return true;
+  }
+
+  async function refreshRenderedUserTargets(users) {
+    if (session.kind !== 'user') return false;
+    if (!Array.isArray(cachedOperatorTargets)) return false;
+
+    const list = document.getElementById('targets-list');
+    if (!list) return false;
+
+    const userTargets = cachedOperatorTargets.filter((target) => target?.targetType === 'user');
+    const usersById = new Map();
+    users.forEach((u) => {
+      if (u?.userId == null) return;
+      usersById.set(Number(u.userId), u);
+    });
+    rebuildUserTargetLabels(users);
+
+    for (const target of userTargets) {
+      const targetIdNum = Number(target?.targetId);
+      if (!Number.isFinite(targetIdNum)) continue;
+      if (!shouldRenderUserTargetRow(targetIdNum, usersById)) continue;
+      const existingRow = list.querySelector(`.user-target[data-id="${String(targetIdNum)}"]`);
+      if (!existingRow) {
+        continue;
+      }
+
+      const currentSocketId = existingRow.dataset.socketId || '';
+      const currentOnline = !existingRow.classList.contains('is-offline');
+      const currentLabel = existingRow.querySelector('.target-label')?.textContent || '';
+      const hotkeyActive = existingRow.classList.contains('hotkey-active');
+      const onlineUser = usersById.get(targetIdNum);
+      const nextSocketId = onlineUser?.socketId || '';
+      const nextOnline = Boolean(nextSocketId);
+      const nextLabel = target.name || onlineUser?.name || `User ${targetIdNum}`;
+
+      if (
+        currentSocketId === nextSocketId
+        && currentOnline === nextOnline
+        && currentLabel === nextLabel
+      ) {
+        continue;
+      }
+
+      const patched = patchUserTargetElement(existingRow, target, usersById);
+      if (!patched) {
+        continue;
+      }
+      if (hotkeyActive) {
+        existingRow.classList.add('hotkey-active');
+      }
+    }
+
+    applyIncomingTalkState();
+    syncRenderedTargetStateUi();
+    syncRenderedTargetAudioPreferences();
+    refreshLastTargetLabel();
+    updateCompactSessionBarMode(list.childElementCount);
+    return true;
+  }
+
   async function renderTargetList(users) {
     if (session.kind !== 'user') return;
     const dbUserId = session.userId;
@@ -4199,6 +4729,8 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       console.error('Failed to fetch targets', err);
       return;
     }
+
+    cachedOperatorTargets = Array.isArray(targets) ? targets.map((target) => ({ ...target })) : [];
 
     const list = document.getElementById('targets-list');
     if (!list) return;
@@ -4231,10 +4763,8 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     users.forEach(u => {
       if (u.userId == null) return;
       usersById.set(Number(u.userId), u);
-      if (u.socketId) {
-        targetLabels.set(`user-${u.socketId}`, u.name || u.socketId);
-      }
     });
+    rebuildUserTargetLabels(users);
 
     const conferenceNames = new Map();
     targets
@@ -4253,243 +4783,12 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
     const appendUserTarget = (target) => {
       const targetIdNum = Number(target.targetId);
-      if (!Number.isFinite(targetIdNum)) return;
-      if (session.userId && Number(session.userId) === targetIdNum) return;
-
-      const onlineUser = usersById.get(targetIdNum);
-      const socketId = onlineUser?.socketId || null;
-      if (socketId && socketId === socket.id) return;
-
-      const isOnline = !!socketId;
-      const displayName = target.name || onlineUser?.name || `User ${targetIdNum}`;
-      const keyId = isOnline ? socketId : String(targetIdNum);
-
-      const li = document.createElement('li');
-      const targetKey = `user-${keyId}`;
-      li.id = targetKey;
-      li.classList.add('target-item', 'user-target');
-      li.dataset.type = 'user';
-      li.dataset.id = String(targetIdNum);
-      if (!isOnline) {
-        li.classList.add('is-offline');
+      const digit = takeHotkeyDigit();
+      const li = buildUserTargetElement(target, usersById, digit);
+      if (!li) return;
+      if (digit && Number.isFinite(targetIdNum)) {
+        targetHotkeys.set(digit, { type: 'user', id: targetIdNum });
       }
-
-      const hint = document.createElement('div');
-      hint.className = 'slide-to-lock-hint';
-      hint.textContent = '← Slide to lock';
-      hint.setAttribute('aria-hidden', 'true');
-
-      const icon = document.createElement('div');
-      icon.className = 'user-icon';
-      icon.textContent = displayName ? displayName.charAt(0).toUpperCase() : String(targetIdNum).slice(0, 2);
-
-      const info = document.createElement('div');
-      info.className = 'target-info';
-
-      const label = document.createElement('span');
-      label.className = 'target-label';
-      label.textContent = displayName;
-      const labelRow = document.createElement('div');
-      labelRow.className = 'target-label-row';
-      labelRow.appendChild(label);
-      info.appendChild(labelRow);
-
-      const persistedUserState = getPersistedTargetAudioState('user', targetIdNum);
-      const userKey = `volume_user_${targetIdNum}`;
-      const volSlider = document.createElement('input');
-      volSlider.type = 'range';
-      volSlider.min = '0';
-      volSlider.max = '1';
-      volSlider.step = '0.01';
-      volSlider.value = getStoredVolume(userKey).toString();
-      volSlider.className = 'volume-slider';
-      volSlider.title = 'Source Volume';
-      if (isOnline) {
-        volSlider.addEventListener('input', e => {
-          const vol = parseFloat(e.target.value);
-          setTargetVolumeAndPersist(targetKey, userKey, vol, {
-            targetType: 'user',
-            targetId: targetIdNum,
-            muted: mutedPeers.has(targetKey),
-          });
-        });
-      } else {
-        volSlider.disabled = true;
-      }
-      info.appendChild(volSlider);
-
-      const talkBtn = document.createElement('button');
-      talkBtn.className = 'talk-btn';
-      talkBtn.type = 'button';
-      talkBtn.setAttribute('aria-pressed', 'false');
-      talkBtn.setAttribute(
-        'aria-label',
-        isOnline ? `Hold to talk to ${displayName}` : `${displayName} is offline`
-      );
-      talkBtn.title = isOnline ? 'Hold to talk' : 'Offline';
-      const talkIcon = document.createElement('img');
-      talkIcon.className = 'btn-icon';
-      talkIcon.src = UI_ICONS.talk;
-      talkIcon.alt = '';
-      talkIcon.setAttribute('aria-hidden', 'true');
-      talkBtn.appendChild(talkIcon);
-      if (isOnline) {
-        talkBtn.addEventListener('pointerdown', e => {
-          e.stopPropagation();
-          li.classList.add('ptt-pressing');
-
-          const normalizedTarget = { type: 'user', id: socketId };
-
-          if (activeLockButton) {
-            if (activeLockButton === talkBtn) {
-              li.classList.remove('ptt-pressing');
-              handleStopTalking({ preventDefault() {}, currentTarget: talkBtn });
-              return;
-            }
-            suspendActiveLockState();
-            handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
-          }
-
-          const startX = e.clientX;
-          let lockedByGesture = false;
-
-          const onMove = (ev) => {
-            if (lockedByGesture || activeLockButton === talkBtn) return;
-            if (ev.clientX - startX <= -42) {
-              lockedByGesture = true;
-              activateTalkLock(normalizedTarget, talkBtn);
-            }
-          };
-
-          const cleanup = () => {
-            talkBtn.removeEventListener('pointermove', onMove);
-            talkBtn.removeEventListener('pointerup', onEnd);
-            talkBtn.removeEventListener('pointercancel', onEnd);
-            try { talkBtn.releasePointerCapture(e.pointerId); } catch {}
-          };
-
-          const onEnd = (ev) => {
-            cleanup();
-            li.classList.remove('ptt-pressing');
-            if (activeLockButton === talkBtn) return;
-            handleStopTalking(ev);
-          };
-
-          try { talkBtn.setPointerCapture(e.pointerId); } catch {}
-          talkBtn.addEventListener('pointermove', onMove);
-          talkBtn.addEventListener('pointerup', onEnd);
-          talkBtn.addEventListener('pointercancel', onEnd);
-          handleTalk(e, normalizedTarget);
-        });
-      } else {
-        talkBtn.disabled = true;
-      }
-
-      const muteBtn = document.createElement('button');
-      muteBtn.className = 'mute-btn';
-      muteBtn.type = 'button';
-      const initialMuted = isOnline && (
-        persistedUserState?.muted
-        || mutedPeers.has(targetKey)
-      );
-      muteBtn.title = initialMuted ? 'Unmute' : 'Mute';
-      const muteIcon = document.createElement('img');
-      muteIcon.className = 'btn-icon';
-      muteIcon.src = initialMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
-      muteIcon.alt = '';
-      muteIcon.setAttribute('aria-hidden', 'true');
-      muteBtn.appendChild(muteIcon);
-      if (isOnline) {
-        muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
-        muteBtn.addEventListener('click', e => {
-          e.stopPropagation();
-          toggleMute(socketId);
-        });
-        muteBtn.classList.toggle('muted', mutedPeers.has(targetKey));
-      } else {
-        muteBtn.disabled = true;
-        muteBtn.title = 'Offline';
-      }
-
-      const actions = document.createElement('div');
-      actions.className = 'target-actions';
-      actions.classList.add('ptt-actions');
-      actions.append(muteBtn, talkBtn);
-
-      if (isOnline) {
-        const isLocked = isSameTarget(activeLockTarget, { type: 'user', id: socketId });
-        if (isLocked) {
-          activeLockButton = talkBtn;
-          setTalkButtonLocked(talkBtn, true);
-        }
-      }
-
-      if (isOnline) {
-        li.append(icon, info, actions, hint);
-      } else {
-        li.append(icon, info, actions);
-      }
-      applyHotkeyToTarget(li, labelRow, { type: 'user', id: targetIdNum });
-
-      if (isOnline) {
-        let rowPttGestureActive = false;
-        let rowPttStartX = 0;
-        let rowPttLockedByGesture = false;
-        li.addEventListener('pointermove', (e) => {
-          if (!rowPttGestureActive) return;
-          if (rowPttLockedByGesture || activeLockButton === talkBtn) return;
-          if (e.clientX - rowPttStartX <= -42) {
-            rowPttLockedByGesture = true;
-            activateTalkLock({ type: 'user', id: socketId }, talkBtn);
-          }
-        });
-
-        ['down', 'up', 'leave', 'cancel'].forEach(ev => {
-          li.addEventListener(`pointer${ev}`, e => {
-            if (
-              e.target.closest('.talk-btn') ||
-              e.target.closest('.mute-btn') ||
-              e.target.closest('.volume-slider')
-            ) return;
-            if (ev === 'down') {
-              const targetData = { type: 'user', id: socketId };
-              if (activeLockButton && isSameTarget(activeLockTarget, targetData)) {
-                handleStopTalking({ preventDefault() {}, currentTarget: activeLockButton });
-                return;
-              }
-              if (activeLockButton && !isSameTarget(activeLockTarget, targetData)) {
-                suspendActiveLockState();
-                handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
-                rowPttGestureActive = true;
-                rowPttLockedByGesture = false;
-                rowPttStartX = e.clientX;
-                li.classList.add('ptt-pressing');
-                try { li.setPointerCapture(e.pointerId); } catch {}
-                handleTalk(e, targetData);
-                return;
-              }
-
-              rowPttGestureActive = true;
-              rowPttLockedByGesture = false;
-              rowPttStartX = e.clientX;
-              li.classList.add('ptt-pressing');
-              try { li.setPointerCapture(e.pointerId); } catch {}
-              handleTalk(e, targetData);
-              return;
-            }
-
-            if (ev === 'up' || ev === 'leave' || ev === 'cancel') {
-              if (!rowPttGestureActive) return;
-              rowPttGestureActive = false;
-              li.classList.remove('ptt-pressing');
-              try { li.releasePointerCapture(e.pointerId); } catch {}
-              if (activeLockButton === talkBtn) return;
-            }
-            handleStopTalking(e);
-          });
-        });
-      }
-
       list.appendChild(li);
     };
 
@@ -4782,13 +5081,12 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         }
         applyFeedDucking();
       });
-      labelWrap.appendChild(dimBtn);
-
-      info.appendChild(labelWrap);
 
       const status = document.createElement('div');
-      status.className = 'target-status';
-      info.appendChild(status);
+      status.className = 'target-status target-status-inline';
+      labelWrap.appendChild(status);
+
+      info.appendChild(labelWrap);
 
       const persistedFeedState = getPersistedTargetAudioState('feed', id);
       const feedKey = `volume_feed_${id}`;
@@ -4909,28 +5207,11 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
     pruneIncomingStreamBookkeeping();
 
-	    document.querySelectorAll('.target-item').forEach(li => {
-	      const key = li.id;
-      const icon = key.startsWith('user-')
-        ? li.querySelector('.user-icon')
-        : key.startsWith('conf-')
-          ? li.querySelector('.conf-icon')
-        : key.startsWith('feed-')
-            ? li.querySelector('.feed-icon')
-            : null;
-
-      const isSpeaking = isTargetSpeaking(key);
-      li.classList.toggle('speaking', isSpeaking);
-      if (icon) icon.classList.toggle('speaking', isSpeaking);
-
-      const isMuted = mutedPeers.has(key);
-      li.classList.toggle('muted', isMuted);
-	      if (icon) icon.classList.toggle('muted', isMuted);
-	    });
+    applyIncomingTalkState();
+    syncRenderedTargetStateUi();
 
 	    syncRenderedTargetAudioPreferences();
 	    refreshLastTargetLabel();
-	    applyIncomingTalkState();
 
     schedulePttButtonSizing();
     if (!pttSizingListenerBound) {
@@ -4982,10 +5263,26 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     // ignore our own streams
     if (peerId === socket.id) return;
 
-    // skip streams not intended for us
+    // skip streams not intended for us. For direct user targets, allow a stale
+    // targetPeer hint if the stable target user id still matches the current session.
     if (normalizedAppData.targetPeer && normalizedAppData.targetPeer !== socket.id) {
-      console.log('Producer not for us, skipping');
-      return;
+      const directTargetUserId = Number(normalizedAppData.id);
+      const isDirectTargetForCurrentUser = (
+        normalizedAppData.type === 'user'
+        && session.kind === 'user'
+        && Number.isFinite(directTargetUserId)
+        && Number(session.userId) === directTargetUserId
+      );
+      if (!isDirectTargetForCurrentUser) {
+        console.log('Producer not for us, skipping');
+        return;
+      }
+      console.info('[audio][direct-user-fallback]', {
+        producerId,
+        hintedTargetPeer: normalizedAppData.targetPeer,
+        currentSocketId: socket.id,
+        directTargetUserId,
+      });
     }
 
     const effectiveProducerId = producerId || normalizedAppData.producerId || `${peerId}-${Date.now()}`;
@@ -6188,6 +6485,16 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     }
     if (document.visibilityState === 'visible') {
       pruneIncomingStreamBookkeeping();
+      const sharedCtx = sharedAudioContext && sharedAudioContext.state !== 'closed'
+        ? sharedAudioContext
+        : null;
+      if (sharedCtx) {
+        resumeAudioContextIfNeeded(sharedCtx, { label: 'shared AudioContext' });
+      }
+      if (feedProcessingAudioContext && feedProcessingAudioContext.state !== 'closed') {
+        resumeAudioContextIfNeeded(feedProcessingAudioContext, { label: 'feed ingest AudioContext' });
+      }
+      recoverExistingIncomingPlayback();
       if (mediaInitialized) {
         requestActiveProducers().catch(() => {});
       }
@@ -6199,8 +6506,36 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   window.addEventListener('blur', () => stopTalkingSafely({ respectLock: true }));
   window.addEventListener('focus', () => {
     pruneIncomingStreamBookkeeping();
+    const sharedCtx = sharedAudioContext && sharedAudioContext.state !== 'closed'
+      ? sharedAudioContext
+      : null;
+    if (sharedCtx) {
+      resumeAudioContextIfNeeded(sharedCtx, { label: 'shared AudioContext' });
+    }
+    if (feedProcessingAudioContext && feedProcessingAudioContext.state !== 'closed') {
+      resumeAudioContextIfNeeded(feedProcessingAudioContext, { label: 'feed ingest AudioContext' });
+    }
+    recoverExistingIncomingPlayback();
     if (mediaInitialized) {
       requestActiveProducers().catch(() => {});
+    }
+  });
+  window.addEventListener('pageshow', () => {
+    const sharedCtx = sharedAudioContext && sharedAudioContext.state !== 'closed'
+      ? sharedAudioContext
+      : null;
+    if (sharedCtx) {
+      resumeAudioContextIfNeeded(sharedCtx, { label: 'shared AudioContext' });
+    }
+    if (feedProcessingAudioContext && feedProcessingAudioContext.state !== 'closed') {
+      resumeAudioContextIfNeeded(feedProcessingAudioContext, { label: 'feed ingest AudioContext' });
+    }
+    recoverExistingIncomingPlayback();
+    if (mediaInitialized) {
+      requestActiveProducers().catch(() => {});
+      setTimeout(() => {
+        recoverExistingIncomingPlayback();
+      }, 250);
     }
   });
   window.addEventListener('pointerup', () => stopTalkingSafely({ respectLock: true }));
