@@ -82,6 +82,53 @@
         flex-shrink: 0;
       }
 
+      .target-layer-switcher {
+        display: inline-flex;
+        align-items: center;
+        min-width: 0;
+        justify-content: flex-end;
+      }
+
+      .target-layer-switcher[hidden] {
+        display: none !important;
+      }
+
+      .target-layer-switcher button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
+        appearance: none;
+        -webkit-appearance: none;
+        min-width: 7.6rem;
+        width: auto;
+        height: 2.45rem;
+        padding: 0 1rem;
+        margin: 0;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 10px;
+        background-color: rgba(30, 41, 59, 0.7);
+        color: #e2e8f0;
+        font-size: 0.9rem;
+        font-weight: 700;
+        line-height: 1;
+        white-space: nowrap;
+        transition: background-color 0.2s ease, border-color 0.2s ease;
+      }
+
+      .target-layer-switcher button:hover:not(:disabled) {
+        background-color: rgba(30, 41, 59, 0.9);
+      }
+
+      .target-layer-switcher button:active:not(:disabled) {
+        background-color: rgba(51, 65, 85, 0.95);
+      }
+
+      .target-layer-switcher button:focus-visible {
+        outline: 2px solid #2c3995;
+        outline-offset: 2px;
+      }
+
       body.compact-session-bar .session-bar {
         gap: 0.35rem;
         padding: 0.28rem 0.45rem;
@@ -92,13 +139,20 @@
       }
 
       body.compact-session-bar .settings-trigger {
-        width: 2.2rem;
-        height: 2.2rem;
+        width: 3rem;
+        height: 2.45rem;
       }
 
       body.compact-session-bar .logout-btn {
         padding: 0.32rem 0.72rem;
         font-size: 0.78rem;
+      }
+
+      body.compact-session-bar .target-layer-switcher button {
+        min-width: 6.6rem;
+        height: 2.45rem;
+        padding: 0 0.85rem;
+        font-size: 0.82rem;
       }
 
       .logout-btn {
@@ -140,18 +194,24 @@
       }
 
       .settings-trigger {
-        display: flex;
+        display: inline-flex;
         align-items: center;
         justify-content: center;
+        box-sizing: border-box;
+        appearance: none;
+        -webkit-appearance: none;
         cursor: pointer;
         font-weight: 700;
         color: #cbd5f5;
-        width: 2.5rem;
-        height: 2.5rem;
-        border-radius: 50%;
+        width: 3rem;
+        height: 2.45rem;
+        padding: 0;
+        margin: 0;
+        line-height: 1;
+        border-radius: 10px;
         border: 1px solid rgba(148, 163, 184, 0.25);
-        background: rgba(30, 41, 59, 0.7);
-        transition: background 0.2s ease, border-color 0.2s ease;
+        background-color: rgba(30, 41, 59, 0.7);
+        transition: background-color 0.2s ease, border-color 0.2s ease;
       }
 
       .settings-trigger:focus-visible {
@@ -160,7 +220,11 @@
       }
 
       .settings-trigger:hover {
-        background: rgba(30, 41, 59, 0.9);
+        background-color: rgba(30, 41, 59, 0.9);
+      }
+
+      .settings-trigger:active {
+        background-color: rgba(51, 65, 85, 0.95);
       }
 
       .settings-icon {
@@ -408,7 +472,7 @@
         #targets-list {
           margin-top: 0.7rem;
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
           row-gap: 0.1rem;
           column-gap: 0.45rem;
           align-content: end;
@@ -457,6 +521,10 @@
       #targets-list li.target-item * {
         -webkit-user-select: none;
         user-select: none;
+      }
+
+      #targets-list li.target-item.layer-hidden {
+        display: none !important;
       }
 
       /* Hover effect (desktop pointers only) */
@@ -805,8 +873,20 @@
           margin: 0.4rem auto;
         }
 
+        .session-bar {
+          gap: 0.35rem;
+        }
+
+        body.compact-session-bar .session-bar {
+          padding: 0.5rem 0.5rem;
+        }
+
         body.compact-session-bar .session-info {
-          font-size: 0.8rem;
+          font-size: 0.82rem;
+        }
+
+        .target-layer-switcher {
+          margin-left: auto;
         }
 
         .reply-bar button {
@@ -1144,6 +1224,9 @@
       <div id="intercom-app" style="display: none;">
         <div class="session-bar">
           <div class="session-info">Logged in as <span id="my-id">Connecting...</span></div>
+          <div id="target-layer-switcher" class="target-layer-switcher" hidden>
+            <button id="target-layer-button" type="button" aria-label="Switch target layer">Layer 1/1</button>
+          </div>
           <div class="settings-panel">
           <button
             type="button"

@@ -89,6 +89,10 @@ const FEED_PTIME_OPTIONS = Object.freeze({
   20: { label: '20 ms (highest resilience, lowest load)' },
 });
 const USER_OFFLINE_GRACE_MS = 1500;
+const MOBILE_TARGET_LAYER_MAX_WIDTH = 699;
+const MOBILE_TARGET_LAYER_COMPACT_MAX_WIDTH = 414;
+const MOBILE_TARGET_LAYER_DEFAULT_SIZE = 8;
+const MOBILE_TARGET_LAYER_COMPACT_SIZE = 7;
 
 const TARGET_HOTKEY_DIGITS = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 const targetHotkeys = new Map();
@@ -2296,12 +2300,17 @@ document.addEventListener("DOMContentLoaded", () => {
   const loginError = document.getElementById("login-error");
   const logoutBtn = document.getElementById("logout-btn");
   const feedLogoutBtn = document.getElementById("feed-logout-btn");
+  const targetLayerSwitcher = document.getElementById('target-layer-switcher');
+  const targetLayerButton = document.getElementById('target-layer-button');
 
   const myIdEl = document.getElementById("my-id");
   const btnReply = document.getElementById("reply");
   if (btnReply) {
     btnReply.setAttribute("aria-pressed", "false");
   }
+  targetLayerButton?.addEventListener('click', () => {
+    advanceTargetLayer();
+  });
   const audioStreamsDiv = document.getElementById("audio-streams");
   const feedBanner = document.getElementById("feed-banner");
   const feedStreamToggle = document.getElementById("feed-stream-toggle");
@@ -2423,6 +2432,7 @@ let cachedOperatorTargets = null;
   let suspendedLockRestoreTimer = null;
   let pendingPttSizingRaf = null;
   let pttSizingListenerBound = false;
+  let currentTargetLayerIndex = 0;
   let streamPruneInterval = null;
   let activeProducerSyncInterval = null;
   let activeProducersSyncInFlight = false;
@@ -4376,6 +4386,134 @@ function updateCompactSessionBarMode(targetCount = null) {
   document.body.classList.toggle('compact-session-bar', shouldCompact);
 }
 
+function getMobileTargetLayerSize() {
+  if (typeof window === 'undefined') return MOBILE_TARGET_LAYER_DEFAULT_SIZE;
+  return window.innerWidth <= MOBILE_TARGET_LAYER_COMPACT_MAX_WIDTH
+    ? MOBILE_TARGET_LAYER_COMPACT_SIZE
+    : MOBILE_TARGET_LAYER_DEFAULT_SIZE;
+}
+
+function getDynamicTargetLayerSize(list, targetEls) {
+  if (typeof window === 'undefined' || !list || !Array.isArray(targetEls) || !targetEls.length) {
+    return null;
+  }
+
+  const hasFinePointer = typeof window.matchMedia === 'function'
+    ? window.matchMedia('(pointer: fine)').matches
+    : false;
+  if (!hasFinePointer) {
+    return null;
+  }
+
+  const probeTarget = targetEls.find((targetEl) => targetEl.getBoundingClientRect().height > 0) || null;
+  if (!probeTarget) {
+    return null;
+  }
+
+  const rect = probeTarget.getBoundingClientRect();
+  const styles = window.getComputedStyle(probeTarget);
+  const marginTop = parseFloat(styles.marginTop || '0');
+  const marginBottom = parseFloat(styles.marginBottom || '0');
+  const fullItemHeight = rect.height + marginTop + marginBottom;
+  const availableHeight = list.clientHeight;
+
+  if (!Number.isFinite(fullItemHeight) || fullItemHeight <= 0 || !Number.isFinite(availableHeight) || availableHeight <= 0) {
+    return null;
+  }
+
+  const fittedCount = Math.floor(availableHeight / fullItemHeight);
+  return fittedCount > 0 ? fittedCount : null;
+}
+
+function getTargetLayerSize(list, targetEls) {
+  const baseLayerSize = getMobileTargetLayerSize();
+  const dynamicLayerSize = getDynamicTargetLayerSize(list, targetEls);
+  if (!Number.isFinite(dynamicLayerSize)) {
+    return baseLayerSize;
+  }
+  return Math.max(baseLayerSize, dynamicLayerSize);
+}
+
+function updateTargetLayerControls() {
+  if (typeof document === 'undefined') return;
+
+  const list = document.getElementById('targets-list');
+  if (!list || !targetLayerSwitcher || !targetLayerButton) {
+    return;
+  }
+
+  const targetEls = Array.from(list.querySelectorAll('li.target-item'));
+  const isMobileViewport = typeof window !== 'undefined' && window.innerWidth <= MOBILE_TARGET_LAYER_MAX_WIDTH;
+  const layerSize = getTargetLayerSize(list, targetEls);
+  const shouldPaginate = session.kind === 'user'
+    && isMobileViewport
+    && targetEls.length > layerSize;
+
+  if (!shouldPaginate) {
+    currentTargetLayerIndex = 0;
+    targetEls.forEach((targetEl) => {
+      targetEl.dataset.layer = '0';
+      targetEl.classList.remove('layer-hidden');
+    });
+    list.dataset.activeLayer = '0';
+    targetLayerButton.textContent = 'Layer 1/1';
+    targetLayerButton.setAttribute('aria-label', 'Only one target layer');
+    targetLayerSwitcher.hidden = true;
+    return;
+  }
+
+  const layerCount = Math.max(1, Math.ceil(targetEls.length / layerSize));
+  if (currentTargetLayerIndex >= layerCount) {
+    currentTargetLayerIndex = layerCount - 1;
+  }
+  if (currentTargetLayerIndex < 0) {
+    currentTargetLayerIndex = 0;
+  }
+
+  targetEls.forEach((targetEl, index) => {
+    const layerIndex = Math.floor(index / layerSize);
+    targetEl.dataset.layer = String(layerIndex);
+    targetEl.classList.toggle('layer-hidden', layerIndex !== currentTargetLayerIndex);
+  });
+
+  list.dataset.activeLayer = String(currentTargetLayerIndex);
+  targetLayerButton.textContent = `Layer ${currentTargetLayerIndex + 1}/${layerCount}`;
+  targetLayerButton.setAttribute('aria-label', `Switch target layer, current layer ${currentTargetLayerIndex + 1} of ${layerCount}`);
+  targetLayerSwitcher.hidden = false;
+}
+
+function setTargetLayer(nextIndex) {
+  const list = document.getElementById('targets-list');
+  if (!list) return;
+  const targetEls = Array.from(list.querySelectorAll('li.target-item'));
+  const layerSize = getTargetLayerSize(list, targetEls);
+  const layerCount = Math.max(1, Math.ceil(targetEls.length / layerSize));
+  if (layerCount <= 1) return;
+
+  const parsedIndex = Number(nextIndex);
+  const normalizedIndex = Number.isFinite(parsedIndex)
+    ? Math.max(0, Math.min(layerCount - 1, parsedIndex))
+    : 0;
+  if (normalizedIndex === currentTargetLayerIndex) return;
+
+  currentTargetLayerIndex = normalizedIndex;
+  updateTargetLayerControls();
+  schedulePttButtonSizing();
+  list.scrollTop = 0;
+}
+
+function advanceTargetLayer() {
+  const list = document.getElementById('targets-list');
+  if (!list) return;
+  const targetEls = Array.from(list.querySelectorAll('li.target-item'));
+  const layerSize = getTargetLayerSize(list, targetEls);
+  const layerCount = Math.max(1, Math.ceil(targetEls.length / layerSize));
+  if (layerCount <= 1) return;
+
+  const nextIndex = (currentTargetLayerIndex + 1) % layerCount;
+  setTargetLayer(nextIndex);
+}
+
 function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   if (session.kind !== 'user') return;
   if (!socket.connected) return;
@@ -5065,6 +5203,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     syncRenderedTargetStateUi();
     syncRenderedTargetAudioPreferences();
     refreshLastTargetLabel();
+    updateTargetLayerControls();
     updateCompactSessionBarMode(list.childElementCount);
     primeVisibleRemotePlaybackBuses();
     pruneTargetPlaybackBuses();
@@ -5572,9 +5711,11 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     schedulePttButtonSizing();
     if (!pttSizingListenerBound) {
       window.addEventListener('resize', schedulePttButtonSizing, { passive: true });
+      window.addEventListener('resize', updateTargetLayerControls, { passive: true });
       window.addEventListener('resize', () => updateCompactSessionBarMode(), { passive: true });
       pttSizingListenerBound = true;
     }
+    updateTargetLayerControls();
     updateCompactSessionBarMode(list.childElementCount);
     emitTargetAudioStateSnapshot('target-audio-render');
   }
