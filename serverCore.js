@@ -2681,6 +2681,19 @@ if (HTTP_PORT !== null) {
 let worker, router;
 const peers = new Map();
 
+function warnIfDockerAnnouncedIpLooksInternal(announcedIp) {
+  if (process.env.PUBLIC_IP) return;
+  if (!fs.existsSync("/.dockerenv")) return;
+  if (typeof announcedIp !== "string") return;
+  if (!/^172\.(1[6-9]|2\d|3[0-1])\./.test(announcedIp.trim())) return;
+
+  console.warn(
+    `[TRANSPORT][WARN] Auto-detected announced IP ${announcedIp} looks like a Docker-internal bridge address. ` +
+    `WebRTC media will usually fail from outside the container. Set PUBLIC_IP to the host/LAN IP and publish RTC ports 40000-49999, ` +
+    `or use --network host on Linux.`
+  );
+}
+
 (async () => {
   console.log("[INIT] Starting mediasoup worker");
   worker = await mediasoup.createWorker({
@@ -3357,6 +3370,7 @@ io.on("connection", (socket) => {
       }
 
       console.log(`[TRANSPORT] Using announced IP: ${announcedIp}`);
+      warnIfDockerAnnouncedIpLooksInternal(announcedIp);
 
       const transport = await router.createWebRtcTransport({
         listenIps: [
@@ -3411,6 +3425,7 @@ io.on("connection", (socket) => {
       }
 
       console.log(`[TRANSPORT] Using announced IP: ${announcedIp}`);
+      warnIfDockerAnnouncedIpLooksInternal(announcedIp);
 
       const transport = await router.createWebRtcTransport({
         listenIps: [

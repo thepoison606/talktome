@@ -17,14 +17,17 @@ A local WebRTC Intercom app built with Node.js and mediasoup.
 If you don't want to install Node, grab the matching binary from the GitHub Releases page or run via docker.
 
 ### Docker:
+Linux host networking is the simplest and most reliable option for mediasoup:
 ```bash
 docker pull thepoison606/talktome:latest
-docker run -d --restart unless-stopped --name talktome \
-  -p 8443:8443 -p 8080:8080 \
-  -v talktome_data:/data \
-  thepoison606/talktome:latest
+docker run -d --restart unless-stopped --name talktome --network host -e PUBLIC_IP=<HOST-IP> -v talktome_data:/data thepoison606/talktome:latest
 ```
 Then open `https://<HOST-IP>:8443` in the browser.
+
+If you do not use `--network host`, you must also publish the mediasoup RTC range:
+```bash
+docker run -d --restart unless-stopped --name talktome -e PUBLIC_IP=<HOST-IP> -p 8443:8443 -p 8080:8080 -p 40000-49999:40000-49999/udp -p 40000-49999:40000-49999/tcp -v talktome_data:/data thepoison606/talktome:latest
+```
 - Logs: `docker logs -f talktome`
 - Stop: `docker stop talktome`
 
