@@ -115,8 +115,7 @@ Post when a user’s camera is on-air; their UI background turns red.
   ```
 
 ## Companion API (v1)
-For Stream Deck / Companion integrations use the versioned API and live status channel.
-> Simultaneous talk into multiple destinations is not supported yet.
+
 
 Companion module source is maintained in a separate standalone repository.
 

@@ -2418,6 +2418,8 @@ document.addEventListener("DOMContentLoaded", () => {
 let currentTargetPeer = null;
 let lastTarget = null;
 let currentTarget = null;
+let currentTargets = [];
+const activeTalkPointers = new Map();
 let selfTalkingKey = null;
 let cachedUsers = [];
 let latestServerUsers = [];
@@ -2673,14 +2675,33 @@ let cachedOperatorTargets = null;
     };
   }
 
+  function normalizePttTargets(targets) {
+    if (!Array.isArray(targets)) return [];
+    const normalizedTargets = [];
+    const seen = new Set();
+    targets.forEach((target) => {
+      const normalizedTarget = normalizePttTarget(target);
+      if (!normalizedTarget) return;
+      const key = `${normalizedTarget.type}:${normalizedTarget.id}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      normalizedTargets.push(normalizedTarget);
+    });
+    return normalizedTargets;
+  }
+
   function getCurrentPttState(overrides = {}) {
     const baseTarget = overrides.target !== undefined
       ? overrides.target
-      : (currentTarget || activeLockTarget || null);
+      : ((currentTargets[0] || currentTarget || activeLockTarget || null));
+    const baseTargets = overrides.targets !== undefined
+      ? overrides.targets
+      : (currentTargets.length > 0 ? currentTargets : (baseTarget ? [baseTarget] : []));
     return {
       talking: typeof overrides.talking === 'boolean' ? overrides.talking : Boolean(isTalking || producer),
       lockActive: typeof overrides.lockActive === 'boolean' ? overrides.lockActive : Boolean(activeLockButton),
       target: normalizePttTarget(baseTarget),
+      targets: normalizePttTargets(baseTargets),
     };
   }
 
@@ -2691,6 +2712,15 @@ let cachedOperatorTargets = null;
     socket.emit('ptt-state', {
       ...state,
       reason: reason || undefined,
+    });
+  }
+
+  function emitTalkTargetsUpdated(reason, targets = currentTargets) {
+    if (session.kind !== 'user') return;
+    if (!socket.connected) return;
+    socket.emit('talk-targets-updated', {
+      reason: reason || undefined,
+      targets: normalizePttTargets(targets),
     });
   }
 
@@ -4552,7 +4582,13 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     return { ok: false, reason: 'unsupported-action' };
   }
 
-  socket.on('api-talk-command', async ({ commandId = null, action, targetType = 'conference', targetId = null } = {}) => {
+  socket.on('api-talk-command', async ({
+    commandId = null,
+    action,
+    targetType = 'conference',
+    targetId = null,
+    inputKey = null,
+  } = {}) => {
     if (session.kind !== 'user') {
       emitApiTalkCommandResult({
         commandId,
@@ -4565,7 +4601,12 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       return;
     }
 
-    const dummyEvent = { preventDefault() {} };
+    const normalizedInputKey = typeof inputKey === 'string' && inputKey.trim()
+      ? inputKey.trim()
+      : null;
+    const dummyEvent = normalizedInputKey
+      ? { preventDefault() {}, talkInputKey: normalizedInputKey }
+      : { preventDefault() {} };
 
     try {
       if (action === 'lock-toggle') {
@@ -4627,7 +4668,11 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         if (targetType === 'reply') {
           btnReply.classList.remove('active');
         }
-        handleStopTalking({ preventDefault() {}, currentTarget: null });
+        handleStopTalking(
+          normalizedInputKey
+            ? { preventDefault() {}, currentTarget: null, talkInputKey: normalizedInputKey }
+            : { preventDefault() {}, currentTarget: null }
+        );
         emitApiTalkCommandResult({
           commandId,
           ok: true,
@@ -5642,19 +5687,22 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     // The list is rebuilt via `innerHTML = ''`, so any previous DOM classes
     // (like "talking-to") are lost even though the producer may still be live.
     if (producer || isTalking || activeLockTarget) {
-      const target = currentTarget || activeLockTarget;
-      if (target && (target.type === 'conference' || target.type === 'user')) {
+      const activeTargetsToHighlight = currentTargets.length > 0
+        ? currentTargets
+        : (currentTarget ? [currentTarget] : []);
+      activeTargetsToHighlight.forEach((target) => {
+        if (!target || (target.type !== 'conference' && target.type !== 'user')) return;
         const selector = target.type === 'conference'
           ? `#conf-${target.id}`
           : `#user-${target.id}`;
-        const el = document.querySelector(selector);
-        if (el) {
-          el.classList.add('talking-to');
-        } else if (producer || isTalking) {
-          // If we're still producing but the target is no longer present in the UI
-          // (e.g. a user went offline), stop to avoid misleading UI/state.
-          stopTalkingSafely();
-        }
+        document.querySelector(selector)?.classList.add('talking-to');
+      });
+
+      if (activeTargetsToHighlight.length === 0 && activeLockTarget) {
+        const selector = activeLockTarget.type === 'conference'
+          ? `#conf-${activeLockTarget.id}`
+          : `#user-${activeLockTarget.id}`;
+        document.querySelector(selector)?.classList.add('talking-to');
       }
     }
 
@@ -6318,12 +6366,12 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           "produce",
           async ({ kind, rtpParameters, appData }, callback, errback) => {
             try {
-              // Keep the appData from handleTalk() and optionally add targetPeer
+              const shouldAppendTargetPeer = appData?.type === 'user' && currentTargetPeer;
               const mergedAppData = {
-                ...appData,                     // { type: "user"/"conference", id: … }
-                ...(currentTargetPeer
+                ...appData,
+                ...(shouldAppendTargetPeer
                     ? { targetPeer: currentTargetPeer }
-                    : {})                         // append only when defined
+                    : {})
               };
 
               const response = await new Promise((resolve) => {
@@ -6623,6 +6671,107 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     document.querySelector(selector)?.classList.toggle('talking-to', Boolean(isActive));
   }
 
+  function getTalkInputKey(event) {
+    if (!event || typeof event !== 'object') return null;
+    if (typeof event.talkInputKey === 'string' && event.talkInputKey.trim()) {
+      return event.talkInputKey.trim();
+    }
+    if (Number.isFinite(Number(event.pointerId))) {
+      return Number(event.pointerId);
+    }
+    return null;
+  }
+
+  function getTalkTargetIdentity(target) {
+    const normalizedTarget = normalizePttTarget(target);
+    if (!normalizedTarget) return null;
+    return `${normalizedTarget.type}:${normalizedTarget.id}`;
+  }
+
+  function resolveLiveTalkTarget(target) {
+    const normalizedTarget = normalizePttTarget(target);
+    if (!normalizedTarget) return null;
+
+    if (normalizedTarget.type === 'conference') {
+      return normalizedTarget;
+    }
+
+    const socketId = resolveUserSocketId(normalizedTarget.id)
+      || cachedUsers.find((entry) => String(entry?.socketId) === String(normalizedTarget.id))?.socketId
+      || null;
+    if (!socketId) {
+      return null;
+    }
+
+    return { type: 'user', id: socketId };
+  }
+
+  function collectActiveTalkTargetsFromPointers() {
+    const collectedTargets = [];
+    const seen = new Set();
+    for (const pointerState of activeTalkPointers.values()) {
+      const normalizedTarget = normalizePttTarget(pointerState?.target);
+      if (!normalizedTarget) continue;
+      const identity = getTalkTargetIdentity(normalizedTarget);
+      if (!identity || seen.has(identity)) continue;
+      seen.add(identity);
+      collectedTargets.push(normalizedTarget);
+    }
+    return collectedTargets;
+  }
+
+  function refreshSelfTalkingKey() {
+    const matchingKey = currentTargets
+      .map((target) => keyFromTarget(target))
+      .find((targetKey) => targetKey && speakingPeers.has(targetKey));
+    setSelfTalkingKey(matchingKey || null);
+  }
+
+  function setCurrentTalkTargets(nextTargets) {
+    const normalizedTargets = normalizePttTargets(nextTargets);
+    const previousTargets = Array.isArray(currentTargets) ? currentTargets : [];
+    const previousKeys = new Set(previousTargets.map((target) => keyFromTarget(target)).filter(Boolean));
+    const nextKeys = new Set(normalizedTargets.map((target) => keyFromTarget(target)).filter(Boolean));
+
+    previousTargets.forEach((target) => {
+      const targetKey = keyFromTarget(target);
+      if (!targetKey || nextKeys.has(targetKey)) return;
+      updateOutgoingTalkHighlight(target, false);
+    });
+
+    normalizedTargets.forEach((target) => {
+      const targetKey = keyFromTarget(target);
+      if (!targetKey) return;
+      updateOutgoingTalkHighlight(target, true);
+      previousKeys.delete(targetKey);
+    });
+
+    currentTargets = normalizedTargets;
+    currentTarget = normalizedTargets[0] || null;
+    refreshSelfTalkingKey();
+  }
+
+  function addPressedTalkPointer(pointerId, target) {
+    if (pointerId === null || pointerId === undefined) return;
+    const normalizedTarget = normalizePttTarget(target);
+    if (!normalizedTarget) return;
+    activeTalkPointers.set(pointerId, { target: normalizedTarget });
+    setCurrentTalkTargets(collectActiveTalkTargetsFromPointers());
+  }
+
+  function removePressedTalkPointer(pointerId) {
+    if (pointerId === null || pointerId === undefined) return;
+    if (!activeTalkPointers.has(pointerId)) return;
+    activeTalkPointers.delete(pointerId);
+    setCurrentTalkTargets(collectActiveTalkTargetsFromPointers());
+  }
+
+  function clearPressedTalkPointers() {
+    if (activeTalkPointers.size === 0 && currentTargets.length === 0) return;
+    activeTalkPointers.clear();
+    setCurrentTalkTargets([]);
+  }
+
   function clearHotkeyActiveStyles() {
     document
       .querySelectorAll(".target-item.hotkey-active")
@@ -6887,21 +7036,22 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   async function handleTalk(e, target) {
     e.preventDefault();
     if (session.kind !== 'user') return;
-    if (producer || pendingTalkStart) return;
     if (!target) return;
-    let normalizedTarget = { type: target.type, id: target.id };
-    let resolvedTargetPeer = null;
-    if (normalizedTarget.type === 'user') {
-      resolvedTargetPeer = resolveUserSocketId(normalizedTarget.id)
-        || cachedUsers.find((entry) => String(entry?.socketId) === String(normalizedTarget.id))?.socketId
-        || null;
-      if (!resolvedTargetPeer) {
-        console.warn('Talk target is not currently available', normalizedTarget);
-        return;
-      }
-      normalizedTarget = { type: 'user', id: resolvedTargetPeer };
+    const normalizedTarget = resolveLiveTalkTarget(target);
+    if (!normalizedTarget) {
+      console.warn('Talk target is not currently available', target);
+      return;
     }
-    const targetKey = keyFromTarget(normalizedTarget);
+
+    const inputKey = getTalkInputKey(e);
+    if (inputKey !== null) {
+      addPressedTalkPointer(inputKey, normalizedTarget);
+    } else {
+      setCurrentTalkTargets([normalizedTarget]);
+    }
+
+    const effectiveTargets = currentTargets.length > 0 ? currentTargets : [normalizedTarget];
+    const targetKey = keyFromTarget(effectiveTargets[0] || normalizedTarget);
     if (!slideHintShown && targetKey && !targetKey.startsWith('feed-')) {
       const li = document.getElementById(targetKey);
       if (li) {
@@ -6911,12 +7061,27 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       }
     }
 
+    if (producer || pendingTalkStart) {
+      emitTalkTargetsUpdated('talk-targets-updated', effectiveTargets);
+      emitPttState('talk-targets-updated', {
+        talking: true,
+        lockActive: Boolean(activeLockButton),
+        target: effectiveTargets[0] || null,
+        targets: effectiveTargets,
+      });
+      if (feedDimSelf) {
+        applyFeedDucking();
+      }
+      return;
+    }
+
     const pendingStart = {
       canceled: false,
-      target: normalizedTarget,
-      targetPeer: normalizedTarget.type === 'user' ? resolvedTargetPeer : null,
+      targets: [...effectiveTargets],
     };
     pendingTalkStart = pendingStart;
+    currentTargetPeer = null;
+    emitTalkTargetsUpdated('talk-targets-starting', effectiveTargets);
     if (feedDimSelf) {
       applyFeedDucking();
     }
@@ -6957,35 +7122,39 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       }
 
       const finalTrack = processedTrack || track;
+      const activeTargets = currentTargets.length > 0 ? currentTargets : pendingStart.targets;
+      if (activeTargets.length === 0) {
+        if (pendingTalkStart === pendingStart) {
+          pendingTalkStart = null;
+        }
+        finalTrack.enabled = false;
+        track.enabled = false;
+        scheduleMicCleanup();
+        applyFeedDucking();
+        return;
+      }
+
       finalTrack.enabled = true;
-      currentTarget = normalizedTarget;
-      currentTargetPeer = pendingStart.targetPeer;
+      setCurrentTalkTargets(activeTargets);
+      currentTargetPeer = null;
       isTalking = true;
 
-      const shouldPinSelfColor = targetKey ? speakingPeers.has(targetKey) : false;
-      setSelfTalkingKey(shouldPinSelfColor ? targetKey : null);
+      refreshSelfTalkingKey();
 
-      // ◆ Producer parameters: always include appData
       const params = {
         track: finalTrack,
-        appData: { type: normalizedTarget.type, id: normalizedTarget.id },
+        appData: { type: 'talk' },
         codecOptions: profile?.codecOptions ? { ...profile.codecOptions } : undefined,
         encodings: profile?.encodings ? profile.encodings.map(enc => ({ ...enc })) : undefined,
         stopTracks: false,
       };
 
-      // ◆ Start producing
       const newProducer = await sendTransport.produce(params);
 
-      // ◆ If the button was released in the meantime
       if (!isTalking || pendingTalkStart !== pendingStart || pendingStart.canceled) {
         if (pendingTalkStart === pendingStart) {
           pendingTalkStart = null;
         }
-        // The server-side producer already exists once `produce()` resolves.
-        // If the user released PTT during that async window, we still must
-        // explicitly tell the server to close it or remote peers keep a stale
-        // "speaking" state.
         notifyServerProducerClosed(newProducer.id, { context: 'talk-start-cancel' });
         newProducer.close();
         finalTrack.enabled = false;
@@ -7004,6 +7173,8 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         if (producer === newProducer) {
           producer = null;
         }
+        isTalking = false;
+        currentTargetPeer = null;
         if (micTrack) {
           micTrack.enabled = false;
         }
@@ -7011,14 +7182,22 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           processedTrack.enabled = false;
         }
         scheduleMicCleanup();
-        if (targetKey && selfTalkingKey === targetKey) {
-          setSelfTalkingKey(null);
+        clearPressedTalkPointers();
+        setReplyButtonActive(false);
+        clearHotkeyActiveStyles();
+        pressedHotkeyDigits.clear();
+        setSelfTalkingKey(null);
+        if (activeLockButton || activeLockTarget) {
+          clearLockState();
         }
       });
 
-      // ◆ Visual feedback only for targeted recipients
-      updateOutgoingTalkHighlight(normalizedTarget, true);
-      emitPttState('talk-started', { talking: true, target: normalizedTarget });
+      emitTalkTargetsUpdated('talk-targets-started', currentTargets.length > 0 ? currentTargets : activeTargets);
+      emitPttState('talk-started', {
+        talking: true,
+        target: (currentTargets[0] || activeTargets[0] || null),
+        targets: currentTargets.length > 0 ? currentTargets : activeTargets,
+      });
     } catch (err) {
       const talkStartCanceled = pendingTalkStart === pendingStart && pendingStart.canceled;
       if (pendingTalkStart === pendingStart) {
@@ -7043,10 +7222,15 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       scheduleMicCleanup();
       applyFeedDucking();
 
-      updateOutgoingTalkHighlight(currentTarget, false);
-      currentTarget = null;
+      clearPressedTalkPointers();
       setSelfTalkingKey(null);
-      emitPttState('talk-start-failed', { talking: false, lockActive: Boolean(activeLockButton), target: activeLockTarget || null });
+      emitTalkTargetsUpdated('talk-targets-cleared', []);
+      emitPttState('talk-start-failed', {
+        talking: false,
+        lockActive: Boolean(activeLockButton),
+        target: activeLockTarget || null,
+        targets: [],
+      });
     }
   }
 
@@ -7080,21 +7264,36 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     e.preventDefault();
     if (session.kind !== 'user') return;
     const shouldRestoreSuspendedLock = Boolean(suspendedLockState) && !e?.suppressLockRestore;
+    const inputKey = getTalkInputKey(e);
 
     if (activeLockButton && e.currentTarget && e.currentTarget !== activeLockButton) {
       return;
     }
 
+    if (inputKey !== null && activeTalkPointers.has(inputKey)) {
+      removePressedTalkPointer(inputKey);
+      if (currentTargets.length > 0) {
+        emitTalkTargetsUpdated('talk-targets-updated', currentTargets);
+        emitPttState('talk-targets-updated', {
+          talking: true,
+          lockActive: Boolean(activeLockButton),
+          target: currentTargets[0] || null,
+          targets: currentTargets,
+        });
+        applyFeedDucking();
+        return;
+      }
+    }
+
     isTalking = false;
     setSelfTalkingKey(null);
-    const pendingTarget = pendingTalkStart?.target || null;
     if (pendingTalkStart) {
       pendingTalkStart.canceled = true;
     }
 
-    // Reset button states
     setReplyButtonActive(false);
     clearLockState();
+    emitTalkTargetsUpdated('talk-targets-cleared', []);
 
     if (producer) {
       notifyServerProducerClosed(producer.id, { context: 'talk-stop' });
@@ -7111,14 +7310,12 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
     scheduleMicCleanup();
 
-    // Remove the purple highlight from the <li>
-    updateOutgoingTalkHighlight(currentTarget || pendingTarget, false);
-    currentTarget = null;
     currentTargetPeer = null;
+    clearPressedTalkPointers();
     applyFeedDucking();
     clearHotkeyActiveStyles();
     pressedHotkeyDigits.clear();
-    emitPttState('talk-stopped', { talking: false, lockActive: false, target: null });
+    emitPttState('talk-stopped', { talking: false, lockActive: false, target: null, targets: [] });
 
     if (shouldRestoreSuspendedLock) {
       scheduleRestoreSuspendedLock();
@@ -7126,10 +7323,19 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   // Safety stop so PTT can't get stuck on iOS/background transitions.
-  function stopTalkingSafely({ respectLock = false } = {}) {
+  function stopTalkingSafely({ respectLock = false, pointerId = null } = {}) {
     if (session.kind !== 'user') return;
     if (!producer && !isTalking && !pendingTalkStart) return;
     if (respectLock && activeLockButton) return;
+    if (pointerId !== null) {
+      if (activeTalkPointers.has(pointerId)) {
+        handleStopTalking({ preventDefault() {}, currentTarget: null, pointerId });
+        return;
+      }
+      if (activeTalkPointers.size > 0) {
+        return;
+      }
+    }
     handleStopTalking({ preventDefault() {}, currentTarget: null });
   }
 
@@ -7196,10 +7402,21 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       }, 250);
     }
   });
-  window.addEventListener('pointerup', () => stopTalkingSafely({ respectLock: true }));
-  window.addEventListener('pointercancel', () => stopTalkingSafely({ respectLock: true }));
-  window.addEventListener('touchend', () => stopTalkingSafely({ respectLock: true }), { passive: true });
-  window.addEventListener('touchcancel', () => stopTalkingSafely({ respectLock: true }), { passive: true });
+  const handleGlobalPointerRelease = (e) => {
+    const pointerId = Number.isFinite(Number(e?.pointerId)) ? Number(e.pointerId) : null;
+    stopTalkingSafely({ respectLock: true, pointerId });
+  };
+
+  window.addEventListener('pointerup', handleGlobalPointerRelease);
+  window.addEventListener('pointercancel', handleGlobalPointerRelease);
+  window.addEventListener('touchend', () => {
+    if (typeof window !== 'undefined' && 'PointerEvent' in window) return;
+    stopTalkingSafely({ respectLock: true });
+  }, { passive: true });
+  window.addEventListener('touchcancel', () => {
+    if (typeof window !== 'undefined' && 'PointerEvent' in window) return;
+    stopTalkingSafely({ respectLock: true });
+  }, { passive: true });
 
   // Keyboard Push-to-Talk: hold Space to talk
   let spaceKeyHeld = false;
@@ -7249,7 +7466,6 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     const digit = extractHotkeyDigit(e);
     if (!digit) return;
     if (!canUseTargetHotkeys(e)) return;
-     if (pressedHotkeyDigits.size) return;
     if (pressedHotkeyDigits.has(digit)) return;
     const target = targetHotkeys.get(digit);
     if (!target) return;
@@ -7257,7 +7473,10 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     pressedHotkeyDigits.add(digit);
     e.preventDefault();
     setHotkeyElementState(digit, true);
-    handleTalk(e, target);
+    handleTalk({
+      preventDefault() {},
+      talkInputKey: `hotkey:${digit}`,
+    }, target);
   });
 
   window.addEventListener('keyup', e => {
@@ -7267,7 +7486,11 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     pressedHotkeyDigits.delete(digit);
     setHotkeyElementState(digit, false);
     e.preventDefault();
-    handleStopTalking({ preventDefault() {}, currentTarget: null });
+    handleStopTalking({
+      preventDefault() {},
+      currentTarget: null,
+      talkInputKey: `hotkey:${digit}`,
+    });
   });
 
 

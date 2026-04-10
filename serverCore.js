@@ -771,29 +771,91 @@ function normalizeRuntimeTalkTarget(target) {
   return { type: "user", id: Number(userId) };
 }
 
+function normalizeRuntimeTalkTargets(targets) {
+  if (!Array.isArray(targets)) {
+    return [];
+  }
+
+  const normalizedTargets = [];
+  const seen = new Set();
+  for (const rawTarget of targets) {
+    const target = normalizeRuntimeTalkTarget(rawTarget);
+    if (!target) continue;
+    const key = `${target.type}:${target.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalizedTargets.push(target);
+  }
+
+  return normalizedTargets;
+}
+
+function isLiveTalkProducerAppData(appData) {
+  const type = typeof appData?.type === "string" ? appData.type.trim().toLowerCase() : "";
+  return type === "talk" || type === "user" || type === "conference";
+}
+
+function getPeerActiveTalkProducers(peer) {
+  if (!peer || peer.kind !== "user") {
+    return [];
+  }
+
+  return Array.from(peer.producers.values()).filter((producer) => (
+    producer
+    && !producer.paused
+    && isLiveTalkProducerAppData(producer.appData)
+  ));
+}
+
+function getPeerActiveTalkTargets(peer) {
+  const activeProducers = getPeerActiveTalkProducers(peer);
+  if (activeProducers.length === 0) {
+    return [];
+  }
+
+  const hasGenericTalkProducer = activeProducers.some((producer) => (
+    String(producer?.appData?.type || "").trim().toLowerCase() === "talk"
+  ));
+
+  if (hasGenericTalkProducer) {
+    return normalizeRuntimeTalkTargets(peer.activeTalkTargets);
+  }
+
+  return normalizeRuntimeTalkTargets(
+    activeProducers.map((producer) => ({
+      type: producer?.appData?.type,
+      id: producer?.appData?.id,
+    }))
+  );
+}
+
 function getPeerActiveTalkInfo(peer) {
   if (!peer || peer.kind !== "user") {
     return null;
   }
 
-  let latest = null;
-  for (const producer of peer.producers.values()) {
-    if (!producer || producer.paused) continue;
-    const appData = producer?.appData;
-    if (!appData || typeof appData !== "object") continue;
-    if (appData.type !== "user" && appData.type !== "conference") continue;
-
-    const target = normalizeRuntimeTalkTarget({ type: appData.type, id: appData.id });
-    if (!target) continue;
-
-    const startedAt = Number(producer.__startedAt);
-    const at = Number.isFinite(startedAt) ? startedAt : Date.now();
-    if (!latest || at >= latest.at) {
-      latest = { target, at };
-    }
+  const activeProducers = getPeerActiveTalkProducers(peer);
+  if (activeProducers.length === 0) {
+    return null;
   }
 
-  return latest;
+  let latestAt = 0;
+  for (const producer of activeProducers) {
+    const startedAt = Number(producer.__startedAt);
+    const at = Number.isFinite(startedAt) ? startedAt : Date.now();
+    if (at >= latestAt) latestAt = at;
+  }
+
+  const targets = getPeerActiveTalkTargets(peer);
+  if (targets.length === 0) {
+    return null;
+  }
+
+  return {
+    target: targets[0] || null,
+    targets,
+    at: latestAt || Date.now(),
+  };
 }
 
 function resolveAddressedUserIdsForTarget(target, speakerUserId) {
@@ -823,6 +885,16 @@ function resolveAddressedUserIdsForTarget(target, speakerUserId) {
   }
 
   return [];
+}
+
+function resolveAddressedUserIdsForTargets(targets, speakerUserId) {
+  const recipientUserIds = new Set();
+  for (const target of normalizeRuntimeTalkTargets(targets)) {
+    for (const userId of resolveAddressedUserIdsForTarget(target, speakerUserId)) {
+      recipientUserIds.add(Number(userId));
+    }
+  }
+  return Array.from(recipientUserIds);
 }
 
 function buildAddressedEntry(target, speakerUserId, fromName, at) {
@@ -936,18 +1008,21 @@ function buildIncomingTalkStateSnapshot() {
     const activeTalk = getPeerActiveTalkInfo(peer);
     const speakerName = peer?.name || base.userName || user?.name || `User ${speakerUserId}`;
 
-    const activeTarget = activeTalk?.target || null;
+    const activeTargets = Array.isArray(activeTalk?.targets) ? activeTalk.targets : [];
     const activeAt = Number.isFinite(Number(activeTalk?.at))
       ? Number(activeTalk.at)
       : Number(base.updatedAt) || Date.now();
 
-    if (activeTarget) {
-      const activeEntry = buildAddressedEntry(activeTarget, speakerUserId, speakerName, activeAt);
-      const addressedUsers = resolveAddressedUserIdsForTarget(activeTarget, speakerUserId);
-      for (const addressedUserId of addressedUsers) {
-        mergeAddressedNowEntry(addressedNowByUser, addressedUserId, activeEntry);
-        setReplyEntry(replyTargetByUser, addressedUserId, activeEntry);
-        rememberIncomingReplyEntry(addressedUserId, activeEntry);
+    if (activeTargets.length > 0) {
+      for (const activeTarget of activeTargets) {
+        const activeEntry = buildAddressedEntry(activeTarget, speakerUserId, speakerName, activeAt);
+        if (!activeEntry) continue;
+        const addressedUsers = resolveAddressedUserIdsForTarget(activeTarget, speakerUserId);
+        for (const addressedUserId of addressedUsers) {
+          mergeAddressedNowEntry(addressedNowByUser, addressedUserId, activeEntry);
+          setReplyEntry(replyTargetByUser, addressedUserId, activeEntry);
+          rememberIncomingReplyEntry(addressedUserId, activeEntry);
+        }
       }
     }
   }
@@ -993,7 +1068,7 @@ function parseCompanionWaitMs(raw) {
 }
 
 function normalizeTalkCommandInput(input = {}) {
-  let { action, targetType = "conference", targetId = null } = input || {};
+  let { action, targetType = "conference", targetId = null, inputKey = null } = input || {};
 
   if (!["press", "release", "lock-toggle"].includes(action)) {
     return { ok: false, status: 400, error: "action must be press, release, or lock-toggle" };
@@ -1031,9 +1106,13 @@ function normalizeTalkCommandInput(input = {}) {
     }
   }
 
+  const normalizedInputKey = typeof inputKey === "string" ? inputKey.trim() : "";
   const payload = targetType === "reply"
     ? { action, targetType }
     : { action, targetType, targetId };
+  if (normalizedInputKey) {
+    payload.inputKey = normalizedInputKey;
+  }
 
   return { ok: true, value: { action, targetType, targetId, payload } };
 }
@@ -1135,7 +1214,9 @@ function ensureCompanionUserState(userId, fallbackName = null) {
       talking: false,
       talkLocked: false,
       currentTarget: null,
+      currentTargets: [],
       lastTarget: null,
+      lastTargets: [],
       lastIncomingReplyEntry: null,
       targetAudioStates: persistedTargetAudioStates,
       lastSpokeAt: null,
@@ -1155,11 +1236,14 @@ function buildCompanionUserState(userId, fallbackName = null, incomingSnapshot =
   const found = findUserPeerByUserId(userId);
   const peer = found?.peer || null;
   const socketId = found?.socketId || null;
-  const activeTarget = peer ? getPeerActiveTalkTarget(peer) : null;
+  const activeTalkInfo = peer ? getPeerActiveTalkInfo(peer) : null;
+  const activeTargets = Array.isArray(activeTalkInfo?.targets) ? activeTalkInfo.targets : [];
+  const activeTarget = activeTalkInfo?.target || null;
   const currentTarget = activeTarget || null;
-  const talking = Boolean(found && activeTarget);
+  const talking = Boolean(found && activeTargets.length > 0);
   const resolvedName = peer?.name || base.userName || fallbackName || null;
-  const lastTarget = normalizeRuntimeTalkTarget(base.lastTarget) || currentTarget || null;
+  const lastTargets = normalizeRuntimeTalkTargets(base.lastTargets);
+  const lastTarget = normalizeRuntimeTalkTarget(base.lastTarget) || lastTargets[0] || currentTarget || null;
   const incomingTalkState = buildIncomingTalkStateForUser(userId, incomingSnapshot);
 
   return {
@@ -1170,7 +1254,9 @@ function buildCompanionUserState(userId, fallbackName = null, incomingSnapshot =
     talking,
     talkLocked: Boolean(base.talkLocked && found),
     currentTarget: talking ? currentTarget : null,
+    currentTargets: talking ? activeTargets : [],
     lastTarget,
+    lastTargets: lastTargets.length > 0 ? lastTargets : (lastTarget ? [lastTarget] : []),
     lastSpokeAt: base.lastSpokeAt || null,
     cutCamera: Boolean(resolvedName && cutCameraUser && resolvedName === cutCameraUser),
     lastCommandId: base.lastCommandId || null,
@@ -1306,16 +1392,20 @@ function syncPeerCompanionState(peer, { reason = "peer-sync" } = {}) {
   if (!peer || peer.kind !== "user" || peer.userId === null || peer.userId === undefined) {
     return;
   }
-  const activeTarget = getPeerActiveTalkTarget(peer);
+  const activeTalkInfo = getPeerActiveTalkInfo(peer);
+  const activeTarget = activeTalkInfo?.target || null;
+  const activeTargets = Array.isArray(activeTalkInfo?.targets) ? activeTalkInfo.targets : [];
   const patch = {
     userName: peer.name || null,
     online: true,
     socketId: peer.socket?.id || null,
-    talking: Boolean(activeTarget),
+    talking: activeTargets.length > 0,
     currentTarget: activeTarget,
+    currentTargets: activeTargets,
   };
   if (activeTarget) {
     patch.lastTarget = activeTarget;
+    patch.lastTargets = activeTargets;
   } else {
     patch.talkLocked = false;
     patch.lastSpokeAt = Date.now();
@@ -2147,6 +2237,7 @@ app.post("/api/v1/client/logout", (req, res) => {
         talking: false,
         talkLocked: false,
         currentTarget: null,
+        currentTargets: [],
         targetAudioStates: [],
         lastSpokeAt: Date.now(),
       },
@@ -3002,12 +3093,19 @@ function getUserList() {
   }));
 }
 
-function resolveApplePttRecipientUserIds({ type, targetId, speakerSocketId }) {
+function resolveApplePttRecipientUserIds({ type, targetId, targets = null, speakerSocketId }) {
   const recipientUserIds = new Set();
   const speakerPeer = peers.get(speakerSocketId);
   const speakerUserId = speakerPeer?.userId != null ? Number(speakerPeer.userId) : null;
 
-  if (type === "user") {
+  if (type === "talk") {
+    const resolvedTargets = Array.isArray(targets)
+      ? normalizeRuntimeTalkTargets(targets)
+      : getPeerActiveTalkTargets(speakerPeer);
+    for (const userId of resolveAddressedUserIdsForTargets(resolvedTargets, speakerUserId)) {
+      recipientUserIds.add(Number(userId));
+    }
+  } else if (type === "user") {
     const targetUserId = resolveUserIdFromTargetIdentity(targetId);
     if (Number.isFinite(targetUserId)) {
       recipientUserIds.add(Number(targetUserId));
@@ -3037,88 +3135,170 @@ function resolveApplePttSpeakerName(socketId) {
   return trimmed || "TalkToMe";
 }
 
-function resolveProducerRecipientSocketIds({ appData, speakerSocketId }) {
-  const recipientSocketIds = new Set();
-  const type = appData?.type;
-  const targetId = appData?.id;
+function buildProducerDeliverySignature(appData = {}) {
+  return [
+    appData?.type || "",
+    appData?.id ?? "",
+    appData?.targetPeer || "",
+  ].join(":");
+}
 
-  if (type === "user") {
-    const hintedPeerId = typeof appData?.targetPeer === "string" ? appData.targetPeer : null;
-    const targetUserId = resolveUserIdFromTargetIdentity(targetId) ?? resolveUserIdFromTargetIdentity(hintedPeerId);
-    if (hintedPeerId && hintedPeerId !== speakerSocketId) {
-      const hintedPeer = peers.get(hintedPeerId);
-      if (
-        hintedPeer
-        && (
-          !Number.isFinite(targetUserId)
-          || String(hintedPeer.userId) === String(targetUserId)
-        )
-      ) {
-        recipientSocketIds.add(hintedPeerId);
+function resolveProducerRecipientDeliveriesForTargets({ targets, speakerSocketId }) {
+  const deliveries = [];
+  const seenRecipients = new Set();
+
+  for (const target of normalizeRuntimeTalkTargets(targets)) {
+    if (target.type === "user") {
+      const found = findUserPeerByUserId(target.id);
+      const recipientSocketId = found?.socketId || null;
+      if (!recipientSocketId || recipientSocketId === speakerSocketId || seenRecipients.has(recipientSocketId)) {
+        continue;
       }
+      seenRecipients.add(recipientSocketId);
+      deliveries.push({
+        recipientSocketId,
+        appData: {
+          type: "user",
+          id: Number(target.id),
+          targetPeer: recipientSocketId,
+        },
+      });
+      continue;
     }
 
-    if (Number.isFinite(targetUserId)) {
-      const found = findUserPeerByUserId(targetUserId);
-      if (found?.socketId && found.socketId !== speakerSocketId) {
-        recipientSocketIds.add(found.socketId);
+    if (target.type === "conference") {
+      const members = getUsersForConference(target.id) || [];
+      for (const member of members) {
+        const found = findUserPeerByUserId(member?.id);
+        const recipientSocketId = found?.socketId || null;
+        if (!recipientSocketId || recipientSocketId === speakerSocketId || seenRecipients.has(recipientSocketId)) {
+          continue;
+        }
+        seenRecipients.add(recipientSocketId);
+        deliveries.push({
+          recipientSocketId,
+          appData: {
+            type: "conference",
+            id: Number(target.id),
+          },
+        });
       }
-    } else if (typeof targetId === "string" && targetId !== speakerSocketId && peers.has(targetId)) {
-      recipientSocketIds.add(targetId);
     }
-
-    return Array.from(recipientSocketIds);
   }
 
-  if (type === "conference") {
-    const members = getUsersForConference(targetId) || [];
-    for (const member of members) {
-      for (const [sid, peer] of peers) {
-        if (sid === speakerSocketId) continue;
-        if (String(peer?.userId) === String(member?.id)) {
-          recipientSocketIds.add(sid);
-        }
-      }
-    }
-    return Array.from(recipientSocketIds);
+  return deliveries;
+}
+
+function resolveProducerRecipientDeliveries({ appData, speakerSocketId }) {
+  const type = typeof appData?.type === "string" ? appData.type.trim().toLowerCase() : "";
+  const targetId = appData?.id;
+
+  if (type === "talk") {
+    const speakerPeer = peers.get(speakerSocketId);
+    return resolveProducerRecipientDeliveriesForTargets({
+      targets: speakerPeer?.activeTalkTargets || [],
+      speakerSocketId,
+    });
+  }
+
+  if (type === "user" || type === "conference") {
+    return resolveProducerRecipientDeliveriesForTargets({
+      targets: [{ type, id: targetId }],
+      speakerSocketId,
+    });
   }
 
   if (type === "feed") {
+    const deliveries = [];
     const listeners = getUsersForFeed(targetId) || [];
     const listenerIds = new Set(listeners.map((row) => String(row.user_id)));
     for (const [sid, peer] of peers) {
       if (sid === speakerSocketId) continue;
       if (peer?.kind !== "user" || peer?.userId === null) continue;
       if (listenerIds.has(String(peer.userId))) {
-        recipientSocketIds.add(sid);
+        deliveries.push({
+          recipientSocketId: sid,
+          appData: { ...appData },
+        });
       }
     }
-    return Array.from(recipientSocketIds);
+    return deliveries;
   }
 
   return [];
 }
 
-function announceProducerToRecipients({ producerId, appData, speakerSocketId }) {
-  const recipientSocketIds = resolveProducerRecipientSocketIds({ appData, speakerSocketId });
-  for (const recipientSocketId of recipientSocketIds) {
+function closeProducerConsumersForRecipient({ producerId, recipientSocketId }) {
+  const recipientPeer = peers.get(recipientSocketId);
+  if (!recipientPeer) return;
+
+  for (const consumer of Array.from(recipientPeer.consumers.values())) {
+    if (String(consumer?.producerId || "") !== String(producerId)) {
+      continue;
+    }
+    try {
+      consumer.close();
+      recipientPeer.consumers.delete(consumer.id);
+      recipientPeer.socket?.emit("consumer-closed", { consumerId: consumer.id });
+    } catch (error) {
+      console.warn(`[ROUTE] Failed to close consumer ${consumer?.id} for producer ${producerId}:`, error?.message || error);
+    }
+  }
+}
+
+function syncProducerRecipients({ producer, speakerSocketId }) {
+  if (!producer) return [];
+
+  const deliveries = resolveProducerRecipientDeliveries({
+    appData: producer.appData,
+    speakerSocketId,
+  });
+  const previousDeliveries = producer.__recipientDeliveries instanceof Map
+    ? producer.__recipientDeliveries
+    : new Map();
+  const nextDeliveries = new Map(
+    deliveries.map((delivery) => [delivery.recipientSocketId, delivery.appData])
+  );
+
+  for (const [recipientSocketId, previousAppData] of previousDeliveries.entries()) {
+    const nextAppData = nextDeliveries.get(recipientSocketId);
+    const deliveryChanged = !nextAppData
+      || buildProducerDeliverySignature(previousAppData) !== buildProducerDeliverySignature(nextAppData);
+    if (!deliveryChanged) continue;
+    closeProducerConsumersForRecipient({ producerId: producer.id, recipientSocketId });
+  }
+
+  for (const [recipientSocketId, nextAppData] of nextDeliveries.entries()) {
+    const previousAppData = previousDeliveries.get(recipientSocketId);
+    const deliveryChanged = !previousAppData
+      || buildProducerDeliverySignature(previousAppData) !== buildProducerDeliverySignature(nextAppData);
+    if (!deliveryChanged) continue;
     const recipientPeer = peers.get(recipientSocketId);
     if (!recipientPeer?.socket) continue;
     recipientPeer.socket.emit("new-producer", {
       peerId: speakerSocketId,
-      producerId,
-      appData,
+      producerId: producer.id,
+      appData: nextAppData,
     });
   }
-  return recipientSocketIds;
+
+  producer.__recipientDeliveries = nextDeliveries;
+  return deliveries;
 }
 
-async function sendApplePttSpeakerStarted({ type, targetId, speakerSocketId, reason }) {
+function announceProducerToRecipients({ producerId, appData, speakerSocketId }) {
+  const speakerPeer = peers.get(speakerSocketId);
+  const producer = speakerPeer?.producers?.get(producerId) || null;
+  if (!producer) return [];
+  return syncProducerRecipients({ producer, speakerSocketId }).map((delivery) => delivery.recipientSocketId);
+}
+
+async function sendApplePttSpeakerStarted({ type, targetId, targets = null, speakerSocketId, reason }) {
   if (!applePttPushService.isConfigured()) {
     return [];
   }
 
-  const recipientUserIds = resolveApplePttRecipientUserIds({ type, targetId, speakerSocketId });
+  const recipientUserIds = resolveApplePttRecipientUserIds({ type, targetId, targets, speakerSocketId });
   if (recipientUserIds.length === 0) {
     return recipientUserIds;
   }
@@ -3171,6 +3351,7 @@ io.on("connection", (socket) => {
     kind:     "guest",
     consumers: new Map(),
     producers: new Map(),
+    activeTalkTargets: [],
   });
 
   // Emit lists
@@ -3373,15 +3554,75 @@ io.on("connection", (socket) => {
       patch.talkLocked = payload.lockActive;
     }
 
+    const normalizedTargets = normalizeRuntimeTalkTargets(payload.targets);
+    if (normalizedTargets.length > 0) {
+      patch.lastTargets = normalizedTargets;
+    }
+
     const normalizedTarget = normalizeRuntimeTalkTarget(payload.target);
     if (normalizedTarget) {
       patch.lastTarget = normalizedTarget;
+    } else if (normalizedTargets.length > 0) {
+      patch.lastTarget = normalizedTargets[0];
     }
 
     updateCompanionUserState(peer.userId, patch, {
       reason: "ptt-state",
       fallbackName: peer.name || null,
     });
+  });
+
+  socket.on("talk-targets-updated", async (payload = {}) => {
+    const peer = peers.get(socket.id);
+    if (!peer || peer.kind !== "user" || peer.userId === null || peer.userId === undefined) {
+      return;
+    }
+
+    const normalizedTargets = normalizeRuntimeTalkTargets(payload.targets);
+    peer.activeTalkTargets = normalizedTargets;
+
+    const patch = {
+      userName: peer.name || null,
+      online: true,
+      socketId: socket.id,
+    };
+    if (normalizedTargets.length > 0) {
+      patch.lastTarget = normalizedTargets[0];
+      patch.lastTargets = normalizedTargets;
+    }
+
+    updateCompanionUserState(peer.userId, patch, {
+      reason: "talk-targets-updated",
+      fallbackName: peer.name || null,
+    });
+
+    const activeTalkProducers = getPeerActiveTalkProducers(peer).filter((producer) => (
+      String(producer?.appData?.type || "").trim().toLowerCase() === "talk"
+    ));
+    if (activeTalkProducers.length === 0) {
+      return;
+    }
+
+    activeTalkProducers.forEach((producer) => {
+      syncProducerRecipients({ producer, speakerSocketId: socket.id });
+    });
+
+    try {
+      const recipientUserIds = await sendApplePttSpeakerStarted({
+        type: "talk",
+        targets: normalizedTargets,
+        speakerSocketId: socket.id,
+        reason: "talk-targets-updated",
+      });
+      activeTalkProducers.forEach((producer) => {
+        producer.__applePttRecipientUserIds = recipientUserIds;
+      });
+    } catch (error) {
+      console.warn("[PTT] Failed to update Apple PTT recipients for talk-targets-updated:", error?.message || error);
+    }
+
+    syncPeerCompanionState(peer, { reason: "talk-targets-updated" });
+    broadcastRuntimeUserStates("talk-targets-updated");
   });
 
   const handleApiCommandResult = (payload = {}) => {
@@ -3415,8 +3656,14 @@ io.on("connection", (socket) => {
     if (typeof payload.lockActive === "boolean") {
       patch.talkLocked = payload.lockActive;
     }
+    const normalizedTargets = normalizeRuntimeTalkTargets(payload.targets);
+    if (normalizedTargets.length > 0) {
+      patch.lastTargets = normalizedTargets;
+    }
     if (normalizedTarget) {
       patch.lastTarget = normalizedTarget;
+    } else if (normalizedTargets.length > 0) {
+      patch.lastTarget = normalizedTargets[0];
     }
     updateCompanionUserState(peer.userId, patch, {
       reason: "command-result",
@@ -3476,18 +3723,9 @@ io.on("connection", (socket) => {
         if (!producer || producer.paused) continue;
         const appData = producer?.appData;
         if (!appData || typeof appData !== "object") continue;
+        const type = String(appData.type || "").trim().toLowerCase();
 
-        if (appData.type === "conference") {
-          const confId = appData.id;
-          if (confId == null) continue;
-          const membership = loadConferenceIds();
-          if (membership.has(String(confId))) {
-            response.push({ peerId: otherSocketId, producerId, appData });
-          }
-          continue;
-        }
-
-        if (appData.type === "feed") {
+        if (type === "feed") {
           const feedId = appData.id;
           if (feedId == null) continue;
           const membership = loadFeedIds();
@@ -3497,14 +3735,21 @@ io.on("connection", (socket) => {
           continue;
         }
 
-        if (appData.type === "user") {
-          const targetPeerId = appData.targetPeer || appData.id;
-          const targetUserId = resolveUserIdFromTargetIdentity(appData.id) ?? resolveUserIdFromTargetIdentity(targetPeerId);
-          if (
-            (targetPeerId && targetPeerId === socket.id)
-            || (Number.isFinite(targetUserId) && String(peer.userId) === String(targetUserId))
-          ) {
+        if (type === "conference") {
+          const confId = appData.id;
+          if (confId == null) continue;
+          const membership = loadConferenceIds();
+          if (membership.has(String(confId))) {
             response.push({ peerId: otherSocketId, producerId, appData });
+          }
+          continue;
+        }
+
+        if (type === "user" || type === "talk") {
+          const deliveries = resolveProducerRecipientDeliveries({ appData, speakerSocketId: otherSocketId });
+          const delivery = deliveries.find((candidate) => candidate.recipientSocketId === socket.id);
+          if (delivery?.appData) {
+            response.push({ peerId: otherSocketId, producerId, appData: delivery.appData });
           }
         }
       }
@@ -3755,17 +4000,18 @@ io.on("connection", (socket) => {
         // 0️⃣  Validate incoming data
         //------------------------------------------------------------------
         const { type, id: targetId } = appData || {};
-        const validTypes = ["user","conference","feed"];
+        const validTypes = ["talk", "user", "conference", "feed"];
+        const requiresTargetId = type !== "talk";
 
         if (
             !type ||
             !validTypes.includes(type) ||
-            !targetId
+            (requiresTargetId && !targetId)
         ) {
           console.warn("[PRODUCE] Invalid appData:", appData);
           return callback({
             error:
-                "Invalid appData: For 'user', 'conference', or 'feed', 'id' must be provided.",
+                "Invalid appData: For 'talk', 'user', 'conference', or 'feed', valid routing metadata must be provided.",
           });
         }
 
@@ -3839,11 +4085,12 @@ io.on("connection", (socket) => {
             appData,
             speakerSocketId: socket.id,
           });
-          console.log(`[ROUTE] Announced producer ${producer.id} for ${type} ${targetId}`);
+          console.log(`[ROUTE] Announced producer ${producer.id} for ${type} ${targetId ?? ""}`.trim());
 
           const applePttRecipientUserIds = await sendApplePttSpeakerStarted({
             type,
             targetId,
+            targets: type === "talk" ? getPeerActiveTalkTargets(peer) : null,
             speakerSocketId: socket.id,
             reason: "producer-started",
           });
@@ -3868,6 +4115,7 @@ io.on("connection", (socket) => {
             void sendApplePttSpeakerStarted({
               type,
               targetId,
+              targets: type === "talk" ? getPeerActiveTalkTargets(peer) : null,
               speakerSocketId: socket.id,
               reason: "producer-resumed",
             }).then((recipientUserIds) => {
@@ -3879,6 +4127,9 @@ io.on("connection", (socket) => {
 
           producer.on("close", () => {
             peer.producers.delete(producer.id);
+            if (type === "talk" && getPeerActiveTalkProducers(peer).length === 0) {
+              peer.activeTalkTargets = [];
+            }
             syncPeerCompanionState(peer, { reason: "produce-closed" });
             broadcastRuntimeUserStates("produce-closed");
             socket.broadcast.emit("producer-closed", {
@@ -3891,6 +4142,9 @@ io.on("connection", (socket) => {
 
           producer.on("transportclose", () => {
             peer.producers.delete(producer.id);
+            if (type === "talk" && getPeerActiveTalkProducers(peer).length === 0) {
+              peer.activeTalkTargets = [];
+            }
             syncPeerCompanionState(peer, { reason: "produce-transport-closed" });
             broadcastRuntimeUserStates("produce-transport-closed");
           });
@@ -4027,6 +4281,7 @@ io.on("connection", (socket) => {
         talking: false,
         talkLocked: false,
         currentTarget: null,
+        currentTargets: [],
         targetAudioStates: [],
         lastSpokeAt: Date.now(),
       }, {
