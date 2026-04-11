@@ -93,14 +93,80 @@ const MOBILE_TARGET_LAYER_MAX_WIDTH = 699;
 const MOBILE_TARGET_LAYER_COMPACT_MAX_WIDTH = 414;
 const MOBILE_TARGET_LAYER_DEFAULT_SIZE = 8;
 const MOBILE_TARGET_LAYER_COMPACT_SIZE = 7;
+const TARGET_HOTKEY_STORAGE_KEY_PREFIX = 'targetHotkeys:';
+const REPLY_HOTKEY_IDENTITY = 'reply';
+const DEFAULT_REPLY_HOTKEY_BINDING = Object.freeze({
+  id: 'code:Space',
+  type: 'code',
+  value: 'Space',
+  label: 'Space',
+});
 
 const TARGET_HOTKEY_DIGITS = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+const DEFAULT_TARGET_HOTKEY_BINDINGS = Object.freeze(
+  TARGET_HOTKEY_DIGITS.map((digit) => Object.freeze({
+    id: `digit:${digit}`,
+    type: 'digit',
+    value: String(digit),
+    label: String(digit),
+  }))
+);
+const HOTKEY_CODE_LABELS = Object.freeze({
+  Minus: '-',
+  Equal: '=',
+  BracketLeft: '[',
+  BracketRight: ']',
+  Backslash: '\\',
+  Semicolon: ';',
+  Quote: "'",
+  Comma: ',',
+  Period: '.',
+  Slash: '/',
+  Backquote: '`',
+  Backspace: 'Backspace',
+  Delete: 'Delete',
+  Insert: 'Insert',
+  Home: 'Home',
+  End: 'End',
+  PageUp: 'Page Up',
+  PageDown: 'Page Down',
+  ArrowLeft: 'Left',
+  ArrowRight: 'Right',
+  ArrowUp: 'Up',
+  ArrowDown: 'Down',
+  NumpadAdd: 'Num +',
+  NumpadSubtract: 'Num -',
+  NumpadMultiply: 'Num *',
+  NumpadDivide: 'Num /',
+  NumpadDecimal: 'Num .',
+  NumpadEnter: 'Num Enter',
+});
+const HOTKEY_BLOCKED_CODES = new Set([
+  'ShiftLeft',
+  'ShiftRight',
+  'ControlLeft',
+  'ControlRight',
+  'AltLeft',
+  'AltRight',
+  'MetaLeft',
+  'MetaRight',
+  'CapsLock',
+  'NumLock',
+  'ScrollLock',
+  'ContextMenu',
+  'Escape',
+  'Tab',
+]);
 const targetHotkeys = new Map();
-const pressedHotkeyDigits = new Set();
+const targetHotkeysByTarget = new Map();
+const hotkeyBindingElements = new Map();
+const pressedHotkeyBindings = new Set();
+const customTargetHotkeys = new Map();
 const persistedTargetAudioStateMap = new Map();
 const pendingOfflineUserTimers = new Map();
 let recoverExistingIncomingPlayback = () => {};
 let attemptPlayAudio = () => Promise.resolve();
+let loadedTargetHotkeyStorageKey = null;
 
 let feedDuckingDb = DEFAULT_FEED_DUCKING_DB;
 let feedDuckingFactor = dbToLinear(feedDuckingDb);
@@ -133,6 +199,153 @@ const isiOS = typeof navigator !== 'undefined'
 const isSafariBrowser = typeof navigator !== 'undefined'
   ? /Safari/i.test(USER_AGENT) && !/Chrome|CriOS|Edg|OPR|Firefox|FxiOS/i.test(USER_AGENT)
   : false;
+
+function createDigitHotkeyBinding(digit) {
+  const value = String(digit);
+  if (!/^[0-9]$/.test(value)) return null;
+  return {
+    id: `digit:${value}`,
+    type: 'digit',
+    value,
+    label: value,
+  };
+}
+
+function formatHotkeyCodeLabel(code, fallbackKey = '') {
+  if (typeof code !== 'string' || !code.trim()) return '';
+
+  let match = code.match(/^Key([A-Z])$/);
+  if (match) return match[1];
+  match = code.match(/^Digit([0-9])$/);
+  if (match) return match[1];
+  match = code.match(/^Numpad([0-9])$/);
+  if (match) return `Num ${match[1]}`;
+  match = code.match(/^F([1-9]|1[0-9]|2[0-4])$/);
+  if (match) return `F${match[1]}`;
+
+  if (HOTKEY_CODE_LABELS[code]) {
+    return HOTKEY_CODE_LABELS[code];
+  }
+
+  if (typeof fallbackKey === 'string') {
+    const normalized = fallbackKey.trim();
+    if (normalized && normalized !== 'Unidentified') {
+      if (normalized === ' ') return 'Space';
+      if (normalized.length === 1) return normalized.toUpperCase();
+      return normalized;
+    }
+  }
+
+  return code;
+}
+
+function createCodeHotkeyBinding(code, fallbackKey = '') {
+  if (typeof code !== 'string' || !code.trim()) return null;
+  const normalizedCode = code.trim();
+  return {
+    id: `code:${normalizedCode}`,
+    type: 'code',
+    value: normalizedCode,
+    label: formatHotkeyCodeLabel(normalizedCode, fallbackKey),
+  };
+}
+
+function normalizeStoredTargetHotkeyBinding(rawBinding) {
+  if (!rawBinding || typeof rawBinding !== 'object') return null;
+  if (rawBinding.type === 'digit') {
+    return createDigitHotkeyBinding(rawBinding.value);
+  }
+  if (rawBinding.type === 'code') {
+    return createCodeHotkeyBinding(rawBinding.value, rawBinding.label);
+  }
+  return null;
+}
+
+function getTargetHotkeyStorageKeyForSession() {
+  if (session?.kind !== 'user' || !session?.userId) return null;
+  return `${TARGET_HOTKEY_STORAGE_KEY_PREFIX}${session.userId}`;
+}
+
+function ensureCustomTargetHotkeysLoaded() {
+  const storageKey = getTargetHotkeyStorageKeyForSession();
+  if (loadedTargetHotkeyStorageKey === storageKey) return;
+
+  customTargetHotkeys.clear();
+  loadedTargetHotkeyStorageKey = storageKey;
+  if (!storageKey || typeof window === 'undefined') return;
+
+  try {
+    const rawValue = window.localStorage?.getItem(storageKey);
+    if (!rawValue) return;
+    const parsed = JSON.parse(rawValue);
+    if (!parsed || typeof parsed !== 'object') return;
+    Object.entries(parsed).forEach(([targetIdentity, rawBinding]) => {
+      if (typeof targetIdentity !== 'string' || !targetIdentity.trim()) return;
+      const binding = normalizeStoredTargetHotkeyBinding(rawBinding);
+      if (!binding) return;
+      customTargetHotkeys.set(targetIdentity, binding);
+    });
+  } catch (error) {
+    console.warn('Unable to restore custom target hotkeys:', error);
+  }
+}
+
+function persistCustomTargetHotkeys() {
+  const storageKey = getTargetHotkeyStorageKeyForSession();
+  if (!storageKey || typeof window === 'undefined') return;
+
+  const serialized = {};
+  customTargetHotkeys.forEach((binding, targetIdentity) => {
+    if (!binding || typeof targetIdentity !== 'string') return;
+    serialized[targetIdentity] = {
+      type: binding.type,
+      value: binding.value,
+      label: binding.label,
+    };
+  });
+
+  try {
+    if (Object.keys(serialized).length === 0) {
+      window.localStorage?.removeItem(storageKey);
+      return;
+    }
+    window.localStorage?.setItem(storageKey, JSON.stringify(serialized));
+  } catch (error) {
+    console.warn('Unable to persist custom target hotkeys:', error);
+  }
+}
+
+function getHotkeyLookupIds(event) {
+  if (!event) return [];
+  const lookupIds = [];
+  if (event.key && /^[0-9]$/.test(event.key)) {
+    lookupIds.push(`digit:${event.key}`);
+  }
+
+  const code = typeof event.code === 'string' ? event.code : '';
+  let match = code.match(/^Digit([0-9])$/);
+  if (match) lookupIds.push(`digit:${match[1]}`);
+  match = code.match(/^Numpad([0-9])$/);
+  if (match) lookupIds.push(`digit:${match[1]}`);
+  if (code) lookupIds.push(`code:${code}`);
+
+  return [...new Set(lookupIds)];
+}
+
+function getRecordableHotkeyBinding(event) {
+  if (!event || typeof event !== 'object') return null;
+  if (event.altKey || event.ctrlKey || event.metaKey) return null;
+
+  const code = typeof event.code === 'string' ? event.code.trim() : '';
+  if (!code || HOTKEY_BLOCKED_CODES.has(code)) return null;
+
+  let match = code.match(/^Digit([0-9])$/);
+  if (match) return createDigitHotkeyBinding(match[1]);
+  match = code.match(/^Numpad([0-9])$/);
+  if (match) return createDigitHotkeyBinding(match[1]);
+
+  return createCodeHotkeyBinding(code, event.key);
+}
 
 function logReceiveDiagnostic(event, details = {}) {
   if (!(isiOS || isSafariBrowser)) return;
@@ -324,6 +537,15 @@ let outputDeviceSelector;
 let outputSelect;
 let qualitySelect;
 let dimAmountSelect;
+let settingsMainView;
+let settingsShortcutsView;
+let shortcutSettingsOpenButton;
+let shortcutSettingsBackButton;
+let shortcutSettingsSection;
+let shortcutSettingsList;
+let shortcutSettingsEmpty;
+let shortcutResetButton;
+let sessionSlideHintEl;
 let dimWhileSpeakingToggle;
 let audioProcessingToggle;
 let userLevelControls;
@@ -362,6 +584,8 @@ let feedManualStop = false;
 let shouldStartFeedWhenReady = false;
 let isTalking = false;
 let pendingTalkStart = null;
+let activeHotkeyCaptureTargetIdentity = null;
+let activeSettingsView = 'main';
 const USER_ACTIVATION_EVENTS = ['pointerdown', 'mousedown', 'click', 'touchstart', 'keydown'];
 const ACTIVE_PRODUCERS_SYNC_INTERVAL_MS = 10000;
 const UI_ICONS = {
@@ -384,6 +608,9 @@ let userProcessingChain = null;
 let settingsMonitorActive = false;
 let settingsMonitorPromise = null;
 let settingsMenuOpen = false;
+let stopHotkeyCaptureHandler = () => {};
+let renderTargetHotkeySettingsHandler = () => {};
+let refreshTargetHotkeyUiHandler = () => {};
 
 function clampFeedDuckingDb(value) {
   if (!Number.isFinite(value)) return DEFAULT_FEED_DUCKING_DB;
@@ -1396,13 +1623,52 @@ function stopInputMonitor() {
 function handleSettingsMenuOpened() {
   if (settingsMenuOpen) return;
   settingsMenuOpen = true;
+  setActiveSettingsView('main');
+  refreshTargetHotkeyUiHandler(cachedUsers);
   startInputMonitor();
 }
 
 function handleSettingsMenuClosed() {
   if (!settingsMenuOpen) return;
   settingsMenuOpen = false;
+  setActiveSettingsView('main');
+  stopHotkeyCaptureHandler({ rerender: false });
   stopInputMonitor();
+}
+
+function setActiveSettingsView(nextView = 'main') {
+  const resolvedView = nextView === 'shortcuts' ? 'shortcuts' : 'main';
+  if (resolvedView === activeSettingsView && settingsMainView && settingsShortcutsView) {
+    return;
+  }
+
+  if (resolvedView !== 'shortcuts') {
+    stopHotkeyCaptureHandler({ rerender: false });
+  }
+
+  activeSettingsView = resolvedView;
+
+  if (settingsMainView) {
+    settingsMainView.hidden = resolvedView !== 'main';
+  }
+  if (settingsShortcutsView) {
+    settingsShortcutsView.hidden = resolvedView !== 'shortcuts';
+  }
+
+  if (resolvedView === 'shortcuts') {
+    renderTargetHotkeySettingsHandler(cachedUsers);
+  }
+}
+
+function bindSettingsViewButton(button, nextView) {
+  if (!button) return;
+  const handleActivate = (event) => {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    setActiveSettingsView(nextView);
+  };
+  button.addEventListener('click', handleActivate);
+  button.addEventListener('pointerup', handleActivate);
 }
 
 if (typeof window !== 'undefined') {
@@ -2086,6 +2352,15 @@ document.addEventListener("DOMContentLoaded", () => {
   outputSelect = document.getElementById("output-select");
   qualitySelect = document.getElementById("quality-select");
   dimAmountSelect = document.getElementById('dim-amount-select');
+  settingsMainView = document.getElementById('settings-main-view');
+  settingsShortcutsView = document.getElementById('settings-shortcuts-view');
+  shortcutSettingsOpenButton = document.getElementById('shortcut-settings-open');
+  shortcutSettingsBackButton = document.getElementById('shortcut-settings-back');
+  shortcutSettingsSection = document.getElementById('shortcut-settings');
+  shortcutSettingsList = document.getElementById('shortcut-settings-list');
+  shortcutSettingsEmpty = document.getElementById('shortcut-settings-empty');
+  shortcutResetButton = document.getElementById('shortcut-reset-btn');
+  sessionSlideHintEl = document.getElementById('session-slide-hint');
   dimWhileSpeakingToggle = document.getElementById('toggle-self-dim');
   audioProcessingToggle = document.getElementById('toggle-processing');
   userLevelControls = document.getElementById('user-level-controls');
@@ -2116,6 +2391,15 @@ document.addEventListener("DOMContentLoaded", () => {
   setFeedMeterDisplayFor(feedMeterBarLEl, feedMeterValueLEl, feedMeterClipLEl, feedMeterStateL, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
   setFeedMeterDisplayFor(feedMeterBarREl, feedMeterValueREl, feedMeterClipREl, feedMeterStateR, 0, formatDbDisplay(-Infinity), false, null, { forceText: true });
   applyUserGainControlState();
+  ensureCustomTargetHotkeysLoaded();
+
+  if (shortcutResetButton) {
+    shortcutResetButton.addEventListener('click', () => {
+      resetCustomTargetHotkeys();
+    });
+  }
+  bindSettingsViewButton(shortcutSettingsOpenButton, 'shortcuts');
+  bindSettingsViewButton(shortcutSettingsBackButton, 'main');
 
   if (feedInputProcessingToggle) {
     feedInputProcessingToggle.checked = feedInputProcessingEnabled;
@@ -2440,6 +2724,7 @@ let cachedOperatorTargets = null;
   let activeProducersSyncInFlight = false;
   let pendingIncomingConsumeKeys = new Set();
   let slideHintShown = false;
+  let slideHintTimeoutId = null;
 
   function makePersistedTargetAudioStateKey(targetType, targetId) {
     const normalizedType = typeof targetType === 'string' ? targetType.trim().toLowerCase() : '';
@@ -2457,6 +2742,42 @@ let cachedOperatorTargets = null;
     if (normalizedType === 'conference') return `volume_conf_${numericId}`;
     if (normalizedType === 'feed') return `volume_feed_${numericId}`;
     return null;
+  }
+
+  function shouldUseHeaderSlideHint() {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth >= 700;
+  }
+
+  function showSlideToLockHint(targetKey) {
+    if (slideHintShown || !targetKey || String(targetKey).startsWith('feed-')) return;
+    slideHintShown = true;
+
+    if (slideHintTimeoutId) {
+      clearTimeout(slideHintTimeoutId);
+      slideHintTimeoutId = null;
+    }
+
+    if (shouldUseHeaderSlideHint() && sessionSlideHintEl) {
+      sessionSlideHintEl.classList.remove('is-visible');
+      void sessionSlideHintEl.offsetWidth;
+      sessionSlideHintEl.classList.add('is-visible');
+      slideHintTimeoutId = window.setTimeout(() => {
+        sessionSlideHintEl?.classList.remove('is-visible');
+        slideHintTimeoutId = null;
+      }, 3000);
+      return;
+    }
+
+    const li = document.getElementById(targetKey);
+    if (!li) return;
+    li.classList.remove('show-slide-hint');
+    void li.offsetWidth;
+    li.classList.add('show-slide-hint');
+    slideHintTimeoutId = window.setTimeout(() => {
+      li.classList.remove('show-slide-hint');
+      slideHintTimeoutId = null;
+    }, 3000);
   }
 
   function normalizePersistedTargetAudioState(rawState) {
@@ -2995,6 +3316,12 @@ let cachedOperatorTargets = null;
 
   function disconnectPlaybackNodes(entry) {
     if (!entry) return;
+    if (entry.gainNode?.gain) {
+      try { entry.gainNode.gain.value = 0; } catch {}
+    }
+    if (entry.feedDuckingNode?.gain) {
+      try { entry.feedDuckingNode.gain.value = 0; } catch {}
+    }
     if (entry.mediaSource) {
       try { entry.mediaSource.disconnect(); } catch {}
       entry.mediaSource = null;
@@ -3009,9 +3336,35 @@ let cachedOperatorTargets = null;
     }
   }
 
+  function finalizeDetachedAudioElement(audioEl) {
+    if (!audioEl) return;
+    try { audioEl.load?.(); } catch {}
+    try { audioEl.remove(); } catch {}
+    audioEntryMap.delete(audioEl);
+  }
+
+  function disposeDetachedAudioElement(audioEl) {
+    if (!audioEl) return;
+    if (isiOS || isSafariBrowser) {
+      window.setTimeout(() => {
+        finalizeDetachedAudioElement(audioEl);
+      }, 0);
+      return;
+    }
+    finalizeDetachedAudioElement(audioEl);
+  }
+
   function disposePlaybackEntry(entry) {
     if (!entry) return;
     disconnectPlaybackNodes(entry);
+    if (entry.stream) {
+      try {
+        entry.stream.getTracks().forEach((track) => {
+          try { track.stop(); } catch {}
+        });
+      } catch {}
+      entry.stream = null;
+    }
     if (entry.usesSharedAudioElement) {
       return;
     }
@@ -3020,8 +3373,8 @@ let cachedOperatorTargets = null;
     pendingAudioPlayPromises.delete(entry.audio);
     try { entry.audio.pause?.(); } catch {}
     try { entry.audio.srcObject = null; } catch {}
-    entry.audio.remove();
-    audioEntryMap.delete(entry.audio);
+    try { entry.audio.removeAttribute('src'); } catch {}
+    disposeDetachedAudioElement(entry.audio);
   }
 
   function shouldDimFeedEntry(entry) {
@@ -3469,6 +3822,14 @@ let cachedOperatorTargets = null;
   function applySessionUI() {
     const isFeed = session.kind === 'feed';
     document.body.classList.toggle('feed-mode', isFeed);
+    ensureCustomTargetHotkeysLoaded();
+    if (session.kind !== 'user') {
+      setActiveSettingsView('main');
+      stopHotkeyCapture({ rerender: false });
+    }
+    if (shortcutSettingsOpenButton) {
+      shortcutSettingsOpenButton.hidden = session.kind !== 'user';
+    }
 
     if (feedBanner) {
       feedBanner.hidden = !isFeed;
@@ -3515,6 +3876,7 @@ let cachedOperatorTargets = null;
     updateFeedPtimeUI();
     applyUserGainControlState();
     updateFeedControls();
+    renderTargetHotkeySettings(cachedUsers);
   }
 
   applySessionUI();
@@ -3562,10 +3924,6 @@ let cachedOperatorTargets = null;
 
     for (const [feedId, audios] of feedAudioElements) {
       const key = `feed-${feedId}`;
-      const tile = document.getElementById(key);
-      const dimDisabled = feedDimmingDisabled.has(String(feedId));
-      const shouldDim = shouldDuck && !dimDisabled && feedDuckingFactor < 0.999;
-      tile?.classList.toggle('feed-dimmed', shouldDim);
 
       for (const audioEl of audios) {
         const entry = audioEntryMap.get(audioEl);
@@ -3589,8 +3947,7 @@ let cachedOperatorTargets = null;
       const conferenceId = Number(String(key).slice(5));
       const tile = document.getElementById(key);
       const dimDisabled = listenOnlyConferenceDimmingDisabled.has(String(conferenceId));
-      const shouldDim = shouldDimSelf && !dimDisabled && feedDuckingFactor < 0.999;
-      tile?.classList.toggle('monitor-dimmed', shouldDim);
+      tile?.classList.remove('monitor-dimmed');
 
       forEachStreamEntry(key, (entry) => {
         if (mutedPeers.has(key)) {
@@ -4766,6 +5123,306 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     return true;
   }
 
+  function buildTalkTargetDescriptors(users = cachedUsers) {
+    if (session.kind !== 'user') return [];
+
+    const usersById = new Map();
+    (Array.isArray(users) ? users : []).forEach((user) => {
+      if (user?.userId == null) return;
+      usersById.set(Number(user.userId), user);
+    });
+
+    const descriptors = [{
+      identity: REPLY_HOTKEY_IDENTITY,
+      kind: 'reply',
+      label: 'Reply',
+      kindLabel: 'Action',
+    }];
+
+    if (!Array.isArray(cachedOperatorTargets)) {
+      return descriptors;
+    }
+
+    cachedOperatorTargets.forEach((target) => {
+      if (!target || typeof target !== 'object') return;
+
+      if (target.targetType === 'user') {
+        const targetIdNum = Number(target.targetId);
+        if (!shouldRenderUserTargetRow(targetIdNum, usersById)) return;
+        const onlineUser = usersById.get(targetIdNum);
+        const targetData = { type: 'user', id: targetIdNum };
+        descriptors.push({
+          identity: getTalkTargetIdentity(targetData),
+          kind: 'target',
+          target: targetData,
+          label: target.name || onlineUser?.name || `User ${targetIdNum}`,
+          kindLabel: 'User',
+        });
+        return;
+      }
+
+      if (target.targetType === 'conference' && target.canTalk !== false) {
+        const conferenceId = Number(target.targetId);
+        const targetData = { type: 'conference', id: conferenceId };
+        descriptors.push({
+          identity: getTalkTargetIdentity(targetData),
+          kind: 'target',
+          target: targetData,
+          label: target.name || `Conference ${conferenceId}`,
+          kindLabel: 'Conference',
+        });
+      }
+    });
+
+    return descriptors.filter((entry) => entry.identity);
+  }
+
+  function rebuildTargetHotkeyAssignments(users = cachedUsers) {
+    ensureCustomTargetHotkeysLoaded();
+    targetHotkeys.clear();
+    targetHotkeysByTarget.clear();
+    hotkeyBindingElements.clear();
+
+    const descriptors = buildTalkTargetDescriptors(users);
+    const claimedBindingIds = new Set();
+
+    descriptors.forEach((descriptor) => {
+      const customBinding = customTargetHotkeys.get(descriptor.identity);
+      if (!customBinding || claimedBindingIds.has(customBinding.id)) return;
+      claimedBindingIds.add(customBinding.id);
+      targetHotkeys.set(customBinding.id, {
+        kind: descriptor.kind || 'target',
+        target: descriptor.target,
+        binding: customBinding,
+        identity: descriptor.identity,
+      });
+      targetHotkeysByTarget.set(descriptor.identity, customBinding);
+    });
+
+    let defaultIndex = 0;
+    descriptors.forEach((descriptor) => {
+      if (targetHotkeysByTarget.has(descriptor.identity)) return;
+      if (descriptor.kind === 'reply') {
+        if (claimedBindingIds.has(DEFAULT_REPLY_HOTKEY_BINDING.id)) return;
+        claimedBindingIds.add(DEFAULT_REPLY_HOTKEY_BINDING.id);
+        targetHotkeys.set(DEFAULT_REPLY_HOTKEY_BINDING.id, {
+          kind: 'reply',
+          target: null,
+          binding: DEFAULT_REPLY_HOTKEY_BINDING,
+          identity: descriptor.identity,
+        });
+        targetHotkeysByTarget.set(descriptor.identity, DEFAULT_REPLY_HOTKEY_BINDING);
+        return;
+      }
+      while (
+        defaultIndex < DEFAULT_TARGET_HOTKEY_BINDINGS.length
+        && claimedBindingIds.has(DEFAULT_TARGET_HOTKEY_BINDINGS[defaultIndex].id)
+      ) {
+        defaultIndex += 1;
+      }
+      if (defaultIndex >= DEFAULT_TARGET_HOTKEY_BINDINGS.length) return;
+      const defaultBinding = DEFAULT_TARGET_HOTKEY_BINDINGS[defaultIndex];
+      defaultIndex += 1;
+      claimedBindingIds.add(defaultBinding.id);
+      targetHotkeys.set(defaultBinding.id, {
+        kind: descriptor.kind || 'target',
+        target: descriptor.target,
+        binding: defaultBinding,
+        identity: descriptor.identity,
+      });
+      targetHotkeysByTarget.set(descriptor.identity, defaultBinding);
+    });
+
+    return descriptors;
+  }
+
+  function findRenderedTargetRow(target) {
+    const normalizedTarget = normalizePttTarget(target);
+    if (!normalizedTarget) return null;
+    if (normalizedTarget.type === 'conference') {
+      return document.getElementById(`conf-${normalizedTarget.id}`);
+    }
+    if (normalizedTarget.type === 'user') {
+      return document.querySelector(`.user-target[data-id="${String(normalizedTarget.id)}"]`);
+    }
+    return null;
+  }
+
+  function syncRenderedHotkeyBindings(users = cachedUsers) {
+    hotkeyBindingElements.clear();
+    document.querySelectorAll('.target-item').forEach((row) => {
+      delete row.dataset.hotkeyId;
+      delete row.dataset.hotkey;
+      row.classList.remove('hotkey-active');
+    });
+
+    buildTalkTargetDescriptors(users).forEach((descriptor) => {
+      if (descriptor.kind !== 'target') return;
+      const binding = targetHotkeysByTarget.get(descriptor.identity);
+      if (!binding) return;
+      const row = findRenderedTargetRow(descriptor.target);
+      if (!row) return;
+      row.dataset.hotkeyId = binding.id;
+      row.dataset.hotkey = binding.label;
+      row.classList.toggle('hotkey-active', pressedHotkeyBindings.has(binding.id));
+      hotkeyBindingElements.set(binding.id, row);
+    });
+  }
+
+  function stopHotkeyCapture({ rerender = true } = {}) {
+    if (!activeHotkeyCaptureTargetIdentity) return;
+    activeHotkeyCaptureTargetIdentity = null;
+    if (rerender) {
+      renderTargetHotkeySettings(cachedUsers);
+    }
+  }
+
+  function setCustomHotkeyForTarget(targetIdentity, binding) {
+    if (!targetIdentity || !binding) return;
+    ensureCustomTargetHotkeysLoaded();
+    Array.from(customTargetHotkeys.entries()).forEach(([existingIdentity, existingBinding]) => {
+      if (existingIdentity === targetIdentity) return;
+      if (existingBinding?.id !== binding.id) return;
+      customTargetHotkeys.delete(existingIdentity);
+    });
+    customTargetHotkeys.set(targetIdentity, binding);
+    persistCustomTargetHotkeys();
+    stopHotkeyCapture({ rerender: false });
+    refreshTargetHotkeyUi(cachedUsers);
+  }
+
+  function clearCustomHotkeyForTarget(targetIdentity) {
+    if (!targetIdentity || !customTargetHotkeys.has(targetIdentity)) return;
+    customTargetHotkeys.delete(targetIdentity);
+    persistCustomTargetHotkeys();
+    stopHotkeyCapture({ rerender: false });
+    refreshTargetHotkeyUi(cachedUsers);
+  }
+
+  function resetCustomTargetHotkeys() {
+    if (customTargetHotkeys.size === 0) return;
+    customTargetHotkeys.clear();
+    persistCustomTargetHotkeys();
+    stopHotkeyCapture({ rerender: false });
+    refreshTargetHotkeyUi(cachedUsers);
+  }
+
+  function renderTargetHotkeySettings(users = cachedUsers) {
+    if (!shortcutSettingsSection || !shortcutSettingsList || !shortcutSettingsEmpty) return;
+
+    const shouldShow = session.kind === 'user';
+    shortcutSettingsSection.hidden = !shouldShow;
+    if (!shouldShow) return;
+
+    const descriptors = buildTalkTargetDescriptors(users);
+    if (
+      activeHotkeyCaptureTargetIdentity
+      && !descriptors.some((descriptor) => descriptor.identity === activeHotkeyCaptureTargetIdentity)
+    ) {
+      activeHotkeyCaptureTargetIdentity = null;
+    }
+    shortcutSettingsList.innerHTML = '';
+    if (shortcutResetButton) {
+      shortcutResetButton.disabled = customTargetHotkeys.size === 0;
+    }
+
+    if (descriptors.length === 0) {
+      shortcutSettingsEmpty.hidden = false;
+      shortcutSettingsEmpty.textContent = 'No talk targets available yet.';
+      return;
+    }
+
+    shortcutSettingsEmpty.hidden = true;
+
+    descriptors.forEach((descriptor) => {
+      const { identity, label, kindLabel } = descriptor;
+      const binding = targetHotkeysByTarget.get(identity) || null;
+      const isCustom = customTargetHotkeys.has(identity);
+      const isRecording = activeHotkeyCaptureTargetIdentity === identity;
+
+      const row = document.createElement('div');
+      row.className = 'shortcut-settings__row';
+
+      const targetInfo = document.createElement('div');
+      targetInfo.className = 'shortcut-settings__target';
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'shortcut-settings__target-name';
+      nameEl.textContent = label;
+      targetInfo.appendChild(nameEl);
+
+      const typeEl = document.createElement('span');
+      typeEl.className = 'shortcut-settings__target-type';
+      typeEl.textContent = kindLabel;
+      targetInfo.appendChild(typeEl);
+
+      const bindingWrap = document.createElement('div');
+      bindingWrap.className = 'shortcut-settings__binding-wrap';
+
+      const bindingEl = document.createElement('span');
+      bindingEl.className = 'shortcut-settings__binding';
+      if (isRecording) {
+        bindingEl.classList.add('is-recording');
+      } else if (isCustom) {
+        bindingEl.classList.add('is-custom');
+      }
+      bindingEl.textContent = isRecording ? 'Press key…' : (binding?.label || 'None');
+      bindingWrap.appendChild(bindingEl);
+
+      const bindingMeta = document.createElement('span');
+      bindingMeta.className = 'shortcut-settings__binding-meta';
+      if (isRecording) {
+        bindingMeta.hidden = true;
+      } else if (isCustom) {
+        bindingMeta.textContent = 'Custom';
+      } else if (binding) {
+        bindingMeta.textContent = 'Default';
+      } else {
+        bindingMeta.textContent = 'No default';
+      }
+      bindingWrap.appendChild(bindingMeta);
+
+      const actions = document.createElement('div');
+      actions.className = 'shortcut-settings__actions';
+
+      const assignBtn = document.createElement('button');
+      assignBtn.type = 'button';
+      assignBtn.className = 'shortcut-settings__button';
+      if (isRecording) {
+        assignBtn.classList.add('is-recording');
+      }
+      assignBtn.textContent = isRecording ? 'Cancel' : 'Set key';
+      assignBtn.addEventListener('click', () => {
+        activeHotkeyCaptureTargetIdentity = isRecording ? null : identity;
+        renderTargetHotkeySettings(cachedUsers);
+      });
+      actions.appendChild(assignBtn);
+
+      const resetBtn = document.createElement('button');
+      resetBtn.type = 'button';
+      resetBtn.className = 'shortcut-settings__button shortcut-settings__button--secondary';
+      resetBtn.textContent = 'Default';
+      resetBtn.disabled = !isCustom;
+      resetBtn.addEventListener('click', () => {
+        clearCustomHotkeyForTarget(identity);
+      });
+      actions.appendChild(resetBtn);
+
+      row.append(targetInfo, bindingWrap, actions);
+      shortcutSettingsList.appendChild(row);
+    });
+  }
+
+  function refreshTargetHotkeyUi(users = cachedUsers) {
+    rebuildTargetHotkeyAssignments(users);
+    syncRenderedHotkeyBindings(users);
+    renderTargetHotkeySettings(users);
+  }
+
+  stopHotkeyCaptureHandler = stopHotkeyCapture;
+  renderTargetHotkeySettingsHandler = renderTargetHotkeySettings;
+  refreshTargetHotkeyUiHandler = refreshTargetHotkeyUi;
+
   function clearPendingOfflineUserTimer(userId) {
     const key = String(userId);
     const timerId = pendingOfflineUserTimers.get(key);
@@ -4864,7 +5521,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 	    });
   }
 
-  function buildUserTargetElement(target, usersById, hotkeyDigit = null) {
+  function buildUserTargetElement(target, usersById) {
       const targetIdNum = Number(target.targetId);
       if (!shouldRenderUserTargetRow(targetIdNum, usersById)) return null;
 
@@ -4881,9 +5538,6 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       li.dataset.type = 'user';
       li.dataset.id = String(targetIdNum);
       li.dataset.socketId = socketId || '';
-      if (hotkeyDigit) {
-        li.dataset.hotkey = hotkeyDigit;
-      }
       if (!isOnline) {
         li.classList.add('is-offline');
       }
@@ -5247,6 +5901,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     applyIncomingTalkState();
     syncRenderedTargetStateUi();
     syncRenderedTargetAudioPreferences();
+    refreshTargetHotkeyUi(users);
     refreshLastTargetLabel();
     updateTargetLayerControls();
     updateCompactSessionBarMode(list.childElementCount);
@@ -5274,25 +5929,13 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     if (!list) return;
     list.innerHTML = '';
 
-    if (pressedHotkeyDigits.size) {
+    ensureCustomTargetHotkeysLoaded();
+
+    if (pressedHotkeyBindings.size) {
       handleStopTalking({ preventDefault() {}, currentTarget: null });
     }
-    pressedHotkeyDigits.clear();
+    pressedHotkeyBindings.clear();
     clearHotkeyActiveStyles();
-    targetHotkeys.clear();
-    let nextHotkeyIndex = 0;
-
-    const takeHotkeyDigit = () => {
-      if (nextHotkeyIndex >= TARGET_HOTKEY_DIGITS.length) return null;
-      return TARGET_HOTKEY_DIGITS[nextHotkeyIndex++];
-    };
-
-    const applyHotkeyToTarget = (li, labelRow, targetData) => {
-      const digit = takeHotkeyDigit();
-      if (!digit) return;
-      targetHotkeys.set(digit, targetData);
-      li.dataset.hotkey = digit;
-    };
 
     targetLabels.clear();
     listenOnlyConferenceKeys.clear();
@@ -5303,6 +5946,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       usersById.set(Number(u.userId), u);
     });
     rebuildUserTargetLabels(users);
+    rebuildTargetHotkeyAssignments(users);
 
     const conferenceNames = new Map();
     targets
@@ -5320,13 +5964,8 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       });
 
     const appendUserTarget = (target) => {
-      const targetIdNum = Number(target.targetId);
-      const digit = takeHotkeyDigit();
-      const li = buildUserTargetElement(target, usersById, digit);
+      const li = buildUserTargetElement(target, usersById);
       if (!li) return;
-      if (digit && Number.isFinite(targetIdNum)) {
-        targetHotkeys.set(digit, { type: 'user', id: targetIdNum });
-      }
       list.appendChild(li);
     };
 
@@ -5509,8 +6148,6 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       }
 
       li.append(icon, info, actions, hint);
-      applyHotkeyToTarget(li, labelRow, { type: 'conference', id });
-
       let rowPttGestureActive = false;
       let rowPttStartX = 0;
       let rowPttLockedByGesture = false;
@@ -5752,6 +6389,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     syncRenderedTargetStateUi();
 
 	    syncRenderedTargetAudioPreferences();
+    refreshTargetHotkeyUi(users);
 	    refreshLastTargetLabel();
     primeVisibleRemotePlaybackBuses();
     pruneTargetPlaybackBuses(collectVisibleRemoteTargetKeys());
@@ -6068,6 +6706,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       }
       const entry = {
         audio,
+        stream,
         volume: initVol,
         key: targetKey,
         streamKey,
@@ -6778,29 +7417,48 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       .forEach((el) => el.classList.remove("hotkey-active"));
   }
 
-  function setHotkeyElementState(digit, isActive) {
-    const el = document.querySelector(`.target-item[data-hotkey="${digit}"]`);
+  function setHotkeyElementState(bindingId, isActive) {
+    const el = hotkeyBindingElements.get(bindingId) || null;
     if (!el) return;
     el.classList.toggle("hotkey-active", Boolean(isActive));
   }
 
-  function extractHotkeyDigit(event) {
-    if (!event) return null;
-    if (event.key && /^[1-9]$/.test(event.key)) {
-      return event.key;
+  function getHotkeyAssignmentForEvent(event) {
+    const lookupIds = getHotkeyLookupIds(event);
+    for (const bindingId of lookupIds) {
+      const assignment = targetHotkeys.get(bindingId);
+      if (assignment) {
+        return assignment;
+      }
     }
-
-    const code = event.code || "";
-    let match = code.match(/^Digit([1-9])$/);
-    if (match) return match[1];
-    match = code.match(/^Numpad([1-9])$/);
-    if (match) return match[1];
     return null;
+  }
+
+  function resolveHotkeyAssignmentTarget(assignment) {
+    if (!assignment || typeof assignment !== 'object') return null;
+    if (assignment.kind === 'reply') {
+      if (!lastTarget) return null;
+      return { type: lastTarget.type, id: lastTarget.id };
+    }
+    return assignment.target || null;
+  }
+
+  function setHotkeyAssignmentActiveState(assignment, isActive) {
+    if (!assignment || typeof assignment !== 'object') return;
+    if (assignment.kind === 'reply') {
+      setReplyButtonActive(isActive);
+      return;
+    }
+    const bindingId = assignment.binding?.id || null;
+    if (!bindingId) return;
+    setHotkeyElementState(bindingId, isActive);
   }
 
   function canUseTargetHotkeys(event) {
     if (session.kind !== "user") return false;
     if (activeLockButton) return false;
+    if (settingsMenuOpen) return false;
+    if (activeHotkeyCaptureTargetIdentity) return false;
     if (!event) return false;
     if (event.altKey || event.ctrlKey || event.metaKey) return false;
     if (isTextInput(event.target)) return false;
@@ -7052,14 +7710,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
     const effectiveTargets = currentTargets.length > 0 ? currentTargets : [normalizedTarget];
     const targetKey = keyFromTarget(effectiveTargets[0] || normalizedTarget);
-    if (!slideHintShown && targetKey && !targetKey.startsWith('feed-')) {
-      const li = document.getElementById(targetKey);
-      if (li) {
-        slideHintShown = true;
-        li.classList.add('show-slide-hint');
-        setTimeout(() => li.classList.remove('show-slide-hint'), 3000);
-      }
-    }
+    showSlideToLockHint(targetKey);
 
     if (producer || pendingTalkStart) {
       emitTalkTargetsUpdated('talk-targets-updated', effectiveTargets);
@@ -7185,7 +7836,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         clearPressedTalkPointers();
         setReplyButtonActive(false);
         clearHotkeyActiveStyles();
-        pressedHotkeyDigits.clear();
+        pressedHotkeyBindings.clear();
         setSelfTalkingKey(null);
         if (activeLockButton || activeLockTarget) {
           clearLockState();
@@ -7314,7 +7965,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     clearPressedTalkPointers();
     applyFeedDucking();
     clearHotkeyActiveStyles();
-    pressedHotkeyDigits.clear();
+    pressedHotkeyBindings.clear();
     emitPttState('talk-stopped', { talking: false, lockActive: false, target: null, targets: [] });
 
     if (shouldRestoreSuspendedLock) {
@@ -7418,78 +8069,59 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     stopTalkingSafely({ respectLock: true });
   }, { passive: true });
 
-  // Keyboard Push-to-Talk: hold Space to talk
-  let spaceKeyHeld = false;
   function isTextInput(el) {
     const tag = (el?.tagName || '').toLowerCase();
     return tag === 'input' || tag === 'textarea' || tag === 'select' || el?.isContentEditable;
   }
 
   window.addEventListener('keydown', (e) => {
+    if (!activeHotkeyCaptureTargetIdentity) return;
     if (e.repeat) return;
-    const isSpace = e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar';
-    if (!isSpace) return;
-    if (e.altKey || e.ctrlKey || e.metaKey) return;
-    if (session.kind !== 'user') return;
-    if (!lastTarget) return;
-    if (activeLockButton) return; // don't interfere with lock mode
-    if (isTextInput(e.target)) return;
 
-    spaceKeyHeld = true;
     e.preventDefault();
-    // Reply-Button highlighten und als gedrückt markieren
-    if (btnReply) {
-      btnReply.classList.add('active');
-      btnReply.setAttribute('aria-pressed', 'true');
-    }
-    setReplyButtonActive(true);
-    handleTalk(e, { type: lastTarget.type, id: lastTarget.id });
-  });
+    e.stopImmediatePropagation();
 
-  window.addEventListener('keyup', (e) => {
-    if (!spaceKeyHeld) return;
-    const isSpace = e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar';
-    if (!isSpace) return;
-    spaceKeyHeld = false;
-    if (activeLockButton) return; // ignore when locked
-    // Reply-Button Highlight entfernen
-    if (btnReply) {
-      btnReply.classList.remove('active');
-      btnReply.setAttribute('aria-pressed', 'false');
+    if (e.key === 'Escape') {
+      stopHotkeyCapture();
+      return;
     }
-    setReplyButtonActive(false);
-    handleStopTalking({ preventDefault() {}, currentTarget: null });
-  });
+
+    const binding = getRecordableHotkeyBinding(e);
+    if (!binding) return;
+    setCustomHotkeyForTarget(activeHotkeyCaptureTargetIdentity, binding);
+  }, { capture: true });
 
   window.addEventListener('keydown', e => {
     if (e.repeat) return;
-    const digit = extractHotkeyDigit(e);
-    if (!digit) return;
     if (!canUseTargetHotkeys(e)) return;
-    if (pressedHotkeyDigits.has(digit)) return;
-    const target = targetHotkeys.get(digit);
-    if (!target) return;
+    const assignment = getHotkeyAssignmentForEvent(e);
+    if (!assignment) return;
+    const bindingId = assignment.binding?.id || null;
+    if (!bindingId || pressedHotkeyBindings.has(bindingId)) return;
+    const talkTarget = resolveHotkeyAssignmentTarget(assignment);
+    if (!talkTarget) return;
 
-    pressedHotkeyDigits.add(digit);
+    pressedHotkeyBindings.add(bindingId);
     e.preventDefault();
-    setHotkeyElementState(digit, true);
+    setHotkeyAssignmentActiveState(assignment, true);
     handleTalk({
       preventDefault() {},
-      talkInputKey: `hotkey:${digit}`,
-    }, target);
+      talkInputKey: `hotkey:${bindingId}`,
+    }, talkTarget);
   });
 
   window.addEventListener('keyup', e => {
-    const digit = extractHotkeyDigit(e);
-    if (!digit) return;
-    if (!pressedHotkeyDigits.has(digit)) return;
-    pressedHotkeyDigits.delete(digit);
-    setHotkeyElementState(digit, false);
+    const assignment = getHotkeyAssignmentForEvent(e);
+    if (!assignment) return;
+    const bindingId = assignment.binding?.id || null;
+    if (!bindingId || !pressedHotkeyBindings.has(bindingId)) return;
+    pressedHotkeyBindings.delete(bindingId);
+    setHotkeyAssignmentActiveState(assignment, false);
     e.preventDefault();
     handleStopTalking({
       preventDefault() {},
       currentTarget: null,
-      talkInputKey: `hotkey:${digit}`,
+      talkInputKey: `hotkey:${bindingId}`,
     });
   });
 

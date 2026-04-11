@@ -57,6 +57,7 @@
         justify-content: space-between;
         gap: 0.5rem;
         flex-wrap: wrap;
+        position: relative;
         padding: 0.45rem 0.6rem;
         background: rgba(59, 130, 246, 0.08);
         border-radius: 4px;
@@ -80,6 +81,13 @@
       .session-bar button {
         margin: 0;
         flex-shrink: 0;
+      }
+
+      .session-slide-hint {
+        display: none;
+        pointer-events: none;
+        user-select: none;
+        -webkit-user-select: none;
       }
 
       .target-layer-switcher {
@@ -242,9 +250,9 @@
         display: none;
         gap: 0.9rem;
         padding: 1rem 1.25rem;
-        min-width: 320px;
-        width: min(360px, calc(100vw - 1rem));
-        max-height: min(calc(100dvh - 5rem), 40rem);
+        min-width: min(420px, calc(100vw - 1rem));
+        width: min(560px, calc(100vw - 1rem));
+        max-height: min(calc(100dvh - 4rem), 42rem);
         overflow-y: auto;
         overscroll-behavior: contain;
         border: 1px solid rgba(148, 163, 184, 0.2);
@@ -260,6 +268,15 @@
         animation: fadeIn 0.15s ease;
       }
 
+      .settings-view {
+        display: grid;
+        gap: 0.9rem;
+      }
+
+      .settings-view[hidden] {
+        display: none !important;
+      }
+
       .settings-actions {
         display: flex;
         justify-content: flex-end;
@@ -269,6 +286,236 @@
         padding-bottom: 0.1rem;
         border-top: 1px solid rgba(148, 163, 184, 0.2);
         background: #1f2937;
+      }
+
+      .settings-nav-button {
+        appearance: none;
+        -webkit-appearance: none;
+        width: 100%;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+          "title arrow"
+          "desc arrow";
+        align-items: center;
+        gap: 0.2rem 0.8rem;
+        text-align: left;
+        cursor: pointer;
+        padding: 0.9rem 1rem;
+        border-radius: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(15, 23, 42, 0.5);
+        color: #e2e8f0;
+      }
+
+      .settings-nav-button:hover {
+        background: rgba(30, 41, 59, 0.72);
+      }
+
+      .settings-nav-button__title {
+        grid-area: title;
+        font-size: 0.92rem;
+        font-weight: 700;
+        color: #e2e8f0;
+      }
+
+      .settings-nav-button__desc {
+        grid-area: desc;
+        font-size: 0.8rem;
+        color: #94a3b8;
+      }
+
+      .settings-nav-button__arrow {
+        grid-area: arrow;
+        font-size: 1.15rem;
+        color: #94a3b8;
+      }
+
+      .settings-subheader {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+        gap: 0.75rem;
+        padding-bottom: 0.2rem;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+      }
+
+      .settings-subheader__title {
+        font-size: 1rem;
+        font-weight: 700;
+        color: #e2e8f0;
+      }
+
+      .settings-back-button {
+        appearance: none;
+        -webkit-appearance: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
+        cursor: pointer;
+        height: 2.45rem;
+        padding: 0 0.9rem;
+        border-radius: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        background: rgba(30, 41, 59, 0.72);
+        color: #e2e8f0;
+        font-size: 0.8rem;
+        font-weight: 600;
+        line-height: 1;
+        transition: background-color 0.2s ease, border-color 0.2s ease;
+      }
+
+      .settings-back-button:hover {
+        background: rgba(51, 65, 85, 0.88);
+      }
+
+      .shortcut-settings {
+        display: grid;
+        gap: 0.8rem;
+      }
+
+      .shortcut-settings[hidden] {
+        display: none !important;
+      }
+
+      .shortcut-settings__header {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.75rem;
+      }
+
+      .shortcut-settings__title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: #e2e8f0;
+      }
+
+      .shortcut-settings__desc {
+        margin: 0;
+        font-size: 0.83rem;
+        line-height: 1.45;
+        color: #94a3b8;
+      }
+
+      .shortcut-settings__list {
+        display: grid;
+        gap: 0.55rem;
+      }
+
+      .shortcut-settings__empty {
+        font-size: 0.84rem;
+        color: #94a3b8;
+      }
+
+      .shortcut-settings__row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto auto;
+        gap: 0.6rem;
+        align-items: center;
+        padding: 0.65rem 0.7rem;
+        border-radius: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        background: rgba(15, 23, 42, 0.5);
+      }
+
+      .shortcut-settings__target {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+      }
+
+      .shortcut-settings__target-name {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: #e2e8f0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .shortcut-settings__target-type {
+        font-size: 0.78rem;
+        color: #94a3b8;
+      }
+
+      .shortcut-settings__binding-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.2rem;
+        min-width: 5.25rem;
+      }
+
+      .shortcut-settings__binding {
+        min-width: 100%;
+        padding: 0.45rem 0.6rem;
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: #111827;
+        color: #cbd5f5;
+        text-align: center;
+        font-size: 0.82rem;
+        font-weight: 700;
+        line-height: 1;
+        box-sizing: border-box;
+      }
+
+      .shortcut-settings__binding.is-custom {
+        color: #bfdbfe;
+        border-color: rgba(96, 165, 250, 0.35);
+      }
+
+      .shortcut-settings__binding.is-recording {
+        color: #fde68a;
+        border-color: rgba(245, 158, 11, 0.45);
+        background: rgba(120, 53, 15, 0.3);
+      }
+
+      .shortcut-settings__binding-meta {
+        font-size: 0.72rem;
+        color: #94a3b8;
+      }
+
+      .shortcut-settings__actions {
+        display: flex;
+        gap: 0.45rem;
+      }
+
+      .shortcut-settings__button {
+        appearance: none;
+        -webkit-appearance: none;
+        cursor: pointer;
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        background: rgba(30, 41, 59, 0.72);
+        color: #e2e8f0;
+        font-size: 0.8rem;
+        font-weight: 600;
+        padding: 0.48rem 0.72rem;
+        line-height: 1;
+        transition: background-color 0.18s ease, border-color 0.18s ease;
+      }
+
+      .shortcut-settings__button:hover {
+        background: rgba(51, 65, 85, 0.88);
+      }
+
+      .shortcut-settings__button:disabled {
+        cursor: default;
+        opacity: 0.45;
+      }
+
+      .shortcut-settings__button.is-recording {
+        border-color: rgba(245, 158, 11, 0.45);
+        background: rgba(120, 53, 15, 0.3);
+        color: #fde68a;
+      }
+
+      .shortcut-settings__button--secondary {
+        color: #cbd5f5;
       }
 
       .device-selector {
@@ -289,6 +536,88 @@
           width: min(360px, calc(100vw - 0.75rem));
           max-height: calc(100dvh - 4.5rem);
           padding: 0.95rem 1rem;
+        }
+
+        .shortcut-settings__row {
+          grid-template-columns: minmax(0, 1fr) auto;
+        }
+
+        .shortcut-settings__target {
+          grid-column: 1 / -1;
+        }
+
+        .shortcut-settings__binding-wrap {
+          min-width: 4.65rem;
+        }
+
+        .shortcut-settings__actions {
+          justify-self: end;
+        }
+      }
+
+      @media (min-width: 700px) and (max-width: 979px) {
+        .settings-body {
+          min-width: min(520px, calc(100vw - 1.25rem));
+          width: min(720px, calc(100vw - 1.25rem));
+          max-height: min(calc(100dvh - 2.5rem), 48rem);
+        }
+
+        .session-slide-hint {
+          display: block;
+          position: absolute;
+          left: 50%;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          max-width: calc(100% - 19rem);
+          padding: 0.2rem 0.75rem;
+          border-radius: 999px;
+          background: rgba(15, 23, 42, 0.82);
+          color: rgba(226, 232, 240, 0.96);
+          font-size: 1rem;
+          font-weight: 800;
+          line-height: 1.2;
+          letter-spacing: 0.01em;
+          text-align: center;
+          white-space: nowrap;
+          opacity: 0;
+          z-index: 1;
+        }
+
+        .session-slide-hint.is-visible {
+          animation: slideHintFade 3s ease forwards;
+        }
+      }
+
+      @media (min-width: 980px) {
+        .settings-body {
+          min-width: 560px;
+          width: min(780px, calc(100vw - 2rem));
+          max-height: min(calc(100dvh - 2rem), 52rem);
+        }
+
+        .session-slide-hint {
+          display: block;
+          position: absolute;
+          left: 50%;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          max-width: calc(100% - 22rem);
+          padding: 0.24rem 0.9rem;
+          border-radius: 999px;
+          background: rgba(15, 23, 42, 0.84);
+          color: rgba(226, 232, 240, 0.97);
+          font-size: 1.08rem;
+          font-weight: 800;
+          line-height: 1.2;
+          letter-spacing: 0.01em;
+          text-align: center;
+          white-space: nowrap;
+          opacity: 0;
+          z-index: 1;
+        }
+
+        .session-slide-hint.is-visible {
+          animation: slideHintFade 3s ease forwards;
         }
       }
 
@@ -628,11 +957,6 @@
       #targets-list li.feed-target,
       #targets-list li.monitor-only-target {
         cursor: default;
-      }
-
-      #targets-list li.feed-target.feed-dimmed,
-      #targets-list li.monitor-only-target.monitor-dimmed {
-        opacity: 0.65;
       }
 
       #targets-list .target-info {
@@ -1221,12 +1545,13 @@
     </div>
 
     <!-- Intercom App (initially hidden until login) -->
-      <div id="intercom-app" style="display: none;">
-        <div class="session-bar">
-          <div class="session-info">Logged in as <span id="my-id">Connecting...</span></div>
-          <div id="target-layer-switcher" class="target-layer-switcher" hidden>
-            <button id="target-layer-button" type="button" aria-label="Switch target layer">Layer 1/1</button>
-          </div>
+	      <div id="intercom-app" style="display: none;">
+	        <div class="session-bar">
+	          <div class="session-info">Logged in as <span id="my-id">Connecting...</span></div>
+          <div id="session-slide-hint" class="session-slide-hint" aria-hidden="true">← Slide to lock</div>
+	          <div id="target-layer-switcher" class="target-layer-switcher" hidden>
+	            <button id="target-layer-button" type="button" aria-label="Switch target layer">Layer 1/1</button>
+	          </div>
           <div class="settings-panel">
           <button
             type="button"
@@ -1240,85 +1565,110 @@
           </button>
           <button id="feed-logout-btn" type="button" class="logout-btn feed-session-logout">Logout</button>
           <div class="settings-body" id="settings-menu" hidden>
-            <div class="device-selector feed-optional">
-              <label for="input-select">Microphone</label>
-              <select id="input-select">
-                <option value="">select device</option>
-              </select>
-            </div>
-            <div id="output-device-selector" class="device-selector" hidden>
-              <label for="output-select">Output</label>
-              <select id="output-select">
-                <option value="">System default</option>
-              </select>
-            </div>
-            <div class="device-selector feed-optional">
-              <label for="quality-select">Audio profile</label>
-              <select id="quality-select">
-                <option value="ultra-low">Ultra low (5 ms frame)</option>
-                <option value="low">Low (10 ms frame)</option>
-                <option value="standard">Standard (20 ms frame)</option>
-              </select>
-            </div>
-            <div class="device-selector feed-optional">
-              <label for="dim-amount-select">Dim amount</label>
-              <select id="dim-amount-select">
-                <option value="-6">-6 dB</option>
-                <option value="-12">-12 dB</option>
-                <option value="-14" selected>-14 dB</option>
-                <option value="-18">-18 dB</option>
-                <option value="-24">-24 dB</option>
-              </select>
-            </div>
-            <div class="processing-options feed-optional">
-              <label>
-                <span class="processing-inline">
-                  <input type="checkbox" id="toggle-self-dim" />
-                  Dim feeds while speaking
-                </span>
-              </label>
-            </div>
-            <div class="processing-options feed-optional">
-              <label>
-                <span class="processing-inline">
-                  <input type="checkbox" id="toggle-processing" />
-                  Audio auto processing
-                </span>
-                <span class="processing-desc">(auto gain, noise cancellation, echo suppression - adds ~50 ms latency)</span>
-              </label>
-            </div>
-            <div class="user-level-controls feed-optional" id="user-level-controls">
-              <label for="user-input-gain">
-                Manual mic gain
-                <output id="user-input-gain-value" for="user-input-gain">+18.0 dB</output>
-              </label>
-              <input
-                type="range"
-                id="user-input-gain"
-                min="-30"
-                max="40"
-                step="0.5"
-                value="18"
-              />
-              <div class="user-meter">
-                <div class="user-meter__bar-wrapper">
-                  <div class="user-meter__bar" id="user-meter-bar"></div>
-                  <div class="user-meter__clip" id="user-meter-clip"></div>
+            <div class="settings-view" id="settings-main-view">
+              <div class="device-selector feed-optional">
+                <label for="input-select">Microphone</label>
+                <select id="input-select">
+                  <option value="">select device</option>
+                </select>
+              </div>
+              <div id="output-device-selector" class="device-selector" hidden>
+                <label for="output-select">Output</label>
+                <select id="output-select">
+                  <option value="">System default</option>
+                </select>
+              </div>
+              <div class="device-selector feed-optional">
+                <label for="quality-select">Audio profile</label>
+                <select id="quality-select">
+                  <option value="ultra-low">Ultra low (5 ms frame)</option>
+                  <option value="low">Low (10 ms frame)</option>
+                  <option value="standard">Standard (20 ms frame)</option>
+                </select>
+              </div>
+              <div class="device-selector feed-optional">
+                <label for="dim-amount-select">Dim amount</label>
+                <select id="dim-amount-select">
+                  <option value="-6">-6 dB</option>
+                  <option value="-12">-12 dB</option>
+                  <option value="-14" selected>-14 dB</option>
+                  <option value="-18">-18 dB</option>
+                  <option value="-24">-24 dB</option>
+                </select>
+              </div>
+              <div class="processing-options feed-optional">
+                <label>
+                  <span class="processing-inline">
+                    <input type="checkbox" id="toggle-self-dim" />
+                    Dim feeds while speaking
+                  </span>
+                </label>
+              </div>
+              <div class="processing-options feed-optional">
+                <label>
+                  <span class="processing-inline">
+                    <input type="checkbox" id="toggle-processing" />
+                    Audio auto processing
+                  </span>
+                  <span class="processing-desc">(auto gain, noise cancellation, echo suppression - adds ~50 ms latency)</span>
+                </label>
+              </div>
+              <div class="user-level-controls feed-optional" id="user-level-controls">
+                <label for="user-input-gain">
+                  Manual mic gain
+                  <output id="user-input-gain-value" for="user-input-gain">+18.0 dB</output>
+                </label>
+                <input
+                  type="range"
+                  id="user-input-gain"
+                  min="-30"
+                  max="40"
+                  step="0.5"
+                  value="18"
+                />
+                <div class="user-meter">
+                  <div class="user-meter__bar-wrapper">
+                    <div class="user-meter__bar" id="user-meter-bar"></div>
+                    <div class="user-meter__clip" id="user-meter-clip"></div>
+                  </div>
+                  <div class="user-meter__ticks">
+                    <span>-30</span>
+                    <span>-12</span>
+                    <span>-6</span>
+                    <span>-3</span>
+                    <span>0</span>
+                  </div>
                 </div>
-                <div class="user-meter__ticks">
-                  <span>-30</span>
-                  <span>-12</span>
-                  <span>-6</span>
-                  <span>-3</span>
-                  <span>0</span>
+                <div class="user-meter__readout">
+                  Peak: <span id="user-meter-value">-inf dB</span>
                 </div>
               </div>
-              <div class="user-meter__readout">
-                Peak: <span id="user-meter-value">-inf dB</span>
+              <button type="button" class="settings-nav-button feed-optional" id="shortcut-settings-open">
+                <span class="settings-nav-button__title">Keyboard shortcuts</span>
+                <span class="settings-nav-button__desc">Configure keys per target</span>
+                <span class="settings-nav-button__arrow" aria-hidden="true">&#8250;</span>
+              </button>
+              <div class="settings-actions">
+                <button id="logout-btn" type="button" class="logout-btn">Logout</button>
               </div>
             </div>
-            <div class="settings-actions">
-              <button id="logout-btn" type="button" class="logout-btn">Logout</button>
+            <div class="settings-view" id="settings-shortcuts-view" hidden>
+              <div class="settings-subheader">
+                <button type="button" class="settings-back-button" id="shortcut-settings-back">Back</button>
+                <span class="settings-subheader__title">Keyboard shortcuts</span>
+              </div>
+              <div class="shortcut-settings feed-optional" id="shortcut-settings" hidden>
+                <div class="shortcut-settings__header">
+                  <button type="button" class="shortcut-settings__button shortcut-settings__button--secondary" id="shortcut-reset-btn">
+                    Reset all
+                  </button>
+                </div>
+                <p class="shortcut-settings__desc">
+                  Targets default to 1-9 in target order. Reply defaults to Space. Click Set key and press a key to store a custom shortcut.
+                </p>
+                <div class="shortcut-settings__empty" id="shortcut-settings-empty" hidden>No talk targets available yet.</div>
+                <div class="shortcut-settings__list" id="shortcut-settings-list"></div>
+              </div>
             </div>
           </div>
         </div>

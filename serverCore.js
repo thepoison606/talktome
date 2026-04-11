@@ -4164,6 +4164,11 @@ io.on("connection", (socket) => {
     );
 
     try {
+      const peer = peers.get(socket.id);
+      if (!peer) {
+        return callback({ error: "Peer not registered" });
+      }
+
       // Find the producer
       let producerPeer = null;
       for (const [peerId, peer] of peers) {
@@ -4183,14 +4188,18 @@ io.on("connection", (socket) => {
         throw new Error("Cannot consume");
       }
 
-      const transport = peers.get(socket.id).recvTransport;
+      const transport = peer.recvTransport;
+      if (!transport) {
+        return callback({ error: "Receive transport not ready" });
+      }
+
       const consumer = await transport.consume({
         producerId,
         rtpCapabilities,
         paused: true,
       });
 
-      peers.get(socket.id).consumers.set(consumer.id, consumer);
+      peer.consumers.set(consumer.id, consumer);
       console.log(
         `[CONSUME] Consumer created: ${consumer.id} for ${socket.id}`
       );
