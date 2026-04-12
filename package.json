@@ -24,6 +24,7 @@
     "express": "^4.18.2",
     "mediasoup": "^3.19.2",
     "mediasoup-client": "^3.11.0",
+    "qrcode": "^1.5.4",
     "selfsigned": "^2.4.1",
     "socket.io": "^4.5.1"
   },

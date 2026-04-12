@@ -9,6 +9,7 @@ const adminState = {
 const adminLogin = document.getElementById('admin-login');
 const adminLoginForm = document.getElementById('admin-login-form');
 const adminLoginMessage = document.getElementById('admin-login-message');
+const adminNameInput = document.getElementById('admin-name');
 const adminApp = document.getElementById('admin-app');
 const adminBar = document.getElementById('admin-bar');
 const adminNameLabel = document.getElementById('admin-name-label');
@@ -16,8 +17,59 @@ const adminLogoutBtn = document.getElementById('admin-logout');
 const configExportBtn = document.getElementById('config-export-btn');
 const configImportBtn = document.getElementById('config-import-btn');
 const configImportFile = document.getElementById('config-import-file');
+const mediaNetworkMeta = document.getElementById('media-network-meta');
+const mediaNetworkQrContainer = document.getElementById('media-network-qr');
+const mediaNetworkQrButton = document.getElementById('media-network-qr-button');
+const mediaNetworkQrImage = document.getElementById('media-network-qr-image');
+const mediaNetworkQrDownloadButton = document.getElementById('media-network-qr-download');
+const adminImageLightbox = document.getElementById('admin-image-lightbox');
+const adminImageLightboxClose = document.getElementById('admin-image-lightbox-close');
+const adminImageLightboxImage = document.getElementById('admin-image-lightbox-image');
+const adminImageLightboxDownloadButton = document.getElementById('admin-image-lightbox-download');
+
+const collapsibleAdminSections = {
+  users: {
+    label: 'Users',
+    bodyEl: document.getElementById('users-section-body'),
+    buttonEl: document.getElementById('users-section-toggle'),
+    titleEl: document.getElementById('users-section-toggle')?.closest('.card-header__title'),
+  },
+  feeds: {
+    label: 'Feeds',
+    bodyEl: document.getElementById('feeds-section-body'),
+    buttonEl: document.getElementById('feeds-section-toggle'),
+    titleEl: document.getElementById('feeds-section-toggle')?.closest('.card-header__title'),
+  },
+  conferences: {
+    label: 'Conferences',
+    bodyEl: document.getElementById('conferences-section-body'),
+    buttonEl: document.getElementById('conferences-section-toggle'),
+    titleEl: document.getElementById('conferences-section-toggle')?.closest('.card-header__title'),
+  },
+  config: {
+    label: 'Config',
+    bodyEl: document.getElementById('config-section-body'),
+    buttonEl: document.getElementById('config-section-toggle'),
+    titleEl: document.getElementById('config-section-toggle')?.closest('.card-header__title'),
+  },
+};
+
+const ADMIN_SECTION_COLLAPSED_STORAGE_PREFIX = 'talktome:admin-section-collapsed:';
+
+let currentMediaNetworkQrState = null;
+
+function focusAdminLoginNameField() {
+  if (!adminNameInput) return;
+  window.requestAnimationFrame(() => {
+    try {
+      adminNameInput.focus();
+      adminNameInput.select?.();
+    } catch {}
+  });
+}
 
 function showLogin(message) {
+  closeAdminImageLightbox();
   if (adminLogin) adminLogin.classList.remove('is-hidden');
   if (adminApp) adminApp.classList.add('is-hidden');
   if (adminBar) adminBar.classList.add('is-hidden');
@@ -27,6 +79,7 @@ function showLogin(message) {
     adminLoginMessage.classList.remove('flash-success', 'flash-warning');
     adminLoginMessage.classList.add('flash-error');
   }
+  focusAdminLoginNameField();
 }
 
 function showAdminApp() {
@@ -78,6 +131,51 @@ function showMessage(text, tone = 'error', scope = 'global') {
     el.classList.remove('is-visible', toneClass);
     el.textContent = '';
   }, 5000);
+}
+
+function getStoredAdminSectionCollapsed(sectionKey) {
+  try {
+    const storedValue = localStorage.getItem(`${ADMIN_SECTION_COLLAPSED_STORAGE_PREFIX}${sectionKey}`);
+    if (storedValue === null) return true;
+    return storedValue === '1';
+  } catch {
+    return true;
+  }
+}
+
+function setAdminSectionCollapsed(sectionKey, collapsed, { persist = true } = {}) {
+  const section = collapsibleAdminSections[sectionKey];
+  if (!section) return;
+  const cardEl = section.bodyEl?.closest('.card') || section.buttonEl?.closest('.card') || null;
+
+  if (section.bodyEl) {
+    section.bodyEl.hidden = Boolean(collapsed);
+  }
+
+  if (cardEl) {
+    cardEl.classList.toggle('card--collapsed', Boolean(collapsed));
+  }
+
+  if (section.buttonEl) {
+    section.buttonEl.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    section.buttonEl.setAttribute('aria-label', `${collapsed ? 'Expand' : 'Collapse'} ${section.label.toLowerCase()} section`);
+  }
+
+  if (!collapsed && sectionKey === 'config') {
+    window.requestAnimationFrame(() => {
+      syncMediaNetworkQrPreviewSize();
+    });
+  }
+
+  if (!persist) return;
+
+  try {
+    localStorage.setItem(`${ADMIN_SECTION_COLLAPSED_STORAGE_PREFIX}${sectionKey}`, collapsed ? '1' : '0');
+  } catch {}
+}
+
+for (const sectionKey of Object.keys(collapsibleAdminSections)) {
+  setAdminSectionCollapsed(sectionKey, getStoredAdminSectionCollapsed(sectionKey), { persist: false });
 }
 
 function escapeHtml(value) {
@@ -147,6 +245,167 @@ function applyAdminState(payload) {
   }
 }
 
+function escapeSvgText(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const ADMIN_QR_RENDER_VIEWBOX_WIDTH = 420;
+const ADMIN_QR_RENDER_VIEWBOX_HEIGHT = 480;
+const ADMIN_QR_RENDER_SCALE = 2;
+
+function buildRenderedQrImageDataUrl({ qrCodeDataUrl, qrUrl, mdnsHostLabel }) {
+  if (!qrCodeDataUrl || !qrUrl) return '';
+  const mdnsLabel = mdnsHostLabel || 'mDNS disabled';
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${ADMIN_QR_RENDER_VIEWBOX_WIDTH * ADMIN_QR_RENDER_SCALE}" height="${ADMIN_QR_RENDER_VIEWBOX_HEIGHT * ADMIN_QR_RENDER_SCALE}" viewBox="0 0 ${ADMIN_QR_RENDER_VIEWBOX_WIDTH} ${ADMIN_QR_RENDER_VIEWBOX_HEIGHT}" role="img" aria-label="Connection QR code">
+      <rect width="${ADMIN_QR_RENDER_VIEWBOX_WIDTH}" height="${ADMIN_QR_RENDER_VIEWBOX_HEIGHT}" rx="20" fill="#ffffff"/>
+      <image href="${escapeSvgText(qrCodeDataUrl)}" x="50" y="26" width="320" height="320"/>
+      <text x="26" y="380" fill="#64748b" font-size="13" font-weight="700" font-family="Inter, Arial, sans-serif">IP URL</text>
+      <text x="26" y="404" fill="#0f172a" font-size="15" font-weight="600" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">${escapeSvgText(qrUrl)}</text>
+      <text x="26" y="438" fill="#64748b" font-size="13" font-weight="700" font-family="Inter, Arial, sans-serif">mDNS URL</text>
+      <text x="26" y="462" fill="#0f172a" font-size="15" font-weight="600" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">${escapeSvgText(mdnsLabel)}</text>
+    </svg>
+  `.trim();
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function closeAdminImageLightbox() {
+  if (!adminImageLightbox) return;
+  adminImageLightbox.classList.add('is-hidden');
+  document.body.style.removeProperty('overflow');
+}
+
+function buildMediaNetworkQrFilename(extension = 'png') {
+  const rawUrl = currentMediaNetworkQrState?.qrUrl || '';
+  try {
+    const host = new URL(rawUrl).hostname || 'talktome';
+    const safeHost = host.replace(/[^a-z0-9.-]+/gi, '-').replace(/-+/g, '-');
+    return `talktome-connect-qr-${safeHost}.${extension}`;
+  } catch {
+    return `talktome-connect-qr.${extension}`;
+  }
+}
+
+function loadImageFromDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to load QR image'));
+    image.src = dataUrl;
+  });
+}
+
+async function rasterizeQrDataUrlToPngBlob(dataUrl) {
+  const image = await loadImageFromDataUrl(dataUrl);
+  const width = Math.max(1, image.naturalWidth || image.width || 420);
+  const height = Math.max(1, image.naturalHeight || image.height || 480);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Canvas context unavailable');
+  }
+  context.drawImage(image, 0, 0, width, height);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) {
+    throw new Error('Failed to encode PNG');
+  }
+  return blob;
+}
+
+async function downloadMediaNetworkQrImage() {
+  const dataUrl = currentMediaNetworkQrState?.renderedQrDataUrl || '';
+  if (!dataUrl) return;
+  try {
+    const blob = await rasterizeQrDataUrlToPngBlob(dataUrl);
+    triggerDownload(blob, buildMediaNetworkQrFilename('png'));
+  } catch (error) {
+    console.error('Failed to download media network QR image:', error);
+    showMessage('❌ Failed to download QR image', 'error', 'config');
+  }
+}
+
+function openAdminImageLightbox() {
+  if (!adminImageLightbox || !currentMediaNetworkQrState?.renderedQrDataUrl) return;
+  if (adminImageLightboxImage) {
+    adminImageLightboxImage.src = currentMediaNetworkQrState.renderedQrDataUrl;
+  }
+  adminImageLightbox.classList.remove('is-hidden');
+  document.body.style.overflow = 'hidden';
+}
+
+function renderMediaNetworkQr(payload = null) {
+  const qrUrl = payload?.qrUrl || '';
+  const mdnsUrl = payload?.mdnsUrl || '';
+  const qrCodeDataUrl = payload?.qrCodeDataUrl || '';
+  const activeMdnsHost = typeof payload?.activeMdnsHost === 'string' ? payload.activeMdnsHost.trim() : '';
+  const mdnsHostLabel = activeMdnsHost && activeMdnsHost !== 'off'
+    ? activeMdnsHost
+    : '';
+  const renderedQrDataUrl = buildRenderedQrImageDataUrl({
+    qrCodeDataUrl,
+    qrUrl,
+    mdnsHostLabel,
+  });
+
+  currentMediaNetworkQrState = renderedQrDataUrl
+    ? {
+        qrUrl,
+        mdnsUrl,
+        renderedQrDataUrl,
+      }
+    : null;
+
+  if (!mediaNetworkQrContainer || !mediaNetworkQrButton || !mediaNetworkQrImage) return;
+
+  if (!renderedQrDataUrl || !qrUrl) {
+    mediaNetworkQrContainer.classList.add('is-hidden');
+    mediaNetworkQrButton.disabled = true;
+    if (mediaNetworkQrDownloadButton) mediaNetworkQrDownloadButton.disabled = true;
+    mediaNetworkQrButton.removeAttribute('aria-expanded');
+    mediaNetworkQrButton.style.height = '';
+    mediaNetworkQrImage.removeAttribute('src');
+    mediaNetworkQrImage.alt = 'Connection QR code unavailable';
+    mediaNetworkQrImage.style.height = '';
+    mediaNetworkQrImage.style.width = '';
+    closeAdminImageLightbox();
+    return;
+  }
+
+  mediaNetworkQrContainer.classList.remove('is-hidden');
+  mediaNetworkQrButton.disabled = false;
+  if (mediaNetworkQrDownloadButton) mediaNetworkQrDownloadButton.disabled = false;
+  mediaNetworkQrImage.src = renderedQrDataUrl;
+  mediaNetworkQrImage.alt = `Connection QR code for ${qrUrl}`;
+  mediaNetworkQrButton.setAttribute('aria-label', `Open large connection QR code for ${qrUrl}`);
+  syncMediaNetworkQrPreviewSize();
+}
+
+function syncMediaNetworkQrPreviewSize() {
+  if (!mediaNetworkQrContainer || !mediaNetworkQrButton || !mediaNetworkQrImage) return;
+
+  if (window.matchMedia('(max-width: 768px)').matches) {
+    mediaNetworkQrButton.style.height = '';
+    mediaNetworkQrImage.style.height = '';
+    mediaNetworkQrImage.style.width = '';
+    return;
+  }
+
+  const metaHeight = mediaNetworkMeta?.getBoundingClientRect?.().height || 0;
+  if (!metaHeight) return;
+
+  const nextHeight = Math.max(144, Math.round(metaHeight + 24));
+  mediaNetworkQrButton.style.height = `${nextHeight}px`;
+  mediaNetworkQrImage.style.height = `${Math.max(nextHeight - 6, 128)}px`;
+  mediaNetworkQrImage.style.width = '100%';
+}
+
 async function logoutAdmin(message) {
   try {
     await authedFetch('/admin/logout', { method: 'POST' });
@@ -158,6 +417,7 @@ async function logoutAdmin(message) {
   adminState.mustChangePassword = false;
   adminState.userId = null;
   adminState.name = '';
+  closeAdminImageLightbox();
   showLogin(message || '');
 }
 
@@ -459,6 +719,8 @@ async function loadMediaNetworkSettings() {
   if (overrideHintEl) {
     overrideHintEl.classList.toggle('is-hidden', !payload?.environmentOverride);
   }
+
+  renderMediaNetworkQr(payload);
 }
 
 async function updateUserConferenceOptions(userId, allConfs, previousIndex) {
@@ -1335,5 +1597,48 @@ if (adminLoginForm) {
 if (adminLogoutBtn) {
   adminLogoutBtn.addEventListener('click', () => logoutAdmin());
 }
+
+for (const [sectionKey, section] of Object.entries(collapsibleAdminSections)) {
+  if (!section.titleEl || !section.bodyEl) continue;
+  section.titleEl.addEventListener('click', () => {
+    setAdminSectionCollapsed(sectionKey, !section.bodyEl.hidden);
+  });
+}
+
+if (mediaNetworkQrButton) {
+  mediaNetworkQrButton.addEventListener('click', () => openAdminImageLightbox());
+}
+
+if (mediaNetworkQrDownloadButton) {
+  mediaNetworkQrDownloadButton.addEventListener('click', () => downloadMediaNetworkQrImage());
+}
+
+if (adminImageLightboxClose) {
+  adminImageLightboxClose.addEventListener('click', () => closeAdminImageLightbox());
+}
+
+if (adminImageLightboxDownloadButton) {
+  adminImageLightboxDownloadButton.addEventListener('click', () => downloadMediaNetworkQrImage());
+}
+
+if (adminImageLightbox) {
+  adminImageLightbox.addEventListener('click', (event) => {
+    if (event.target === adminImageLightbox) {
+      closeAdminImageLightbox();
+    }
+  });
+}
+
+window.addEventListener('resize', () => {
+  if (mediaNetworkQrContainer && !mediaNetworkQrContainer.classList.contains('is-hidden')) {
+    syncMediaNetworkQrPreviewSize();
+  }
+});
+
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && adminImageLightbox && !adminImageLightbox.classList.contains('is-hidden')) {
+    closeAdminImageLightbox();
+  }
+});
 
 ensureAdminSession();

@@ -8,6 +8,7 @@ const crypto = require("crypto");
 const os = require("os");
 const dgram = require("dgram");
 const selfsigned = require("selfsigned");
+const QRCode = require("qrcode");
 const { getDataDir } = require("./dataPaths");
 const { ApplePttPushService } = require("./applePttPushService");
 
@@ -1749,7 +1750,66 @@ app.get("/admin/settings/mdns", requireAdmin, (req, res) => {
   });
 });
 
-app.get("/admin/settings/media-network", requireAdmin, (req, res) => {
+function buildHttpsConnectUrl(host) {
+  if (typeof host !== "string") return "";
+  const trimmed = host.trim();
+  if (!trimmed) return "";
+  return `https://${trimmed}:${HTTPS_PORT}`;
+}
+
+function resolvePreferredAdminQrIpAddress(activeAddress) {
+  const candidates = [];
+  const seen = new Set();
+
+  const addCandidate = (value) => {
+    if (typeof value !== "string") return;
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    candidates.push(trimmed);
+  };
+
+  addCandidate(activeAddress);
+  getStartupHosts().forEach(addCandidate);
+  getLocalIPv4Addresses().forEach(addCandidate);
+
+  return candidates.find(isLikelyIPv4Address) || null;
+}
+
+async function buildAdminMediaNetworkQrPayload(activeAddress) {
+  const qrIpAddress = resolvePreferredAdminQrIpAddress(activeAddress);
+  const qrUrl = buildHttpsConnectUrl(qrIpAddress);
+  const activeMdnsHost = mdnsHostname || "off";
+  const mdnsUrl = mdnsHostname ? buildHttpsConnectUrl(mdnsHostname) : "";
+
+  let qrCodeDataUrl = null;
+  if (qrUrl) {
+    try {
+      qrCodeDataUrl = await QRCode.toDataURL(qrUrl, {
+        errorCorrectionLevel: "M",
+        margin: 1,
+        width: 640,
+        color: {
+          dark: "#0f172a",
+          light: "#ffffff",
+        },
+      });
+    } catch (error) {
+      console.warn("[ADMIN] Failed to generate media network QR code:", error?.message || error);
+    }
+  }
+
+  return {
+    httpsPort: HTTPS_PORT,
+    activeMdnsHost,
+    qrIpAddress,
+    qrUrl: qrUrl || null,
+    mdnsUrl: mdnsUrl || null,
+    qrCodeDataUrl,
+  };
+}
+
+app.get("/admin/settings/media-network", requireAdmin, async (req, res) => {
   const config = loadRuntimeConfig() || {};
   const saved = resolveSavedMediaNetworkConfig(config);
   const active = resolveTransportAnnouncedAddress();
@@ -1761,6 +1821,7 @@ app.get("/admin/settings/media-network", requireAdmin, (req, res) => {
       || saved.interfaceName !== active.interfaceName
       || (saved.mode === "manual" ? saved.announcedAddress : "") !== (active.mode === "manual" ? (active.announcedAddress || "") : "")
     );
+  const qrPayload = await buildAdminMediaNetworkQrPayload(active.announcedAddress);
 
   res.json({
     mediaNetworkMode: saved.mode,
@@ -1775,6 +1836,7 @@ app.get("/admin/settings/media-network", requireAdmin, (req, res) => {
     environmentOverride,
     runningInContainer: isRunningInContainer(),
     configPath: getConfigPath(),
+    ...qrPayload,
   });
 });
 

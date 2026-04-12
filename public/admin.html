@@ -24,6 +24,9 @@
         --danger: #ef4444;
         --radius: 12px;
         --control-height: 2.95rem;
+        --media-network-action-width: 14rem;
+        --media-network-download-width: 2.6rem;
+        --media-network-qr-gap: 0.45rem;
       }
 
       * {
@@ -44,6 +47,10 @@
       }
 
       .is-hidden {
+        display: none !important;
+      }
+
+      [hidden] {
         display: none !important;
       }
 
@@ -127,9 +134,78 @@
         margin-bottom: 1rem;
       }
 
+      .card.card--collapsed .card-header {
+        margin-bottom: 0;
+      }
+
+      .card-header__title {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        min-width: 0;
+        cursor: pointer;
+        user-select: none;
+      }
+
       .card-header h2 {
         margin: 0;
         font-size: 1.5rem;
+      }
+
+      .card-collapse-toggle {
+        appearance: none;
+        -webkit-appearance: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.5rem;
+        height: 1.5rem;
+        min-height: 0;
+        padding: 0;
+        border: none;
+        border-radius: 0;
+        background: transparent;
+        color: var(--muted);
+        box-shadow: none;
+      }
+
+      .card-collapse-toggle::before {
+        content: '▸';
+        display: block;
+        font-size: 1rem;
+        line-height: 1;
+        transition: transform 0.18s ease;
+        transform-origin: center;
+      }
+
+      .card-collapse-toggle[aria-expanded='true']::before {
+        transform: rotate(90deg);
+      }
+
+      .card-collapse-toggle:hover {
+        background: transparent;
+        color: var(--text);
+        transform: none;
+      }
+
+      .card-collapse-toggle:focus-visible {
+        outline: none;
+        border-radius: 6px;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+      }
+
+      .card-header__actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        margin-left: auto;
+      }
+
+      .card-section-body {
+        display: grid;
+        gap: 0;
       }
 
       .section-note {
@@ -408,6 +484,29 @@
         align-items: flex-end;
       }
 
+      .media-network-meta {
+        display: grid;
+        gap: 0.75rem;
+        min-width: 0;
+      }
+
+      .media-network-meta h3 {
+        margin: 0;
+        font-size: 1.05rem;
+      }
+
+      .media-network-meta .setting-meta {
+        margin-bottom: 0;
+      }
+
+      .media-network-top {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 1rem;
+        align-items: start;
+        margin-bottom: 1rem;
+      }
+
       #media-network-form {
         display: grid;
         grid-template-columns: minmax(12rem, 18rem) minmax(14rem, 24rem) auto;
@@ -453,7 +552,157 @@
       }
 
       #media-network-form button {
-        min-width: 14rem;
+        width: var(--media-network-action-width);
+        min-width: 0;
+      }
+
+      .media-network-qr-card {
+        display: flex;
+        align-items: stretch;
+        justify-content: flex-end;
+        gap: var(--media-network-qr-gap);
+        width: var(--media-network-action-width);
+      }
+
+      .media-network-qr-button {
+        appearance: none;
+        -webkit-appearance: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.2rem;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.96);
+        cursor: pointer;
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 100%;
+        transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+      }
+
+      .media-network-qr-button:hover {
+        transform: translateY(-1px);
+        border-color: rgba(37, 99, 235, 0.55);
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.28);
+      }
+
+      .media-network-qr-button:disabled {
+        cursor: default;
+        opacity: 0.5;
+        transform: none;
+        box-shadow: none;
+      }
+
+      .media-network-qr-image {
+        display: block;
+        height: 100%;
+        width: 100%;
+        object-fit: contain;
+      }
+
+      .media-network-qr-actions {
+        display: flex;
+        align-items: stretch;
+        justify-content: flex-start;
+        align-self: stretch;
+      }
+
+      .media-network-qr-download {
+        width: var(--media-network-download-width);
+        min-width: var(--media-network-download-width);
+        min-height: 0 !important;
+        height: 100%;
+        padding: 0;
+      }
+
+      .media-network-qr-download svg {
+        width: 1.05rem;
+        height: 1.05rem;
+        display: block;
+      }
+
+      .icon-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+      }
+
+      .icon-button svg {
+        width: 1.05rem;
+        height: 1.05rem;
+        display: block;
+      }
+
+      .image-lightbox__actions {
+        display: flex;
+        justify-content: center;
+      }
+
+      .image-lightbox__download {
+        width: 4.25rem;
+        min-width: 4.25rem;
+        min-height: 2.7rem !important;
+      }
+
+      .image-lightbox {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5rem;
+        background: rgba(11, 17, 32, 0.86);
+        backdrop-filter: blur(6px);
+      }
+
+      .image-lightbox__dialog {
+        position: relative;
+        width: min(92vw, 620px);
+        display: grid;
+        gap: 0.75rem;
+        padding: 1.2rem;
+        border-radius: 16px;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        background: rgba(19, 26, 42, 0.98);
+        box-shadow: 0 28px 64px rgba(0, 0, 0, 0.45);
+      }
+
+      .image-lightbox__close {
+        appearance: none;
+        -webkit-appearance: none;
+        position: absolute;
+        top: 0.85rem;
+        right: 0.85rem;
+        width: 2.4rem;
+        height: 2.4rem;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        border-radius: 999px;
+        background: rgba(30, 41, 59, 0.84);
+        color: var(--text);
+        font-size: 1.1rem;
+        cursor: pointer;
+      }
+
+      .image-lightbox__title {
+        margin: 0;
+        font-size: 1.08rem;
+        font-weight: 700;
+      }
+
+      .image-lightbox__image-wrap {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.2rem;
+      }
+
+      .image-lightbox__image {
+        display: block;
+        width: min(100%, 560px);
+        height: auto;
       }
 
       .config-transfer-grid {
@@ -535,6 +784,10 @@
           grid-template-columns: 1fr;
         }
 
+        .media-network-top {
+          grid-template-columns: 1fr;
+        }
+
         #media-network-mode-group,
         #media-interface-group,
         #media-announced-address-group,
@@ -548,6 +801,41 @@
 
         #media-network-form button {
           width: 100%;
+        }
+
+        .media-network-qr-card {
+          justify-content: center;
+          width: auto;
+          align-items: flex-start;
+        }
+
+        .media-network-qr-button {
+          height: auto;
+        }
+
+        .media-network-qr-actions {
+          align-self: auto;
+        }
+
+        .media-network-qr-download {
+          width: 2.5rem;
+          min-width: 2.5rem;
+          min-height: 2.5rem !important;
+          height: auto;
+        }
+
+        .media-network-qr-image {
+          width: 220px;
+          height: auto;
+        }
+
+        .image-lightbox {
+          padding: 1rem;
+        }
+
+        .image-lightbox__dialog {
+          width: 100%;
+          padding: 1rem;
         }
 
         .config-import-actions {
@@ -619,166 +907,232 @@
 
       <section class="card" aria-labelledby="users-heading">
         <div class="card-header">
-          <h2 id="users-heading">Users</h2>
-          <div id="user-message" class="flash-message"></div>
+          <div class="card-header__title">
+            <button id="users-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="true" aria-controls="users-section-body" aria-label="Collapse users section"></button>
+            <h2 id="users-heading">Users</h2>
+          </div>
+          <div class="card-header__actions">
+            <div id="user-message" class="flash-message"></div>
+          </div>
         </div>
 
-        <div class="form-grid">
-          <form id="user-form" class="inline-form" autocomplete="off">
-            <div class="field-group">
-              <label for="username">Name</label>
-              <input type="text" id="username" placeholder="e.g. Anna" required />
-            </div>
+        <div id="users-section-body" class="card-section-body">
+          <div class="form-grid">
+            <form id="user-form" class="inline-form" autocomplete="off">
+              <div class="field-group">
+                <label for="username">Name</label>
+                <input type="text" id="username" placeholder="e.g. Anna" required />
+              </div>
 
-            <div class="field-group">
-              <label for="password">Password</label>
-              <input type="password" id="password" placeholder="Password" required />
-            </div>
+              <div class="field-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" placeholder="Password" required />
+              </div>
 
-            <button type="submit">Add User</button>
-          </form>
+              <button type="submit">Add User</button>
+            </form>
+          </div>
+
+          <ul id="user-list" class="item-list" aria-live="polite"></ul>
         </div>
-
-        <ul id="user-list" class="item-list" aria-live="polite"></ul>
-      </section>
-
-      <section class="card" aria-labelledby="feeds-heading">
-        <div class="card-header">
-          <h2 id="feeds-heading">Feeds (experimental)</h2>
-          <div id="feed-message" class="flash-message"></div>
-        </div>
-
-        <div class="form-grid">
-          <form id="feed-form" class="inline-form" autocomplete="off">
-            <div class="field-group">
-              <label for="feedname">Feed name</label>
-              <input type="text" id="feedname" placeholder="e.g. Music Bus" required />
-            </div>
-            <div class="field-group">
-              <label for="feedpassword">Password</label>
-              <input type="password" id="feedpassword" placeholder="Password" required />
-            </div>
-            <button type="submit">Add Feed</button>
-          </form>
-        </div>
-
-        <ul id="feed-list" class="item-list" aria-live="polite"></ul>
       </section>
 
       <section class="card" aria-labelledby="conferences-heading">
         <div class="card-header">
-          <h2 id="conferences-heading">Conferences</h2>
-          <div id="conf-message" class="flash-message"></div>
-        </div>
-        <div class="section-note">
-          Conference membership lets a user listen and control volume for that conference.
-          Add the conference as a target as well if the user should also get a PTT button for it.
-        </div>
-
-        <div class="form-grid">
-          <form id="conf-form" class="inline-form" autocomplete="off">
-            <div class="field-group">
-              <label for="confname">Conference</label>
-              <input type="text" id="confname" placeholder="e.g. Cameras" required />
-            </div>
-            <button type="submit">Add Conference</button>
-          </form>
+          <div class="card-header__title">
+            <button id="conferences-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="true" aria-controls="conferences-section-body" aria-label="Collapse conferences section"></button>
+            <h2 id="conferences-heading">Conferences</h2>
+          </div>
+          <div class="card-header__actions">
+            <div id="conf-message" class="flash-message"></div>
+          </div>
         </div>
 
-        <ul id="conf-list" class="item-list" aria-live="polite"></ul>
+        <div id="conferences-section-body" class="card-section-body">
+          <div class="section-note">
+            Conference membership lets a user listen and control volume for that conference.
+            Add the conference as a target as well if the user should also get a PTT button for it.
+          </div>
+
+          <div class="form-grid">
+            <form id="conf-form" class="inline-form" autocomplete="off">
+              <div class="field-group">
+                <label for="confname">Conference</label>
+                <input type="text" id="confname" placeholder="e.g. Cameras" required />
+              </div>
+              <button type="submit">Add Conference</button>
+            </form>
+          </div>
+
+          <ul id="conf-list" class="item-list" aria-live="polite"></ul>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="feeds-heading">
+        <div class="card-header">
+          <div class="card-header__title">
+            <button id="feeds-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="true" aria-controls="feeds-section-body" aria-label="Collapse feeds section"></button>
+            <h2 id="feeds-heading">Feeds (experimental)</h2>
+          </div>
+          <div class="card-header__actions">
+            <div id="feed-message" class="flash-message"></div>
+          </div>
+        </div>
+
+        <div id="feeds-section-body" class="card-section-body">
+          <div class="form-grid">
+            <form id="feed-form" class="inline-form" autocomplete="off">
+              <div class="field-group">
+                <label for="feedname">Feed name</label>
+                <input type="text" id="feedname" placeholder="e.g. Music Bus" required />
+              </div>
+              <div class="field-group">
+                <label for="feedpassword">Password</label>
+                <input type="password" id="feedpassword" placeholder="Password" required />
+              </div>
+              <button type="submit">Add Feed</button>
+            </form>
+          </div>
+
+          <ul id="feed-list" class="item-list" aria-live="polite"></ul>
+        </div>
       </section>
 
       <section class="card" aria-labelledby="config-heading">
         <div class="card-header">
-          <h2 id="config-heading">Config</h2>
-          <div id="config-message" class="flash-message"></div>
+          <div class="card-header__title">
+            <button id="config-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="false" aria-controls="config-section-body" aria-label="Expand config section"></button>
+            <h2 id="config-heading">Config</h2>
+          </div>
+          <div class="card-header__actions">
+            <div id="config-message" class="flash-message"></div>
+          </div>
         </div>
 
-        <div class="config-layout">
-          <section class="config-panel" aria-labelledby="config-media-network-heading">
-            <h3 id="config-media-network-heading">Media network</h3>
+        <div id="config-section-body" class="card-section-body">
+          <div class="config-layout">
+            <section class="config-panel" aria-labelledby="config-media-network-heading">
+              <div class="media-network-top">
+                <div id="media-network-meta" class="media-network-meta">
+                  <h3 id="config-media-network-heading">Media network</h3>
+                  <div class="setting-meta">
+                    <div>Active media network: <strong id="media-network-active-mode">Loading...</strong></div>
+                    <div>Active announced address: <strong id="media-network-active-address">Loading...</strong></div>
+                    <div>Saved media network: <strong id="media-network-saved-mode">Loading...</strong></div>
+                    <div id="media-network-restart-hint">Changes require a server restart to take effect.</div>
+                    <div id="media-network-override-hint" class="is-hidden">An environment override is active. Saved changes will only apply after restart without `PUBLIC_IP` or `TALKTOME_MEDIA_INTERFACE` overrides.</div>
+                  </div>
+                </div>
 
-            <div class="setting-meta">
-              <div>Active media network: <strong id="media-network-active-mode">Loading...</strong></div>
-              <div>Active announced address: <strong id="media-network-active-address">Loading...</strong></div>
-              <div>Saved media network: <strong id="media-network-saved-mode">Loading...</strong></div>
-              <div id="media-network-restart-hint">Changes require a server restart to take effect.</div>
-              <div id="media-network-override-hint" class="is-hidden">An environment override is active. Saved changes will only apply after restart without `PUBLIC_IP` or `TALKTOME_MEDIA_INTERFACE` overrides.</div>
-            </div>
-
-            <form id="media-network-form" class="inline-form" autocomplete="off">
-              <div class="field-group field-group--stacked" id="media-network-mode-group">
-                <label for="media-network-mode">Mode</label>
-                <select id="media-network-mode" required>
-                  <option value="auto">Automatic</option>
-                  <option value="interface">Preferred network adapter</option>
-                  <option value="manual">Manual announced IP / hostname</option>
-                </select>
-              </div>
-
-              <div class="field-group field-group--stacked" id="media-interface-group">
-                <label for="media-interface-name">Network adapter</label>
-                <select id="media-interface-name">
-                  <option value="">Select adapter</option>
-                </select>
-              </div>
-
-              <div class="field-group field-group--stacked" id="media-announced-address-group">
-                <label for="media-announced-address">Announced IP / hostname</label>
-                <input type="text" id="media-announced-address" placeholder="e.g. 192.168.178.197" />
-              </div>
-
-              <div id="media-network-actions">
-                <button type="submit">Save media network</button>
-              </div>
-            </form>
-          </section>
-
-          <section class="config-panel" aria-labelledby="config-network-heading">
-            <h3 id="config-network-heading">Network alias</h3>
-
-            <div class="setting-meta">
-              <div>Active mDNS alias: <strong id="mdns-active-host">Loading...</strong></div>
-              <div>Saved mDNS alias: <strong id="mdns-saved-host">Loading...</strong></div>
-              <div id="mdns-restart-hint">Changes require a server restart to take effect.</div>
-              <div id="mdns-container-hint" class="is-hidden">Docker/container deployments should usually keep mDNS set to <strong>off</strong>. Use the host LAN IP or DNS name instead.</div>
-            </div>
-
-            <form id="mdns-form" class="inline-form" autocomplete="off">
-              <div class="field-group field-group--stacked">
-                <label for="mdns-host">mDNS name</label>
-                <input type="text" id="mdns-host" placeholder="e.g. intercom.local or off" required />
-              </div>
-              <button type="submit">Save mDNS name</button>
-            </form>
-          </section>
-
-          <section class="config-panel" aria-labelledby="config-backup-heading">
-            <h3 id="config-backup-heading">Backup and restore</h3>
-
-            <div class="setting-meta">
-              <div>Export and import the full server configuration as a JSON backup.</div>
-              <div>This includes server config, users, feeds, conferences, memberships and target routing.</div>
-            </div>
-
-            <div class="config-transfer-grid">
-              <div class="config-export-group">
-                <label>Export backup</label>
-                <button type="button" id="config-export-btn">Export config</button>
-              </div>
-
-              <div class="config-import-group">
-                <label for="config-import-file">Import config file</label>
-                <div class="config-import-actions">
-                  <input type="file" id="config-import-file" accept=".json,application/json" />
-                  <button type="button" id="config-import-btn" class="warning">Import config</button>
+                <div id="media-network-qr" class="media-network-qr-card is-hidden">
+                  <button type="button" id="media-network-qr-button" class="media-network-qr-button" aria-label="Open large connection QR code" disabled>
+                    <img id="media-network-qr-image" class="media-network-qr-image" alt="Connection QR code" />
+                  </button>
+                  <div class="media-network-qr-actions">
+                    <button type="button" id="media-network-qr-download" class="small media-network-qr-download" aria-label="Download connection QR code" title="Download QR code">
+                      <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M10 3.5V11.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M6.75 8.5L10 11.75L13.25 8.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M4 14.25H16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          </section>
+
+              <form id="media-network-form" class="inline-form" autocomplete="off">
+                <div class="field-group field-group--stacked" id="media-network-mode-group">
+                  <label for="media-network-mode">Mode</label>
+                  <select id="media-network-mode" required>
+                    <option value="auto">Automatic</option>
+                    <option value="interface">Preferred network adapter</option>
+                    <option value="manual">Manual announced IP / hostname</option>
+                  </select>
+                </div>
+
+                <div class="field-group field-group--stacked" id="media-interface-group">
+                  <label for="media-interface-name">Network adapter</label>
+                  <select id="media-interface-name">
+                    <option value="">Select adapter</option>
+                  </select>
+                </div>
+
+                <div class="field-group field-group--stacked" id="media-announced-address-group">
+                  <label for="media-announced-address">Announced IP / hostname</label>
+                  <input type="text" id="media-announced-address" placeholder="e.g. 192.168.178.197" />
+                </div>
+
+                <div id="media-network-actions">
+                  <button type="submit">Save media network</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="config-panel" aria-labelledby="config-network-heading">
+              <h3 id="config-network-heading">Network alias</h3>
+
+              <div class="setting-meta">
+                <div>Active mDNS alias: <strong id="mdns-active-host">Loading...</strong></div>
+                <div>Saved mDNS alias: <strong id="mdns-saved-host">Loading...</strong></div>
+                <div id="mdns-restart-hint">Changes require a server restart to take effect.</div>
+                <div id="mdns-container-hint" class="is-hidden">Docker/container deployments should usually keep mDNS set to <strong>off</strong>. Use the host LAN IP or DNS name instead.</div>
+              </div>
+
+              <form id="mdns-form" class="inline-form" autocomplete="off">
+                <div class="field-group field-group--stacked">
+                  <label for="mdns-host">mDNS name</label>
+                  <input type="text" id="mdns-host" placeholder="e.g. intercom.local or off" required />
+                </div>
+                <button type="submit">Save mDNS name</button>
+              </form>
+            </section>
+
+            <section class="config-panel" aria-labelledby="config-backup-heading">
+              <h3 id="config-backup-heading">Backup and restore</h3>
+
+              <div class="setting-meta">
+                <div>Export and import the full server configuration as a JSON backup.</div>
+                <div>This includes server config, users, feeds, conferences, memberships and target routing.</div>
+              </div>
+
+              <div class="config-transfer-grid">
+                <div class="config-export-group">
+                  <label>Export backup</label>
+                  <button type="button" id="config-export-btn">Export config</button>
+                </div>
+
+                <div class="config-import-group">
+                  <label for="config-import-file">Import config file</label>
+                  <div class="config-import-actions">
+                    <input type="file" id="config-import-file" accept=".json,application/json" />
+                    <button type="button" id="config-import-btn" class="warning">Import config</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
         </div>
       </section>
     </main>
+
+    <div id="admin-image-lightbox" class="image-lightbox is-hidden" role="dialog" aria-modal="true" aria-labelledby="admin-image-lightbox-title">
+      <div class="image-lightbox__dialog">
+        <button type="button" id="admin-image-lightbox-close" class="image-lightbox__close" aria-label="Close image preview">&times;</button>
+        <h2 id="admin-image-lightbox-title" class="image-lightbox__title">Connection QR code</h2>
+        <div class="image-lightbox__image-wrap">
+          <img id="admin-image-lightbox-image" class="image-lightbox__image" alt="Large connection QR code" />
+        </div>
+        <div class="image-lightbox__actions">
+          <button type="button" id="admin-image-lightbox-download" class="small icon-button image-lightbox__download" aria-label="Download connection QR code" title="Download QR code">
+            <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M10 3.5V11.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M6.75 8.5L10 11.75L13.25 8.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M4 14.25H16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
 
     <script src="admin.js"></script>
   </body>

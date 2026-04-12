@@ -2580,6 +2580,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // DOM elements
   const loginForm = document.getElementById("login-form");
   const loginContainer = document.getElementById("login-container");
+  const loginUsernameInput = document.getElementById("login-username");
   const intercomApp = document.getElementById("intercom-app");
   const loginError = document.getElementById("login-error");
   const logoutBtn = document.getElementById("logout-btn");
@@ -2612,6 +2613,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const listenOnlyConferenceKeys = new Set();
   const listenOnlyConferenceDimmingDisabled = new Set();
   const activeFeedKeys = new Set();
+  const focusLoginNameField = () => {
+    if (!loginUsernameInput || session.kind !== 'guest') return;
+    window.requestAnimationFrame(() => {
+      try {
+        loginUsernameInput.focus();
+        loginUsernameInput.select?.();
+      } catch {}
+    });
+  };
   recoverExistingIncomingPlayback = ({ forceRetryAll = false } = {}) => {
     const remoteBusAudio = remotePlaybackBus?.audio || null;
     if (remoteBusAudio && typeof remoteBusAudio.play === 'function') {
@@ -4386,6 +4396,8 @@ let cachedOperatorTargets = null;
       requestInitialMicrophoneAccess({ reason: 'auto-login-feed' });
     }
   }
+
+  focusLoginNameField();
 
   // Login Handler
   loginForm.addEventListener("submit", async (e) => {
