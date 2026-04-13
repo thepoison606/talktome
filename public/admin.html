@@ -138,6 +138,22 @@
         margin-bottom: 0;
       }
 
+      .card--toggleable {
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .card--toggleable .card-section-body,
+      .card--toggleable .card-header__actions {
+        cursor: auto;
+        user-select: auto;
+      }
+
+      .card-header--toggleable {
+        cursor: pointer;
+        user-select: none;
+      }
+
       .card-header__title {
         display: flex;
         align-items: center;
@@ -363,11 +379,75 @@
         gap: 0.75rem;
       }
 
+      .list-item-header--toggleable {
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .list-item--toggleable {
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .list-item--toggleable .nested,
+      .list-item--toggleable .inline-controls {
+        cursor: auto;
+        user-select: auto;
+      }
+
       .list-item-title {
         display: flex;
         align-items: center;
+        justify-content: flex-start;
         gap: 0.75rem;
         font-weight: 600;
+      }
+
+      .list-item-title--toggle {
+        appearance: none;
+        -webkit-appearance: none;
+        min-height: 0;
+        padding: 0;
+        border: none;
+        background: transparent;
+        color: var(--text);
+        box-shadow: none;
+        cursor: pointer;
+        user-select: none;
+        text-align: left;
+      }
+
+      .list-item-title--toggle:hover {
+        background: transparent;
+        color: #fff;
+        transform: none;
+      }
+
+      .list-item-title--toggle:focus-visible {
+        outline: none;
+        border-radius: 8px;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+      }
+
+      .list-item-disclosure {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1rem;
+        color: var(--muted);
+        transition: transform 0.18s ease, color 0.18s ease;
+        transform-origin: center;
+      }
+
+      .list-item-disclosure::before {
+        content: '▸';
+        line-height: 1;
+        font-size: 0.95rem;
+      }
+
+      .list-item-title--toggle[aria-expanded='true'] .list-item-disclosure {
+        transform: rotate(90deg);
+        color: var(--text);
       }
 
       .badge {
@@ -906,7 +986,7 @@
       <div id="message" class="flash-message"></div>
 
       <section class="card" aria-labelledby="users-heading">
-        <div class="card-header">
+        <div class="card-header card-header--toggleable">
           <div class="card-header__title">
             <button id="users-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="true" aria-controls="users-section-body" aria-label="Collapse users section"></button>
             <h2 id="users-heading">Users</h2>
@@ -938,7 +1018,7 @@
       </section>
 
       <section class="card" aria-labelledby="conferences-heading">
-        <div class="card-header">
+        <div class="card-header card-header--toggleable">
           <div class="card-header__title">
             <button id="conferences-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="true" aria-controls="conferences-section-body" aria-label="Collapse conferences section"></button>
             <h2 id="conferences-heading">Conferences</h2>
@@ -969,7 +1049,7 @@
       </section>
 
       <section class="card" aria-labelledby="feeds-heading">
-        <div class="card-header">
+        <div class="card-header card-header--toggleable">
           <div class="card-header__title">
             <button id="feeds-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="true" aria-controls="feeds-section-body" aria-label="Collapse feeds section"></button>
             <h2 id="feeds-heading">Feeds (experimental)</h2>
@@ -999,7 +1079,7 @@
       </section>
 
       <section class="card" aria-labelledby="config-heading">
-        <div class="card-header">
+        <div class="card-header card-header--toggleable">
           <div class="card-header__title">
             <button id="config-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="false" aria-controls="config-section-body" aria-label="Expand config section"></button>
             <h2 id="config-heading">Config</h2>

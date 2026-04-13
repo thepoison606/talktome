@@ -3944,7 +3944,7 @@ let cachedOperatorTargets = null;
         }
 
         if (entry.feedDuckingNode) {
-          entry.feedDuckingNode.gain.value = shouldDim ? feedDuckingFactor : 1;
+          entry.feedDuckingNode.gain.value = shouldDimFeedEntry(entry) ? feedDuckingFactor : 1;
           setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
           continue;
         }

@@ -32,25 +32,29 @@ const collapsibleAdminSections = {
     label: 'Users',
     bodyEl: document.getElementById('users-section-body'),
     buttonEl: document.getElementById('users-section-toggle'),
-    titleEl: document.getElementById('users-section-toggle')?.closest('.card-header__title'),
+    cardEl: document.getElementById('users-section-toggle')?.closest('.card'),
+    headerEl: document.getElementById('users-section-toggle')?.closest('.card-header'),
   },
   feeds: {
     label: 'Feeds',
     bodyEl: document.getElementById('feeds-section-body'),
     buttonEl: document.getElementById('feeds-section-toggle'),
-    titleEl: document.getElementById('feeds-section-toggle')?.closest('.card-header__title'),
+    cardEl: document.getElementById('feeds-section-toggle')?.closest('.card'),
+    headerEl: document.getElementById('feeds-section-toggle')?.closest('.card-header'),
   },
   conferences: {
     label: 'Conferences',
     bodyEl: document.getElementById('conferences-section-body'),
     buttonEl: document.getElementById('conferences-section-toggle'),
-    titleEl: document.getElementById('conferences-section-toggle')?.closest('.card-header__title'),
+    cardEl: document.getElementById('conferences-section-toggle')?.closest('.card'),
+    headerEl: document.getElementById('conferences-section-toggle')?.closest('.card-header'),
   },
   config: {
     label: 'Config',
     bodyEl: document.getElementById('config-section-body'),
     buttonEl: document.getElementById('config-section-toggle'),
-    titleEl: document.getElementById('config-section-toggle')?.closest('.card-header__title'),
+    cardEl: document.getElementById('config-section-toggle')?.closest('.card'),
+    headerEl: document.getElementById('config-section-toggle')?.closest('.card-header'),
   },
 };
 
@@ -154,6 +158,7 @@ function setAdminSectionCollapsed(sectionKey, collapsed, { persist = true } = {}
 
   if (cardEl) {
     cardEl.classList.toggle('card--collapsed', Boolean(collapsed));
+    cardEl.classList.add('card--toggleable');
   }
 
   if (section.buttonEl) {
@@ -501,28 +506,37 @@ async function loadData() {
       : '';
     const deleteAttrs = isAdmin ? 'disabled title="Admin accounts cannot be deleted"' : '';
     const li = document.createElement('li');
-    li.className = 'list-item';
+    li.className = 'list-item list-item--toggleable';
+    li.setAttribute('onclick', `toggleUserConfs(${user.id})`);
 
     const optionsHtml = conferences.length
       ? conferences.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')
       : '<option value="" disabled selected>No conferences</option>';
 
     li.innerHTML = `
-      <div class="list-item-header">
-        <div class="list-item-title">
-          <button type="button" class="small" id="user-toggle-${user.id}" onclick="toggleUserConfs(${user.id}, this)" aria-expanded="false">Show details</button>
+      <div class="list-item-header list-item-header--toggleable">
+        <button
+          type="button"
+          class="list-item-title list-item-title--toggle"
+          id="user-toggle-${user.id}"
+          onclick="event.stopPropagation(); toggleUserConfs(${user.id}, this)"
+          aria-expanded="false"
+          aria-controls="user-nested-${user.id}"
+          aria-label="Toggle details for ${safeName}"
+        >
+          <span class="list-item-disclosure" aria-hidden="true"></span>
           <span>${safeName}</span>
           ${adminBadge}
           <span class="badge">ID ${user.id}</span>
-        </div>
-        <div class="inline-controls">
+        </button>
+        <div class="inline-controls" onclick="event.stopPropagation()">
           <button type="button" class="small warning" onclick='editUser(${user.id}, ${JSON.stringify(user.name)})'>Rename</button>
           <button type="button" class="small warning" onclick='resetPassword(${user.id}, ${JSON.stringify(user.name)})'>Reset Password</button>
           ${adminToggle}
           <button type="button" class="small danger" onclick="deleteUser(${user.id})" ${deleteAttrs}>Delete</button>
         </div>
       </div>
-      <div class="nested" id="user-nested-${user.id}">
+      <div class="nested" id="user-nested-${user.id}" onclick="event.stopPropagation()">
         <div class="nested-block">
           <strong>Conferences</strong>
           <div class="inline-controls">
@@ -576,23 +590,32 @@ async function loadData() {
     const safeName = escapeHtml(conf.name);
     const isAllConference = safeName.toLowerCase() === 'all';
     const li = document.createElement('li');
-    li.className = 'list-item';
+    li.className = 'list-item list-item--toggleable';
     li.dataset.confId = String(conf.id);
     li.dataset.isAll = String(isAllConference);
+    li.setAttribute('onclick', `toggleConfUsers(${conf.id})`);
     li.innerHTML = `
-      <div class="list-item-header">
-        <div class="list-item-title">
-          <button type="button" class="small" id="conf-toggle-${conf.id}" onclick="toggleConfUsers(${conf.id}, this)" aria-expanded="false">Show details</button>
+      <div class="list-item-header list-item-header--toggleable">
+        <button
+          type="button"
+          class="list-item-title list-item-title--toggle"
+          id="conf-toggle-${conf.id}"
+          onclick="event.stopPropagation(); toggleConfUsers(${conf.id}, this)"
+          aria-expanded="false"
+          aria-controls="conf-controls-${conf.id}"
+          aria-label="Toggle details for ${safeName}"
+        >
+          <span class="list-item-disclosure" aria-hidden="true"></span>
           <span>${safeName}</span>
           <span class="badge">ID ${conf.id}</span>
-        </div>
+        </button>
         ${isAllConference ? '' : `
-        <div class="inline-controls">
+        <div class="inline-controls" onclick="event.stopPropagation()">
           <button type="button" class="small warning" onclick='editConference(${conf.id}, ${JSON.stringify(conf.name)})'>Rename</button>
           <button type="button" class="small danger" onclick="deleteConference(${conf.id})">Delete</button>
         </div>`}
       </div>
-      <div class="nested" id="conf-controls-${conf.id}">
+      <div class="nested" id="conf-controls-${conf.id}" onclick="event.stopPropagation()">
         <strong>Participants</strong>
         <div class="inline-controls">
           <select id="add-conf-user-${conf.id}"></select>
@@ -1092,8 +1115,7 @@ window.toggleUserConfs = async function (userId, toggleBtn) {
   }
 
   if (button) {
-    button.setAttribute('aria-expanded', willOpen);
-    button.textContent = willOpen ? 'Hide details' : 'Show details';
+    button.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
   }
 };
 
@@ -1153,8 +1175,7 @@ window.toggleConfUsers = async function (confId, toggleBtn) {
   }
 
   if (button) {
-    button.setAttribute('aria-expanded', willOpen);
-    button.textContent = willOpen ? 'Hide details' : 'Show details';
+    button.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
   }
 };
 
@@ -1599,8 +1620,10 @@ if (adminLogoutBtn) {
 }
 
 for (const [sectionKey, section] of Object.entries(collapsibleAdminSections)) {
-  if (!section.titleEl || !section.bodyEl) continue;
-  section.titleEl.addEventListener('click', () => {
+  if (!section.cardEl || !section.bodyEl) continue;
+  section.cardEl.addEventListener('click', (event) => {
+    if (event.target.closest('.card-header__actions')) return;
+    if (event.target.closest('.card-section-body')) return;
     setAdminSectionCollapsed(sectionKey, !section.bodyEl.hidden);
   });
 }
