@@ -812,6 +812,12 @@
         }
       }
 
+      @media (min-width: 900px) and (max-width: 1366px) and (orientation: landscape) and (pointer: coarse) {
+        #targets-list {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
       @media (min-width: 900px) and (max-width: 1180px) {
         #targets-list li.target-item {
           --target-row-pad-x: 0.45rem;

@@ -191,6 +191,7 @@ const isTouchMacUA = typeof navigator !== 'undefined'
   ? navigator.maxTouchPoints > 1 && /Macintosh/.test(USER_AGENT)
   : false;
 const isAndroidBrowser = /Android/i.test(USER_AGENT);
+const isIPhone = /iPhone|iPod/i.test(USER_AGENT);
 const isMobileBrowser = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobi/i.test(USER_AGENT)
   || isTouchMacUA;
 const isiOS = typeof navigator !== 'undefined'
@@ -199,6 +200,7 @@ const isiOS = typeof navigator !== 'undefined'
 const isSafariBrowser = typeof navigator !== 'undefined'
   ? /Safari/i.test(USER_AGENT) && !/Chrome|CriOS|Edg|OPR|Firefox|FxiOS/i.test(USER_AGENT)
   : false;
+const hasAudioSessionApi = typeof navigator !== 'undefined' && !!navigator.audioSession;
 
 function createDigitHotkeyBinding(digit) {
   const value = String(digit);
@@ -381,6 +383,14 @@ function appendPlaybackAudioElement(audioEl) {
     host.appendChild(audioEl);
   }
   return true;
+}
+
+function shouldUseLegacyIosRemoteAudioWorkaround() {
+  return isiOS && !hasAudioSessionApi;
+}
+
+function shouldUseModernIPhonePerStreamGainPath() {
+  return isIPhone && hasAudioSessionApi;
 }
 
 if (typeof window !== 'undefined') {
@@ -776,7 +786,7 @@ function ensureFeedPlaybackBus() {
 }
 
 function shouldUsePersistentRemotePlaybackBus() {
-  return isiOS || isSafariBrowser;
+  return shouldUseLegacyIosRemoteAudioWorkaround();
 }
 
 function disposeRemotePlaybackBus() {
@@ -940,9 +950,13 @@ function pruneTargetPlaybackBuses(allowedTargetKeys = null) {
 }
 
 function shouldUseFeedPlaybackBus() {
-  // Android browsers have been the least reliable path for the shared WebAudio
-  // feed bus. Keep feeds on plain <audio> playback there.
-  return !isAndroidBrowser;
+  // Feed playback should stay on plain <audio> elements on mobile browsers.
+  // The shared WebAudio feed bus is more fragile there, especially on iOS when
+  // the device locks or Safari backgrounds the page.
+  if (isiOS || isAndroidBrowser) {
+    return false;
+  }
+  return true;
 }
 
 function logRemoteAudioPlaybackDecision({
@@ -4423,32 +4437,38 @@ let cachedOperatorTargets = null;
       console.log("Logged in as:", user);
 
       const kind = user.kind === 'feed' ? 'feed' : 'user';
-
-      session = {
+      const nextSession = {
         kind,
         userId: kind === 'user' ? String(user.id) : null,
         feedId: kind === 'feed' ? String(user.id) : null,
         name: user.name,
       };
 
-      feedManualStop = false;
-      shouldStartFeedWhenReady = kind === 'feed';
-
-	      const reg = await registerCurrentSession();
-	      if (!reg?.ok) {
+      const reg = await registerIdentity({
+        id: kind === 'feed' ? nextSession.feedId : nextSession.userId,
+        name: nextSession.name,
+        kind: nextSession.kind,
+        allowPrompt: true,
+      });
+      if (!reg?.ok) {
         if (reg?.cancelled) {
-          await hardLogoutAndReload(null, { silent: true });
+          session = { kind: "guest", userId: null, feedId: null, name: null };
           return;
         }
         loginError.textContent = "Unable to sign in";
         session = { kind: "guest", userId: null, feedId: null, name: null };
         return;
-	      }
-	      if (kind === 'user') {
-	        applyPersistedTargetAudioStates(reg.targetAudioStates || []);
-	      }
+      }
 
-	      localStorage.setItem("userName", user.name);
+      session = nextSession;
+      feedManualStop = false;
+      shouldStartFeedWhenReady = kind === 'feed';
+
+      if (kind === 'user') {
+        applyPersistedTargetAudioStates(reg.targetAudioStates || []);
+      }
+
+      localStorage.setItem("userName", user.name);
       localStorage.setItem(IDENTITY_KIND_KEY, kind);
       if (kind === 'user') {
         localStorage.setItem("userId", session.userId);
@@ -6568,10 +6588,15 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
       const stream = new MediaStream([consumer.track]);
       const feedPlayback = isFeed && shouldUseFeedPlaybackBus() ? ensureFeedPlaybackBus() : null;
-      let persistentPlaybackBus = !isFeed && shouldUsePersistentRemotePlaybackBus()
+      const shouldUseIPhonePerStreamGainPath = !isFeed && shouldUseModernIPhonePerStreamGainPath();
+      const shouldUseModernIPhoneFeedGainPath = isFeed && isIPhone && hasAudioSessionApi;
+      let persistentPlaybackBus = !isFeed && !shouldUseIPhonePerStreamGainPath && shouldUsePersistentRemotePlaybackBus()
         ? ensureTargetPlaybackBus(targetKey, { type: normalizedAppData.type || 'user' })
         : null;
-      const shouldUseWebAudioLevelControl = !isFeed && !persistentPlaybackBus && (isiOS || isSafariBrowser);
+      const shouldUseWebAudioLevelControl = !persistentPlaybackBus && (
+        shouldUseModernIPhoneFeedGainPath
+        || (!isFeed && (shouldUseIPhonePerStreamGainPath || isiOS || isSafariBrowser))
+      );
       const ctxForPlayback = (persistentPlaybackBus || shouldUseWebAudioLevelControl) ? ensureAudioContext() : null;
 
       const initVolRaw = getStoredVolume(volumeStorageKey);
@@ -6648,7 +6673,14 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
       if (!gainNode && ctxForPlayback && !feedPlayback && !persistentPlaybackBus) {
         try {
-          if (isSafariBrowser && typeof ctxForPlayback.createMediaElementSource === 'function') {
+          const shouldUseMediaElementGainPath = (
+            isSafariBrowser
+            && !shouldUseIPhonePerStreamGainPath
+            && typeof ctxForPlayback.createMediaElementSource === 'function'
+          );
+          if (shouldUseModernIPhoneFeedGainPath) {
+            mediaSource = ctxForPlayback.createMediaStreamSource(stream);
+          } else if (shouldUseMediaElementGainPath) {
             mediaSource = ctxForPlayback.createMediaElementSource(audio);
             usesMediaElementSource = true;
           } else {
@@ -6702,13 +6734,19 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         context: feedPlayback?.ctx || ctxForPlayback || null,
         reason: feedPlayback
           ? 'feed bus enabled'
+          : shouldUseModernIPhoneFeedGainPath
+            ? 'iphone feed stream gain'
           : isFeed && isAndroidBrowser
             ? 'android feed fallback'
             : usesSharedAudioElement
               ? 'persistent target playback bus'
             : ctxForPlayback
               ? usesMediaElementSource
-                ? 'safari media element gain'
+                ? isFeed
+                  ? 'feed media element gain'
+                  : 'safari media element gain'
+                : isIPhone
+                  ? 'iphone media stream gain'
                 : 'ios remote gain control'
               : 'default direct playback',
       });
