@@ -24,6 +24,7 @@
         --danger: #ef4444;
         --radius: 12px;
         --control-height: 2.95rem;
+        --config-action-width: 11rem;
         --media-network-action-width: 14rem;
         --media-network-download-width: 2.6rem;
         --media-network-qr-gap: 0.45rem;
@@ -632,8 +633,42 @@
       }
 
       #media-network-form button {
-        width: var(--media-network-action-width);
+        width: var(--config-action-width);
         min-width: 0;
+      }
+
+      .config-panel form button,
+      .config-export-group button,
+      .config-import-actions button {
+        width: var(--config-action-width);
+        min-width: 0;
+      }
+
+      .rtc-port-form {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(8rem, 12rem)) minmax(var(--config-action-width), 1fr);
+        gap: 0.9rem 1rem;
+        align-items: end;
+      }
+
+      .rtc-port-form .field-group {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0;
+        min-width: 0;
+      }
+
+      .rtc-port-form .field-group label {
+        margin-bottom: 0.35rem;
+        white-space: normal;
+      }
+
+      .rtc-port-form input {
+        width: 100%;
+      }
+
+      .rtc-port-form button {
+        justify-self: end;
       }
 
       .media-network-qr-card {
@@ -864,6 +899,10 @@
           grid-template-columns: 1fr;
         }
 
+        .rtc-port-form {
+          grid-template-columns: 1fr;
+        }
+
         .media-network-top {
           grid-template-columns: 1fr;
         }
@@ -880,6 +919,12 @@
         }
 
         #media-network-form button {
+          width: 100%;
+        }
+
+        .config-panel form button,
+        .config-export-group button,
+        .config-import-actions button {
           width: 100%;
         }
 
@@ -1143,8 +1188,33 @@
                 </div>
 
                 <div id="media-network-actions">
-                  <button type="submit">Save media network</button>
+                  <button type="submit">Save network</button>
                 </div>
+              </form>
+            </section>
+
+            <section class="config-panel" aria-labelledby="config-rtc-ports-heading">
+              <h3 id="config-rtc-ports-heading">RTC port range</h3>
+
+              <div class="setting-meta">
+                <div>Active RTC ports: <strong id="rtc-ports-active-range">Loading...</strong></div>
+                <div>Saved RTC ports: <strong id="rtc-ports-saved-range">Loading...</strong></div>
+                <div id="rtc-ports-restart-hint">Changes require a server restart to take effect.</div>
+                <div id="rtc-ports-override-hint" class="is-hidden">An environment override is active. Saved changes will only apply after restart without `TALKTOME_RTC_PORT_START` or `TALKTOME_RTC_PORT_COUNT` overrides.</div>
+              </div>
+
+              <form id="rtc-ports-form" class="rtc-port-form" autocomplete="off">
+                <div class="field-group field-group--stacked">
+                  <label for="rtc-port-start">Start port</label>
+                  <input type="number" id="rtc-port-start" min="1" max="65535" step="1" placeholder="40000" />
+                </div>
+
+                <div class="field-group field-group--stacked">
+                  <label for="rtc-port-count">Number of ports</label>
+                  <input type="number" id="rtc-port-count" min="1" max="65535" step="1" placeholder="10000" />
+                </div>
+
+                <button type="submit">Save RTC ports</button>
               </form>
             </section>
 

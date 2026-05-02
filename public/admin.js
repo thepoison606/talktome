@@ -480,6 +480,7 @@ async function loadData() {
   const feeds       = await fetchJSON('/feeds');
   await loadMdnsSettings();
   await loadMediaNetworkSettings();
+  await loadRtcPortSettings();
 
   // 2) Container referenzieren und leeren
   const userList   = document.getElementById('user-list');
@@ -744,6 +745,50 @@ async function loadMediaNetworkSettings() {
   }
 
   renderMediaNetworkQr(payload);
+}
+
+function formatRtcPortRange(start, end) {
+  const startNumber = Number(start);
+  const endNumber = Number(end);
+  if (!Number.isInteger(startNumber) || !Number.isInteger(endNumber)) {
+    return 'Unavailable';
+  }
+  return `${startNumber}-${endNumber}`;
+}
+
+async function loadRtcPortSettings() {
+  const payload = await fetchJSON('/admin/settings/rtc-ports');
+  const activeRangeEl = document.getElementById('rtc-ports-active-range');
+  const savedRangeEl = document.getElementById('rtc-ports-saved-range');
+  const startInput = document.getElementById('rtc-port-start');
+  const countInput = document.getElementById('rtc-port-count');
+  const restartHintEl = document.getElementById('rtc-ports-restart-hint');
+  const overrideHintEl = document.getElementById('rtc-ports-override-hint');
+
+  if (activeRangeEl) {
+    activeRangeEl.textContent = formatRtcPortRange(payload?.activeRtcPortStart, payload?.activeRtcPortEnd);
+  }
+  if (savedRangeEl) {
+    savedRangeEl.textContent = formatRtcPortRange(payload?.rtcPortStart, payload?.rtcPortEnd);
+  }
+  if (startInput) {
+    startInput.value = payload?.rtcPortStart ?? '';
+  }
+  if (countInput) {
+    countInput.value = payload?.rtcPortCount ?? '';
+  }
+  if (restartHintEl) {
+    if (payload?.environmentOverride) {
+      restartHintEl.textContent = 'An environment override is currently active for RTC ports.';
+    } else {
+      restartHintEl.textContent = payload?.restartRequired
+        ? 'Saved. Restart the server to apply the new RTC port range.'
+        : 'Current RTC port range matches the saved setting.';
+    }
+  }
+  if (overrideHintEl) {
+    overrideHintEl.classList.toggle('is-hidden', !payload?.environmentOverride);
+  }
 }
 
 async function updateUserConferenceOptions(userId, allConfs, previousIndex) {
@@ -1416,6 +1461,44 @@ document.getElementById('media-network-form')?.addEventListener('submit', async 
   } catch (err) {
     console.error('Failed to save media network setting:', err);
     showMessage('❌ Failed to save media network', 'error', 'config');
+  }
+});
+
+document.getElementById('rtc-ports-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const rtcPortStart = document.getElementById('rtc-port-start')?.value?.trim() || '';
+  const rtcPortCount = document.getElementById('rtc-port-count')?.value?.trim() || '';
+
+  try {
+    const res = await authedFetch('/admin/settings/rtc-ports', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        rtcPortStart,
+        rtcPortCount,
+      }),
+    });
+
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      showMessage(payload.error || 'Failed to save RTC ports', 'error', 'config');
+      return;
+    }
+
+    const payload = await res.json();
+    await loadRtcPortSettings();
+    showMessage(
+      payload.environmentOverride
+        ? '✅ RTC port range saved. An environment override is currently active.'
+        : payload.restartRequired
+          ? '✅ RTC port range saved. Restart the server to apply it.'
+          : '✅ RTC port range saved.',
+      'success',
+      'config'
+    );
+  } catch (err) {
+    console.error('Failed to save RTC port setting:', err);
+    showMessage('❌ Failed to save RTC ports', 'error', 'config');
   }
 });
 

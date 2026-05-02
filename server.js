@@ -10,6 +10,8 @@ const dataDir = getDataDir();
 const dataConfigPath = path.join(dataDir, "config.json");
 const legacyConfigPath = path.join(__dirname, "config.json");
 const legacyPkgConfigPath = path.join(execDir, "config.json");
+const DEFAULT_RTC_PORT_START = 40000;
+const DEFAULT_RTC_PORT_COUNT = 10000;
 let configPath = dataConfigPath;
 
 if (!process.pkg && fs.existsSync(legacyConfigPath)) {
@@ -77,6 +79,42 @@ function parseOptionalPort(value) {
   }
 
   return port;
+}
+
+function getDefaultRtcPortRange() {
+  return {
+    start: DEFAULT_RTC_PORT_START,
+    count: DEFAULT_RTC_PORT_COUNT,
+    end: DEFAULT_RTC_PORT_START + DEFAULT_RTC_PORT_COUNT - 1,
+  };
+}
+
+function hasConfigValue(value) {
+  return value !== undefined && value !== null && String(value).trim() !== "";
+}
+
+function normalizeRtcPortRange(startValue, countValue, fallback = getDefaultRtcPortRange()) {
+  const start = hasConfigValue(startValue) ? Number(startValue) : fallback.start;
+  const count = hasConfigValue(countValue) ? Number(countValue) : fallback.count;
+
+  if (!Number.isInteger(start) || start < 1 || start > 65535) {
+    return { error: "RTC port start must be a number between 1 and 65535." };
+  }
+  if (!Number.isInteger(count) || count < 1 || count > 65535) {
+    return { error: "RTC port count must be a number between 1 and 65535." };
+  }
+
+  const end = start + count - 1;
+  if (end > 65535) {
+    return { error: "RTC port range must end at or below 65535." };
+  }
+
+  return { start, count, end };
+}
+
+function resolveSavedRtcPortRange(config) {
+  const resolved = normalizeRtcPortRange(config?.rtcPortStart, config?.rtcPortCount);
+  return resolved.error ? getDefaultRtcPortRange() : resolved;
 }
 
 function normalizeMdnsInput(value) {
@@ -159,7 +197,9 @@ function hasEnvConfig() {
       process.env.INTERCOM_HOSTNAME ||
       process.env.HTTP_PORT ||
       process.env.PUBLIC_IP ||
-      process.env.TALKTOME_MEDIA_INTERFACE
+      process.env.TALKTOME_MEDIA_INTERFACE ||
+      process.env.TALKTOME_RTC_PORT_START ||
+      process.env.TALKTOME_RTC_PORT_COUNT
   );
 }
 
@@ -255,6 +295,28 @@ async function promptForHttpPort(rl, defaultValue, httpsPort) {
   }
 }
 
+async function promptForRtcPortRange(rl, existingConfig = null) {
+  const defaultRange = resolveSavedRtcPortRange(existingConfig);
+
+  console.log("");
+  console.log("WebRTC media port range:");
+  while (true) {
+    const startAnswer = await new Promise((resolve) =>
+      rl.question(`Start port [press Enter to use ${defaultRange.start}]: `, resolve)
+    );
+    const countAnswer = await new Promise((resolve) =>
+      rl.question(`Number of ports [press Enter to use ${defaultRange.count}]: `, resolve)
+    );
+    const range = normalizeRtcPortRange(startAnswer.trim(), countAnswer.trim(), defaultRange);
+    if (range.error) {
+      console.log(range.error);
+      continue;
+    }
+    console.log(`Using RTC ports ${range.start}-${range.end}.`);
+    return range;
+  }
+}
+
 async function promptForMediaNetwork(rl, existingConfig = null) {
   const availableInterfaces = getAvailableMediaNetworkInterfaces();
   const savedSelection = resolveSavedMediaNetworkConfig(existingConfig);
@@ -336,11 +398,14 @@ async function runWizard(existingConfig = null) {
       httpPort = selection;
     }
 
+    const rtcPortRange = await promptForRtcPortRange(rl, existingConfig);
     const mediaNetwork = await promptForMediaNetwork(rl, existingConfig);
 
     const config = {
       httpsPort,
       mdnsHost,
+      rtcPortStart: rtcPortRange.start,
+      rtcPortCount: rtcPortRange.count,
       mediaNetworkMode: mediaNetwork.mode,
     };
     if (httpPort !== undefined) {
@@ -422,6 +487,7 @@ function applyConfig(config) {
     const mdnsHost = resolveEffectiveMdnsHost(config);
     const httpPort = resolveEffectiveHttpPort(config, mdnsHost);
     const httpsPort = config.httpsPort ?? 443;
+    const rtcPortRange = normalizeRtcPortRange(config.rtcPortStart, config.rtcPortCount);
     const conflicts = [];
 
     if (!(await isPortAvailable(httpsPort))) {
@@ -433,6 +499,9 @@ function applyConfig(config) {
       } else if (!(await isPortAvailable(httpPort))) {
         conflicts.push(`HTTP port ${httpPort}`);
       }
+    }
+    if (rtcPortRange.error) {
+      conflicts.push(`RTC port range invalid (${rtcPortRange.error})`);
     }
 
     if (conflicts.length > 0) {

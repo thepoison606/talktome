@@ -120,6 +120,8 @@ const dataDir = getDataDir();
 const dataConfigPath = path.join(dataDir, "config.json");
 const legacyConfigPath = path.join(__dirname, "config.json");
 const legacyPkgConfigPath = path.join(execDir, "config.json");
+const DEFAULT_RTC_PORT_START = 40000;
+const DEFAULT_RTC_PORT_COUNT = 10000;
 
 function copyDirRecursive(srcDir, destDir) {
   if (!fs.existsSync(srcDir)) {
@@ -187,6 +189,66 @@ function saveRuntimeConfig(config) {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
   return configPath;
+}
+
+function getDefaultRtcPortRange() {
+  return {
+    start: DEFAULT_RTC_PORT_START,
+    count: DEFAULT_RTC_PORT_COUNT,
+    end: DEFAULT_RTC_PORT_START + DEFAULT_RTC_PORT_COUNT - 1,
+  };
+}
+
+function hasConfigValue(value) {
+  return value !== undefined && value !== null && String(value).trim() !== "";
+}
+
+function normalizeRtcPortRange(startValue, countValue, fallback = getDefaultRtcPortRange()) {
+  const start = hasConfigValue(startValue) ? Number(startValue) : fallback.start;
+  const count = hasConfigValue(countValue) ? Number(countValue) : fallback.count;
+
+  if (!Number.isInteger(start) || start < 1 || start > 65535) {
+    return { error: "RTC port start must be a number between 1 and 65535." };
+  }
+  if (!Number.isInteger(count) || count < 1 || count > 65535) {
+    return { error: "RTC port count must be a number between 1 and 65535." };
+  }
+
+  const end = start + count - 1;
+  if (end > 65535) {
+    return { error: "RTC port range must end at or below 65535." };
+  }
+
+  return { start, count, end };
+}
+
+function resolveSavedRtcPortRange(config) {
+  const resolved = normalizeRtcPortRange(config?.rtcPortStart, config?.rtcPortCount);
+  return resolved.error ? getDefaultRtcPortRange() : resolved;
+}
+
+function resolveActiveRtcPortRange(config) {
+  const saved = resolveSavedRtcPortRange(config);
+  const hasSavedRange =
+    Object.prototype.hasOwnProperty.call(config || {}, "rtcPortStart") ||
+    Object.prototype.hasOwnProperty.call(config || {}, "rtcPortCount");
+
+  if (
+    hasConfigValue(process.env.TALKTOME_RTC_PORT_START) ||
+    hasConfigValue(process.env.TALKTOME_RTC_PORT_COUNT)
+  ) {
+    const resolved = normalizeRtcPortRange(
+      process.env.TALKTOME_RTC_PORT_START,
+      process.env.TALKTOME_RTC_PORT_COUNT
+    );
+    if (resolved.error) {
+      console.warn(`[CONFIG] ${resolved.error} Falling back to RTC ports ${saved.start}-${saved.end}.`);
+      return { ...saved, source: hasSavedRange ? "config" : "default" };
+    }
+    return { ...resolved, source: "env" };
+  }
+
+  return { ...saved, source: hasSavedRange ? "config" : "default" };
 }
 
 const applePttPushService = new ApplePttPushService({
@@ -1577,6 +1639,7 @@ const HTTP_PORT = (() => {
   return null;
 })();
 const httpPortSource = process.env.HTTP_PORT ? "explicit" : (HTTP_PORT !== null ? "auto" : "disabled");
+const RTC_PORT_RANGE = resolveActiveRtcPortRange(loadRuntimeConfig() || {});
 
 // Track the user whose camera is currently "cut"
 let cutCameraUser = null;
@@ -1840,6 +1903,26 @@ app.get("/admin/settings/media-network", requireAdmin, async (req, res) => {
   });
 });
 
+app.get("/admin/settings/rtc-ports", requireAdmin, (req, res) => {
+  const config = loadRuntimeConfig() || {};
+  const saved = resolveSavedRtcPortRange(config);
+  const environmentOverride = RTC_PORT_RANGE.source === "env";
+
+  res.json({
+    rtcPortStart: saved.start,
+    rtcPortCount: saved.count,
+    rtcPortEnd: saved.end,
+    activeRtcPortStart: RTC_PORT_RANGE.start,
+    activeRtcPortCount: RTC_PORT_RANGE.count,
+    activeRtcPortEnd: RTC_PORT_RANGE.end,
+    restartRequired: environmentOverride
+      ? false
+      : saved.start !== RTC_PORT_RANGE.start || saved.count !== RTC_PORT_RANGE.count,
+    environmentOverride,
+    configPath: getConfigPath(),
+  });
+});
+
 app.put("/admin/settings/mdns", requireAdmin, (req, res) => {
   const nextHost = normalizeMdnsSetting(req.body?.mdnsHost);
   if (!nextHost) {
@@ -1921,6 +2004,42 @@ app.put("/admin/settings/media-network", requireAdmin, (req, res) => {
   }
 });
 
+app.put("/admin/settings/rtc-ports", requireAdmin, (req, res) => {
+  const nextRange = normalizeRtcPortRange(req.body?.rtcPortStart, req.body?.rtcPortCount);
+  if (nextRange.error) {
+    return res.status(400).json({ error: nextRange.error });
+  }
+
+  const currentConfig = loadRuntimeConfig() || {};
+  const updatedConfig = {
+    ...currentConfig,
+    rtcPortStart: nextRange.start,
+    rtcPortCount: nextRange.count,
+  };
+
+  try {
+    const configPath = saveRuntimeConfig(updatedConfig);
+    const environmentOverride = RTC_PORT_RANGE.source === "env";
+    return res.json({
+      rtcPortStart: nextRange.start,
+      rtcPortCount: nextRange.count,
+      rtcPortEnd: nextRange.end,
+      activeRtcPortStart: RTC_PORT_RANGE.start,
+      activeRtcPortCount: RTC_PORT_RANGE.count,
+      activeRtcPortEnd: RTC_PORT_RANGE.end,
+      restartRequired: !environmentOverride && (
+        nextRange.start !== RTC_PORT_RANGE.start ||
+        nextRange.count !== RTC_PORT_RANGE.count
+      ),
+      environmentOverride,
+      configPath,
+    });
+  } catch (err) {
+    console.error("Error saving RTC port setting:", err);
+    return res.status(500).json({ error: "Failed to save RTC port setting" });
+  }
+});
+
 app.get("/admin/config/export", requireAdmin, (req, res) => {
   try {
     const bundle = {
@@ -1992,6 +2111,22 @@ app.post("/admin/config/import", requireAdmin, (req, res) => {
           delete nextConfig.mediaInterfaceName;
           delete nextConfig.mediaAnnouncedAddress;
         }
+      }
+
+      if (
+        Object.prototype.hasOwnProperty.call(bundle.serverConfig, "rtcPortStart")
+        || Object.prototype.hasOwnProperty.call(bundle.serverConfig, "rtcPortCount")
+      ) {
+        const importedRtcRange = normalizeRtcPortRange(
+          bundle.serverConfig.rtcPortStart,
+          bundle.serverConfig.rtcPortCount,
+          resolveSavedRtcPortRange(nextConfig)
+        );
+        if (importedRtcRange.error) {
+          return res.status(400).json({ error: `Config file contains an invalid RTC port range: ${importedRtcRange.error}` });
+        }
+        nextConfig.rtcPortStart = importedRtcRange.start;
+        nextConfig.rtcPortCount = importedRtcRange.count;
       }
     }
 
@@ -3116,7 +3251,7 @@ function warnIfDockerAnnouncedIpLooksInternal(announcedIp) {
 
   console.warn(
     `[TRANSPORT][WARN] Auto-detected announced IP ${announcedIp} looks like a Docker-internal bridge address. ` +
-    `WebRTC media will usually fail from outside the container. Set PUBLIC_IP to the host/LAN IP and publish RTC ports 40000-49999, ` +
+    `WebRTC media will usually fail from outside the container. Set PUBLIC_IP to the host/LAN IP and publish RTC ports ${RTC_PORT_RANGE.start}-${RTC_PORT_RANGE.end}, ` +
     `or use --network host on Linux.`
   );
 }
@@ -3124,13 +3259,13 @@ function warnIfDockerAnnouncedIpLooksInternal(announcedIp) {
 (async () => {
   console.log("[INIT] Starting mediasoup worker");
   worker = await mediasoup.createWorker({
-    rtcMinPort: 40000,
-    rtcMaxPort: 49999,
+    rtcMinPort: RTC_PORT_RANGE.start,
+    rtcMaxPort: RTC_PORT_RANGE.end,
     logLevel: "warn",
     logTags: ["info", "ice", "dtls", "rtp", "srtp", "rtcp"],
   });
   console.log("[INIT] Worker created with PID:", worker.pid);
-  console.log("[INIT] RTC ports: 40000-49999");
+  console.log(`[INIT] RTC ports: ${RTC_PORT_RANGE.start}-${RTC_PORT_RANGE.end}`);
 
   router = await worker.createRouter({
     mediaCodecs: [

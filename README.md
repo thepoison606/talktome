@@ -57,7 +57,7 @@ Ports:
 - HTTP redirect listener defaults to port 80 when mDNS is on; change via `HTTP_PORT=8080` or disable with `HTTP_PORT=off`.
 - mDNS hostname defaults to `intercom.local`; override with `MDNS_HOST=myalias.local`.
 - For internet hosting, set `PUBLIC_IP=<your.public.ip>` so mediasoup announces the correct address.
-- mediasoup uses RTC ports `40000-49999` (UDP and, if needed, TCP). Open them on your firewall/router for external clients (be careful!).
+- mediasoup uses RTC ports `40000-49999` by default (UDP and, if needed, TCP). Change the start/count in the setup wizard or Admin UI, or override with `TALKTOME_RTC_PORT_START` and `TALKTOME_RTC_PORT_COUNT`.
 
 TLS:
 - If no certificate exists yet, the server generates a self-signed pair in `certs/` inside the app data directory (`TALKTOME_DATA_DIR` or the default per-user data path).
@@ -74,6 +74,7 @@ Data:
 On first interactive start, the server asks for:
 - HTTPS port
 - mDNS hostname (use `off` to disable)
+- WebRTC RTC port range (start port and number of ports)
 - Media network for WebRTC
   - `Automatic`
   - `Preferred network adapter`
@@ -86,10 +87,11 @@ The answers are saved to `config.json` in the per-user app data directory:
 Environment variables still override the config.
 - `PUBLIC_IP` forces a manual announced address.
 - `TALKTOME_MEDIA_INTERFACE` forces a specific network adapter.
+- `TALKTOME_RTC_PORT_START` and `TALKTOME_RTC_PORT_COUNT` force the RTC port range.
 Delete `config.json` to re-run the setup.
 
-You can also change the saved media network later in the Admin UI under `Config`.
-Changing the media network requires a server restart before new WebRTC transports use it.
+You can also change the saved media network and RTC port range later in the Admin UI under `Config`.
+Changing either setting requires a server restart before new WebRTC transports use it.
 
 
 ## Admin accounts & passwords
