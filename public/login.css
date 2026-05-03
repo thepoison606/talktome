@@ -1,3 +1,7 @@
+.is-hidden {
+  display: none !important;
+}
+
 .login-overlay {
   position: fixed;
   inset: 0;
@@ -89,6 +93,24 @@
 
 .login-submit:hover {
   background: #1d4ed8;
+}
+
+.login-submit--secondary {
+  color: #e2e8f0;
+  background: rgba(37, 99, 235, 0.18);
+  border: 1px solid rgba(37, 99, 235, 0.35);
+}
+
+.login-submit--secondary:hover {
+  background: rgba(37, 99, 235, 0.28);
+}
+
+.guest-login-panel {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
 }
 
 .login-message {

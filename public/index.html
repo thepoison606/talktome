@@ -1545,19 +1545,32 @@
           </div>
           <button type="submit" class="login-submit">Login</button>
         </form>
+        <div id="guest-login-panel" class="guest-login-panel is-hidden">
+          <div class="login-field">
+            <label for="guest-display-name">Guest name</label>
+            <input
+              type="text"
+              id="guest-display-name"
+              class="login-input"
+              maxlength="40"
+              placeholder="Guest"
+            />
+          </div>
+          <button type="button" id="guest-login-button" class="login-submit login-submit--secondary">Login as Guest</button>
+        </div>
         <div id="login-error" class="login-message" aria-live="polite"></div>
         <a class="login-switch-link" href="/admin">→ to admin login</a>
       </div>
     </div>
 
     <!-- Intercom App (initially hidden until login) -->
-	      <div id="intercom-app" style="display: none;">
-	        <div class="session-bar">
-	          <div class="session-info">Logged in as <span id="my-id">Connecting...</span></div>
+      <div id="intercom-app" style="display: none;">
+        <div class="session-bar">
+          <div class="session-info">Logged in as <span id="my-id">Connecting...</span></div>
           <div id="session-slide-hint" class="session-slide-hint" aria-hidden="true">← Slide to lock</div>
-	          <div id="target-layer-switcher" class="target-layer-switcher" hidden>
-	            <button id="target-layer-button" type="button" aria-label="Switch target layer">Layer 1/1</button>
-	          </div>
+          <div id="target-layer-switcher" class="target-layer-switcher" hidden>
+            <button id="target-layer-button" type="button" aria-label="Switch target layer">Layer 1/1</button>
+          </div>
           <div class="settings-panel">
           <button
             type="button"

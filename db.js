@@ -130,5 +130,6 @@ function ensureColumn(table, column, definition) {
 ensureColumn("users", "is_admin", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("users", "is_superadmin", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("users", "admin_must_change", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("users", "is_guest_profile", "INTEGER NOT NULL DEFAULT 0");
 
 module.exports = db;

@@ -22,6 +22,10 @@ const mediaNetworkQrContainer = document.getElementById('media-network-qr');
 const mediaNetworkQrButton = document.getElementById('media-network-qr-button');
 const mediaNetworkQrImage = document.getElementById('media-network-qr-image');
 const mediaNetworkQrDownloadButton = document.getElementById('media-network-qr-download');
+const guestLoginForm = document.getElementById('guest-login-form');
+const guestLoginEnabledInput = document.getElementById('guest-login-enabled');
+const guestLoginStatus = document.getElementById('guest-login-status');
+const guestLoginProfile = document.getElementById('guest-login-profile');
 const adminImageLightbox = document.getElementById('admin-image-lightbox');
 const adminImageLightboxClose = document.getElementById('admin-image-lightbox-close');
 const adminImageLightboxImage = document.getElementById('admin-image-lightbox-image');
@@ -475,6 +479,7 @@ async function ensureAdminSession() {
 
 async function loadData() {
   // 1) Daten holen
+  await loadGuestLoginSettings();
   const users       = await fetchJSON('/users');
   const conferences = await fetchJSON('/conferences');
   const feeds       = await fetchJSON('/feeds');
@@ -495,17 +500,24 @@ async function loadData() {
     const safeName = escapeHtml(user.name);
     const isAdmin = Boolean(user.is_admin);
     const isSuperadmin = Boolean(user.is_superadmin);
+    const isGuestProfile = Boolean(user.is_guest_profile);
     const adminBadge = isSuperadmin
       ? '<span class="badge superadmin">Superadmin</span>'
       : isAdmin
         ? '<span class="badge admin">Admin</span>'
         : '';
+    const guestBadge = isGuestProfile
+      ? '<span class="badge guest-profile">Guest profile</span>'
+      : '';
     const adminToggle = adminState.isAuthenticated
-      ? isSuperadmin
+      ? isSuperadmin || isGuestProfile
         ? ''
         : `<button type="button" class="small ${isAdmin ? 'warning' : ''}" onclick="toggleAdminRole(${user.id}, ${isAdmin ? 'false' : 'true'})">${isAdmin ? 'Remove admin' : 'Make admin'}</button>`
       : '';
-    const deleteAttrs = isAdmin ? 'disabled title="Admin accounts cannot be deleted"' : '';
+    const passwordAttrs = isGuestProfile ? 'disabled title="Guest profile does not use a password"' : '';
+    const deleteAttrs = isGuestProfile
+      ? 'disabled title="Guest profile cannot be deleted"'
+      : isAdmin ? 'disabled title="Admin accounts cannot be deleted"' : '';
     const li = document.createElement('li');
     li.className = 'list-item list-item--toggleable';
     li.setAttribute('onclick', `toggleUserConfs(${user.id})`);
@@ -528,11 +540,12 @@ async function loadData() {
           <span class="list-item-disclosure" aria-hidden="true"></span>
           <span>${safeName}</span>
           ${adminBadge}
+          ${guestBadge}
           <span class="badge">ID ${user.id}</span>
         </button>
         <div class="inline-controls" onclick="event.stopPropagation()">
           <button type="button" class="small warning" onclick='editUser(${user.id}, ${JSON.stringify(user.name)})'>Rename</button>
-          <button type="button" class="small warning" onclick='resetPassword(${user.id}, ${JSON.stringify(user.name)})'>Reset Password</button>
+          <button type="button" class="small warning" onclick='resetPassword(${user.id}, ${JSON.stringify(user.name)})' ${passwordAttrs}>Reset Password</button>
           ${adminToggle}
           <button type="button" class="small danger" onclick="deleteUser(${user.id})" ${deleteAttrs}>Delete</button>
         </div>
@@ -791,6 +804,23 @@ async function loadRtcPortSettings() {
   }
 }
 
+async function loadGuestLoginSettings() {
+  const payload = await fetchJSON('/admin/settings/guest-login');
+  const enabled = payload?.enabled === true;
+  if (guestLoginEnabledInput) {
+    guestLoginEnabledInput.checked = enabled;
+  }
+  if (guestLoginStatus) {
+    guestLoginStatus.textContent = enabled ? 'Enabled' : 'Disabled';
+  }
+  if (guestLoginProfile) {
+    const profileName = payload?.profileName || 'Guest';
+    const profileId = payload?.profileUserId != null ? `ID ${payload.profileUserId}` : 'not created';
+    guestLoginProfile.textContent = `${profileName} (${profileId})`;
+  }
+  return payload;
+}
+
 async function updateUserConferenceOptions(userId, allConfs, previousIndex) {
   const select = document.getElementById(`add-user-conf-${userId}`);
   if (!select) return;
@@ -835,7 +865,7 @@ async function updateConferenceParticipantOptions(confId, allUsers, previousInde
 
   const assignedIds = new Set(assignedUsers.map(u => String(u.id)));
   const users = Array.isArray(allUsers) ? allUsers : [];
-  const available = users.filter(u => !assignedIds.has(String(u.id)));
+  const available = users.filter(u => !u.is_guest_profile && !assignedIds.has(String(u.id)));
 
   if (!available.length) {
     select.disabled = true;
@@ -883,7 +913,11 @@ async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
   const addBtn  = document.getElementById(`add-target-btn-${userId}`);
   const refreshTargetSelectors = () => {
     const type = selType.value;
-    const selectableUsers = allUsers.filter(item => !item.is_superadmin && Number(item.id) !== Number(userId));
+    const selectableUsers = allUsers.filter(item => (
+      !item.is_superadmin &&
+      !item.is_guest_profile &&
+      Number(item.id) !== Number(userId)
+    ));
     let options = [];
     if (type === 'user') {
       const used = usedByType.user || new Set();
@@ -1501,6 +1535,33 @@ document.getElementById('rtc-ports-form')?.addEventListener('submit', async (e) 
     showMessage('❌ Failed to save RTC ports', 'error', 'config');
   }
 });
+
+if (guestLoginForm) {
+  guestLoginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const res = await authedFetch('/admin/settings/guest-login', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: Boolean(guestLoginEnabledInput?.checked) })
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showMessage(payload.error || 'Failed to save Guest login', 'error', 'config');
+        return;
+      }
+      showMessage(
+        payload.enabled ? '✅ Guest login enabled' : '✅ Guest login disabled',
+        'success',
+        'config'
+      );
+      await loadData();
+    } catch (err) {
+      console.error('Failed to save Guest login:', err);
+      showMessage('❌ Failed to save Guest login', 'error', 'config');
+    }
+  });
+}
 
 if (configExportBtn) {
   configExportBtn.addEventListener('click', async () => {

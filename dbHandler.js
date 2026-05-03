@@ -5,11 +5,11 @@ const crypto = require('crypto');
 const ALL_CONFERENCE_NAME = 'All';
 
 function getAllUsers() {
-  return db.prepare('SELECT id, name, is_admin, is_superadmin FROM users ORDER BY name COLLATE NOCASE').all();
+  return db.prepare('SELECT id, name, is_admin, is_superadmin, is_guest_profile FROM users ORDER BY is_guest_profile, name COLLATE NOCASE').all();
 }
 
 function getUserById(id) {
-  return db.prepare('SELECT id, name, is_admin, is_superadmin, admin_must_change FROM users WHERE id = ?').get(id);
+  return db.prepare('SELECT id, name, is_admin, is_superadmin, admin_must_change, is_guest_profile FROM users WHERE id = ?').get(id);
 }
 
 function getAllConferences() {
@@ -23,7 +23,7 @@ function getAllFeeds() {
 function exportDatabaseSnapshot() {
   return {
     users: db.prepare(`
-      SELECT id, name, password, is_admin, is_superadmin, admin_must_change
+      SELECT id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile
       FROM users
       ORDER BY id
     `).all(),
@@ -121,8 +121,8 @@ function importDatabaseSnapshot(snapshot) {
     }
 
     const insertUser = db.prepare(`
-      INSERT INTO users (id, name, password, is_admin, is_superadmin, admin_must_change)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO users (id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     const insertConference = db.prepare(`
       INSERT INTO conferences (id, name)
@@ -172,7 +172,8 @@ function importDatabaseSnapshot(snapshot) {
         String(row.password),
         row.is_admin ? 1 : 0,
         row.is_superadmin ? 1 : 0,
-        row.admin_must_change ? 1 : 0
+        row.admin_must_change ? 1 : 0,
+        row.is_guest_profile ? 1 : 0
       );
     });
 
@@ -260,6 +261,47 @@ function createUser(name, password) {
   }
 }
 
+function getGuestProfileUser() {
+  return db.prepare(`
+    SELECT id, name, is_admin, is_superadmin, admin_must_change, is_guest_profile
+    FROM users
+    WHERE is_guest_profile = 1
+    ORDER BY id
+    LIMIT 1
+  `).get();
+}
+
+function getOrCreateGuestProfile() {
+  const existing = getGuestProfileUser();
+  if (existing) return existing;
+
+  const baseNames = ['Guest', 'Guest Profile'];
+  let selectedName = null;
+  for (const baseName of baseNames) {
+    const exists = db.prepare('SELECT id FROM users WHERE name = ?').get(baseName);
+    if (!exists) {
+      selectedName = baseName;
+      break;
+    }
+  }
+  if (!selectedName) {
+    let index = 2;
+    while (!selectedName) {
+      const candidate = `Guest Profile ${index}`;
+      const exists = db.prepare('SELECT id FROM users WHERE name = ?').get(candidate);
+      if (!exists) selectedName = candidate;
+      index += 1;
+    }
+  }
+
+  const hash = bcrypt.hashSync(crypto.randomUUID(), 10);
+  const result = db.prepare(`
+    INSERT INTO users (name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile)
+    VALUES (?, ?, 0, 0, 0, 1)
+  `).run(selectedName, hash);
+  return getUserById(result.lastInsertRowid);
+}
+
 function createConference(name) {
   try {
     const stmt = db.prepare('INSERT INTO conferences (name) VALUES (?)');
@@ -296,6 +338,7 @@ function getUsersForConference(conferenceId) {
     JOIN user_conference ON users.id = user_conference.user_id
     WHERE user_conference.conference_id = ?
       AND users.is_superadmin = 0
+      AND users.is_guest_profile = 0
   `);
   return stmt.all(conferenceId);
 }
@@ -431,7 +474,7 @@ function getUserTargets(userId) {
         o.position AS position,
         ut.rowid AS fallback
       FROM user_user_targets ut
-      JOIN users u ON u.id = ut.target_user AND u.is_superadmin = 0
+      JOIN users u ON u.id = ut.target_user AND u.is_superadmin = 0 AND u.is_guest_profile = 0
       LEFT JOIN user_target_order o
         ON o.user_id = ut.user_id
        AND o.target_type = 'user'
@@ -483,6 +526,9 @@ function addUserTargetToUser(userId, targetUserId) {
   }
   if (targetUser.is_superadmin) {
     throw new Error('Superadmin users cannot be targets');
+  }
+  if (targetUser.is_guest_profile) {
+    throw new Error('Guest profile cannot be a direct target');
   }
 
   db.prepare(`
@@ -796,6 +842,8 @@ ensureDefaultAdmin();
 module.exports = {
   getAllUsers,
   getUserById,
+  getGuestProfileUser,
+  getOrCreateGuestProfile,
   getAllConferences,
   getAllFeeds,
   createUser,

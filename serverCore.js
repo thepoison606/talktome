@@ -79,6 +79,8 @@ const {
   updateConferenceName,
   updateUserPassword,
   updateAdminPassword,
+  getGuestProfileUser,
+  getOrCreateGuestProfile,
   getUsersForConference,
   getConferencesForUser,
   getAllUsers,
@@ -249,6 +251,51 @@ function resolveActiveRtcPortRange(config) {
   }
 
   return { ...saved, source: hasSavedRange ? "config" : "default" };
+}
+
+function normalizeGuestDisplayName(value) {
+  const trimmed = String(value ?? "").trim().replace(/\s+/g, " ");
+  if (!trimmed) return "";
+  return trimmed.slice(0, 40);
+}
+
+function resolveGuestLoginSettings(config, { createProfile = false, persist = false } = {}) {
+  const currentConfig = config && typeof config === "object" ? config : {};
+  const rawGuestConfig = currentConfig.guestLogin && typeof currentConfig.guestLogin === "object"
+    ? currentConfig.guestLogin
+    : {};
+  let profile = null;
+  const configuredProfileId = Number(rawGuestConfig.profileUserId);
+  if (Number.isFinite(configuredProfileId)) {
+    const candidate = getUserById(configuredProfileId);
+    if (candidate?.is_guest_profile) {
+      profile = candidate;
+    }
+  }
+
+  if (!profile && createProfile) {
+    profile = getOrCreateGuestProfile();
+  }
+
+  const enabled = rawGuestConfig.enabled === true && !!profile;
+  const resolved = {
+    enabled,
+    profileUserId: profile?.id ?? null,
+    profileName: profile?.name || "Guest",
+  };
+
+  if (persist && profile && rawGuestConfig.profileUserId !== profile.id) {
+    saveRuntimeConfig({
+      ...currentConfig,
+      guestLogin: {
+        ...rawGuestConfig,
+        enabled,
+        profileUserId: profile.id,
+      },
+    });
+  }
+
+  return resolved;
 }
 
 const applePttPushService = new ApplePttPushService({
@@ -814,7 +861,37 @@ function resolveUserIdFromTargetIdentity(rawId) {
   return null;
 }
 
+function isOperatorPeer(peer) {
+  return Boolean(peer && (peer.kind === "user" || peer.kind === "guest"));
+}
+
+function isPersistentUserPeer(peer) {
+  return Boolean(peer && peer.kind === "user" && peer.userId !== null && peer.userId !== undefined);
+}
+
+function findGuestPeerByGuestId(guestId) {
+  const key = String(guestId ?? "");
+  if (!key) return null;
+  for (const [socketId, peer] of peers) {
+    if (peer?.kind === "guest" && String(peer.guestId || "") === key) {
+      return { socketId, peer };
+    }
+  }
+  return null;
+}
+
 function normalizeRuntimeTalkTarget(target) {
+  if (!target || typeof target !== "object") return null;
+  const rawType = typeof target.type === "string" ? target.type.trim().toLowerCase() : "";
+
+  if (rawType === "guest") {
+    const guestId = String(target.id ?? "").trim();
+    if (!guestId) {
+      return null;
+    }
+    return { type: "guest", id: guestId };
+  }
+
   const normalized = normalizeCompanionTarget(target);
   if (!normalized) return null;
 
@@ -825,7 +902,6 @@ function normalizeRuntimeTalkTarget(target) {
     }
     return { type: "conference", id: conferenceId };
   }
-
   const userId = resolveUserIdFromTargetIdentity(normalized.id);
   if (!Number.isFinite(userId)) {
     return null;
@@ -853,13 +929,38 @@ function normalizeRuntimeTalkTargets(targets) {
   return normalizedTargets;
 }
 
+function normalizeCompanionVisibleRuntimeTalkTarget(target) {
+  const normalized = normalizeRuntimeTalkTarget(target);
+  if (!normalized || normalized.type === "guest") {
+    return null;
+  }
+  return normalized;
+}
+
+function normalizeCompanionVisibleRuntimeTalkTargets(targets) {
+  if (!Array.isArray(targets)) {
+    return [];
+  }
+  const normalizedTargets = [];
+  const seen = new Set();
+  for (const rawTarget of targets) {
+    const target = normalizeCompanionVisibleRuntimeTalkTarget(rawTarget);
+    if (!target) continue;
+    const key = `${target.type}:${target.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalizedTargets.push(target);
+  }
+  return normalizedTargets;
+}
+
 function isLiveTalkProducerAppData(appData) {
   const type = typeof appData?.type === "string" ? appData.type.trim().toLowerCase() : "";
-  return type === "talk" || type === "user" || type === "conference";
+  return type === "talk" || type === "user" || type === "conference" || type === "guest";
 }
 
 function getPeerActiveTalkProducers(peer) {
-  if (!peer || peer.kind !== "user") {
+  if (!isOperatorPeer(peer)) {
     return [];
   }
 
@@ -893,7 +994,7 @@ function getPeerActiveTalkTargets(peer) {
 }
 
 function getPeerActiveTalkInfo(peer) {
-  if (!peer || peer.kind !== "user") {
+  if (!isOperatorPeer(peer)) {
     return null;
   }
 
@@ -960,18 +1061,123 @@ function resolveAddressedUserIdsForTargets(targets, speakerUserId) {
   return Array.from(recipientUserIds);
 }
 
-function buildAddressedEntry(target, speakerUserId, fromName, at) {
-  const normalizedSpeakerId = Number(speakerUserId);
-  if (!target || !Number.isFinite(normalizedSpeakerId)) {
+function getRecipientKeyForPeer(peer) {
+  if (isPersistentUserPeer(peer)) {
+    return `user:${Number(peer.userId)}`;
+  }
+  if (peer?.kind === "guest" && peer.guestId) {
+    return `guest:${String(peer.guestId)}`;
+  }
+  return null;
+}
+
+function getRecipientKeyForUserId(userId) {
+  const numericUserId = Number(userId);
+  return Number.isFinite(numericUserId) ? `user:${numericUserId}` : null;
+}
+
+function isPeerMemberOfConference(peer, conferenceId) {
+  const numericConferenceId = Number(conferenceId);
+  if (!Number.isFinite(numericConferenceId) || !isOperatorPeer(peer)) {
+    return false;
+  }
+  const membershipUserId = peer.kind === "guest" ? peer.guestProfileUserId : peer.userId;
+  if (membershipUserId === null || membershipUserId === undefined) {
+    return false;
+  }
+  return (getConferencesForUser(membershipUserId) || [])
+    .some((conference) => Number(conference?.id) === numericConferenceId);
+}
+
+function resolveRecipientPeersForTarget(target, speakerSocketId) {
+  if (!target) return [];
+  const recipients = [];
+  const seen = new Set();
+
+  const addRecipient = (socketId, peer) => {
+    if (!socketId || socketId === speakerSocketId || !isOperatorPeer(peer) || seen.has(socketId)) {
+      return;
+    }
+    seen.add(socketId);
+    recipients.push({ socketId, peer });
+  };
+
+  if (target.type === "user") {
+    const found = findUserPeerByUserId(target.id);
+    addRecipient(found?.socketId, found?.peer);
+    return recipients;
+  }
+
+  if (target.type === "guest") {
+    const found = findGuestPeerByGuestId(target.id);
+    addRecipient(found?.socketId, found?.peer);
+    return recipients;
+  }
+
+  if (target.type === "conference") {
+    for (const [socketId, peer] of peers) {
+      if (isPeerMemberOfConference(peer, target.id)) {
+        addRecipient(socketId, peer);
+      }
+    }
+  }
+
+  return recipients;
+}
+
+function buildSpeakerReplyTarget(speakerPeer, activeTarget) {
+  if (speakerPeer?.kind === "guest" && speakerPeer.guestId) {
+    return {
+      replyTargetType: "guest",
+      replyTargetId: String(speakerPeer.guestId),
+    };
+  }
+
+  if (isPersistentUserPeer(speakerPeer)) {
+    const speakerUserId = Number(speakerPeer.userId);
+    if (activeTarget?.type === "conference") {
+      return {
+        replyTargetType: "conference",
+        replyTargetId: Number(activeTarget.id),
+      };
+    }
+    return {
+      replyTargetType: "user",
+      replyTargetId: speakerUserId,
+    };
+  }
+
+  return {};
+}
+
+function buildAddressedEntry(target, speakerPeer, fromName, at) {
+  if (!target || !isOperatorPeer(speakerPeer)) {
     return null;
   }
+  const speakerReplyTarget = buildSpeakerReplyTarget(speakerPeer, target);
+  const fromUserId = isPersistentUserPeer(speakerPeer) ? Number(speakerPeer.userId) : null;
+  const fromGuestId = speakerPeer.kind === "guest" ? String(speakerPeer.guestId || "") : null;
 
   if (target.type === "user") {
     return {
-      fromUserId: normalizedSpeakerId,
+      fromUserId,
+      fromGuestId,
       fromName: fromName || null,
-      targetType: "user",
-      targetId: normalizedSpeakerId,
+      targetType: fromGuestId ? "guest" : "user",
+      targetId: fromGuestId || fromUserId,
+      ...speakerReplyTarget,
+      at,
+    };
+  }
+
+  if (target.type === "guest") {
+    return {
+      fromUserId,
+      fromGuestId,
+      fromName: fromName || null,
+      targetType: fromGuestId ? "guest" : "user",
+      targetId: fromGuestId || fromUserId,
+      ...speakerReplyTarget,
       at,
     };
   }
@@ -983,10 +1189,12 @@ function buildAddressedEntry(target, speakerUserId, fromName, at) {
     }
 
     return {
-      fromUserId: normalizedSpeakerId,
+      fromUserId,
+      fromGuestId,
       fromName: fromName || null,
       targetType: "conference",
       targetId: conferenceId,
+      ...speakerReplyTarget,
       at,
     };
   }
@@ -995,24 +1203,28 @@ function buildAddressedEntry(target, speakerUserId, fromName, at) {
 }
 
 function mergeAddressedNowEntry(targetMap, targetUserId, entry) {
-  const userId = Number(targetUserId);
-  if (!Number.isFinite(userId) || !entry) {
+  const key = String(targetUserId || "");
+  if (!key || !entry) {
     return;
   }
 
-  let list = targetMap.get(userId);
+  let list = targetMap.get(key);
   if (!list) {
     list = [];
-    targetMap.set(userId, list);
+    targetMap.set(key, list);
   }
 
-  const speakerKey = Number.isFinite(Number(entry.fromUserId))
+  const speakerKey = entry.fromGuestId
+    ? `guest:${entry.fromGuestId}`
+    : Number.isFinite(Number(entry.fromUserId))
     ? Number(entry.fromUserId)
     : String(entry.fromName || "").trim().toLowerCase();
   const entryKey = `${entry.targetType}:${entry.targetId}:${speakerKey}`;
   const existingIndex = list.findIndex((candidate) => (
     `${candidate.targetType}:${candidate.targetId}:${
-      Number.isFinite(Number(candidate?.fromUserId))
+      candidate?.fromGuestId
+        ? `guest:${candidate.fromGuestId}`
+        : Number.isFinite(Number(candidate?.fromUserId))
         ? Number(candidate.fromUserId)
         : String(candidate?.fromName || "").trim().toLowerCase()
     }` === entryKey
@@ -1030,14 +1242,14 @@ function mergeAddressedNowEntry(targetMap, targetUserId, entry) {
 }
 
 function setReplyEntry(targetMap, targetUserId, entry) {
-  const userId = Number(targetUserId);
-  if (!Number.isFinite(userId) || !entry) {
+  const key = String(targetUserId || "");
+  if (!key || !entry) {
     return;
   }
 
-  const existing = targetMap.get(userId);
+  const existing = targetMap.get(key);
   if (!existing || Number(entry.at) >= Number(existing?.at || 0)) {
-    targetMap.set(userId, entry);
+    targetMap.set(key, entry);
   }
 }
 
@@ -1056,35 +1268,34 @@ function rememberIncomingReplyEntry(targetUserId, entry) {
 }
 
 function buildIncomingTalkStateSnapshot() {
-  const addressedNowByUser = new Map();
-  const replyTargetByUser = new Map();
+  const addressedNowByRecipient = new Map();
+  const replyTargetByRecipient = new Map();
 
-  for (const user of getCompanionAddressableUsers()) {
-    const speakerUserId = Number(user?.id);
-    if (!Number.isFinite(speakerUserId)) {
-      continue;
-    }
-
-    const base = ensureCompanionUserState(speakerUserId, user?.name || null);
-    const found = findUserPeerByUserId(speakerUserId);
-    const peer = found?.peer || null;
+  for (const [speakerSocketId, peer] of peers) {
+    if (!isOperatorPeer(peer)) continue;
+    const speakerUserId = isPersistentUserPeer(peer) ? Number(peer.userId) : null;
+    const base = speakerUserId !== null ? ensureCompanionUserState(speakerUserId, peer?.name || null) : null;
     const activeTalk = getPeerActiveTalkInfo(peer);
-    const speakerName = peer?.name || base.userName || user?.name || `User ${speakerUserId}`;
+    const speakerName = peer?.name || base?.userName || (speakerUserId !== null ? `User ${speakerUserId}` : "Guest");
 
     const activeTargets = Array.isArray(activeTalk?.targets) ? activeTalk.targets : [];
     const activeAt = Number.isFinite(Number(activeTalk?.at))
       ? Number(activeTalk.at)
-      : Number(base.updatedAt) || Date.now();
+      : Number(base?.updatedAt) || Date.now();
 
     if (activeTargets.length > 0) {
       for (const activeTarget of activeTargets) {
-        const activeEntry = buildAddressedEntry(activeTarget, speakerUserId, speakerName, activeAt);
+        const activeEntry = buildAddressedEntry(activeTarget, peer, speakerName, activeAt);
         if (!activeEntry) continue;
-        const addressedUsers = resolveAddressedUserIdsForTarget(activeTarget, speakerUserId);
-        for (const addressedUserId of addressedUsers) {
-          mergeAddressedNowEntry(addressedNowByUser, addressedUserId, activeEntry);
-          setReplyEntry(replyTargetByUser, addressedUserId, activeEntry);
-          rememberIncomingReplyEntry(addressedUserId, activeEntry);
+        const addressedPeers = resolveRecipientPeersForTarget(activeTarget, speakerSocketId);
+        for (const addressedPeer of addressedPeers) {
+          const recipientKey = getRecipientKeyForPeer(addressedPeer.peer);
+          if (!recipientKey) continue;
+          mergeAddressedNowEntry(addressedNowByRecipient, recipientKey, activeEntry);
+          setReplyEntry(replyTargetByRecipient, recipientKey, activeEntry);
+          if (isPersistentUserPeer(addressedPeer.peer)) {
+            rememberIncomingReplyEntry(addressedPeer.peer.userId, activeEntry);
+          }
         }
       }
     }
@@ -1098,27 +1309,60 @@ function buildIncomingTalkStateSnapshot() {
 
     const base = ensureCompanionUserState(userId, user?.name || null);
     if (base.lastIncomingReplyEntry) {
-      setReplyEntry(replyTargetByUser, userId, base.lastIncomingReplyEntry);
+      setReplyEntry(replyTargetByRecipient, getRecipientKeyForUserId(userId), base.lastIncomingReplyEntry);
     }
   }
 
   return {
-    addressedNowByUser,
-    replyTargetByUser,
+    addressedNowByRecipient,
+    replyTargetByRecipient,
   };
 }
 
 function buildIncomingTalkStateForUser(userId, snapshot = null) {
   const normalizedUserId = Number(userId);
+  const recipientKey = getRecipientKeyForUserId(normalizedUserId);
+  return buildIncomingTalkStateForRecipientKey(recipientKey, snapshot);
+}
+
+function buildIncomingTalkStateForRecipientKey(recipientKey, snapshot = null) {
   const activeSnapshot = snapshot || buildIncomingTalkStateSnapshot();
-  const addressedNow = Array.isArray(activeSnapshot?.addressedNowByUser?.get(normalizedUserId))
-    ? [...activeSnapshot.addressedNowByUser.get(normalizedUserId)]
+  const addressedNow = recipientKey && Array.isArray(activeSnapshot?.addressedNowByRecipient?.get(recipientKey))
+    ? [...activeSnapshot.addressedNowByRecipient.get(recipientKey)]
     : [];
   addressedNow.sort((left, right) => Number(right?.at || 0) - Number(left?.at || 0));
 
   return {
     addressedNow,
-    replyTarget: activeSnapshot?.replyTargetByUser?.get(normalizedUserId) || null,
+    replyTarget: recipientKey ? activeSnapshot?.replyTargetByRecipient?.get(recipientKey) || null : null,
+  };
+}
+
+function sanitizeCompanionIncomingEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  if (entry.targetType !== "user" && entry.targetType !== "conference") {
+    return null;
+  }
+  const targetId = Number(entry.targetId);
+  if (!Number.isFinite(targetId)) {
+    return null;
+  }
+  return {
+    targetType: entry.targetType,
+    targetId,
+    fromUserId: Number.isFinite(Number(entry.fromUserId)) ? Number(entry.fromUserId) : null,
+    fromName: entry.fromName || null,
+    at: Number.isFinite(Number(entry.at)) ? Number(entry.at) : 0,
+  };
+}
+
+function sanitizeCompanionIncomingTalkState(state) {
+  const addressedNow = (Array.isArray(state?.addressedNow) ? state.addressedNow : [])
+    .map(sanitizeCompanionIncomingEntry)
+    .filter(Boolean);
+  return {
+    addressedNow,
+    replyTarget: sanitizeCompanionIncomingEntry(state?.replyTarget),
   };
 }
 
@@ -1300,14 +1544,15 @@ function buildCompanionUserState(userId, fallbackName = null, incomingSnapshot =
   const peer = found?.peer || null;
   const socketId = found?.socketId || null;
   const activeTalkInfo = peer ? getPeerActiveTalkInfo(peer) : null;
-  const activeTargets = Array.isArray(activeTalkInfo?.targets) ? activeTalkInfo.targets : [];
-  const activeTarget = activeTalkInfo?.target || null;
+  const activeRuntimeTargets = Array.isArray(activeTalkInfo?.targets) ? activeTalkInfo.targets : [];
+  const activeTargets = normalizeCompanionVisibleRuntimeTalkTargets(activeRuntimeTargets);
+  const activeTarget = normalizeCompanionVisibleRuntimeTalkTarget(activeTalkInfo?.target) || activeTargets[0] || null;
   const currentTarget = activeTarget || null;
   const talking = Boolean(found && activeTargets.length > 0);
   const resolvedName = peer?.name || base.userName || fallbackName || null;
-  const lastTargets = normalizeRuntimeTalkTargets(base.lastTargets);
-  const lastTarget = normalizeRuntimeTalkTarget(base.lastTarget) || lastTargets[0] || currentTarget || null;
-  const incomingTalkState = buildIncomingTalkStateForUser(userId, incomingSnapshot);
+  const lastTargets = normalizeCompanionVisibleRuntimeTalkTargets(base.lastTargets);
+  const lastTarget = normalizeCompanionVisibleRuntimeTalkTarget(base.lastTarget) || lastTargets[0] || currentTarget || null;
+  const incomingTalkState = sanitizeCompanionIncomingTalkState(buildIncomingTalkStateForUser(userId, incomingSnapshot));
 
   return {
     userId,
@@ -1384,7 +1629,7 @@ function filterSystemInternalTargets(targets = []) {
 }
 
 function isCompanionAddressableUser(user) {
-  return Boolean(user && !user.is_superadmin);
+  return Boolean(user && !user.is_superadmin && !user.is_guest_profile);
 }
 
 function isCompanionAddressableUserId(userId) {
@@ -1456,8 +1701,9 @@ function syncPeerCompanionState(peer, { reason = "peer-sync" } = {}) {
     return;
   }
   const activeTalkInfo = getPeerActiveTalkInfo(peer);
-  const activeTarget = activeTalkInfo?.target || null;
-  const activeTargets = Array.isArray(activeTalkInfo?.targets) ? activeTalkInfo.targets : [];
+  const activeRuntimeTargets = Array.isArray(activeTalkInfo?.targets) ? activeTalkInfo.targets : [];
+  const activeTargets = normalizeCompanionVisibleRuntimeTalkTargets(activeRuntimeTargets);
+  const activeTarget = normalizeCompanionVisibleRuntimeTalkTarget(activeTalkInfo?.target) || activeTargets[0] || null;
   const patch = {
     userName: peer.name || null,
     online: true,
@@ -1476,19 +1722,20 @@ function syncPeerCompanionState(peer, { reason = "peer-sync" } = {}) {
   updateCompanionUserState(peer.userId, patch, { reason, fallbackName: peer.name || null });
 }
 
-function emitClientIncomingTalkState(userId, reason = "incoming-talk-state", incomingSnapshot = null) {
-  const found = findUserPeerByUserId(userId);
-  const peer = found?.peer || null;
-  if (!peer || peer.kind !== "user" || peer.userId === null || peer.userId === undefined) {
+function emitClientIncomingTalkState(peer, reason = "incoming-talk-state", incomingSnapshot = null) {
+  if (!isOperatorPeer(peer)) {
     return;
   }
+  const recipientKey = getRecipientKeyForPeer(peer);
+  if (!recipientKey) return;
 
   peer.socket.emit("incoming-talk-state", {
     reason,
     at: new Date().toISOString(),
     state: {
-      userId: Number(peer.userId),
-      ...buildIncomingTalkStateForUser(peer.userId, incomingSnapshot),
+      userId: isPersistentUserPeer(peer) ? Number(peer.userId) : null,
+      guestId: peer.kind === "guest" ? String(peer.guestId || "") : null,
+      ...buildIncomingTalkStateForRecipientKey(recipientKey, incomingSnapshot),
     },
   });
 }
@@ -1497,10 +1744,10 @@ function broadcastRuntimeUserStates(reason = "runtime-state-changed") {
   const incomingSnapshot = buildIncomingTalkStateSnapshot();
 
   for (const [, peer] of peers) {
-    if (peer?.kind !== "user" || peer.userId === null || peer.userId === undefined) {
+    if (!isOperatorPeer(peer)) {
       continue;
     }
-    emitClientIncomingTalkState(peer.userId, reason, incomingSnapshot);
+    emitClientIncomingTalkState(peer, reason, incomingSnapshot);
   }
 
   for (const user of getCompanionAddressableUsers()) {
@@ -1695,7 +1942,35 @@ app.get('/users/:id/targets', (req, res) => {
   }
 });
 
+app.get("/guest/targets", (req, res) => {
+  try {
+    const settings = resolveGuestLoginSettings(loadRuntimeConfig() || {}, { createProfile: false });
+    if (!settings.enabled || !settings.profileUserId) {
+      return res.status(403).json({ error: "Guest login is disabled" });
+    }
+    res.json(buildOperatorTargetsForUser(settings.profileUserId));
+  } catch (err) {
+    console.error("Guest targets error:", err);
+    res.status(500).json({ error: err.message || "Failed to load guest targets" });
+  }
+});
+
 // === POST ===
+app.get("/login/options", (req, res) => {
+  try {
+    const settings = resolveGuestLoginSettings(loadRuntimeConfig() || {}, { createProfile: false });
+    res.json({
+      guestLogin: {
+        enabled: settings.enabled,
+        label: settings.profileName || "Guest",
+      },
+    });
+  } catch (err) {
+    console.error("Login options error:", err);
+    res.json({ guestLogin: { enabled: false, label: "Guest" } });
+  }
+});
+
 app.post("/login", (req, res) => {
   console.log("trying to login");
   const { name, password } = req.body;
@@ -1703,6 +1978,9 @@ app.post("/login", (req, res) => {
   try {
     const user = verifyUser(name, password);
     if (user) {
+      if (user.is_guest_profile) {
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
       console.log("Login successful for user:", user.name);
       return res.json({ id: user.id, name: user.name, kind: "user" });
     }
@@ -1721,6 +1999,28 @@ app.post("/login", (req, res) => {
   }
 });
 
+app.post("/login/guest", (req, res) => {
+  try {
+    const settings = resolveGuestLoginSettings(loadRuntimeConfig() || {}, { createProfile: true, persist: true });
+    if (!settings.enabled || !settings.profileUserId) {
+      return res.status(403).json({ error: "Guest login is disabled" });
+    }
+
+    const requestedName = normalizeGuestDisplayName(req.body?.name);
+    const shortId = crypto.randomBytes(2).toString("hex").toUpperCase();
+    const name = requestedName || `${settings.profileName || "Guest"} ${shortId}`;
+    return res.json({
+      kind: "guest",
+      guestId: crypto.randomUUID(),
+      guestProfileUserId: settings.profileUserId,
+      name,
+    });
+  } catch (err) {
+    console.error("Guest login error:", err);
+    return res.status(500).json({ error: "Guest login failed" });
+  }
+});
+
 app.post("/admin/login", (req, res) => {
   const { name, password } = req.body || {};
   if (!name || !password) {
@@ -1729,7 +2029,7 @@ app.post("/admin/login", (req, res) => {
 
   try {
     const user = verifyUser(name, password);
-    if (!user) {
+    if (!user || user.is_guest_profile) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
     if (!user.is_admin) {
@@ -1923,6 +2223,22 @@ app.get("/admin/settings/rtc-ports", requireAdmin, (req, res) => {
   });
 });
 
+app.get("/admin/settings/guest-login", requireAdmin, (req, res) => {
+  try {
+    const config = loadRuntimeConfig() || {};
+    const settings = resolveGuestLoginSettings(config, { createProfile: true, persist: true });
+    res.json({
+      enabled: settings.enabled,
+      profileUserId: settings.profileUserId,
+      profileName: settings.profileName,
+      configPath: getConfigPath(),
+    });
+  } catch (err) {
+    console.error("Error loading guest login setting:", err);
+    res.status(500).json({ error: "Failed to load guest login setting" });
+  }
+});
+
 app.put("/admin/settings/mdns", requireAdmin, (req, res) => {
   const nextHost = normalizeMdnsSetting(req.body?.mdnsHost);
   if (!nextHost) {
@@ -2040,6 +2356,33 @@ app.put("/admin/settings/rtc-ports", requireAdmin, (req, res) => {
   }
 });
 
+app.put("/admin/settings/guest-login", requireAdmin, (req, res) => {
+  const enabled = req.body?.enabled === true;
+
+  try {
+    const currentConfig = loadRuntimeConfig() || {};
+    const profile = getOrCreateGuestProfile();
+    const updatedConfig = {
+      ...currentConfig,
+      guestLogin: {
+        ...(currentConfig.guestLogin && typeof currentConfig.guestLogin === "object" ? currentConfig.guestLogin : {}),
+        enabled,
+        profileUserId: profile.id,
+      },
+    };
+    const configPath = saveRuntimeConfig(updatedConfig);
+    return res.json({
+      enabled,
+      profileUserId: profile.id,
+      profileName: profile.name,
+      configPath,
+    });
+  } catch (err) {
+    console.error("Error saving guest login setting:", err);
+    return res.status(500).json({ error: "Failed to save guest login setting" });
+  }
+});
+
 app.get("/admin/config/export", requireAdmin, (req, res) => {
   try {
     const bundle = {
@@ -2128,9 +2471,26 @@ app.post("/admin/config/import", requireAdmin, (req, res) => {
         nextConfig.rtcPortStart = importedRtcRange.start;
         nextConfig.rtcPortCount = importedRtcRange.count;
       }
+
+      if (bundle.serverConfig.guestLogin && typeof bundle.serverConfig.guestLogin === "object") {
+        const importedGuestProfileId = Number(bundle.serverConfig.guestLogin.profileUserId);
+        nextConfig.guestLogin = {
+          enabled: bundle.serverConfig.guestLogin.enabled === true,
+          profileUserId: Number.isFinite(importedGuestProfileId) ? importedGuestProfileId : null,
+        };
+      }
     }
 
     importDatabaseSnapshot(bundle.database);
+    if (nextConfig.guestLogin && typeof nextConfig.guestLogin === "object") {
+      const configuredGuestProfile = Number.isFinite(Number(nextConfig.guestLogin.profileUserId))
+        ? getUserById(Number(nextConfig.guestLogin.profileUserId))
+        : null;
+      if (!configuredGuestProfile?.is_guest_profile) {
+        const fallbackGuestProfile = getOrCreateGuestProfile();
+        nextConfig.guestLogin.profileUserId = fallbackGuestProfile.id;
+      }
+    }
     saveRuntimeConfig(nextConfig);
 
     res.json({
@@ -2152,7 +2512,7 @@ app.post("/api/v1/companion/auth/login", (req, res) => {
 
   try {
     const user = verifyUser(name, password);
-    if (!user) {
+    if (!user || user.is_guest_profile) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
 
@@ -2213,6 +2573,9 @@ app.put("/admin/users/:id/admin", requireAdmin, (req, res) => {
   }
   if (user.is_superadmin && !isAdmin) {
     return res.status(403).json({ error: "Superadmin cannot be demoted" });
+  }
+  if (user.is_guest_profile) {
+    return res.status(403).json({ error: "Guest profile cannot be an admin account" });
   }
 
   try {
@@ -2296,6 +2659,9 @@ app.post('/users/:id/targets', requireAdmin, (req, res) => {
       if (targetUser.is_superadmin) {
         return res.status(400).json({ error: 'Superadmin users cannot be targets' });
       }
+      if (targetUser.is_guest_profile) {
+        return res.status(400).json({ error: 'Guest profile cannot be a direct target' });
+      }
       addUserTargetToUser(req.params.id, targetId);
     } else if (targetType === 'conference') {
       addUserTargetToConference(req.params.id, targetId);
@@ -2309,7 +2675,7 @@ app.post('/users/:id/targets', requireAdmin, (req, res) => {
   } catch (err) {
     console.error('Error in add-target:', err);
     const lower = String(err?.message || '').toLowerCase();
-    if (lower.includes('superadmin users cannot be targets') || lower.includes('target user not found')) {
+    if (lower.includes('superadmin users cannot be targets') || lower.includes('target user not found') || lower.includes('guest profile cannot be a direct target')) {
       return res.status(400).json({ error: err.message });
     }
     res.status(500).json({ error: err.message });
@@ -2634,6 +3000,12 @@ app.put('/users/:id/password', requireAdmin, (req, res) => {
   }
 
   try {
+    const user = getUserById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.is_guest_profile) {
+      return res.status(403).json({ error: 'Guest profile does not use a password' });
+    }
+
     const updated = updateUserPassword(req.params.id, password.trim());
     if (!updated) return res.status(404).json({ error: 'User not found' });
     res.sendStatus(204);
@@ -2726,6 +3098,9 @@ app.delete("/users/:id", requireAdmin, (req, res) => {
     if (user.is_admin) {
       return res.status(403).json({ error: "Admin accounts cannot be deleted" });
     }
+    if (user.is_guest_profile) {
+      return res.status(403).json({ error: "Guest profile cannot be deleted" });
+    }
     deleteUser(req.params.id);
     res.sendStatus(204);
   } catch (err) {
@@ -2772,14 +3147,19 @@ app.delete("/users/:id/targets/:type/:tid", requireAdmin, (req, res) => {
 function notifyTargetChange(userId) {
   const idStr = String(userId);
   for (const [, peer] of peers) {
-    if (peer.kind === "user" && String(peer.userId) === idStr) {
+    if (
+      (peer.kind === "user" && String(peer.userId) === idStr) ||
+      (peer.kind === "guest" && String(peer.guestProfileUserId) === idStr)
+    ) {
       peer.socket.emit('user-targets-updated');
     }
   }
-  emitCompanionEvent("user-targets-updated", {
-    at: new Date().toISOString(),
-    userId: Number(userId),
-  });
+  if (isCompanionAddressableUserId(userId)) {
+    emitCompanionEvent("user-targets-updated", {
+      at: new Date().toISOString(),
+      userId: Number(userId),
+    });
+  }
 }
 
 
@@ -3285,6 +3665,8 @@ function getUserList() {
     socketId,
     userId: peer.userId ?? null,
     feedId: peer.feedId ?? null,
+    guestId: peer.guestId ?? null,
+    guestProfileUserId: peer.guestProfileUserId ?? null,
     kind: peer.kind ?? (peer.userId ? "user" : peer.feedId ? "feed" : "guest"),
     name: peer.name || null
   }));
@@ -3345,41 +3727,16 @@ function resolveProducerRecipientDeliveriesForTargets({ targets, speakerSocketId
   const seenRecipients = new Set();
 
   for (const target of normalizeRuntimeTalkTargets(targets)) {
-    if (target.type === "user") {
-      const found = findUserPeerByUserId(target.id);
-      const recipientSocketId = found?.socketId || null;
-      if (!recipientSocketId || recipientSocketId === speakerSocketId || seenRecipients.has(recipientSocketId)) {
-        continue;
-      }
+    const recipients = resolveRecipientPeersForTarget(target, speakerSocketId);
+    for (const { socketId: recipientSocketId } of recipients) {
+      if (!recipientSocketId || seenRecipients.has(recipientSocketId)) continue;
       seenRecipients.add(recipientSocketId);
-      deliveries.push({
-        recipientSocketId,
-        appData: {
-          type: "user",
-          id: Number(target.id),
-          targetPeer: recipientSocketId,
-        },
-      });
-      continue;
-    }
-
-    if (target.type === "conference") {
-      const members = getUsersForConference(target.id) || [];
-      for (const member of members) {
-        const found = findUserPeerByUserId(member?.id);
-        const recipientSocketId = found?.socketId || null;
-        if (!recipientSocketId || recipientSocketId === speakerSocketId || seenRecipients.has(recipientSocketId)) {
-          continue;
-        }
-        seenRecipients.add(recipientSocketId);
-        deliveries.push({
-          recipientSocketId,
-          appData: {
-            type: "conference",
-            id: Number(target.id),
-          },
-        });
-      }
+      const appData = target.type === "conference"
+        ? { type: "conference", id: Number(target.id) }
+        : target.type === "guest"
+          ? { type: "guest", id: String(target.id), targetPeer: recipientSocketId }
+          : { type: "user", id: Number(target.id), targetPeer: recipientSocketId };
+      deliveries.push({ recipientSocketId, appData });
     }
   }
 
@@ -3398,7 +3755,7 @@ function resolveProducerRecipientDeliveries({ appData, speakerSocketId }) {
     });
   }
 
-  if (type === "user" || type === "conference") {
+  if (type === "user" || type === "conference" || type === "guest") {
     return resolveProducerRecipientDeliveriesForTargets({
       targets: [{ type, id: targetId }],
       speakerSocketId,
@@ -3411,8 +3768,10 @@ function resolveProducerRecipientDeliveries({ appData, speakerSocketId }) {
     const listenerIds = new Set(listeners.map((row) => String(row.user_id)));
     for (const [sid, peer] of peers) {
       if (sid === speakerSocketId) continue;
-      if (peer?.kind !== "user" || peer?.userId === null) continue;
-      if (listenerIds.has(String(peer.userId))) {
+      if (!isOperatorPeer(peer)) continue;
+      const listenerUserId = peer.kind === "guest" ? peer.guestProfileUserId : peer.userId;
+      if (listenerUserId === null || listenerUserId === undefined) continue;
+      if (listenerIds.has(String(listenerUserId))) {
         deliveries.push({
           recipientSocketId: sid,
           appData: { ...appData },
@@ -3529,7 +3888,7 @@ async function sendApplePttServiceUpdate({ recipientUserIds, reason }) {
 function emitUserListToOperators() {
   const userList = getUserList();
   for (const peer of peers.values()) {
-    if (!peer || peer.kind !== "user") continue;
+    if (!isOperatorPeer(peer)) continue;
     try {
       peer.socket.emit("user-list", userList);
     } catch (err) {
@@ -3544,6 +3903,8 @@ io.on("connection", (socket) => {
     socket,
     userId:   null,
     feedId:   null,
+    guestId:  null,
+    guestProfileUserId: null,
     name:     null,
     kind:     "guest",
     consumers: new Map(),
@@ -3554,14 +3915,14 @@ io.on("connection", (socket) => {
   // Emit lists
   socket.emit("conference-list", getAllConferences());
 
-  socket.on("register-user", ({ id, name, kind = "user", force = false } = {}, callback) => {
+  socket.on("register-user", ({ id, name, kind = "user", force = false, guestProfileUserId = null } = {}, callback) => {
     const peer = peers.get(socket.id);
     if (!peer) {
       if (typeof callback === "function") callback({ error: "Peer not registered" });
       return;
     }
 
-    const normalizedKind = kind === "feed" ? "feed" : "user";
+    const normalizedKind = kind === "feed" ? "feed" : kind === "guest" ? "guest" : "user";
     const numericId = Number(id);
     const effectiveId = Number.isFinite(numericId) ? numericId : id;
 
@@ -3603,9 +3964,11 @@ io.on("connection", (socket) => {
       peer.kind = normalizedKind;
       peer.userId = effectiveId;
       peer.feedId = null;
+      peer.guestId = null;
+      peer.guestProfileUserId = null;
       console.log(`[USER] Registered operator ${name} (${effectiveId}) on socket ${socket.id}`);
       socket.emit("cut-camera", name === cutCameraUser);
-    } else {
+    } else if (normalizedKind === "feed") {
       const existingFeed = Array.from(peers.entries()).find(([sid, p]) => (
         sid !== socket.id
         && p?.kind === "feed"
@@ -3630,7 +3993,28 @@ io.on("connection", (socket) => {
       peer.kind = normalizedKind;
       peer.feedId = effectiveId;
       peer.userId = null;
+      peer.guestId = null;
+      peer.guestProfileUserId = null;
       console.log(`[USER] Registered feed ${name} (${effectiveId}) on socket ${socket.id}`);
+    } else {
+      const settings = resolveGuestLoginSettings(loadRuntimeConfig() || {}, { createProfile: false });
+      const requestedProfileId = Number(guestProfileUserId);
+      if (!settings.enabled || !settings.profileUserId) {
+        if (typeof callback === "function") callback({ error: "Guest login is disabled" });
+        return;
+      }
+      if (Number.isFinite(requestedProfileId) && Number(requestedProfileId) !== Number(settings.profileUserId)) {
+        if (typeof callback === "function") callback({ error: "Invalid guest profile" });
+        return;
+      }
+      const guestId = String(id || crypto.randomUUID()).trim();
+      peer.name = normalizeGuestDisplayName(name) || settings.profileName || "Guest";
+      peer.kind = "guest";
+      peer.userId = null;
+      peer.feedId = null;
+      peer.guestId = guestId;
+      peer.guestProfileUserId = settings.profileUserId;
+      console.log(`[USER] Registered guest ${peer.name} (${guestId}) on socket ${socket.id}`);
     }
 
     emitUserListToOperators();
@@ -3737,7 +4121,10 @@ io.on("connection", (socket) => {
 
   socket.on("ptt-state", (payload = {}) => {
     const peer = peers.get(socket.id);
-    if (!peer || peer.kind !== "user" || peer.userId === null || peer.userId === undefined) {
+    if (!isOperatorPeer(peer)) {
+      return;
+    }
+    if (!isPersistentUserPeer(peer)) {
       return;
     }
 
@@ -3771,27 +4158,29 @@ io.on("connection", (socket) => {
 
   socket.on("talk-targets-updated", async (payload = {}) => {
     const peer = peers.get(socket.id);
-    if (!peer || peer.kind !== "user" || peer.userId === null || peer.userId === undefined) {
+    if (!isOperatorPeer(peer)) {
       return;
     }
 
     const normalizedTargets = normalizeRuntimeTalkTargets(payload.targets);
     peer.activeTalkTargets = normalizedTargets;
 
-    const patch = {
-      userName: peer.name || null,
-      online: true,
-      socketId: socket.id,
-    };
-    if (normalizedTargets.length > 0) {
-      patch.lastTarget = normalizedTargets[0];
-      patch.lastTargets = normalizedTargets;
-    }
+    if (isPersistentUserPeer(peer)) {
+      const patch = {
+        userName: peer.name || null,
+        online: true,
+        socketId: socket.id,
+      };
+      if (normalizedTargets.length > 0) {
+        patch.lastTarget = normalizedTargets[0];
+        patch.lastTargets = normalizedTargets;
+      }
 
-    updateCompanionUserState(peer.userId, patch, {
-      reason: "talk-targets-updated",
-      fallbackName: peer.name || null,
-    });
+      updateCompanionUserState(peer.userId, patch, {
+        reason: "talk-targets-updated",
+        fallbackName: peer.name || null,
+      });
+    }
 
     const activeTalkProducers = getPeerActiveTalkProducers(peer).filter((producer) => (
       String(producer?.appData?.type || "").trim().toLowerCase() === "talk"
@@ -3804,18 +4193,20 @@ io.on("connection", (socket) => {
       syncProducerRecipients({ producer, speakerSocketId: socket.id });
     });
 
-    try {
-      const recipientUserIds = await sendApplePttSpeakerStarted({
-        type: "talk",
-        targets: normalizedTargets,
-        speakerSocketId: socket.id,
-        reason: "talk-targets-updated",
-      });
-      activeTalkProducers.forEach((producer) => {
-        producer.__applePttRecipientUserIds = recipientUserIds;
-      });
-    } catch (error) {
-      console.warn("[PTT] Failed to update Apple PTT recipients for talk-targets-updated:", error?.message || error);
+    if (isPersistentUserPeer(peer)) {
+      try {
+        const recipientUserIds = await sendApplePttSpeakerStarted({
+          type: "talk",
+          targets: normalizedTargets,
+          speakerSocketId: socket.id,
+          reason: "talk-targets-updated",
+        });
+        activeTalkProducers.forEach((producer) => {
+          producer.__applePttRecipientUserIds = recipientUserIds;
+        });
+      } catch (error) {
+        console.warn("[PTT] Failed to update Apple PTT recipients for talk-targets-updated:", error?.message || error);
+      }
     }
 
     syncPeerCompanionState(peer, { reason: "talk-targets-updated" });
@@ -3877,7 +4268,7 @@ io.on("connection", (socket) => {
 
   socket.on("request-active-producers", (callback = () => {}) => {
     const peer = peers.get(socket.id);
-    if (!peer || peer.kind !== "user" || !peer.userId) {
+    if (!isOperatorPeer(peer)) {
       return callback([]);
     }
 
@@ -3889,11 +4280,12 @@ io.on("connection", (socket) => {
       if (conferenceIds !== null) {
         return conferenceIds;
       }
-      if (!peer.userId) {
+      const membershipUserId = peer.kind === "guest" ? peer.guestProfileUserId : peer.userId;
+      if (!membershipUserId) {
         conferenceIds = new Set();
         return conferenceIds;
       }
-      const memberships = getConferencesForUser(peer.userId) || [];
+      const memberships = getConferencesForUser(membershipUserId) || [];
       conferenceIds = new Set(
         memberships.map((conf) => String(conf.id))
       );
@@ -3904,11 +4296,12 @@ io.on("connection", (socket) => {
       if (feedIds !== null) {
         return feedIds;
       }
-      if (!peer.userId) {
+      const membershipUserId = peer.kind === "guest" ? peer.guestProfileUserId : peer.userId;
+      if (!membershipUserId) {
         feedIds = new Set();
         return feedIds;
       }
-      const rows = getFeedIdsForUser(peer.userId) || [];
+      const rows = getFeedIdsForUser(membershipUserId) || [];
       feedIds = new Set(rows.map((id) => String(id)));
       return feedIds;
     };
@@ -3943,6 +4336,15 @@ io.on("connection", (socket) => {
         }
 
         if (type === "user" || type === "talk") {
+          const deliveries = resolveProducerRecipientDeliveries({ appData, speakerSocketId: otherSocketId });
+          const delivery = deliveries.find((candidate) => candidate.recipientSocketId === socket.id);
+          if (delivery?.appData) {
+            response.push({ peerId: otherSocketId, producerId, appData: delivery.appData });
+          }
+          continue;
+        }
+
+        if (type === "guest") {
           const deliveries = resolveProducerRecipientDeliveries({ appData, speakerSocketId: otherSocketId });
           const delivery = deliveries.find((candidate) => candidate.recipientSocketId === socket.id);
           if (delivery?.appData) {
@@ -4197,7 +4599,7 @@ io.on("connection", (socket) => {
         // 0️⃣  Validate incoming data
         //------------------------------------------------------------------
         const { type, id: targetId } = appData || {};
-        const validTypes = ["talk", "user", "conference", "feed"];
+        const validTypes = ["talk", "user", "conference", "guest", "feed"];
         const requiresTargetId = type !== "talk";
 
         if (
@@ -4208,7 +4610,7 @@ io.on("connection", (socket) => {
           console.warn("[PRODUCE] Invalid appData:", appData);
           return callback({
             error:
-                "Invalid appData: For 'talk', 'user', 'conference', or 'feed', valid routing metadata must be provided.",
+                "Invalid appData: For 'talk', 'user', 'conference', 'guest', or 'feed', valid routing metadata must be provided.",
           });
         }
 

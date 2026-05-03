@@ -57,6 +57,7 @@ let warnedVolumeStorageWrite = false;
 const TARGET_AUDIO_VOLUME_STORAGE_PREFIXES = ['volume_user_', 'volume_conf_', 'volume_feed_'];
 const IDENTITY_KIND_KEY = 'identityKind';
 const FEED_ID_STORAGE_KEY = 'feedId';
+const GUEST_SESSION_STORAGE_KEY = 'guestSession';
 const FEED_DUCKING_DB_STORAGE_KEY = 'feedDimDb';
 const FEED_INPUT_PROCESSING_STORAGE_KEY = 'feedInputProcessingEnabled';
 const FEED_PTIME_STORAGE_KEY = 'feedPtimeMs';
@@ -483,11 +484,46 @@ const FEED_PROFILE = {
   },
 };
 
-let session = { kind: 'guest', userId: null, feedId: null, name: null };
+function createAnonymousSession() {
+  return {
+    kind: 'guest',
+    userId: null,
+    feedId: null,
+    guestId: null,
+    guestProfileUserId: null,
+    name: null,
+  };
+}
+
+let session = createAnonymousSession();
 let device = null;
 let sendTransport = null;
 let recvTransport = null;
 let producer = null;
+
+function isGuestSessionActive() {
+  return Boolean(
+    session?.kind === 'guest'
+    && session?.guestId
+    && session?.guestProfileUserId
+    && session?.name
+  );
+}
+
+function isOperatorSession() {
+  return session?.kind === 'user' || isGuestSessionActive();
+}
+
+function getSessionRegistrationId() {
+  if (session?.kind === 'feed') return session.feedId || null;
+  if (session?.kind === 'guest') return isGuestSessionActive() ? session.guestId : null;
+  return session?.userId || null;
+}
+
+function getOperatorProfileUserId() {
+  if (session?.kind === 'guest') return isGuestSessionActive() ? session.guestProfileUserId : null;
+  return session?.kind === 'user' ? session.userId : null;
+}
 
 function installMediaConstraintDiagnostics() {
   if (typeof window === 'undefined') return;
@@ -1545,7 +1581,7 @@ function getCurrentAudioConstraints() {
 
 async function requestInitialMicrophoneAccess({ reason = 'startup' } = {}) {
   if (initialMicAccessRequested) return null;
-  if (session.kind === 'guest') return null;
+  if (session.kind === 'guest' && !isGuestSessionActive()) return null;
   if (!navigator.mediaDevices?.getUserMedia) return null;
 
   initialMicAccessRequested = true;
@@ -1572,7 +1608,7 @@ async function startInputMonitor() {
   if (settingsMonitorActive || settingsMonitorPromise) {
     return settingsMonitorPromise;
   }
-  if (session.kind === 'guest') return null;
+  if (session.kind === 'guest' && !isGuestSessionActive()) return null;
 
   const { constraints, selectedDeviceId } = getCurrentAudioConstraints();
   const startPromise = (async () => {
@@ -2595,6 +2631,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const loginForm = document.getElementById("login-form");
   const loginContainer = document.getElementById("login-container");
   const loginUsernameInput = document.getElementById("login-username");
+  const guestLoginPanel = document.getElementById("guest-login-panel");
+  const guestLoginButton = document.getElementById("guest-login-button");
+  const guestDisplayNameInput = document.getElementById("guest-display-name");
   const intercomApp = document.getElementById("intercom-app");
   const loginError = document.getElementById("login-error");
   const logoutBtn = document.getElementById("logout-btn");
@@ -2628,7 +2667,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const listenOnlyConferenceDimmingDisabled = new Set();
   const activeFeedKeys = new Set();
   const focusLoginNameField = () => {
-    if (!loginUsernameInput || session.kind !== 'guest') return;
+    if (!loginUsernameInput || session.name) return;
     window.requestAnimationFrame(() => {
       try {
         loginUsernameInput.focus();
@@ -2636,6 +2675,78 @@ document.addEventListener("DOMContentLoaded", () => {
       } catch {}
     });
   };
+
+  function setLoginError(message = '') {
+    if (!loginError) return;
+    loginError.textContent = message || '';
+  }
+
+  function clearStoredPersistentIdentity() {
+    localStorage.removeItem("userId");
+    localStorage.removeItem(FEED_ID_STORAGE_KEY);
+    localStorage.removeItem("userName");
+    localStorage.removeItem(IDENTITY_KIND_KEY);
+  }
+
+  function loadStoredGuestSession() {
+    try {
+      const raw = sessionStorage.getItem(GUEST_SESSION_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      const guestId = String(parsed?.guestId || '').trim();
+      const guestProfileUserId = String(parsed?.guestProfileUserId || '').trim();
+      const name = String(parsed?.name || '').trim();
+      if (!guestId || !guestProfileUserId || !name) return null;
+      return {
+        kind: 'guest',
+        userId: null,
+        feedId: null,
+        guestId,
+        guestProfileUserId,
+        name,
+      };
+    } catch (err) {
+      console.warn('Failed to restore Guest session:', err);
+      return null;
+    }
+  }
+
+  function persistGuestSession(nextSession) {
+    if (!nextSession || nextSession.kind !== 'guest') return;
+    try {
+      sessionStorage.setItem(GUEST_SESSION_STORAGE_KEY, JSON.stringify({
+        guestId: nextSession.guestId,
+        guestProfileUserId: nextSession.guestProfileUserId,
+        name: nextSession.name,
+      }));
+    } catch (err) {
+      console.warn('Failed to store Guest session:', err);
+    }
+  }
+
+  function clearStoredGuestSession() {
+    try {
+      sessionStorage.removeItem(GUEST_SESSION_STORAGE_KEY);
+    } catch {}
+  }
+
+  async function loadLoginOptions() {
+    if (!guestLoginPanel || !guestLoginButton) return;
+    try {
+      const res = await fetch('/login/options');
+      if (!res.ok) throw new Error(`Login options failed: ${res.status}`);
+      const payload = await res.json();
+      const guestLogin = payload?.guestLogin || {};
+      const enabled = guestLogin.enabled === true;
+      guestLoginPanel.classList.toggle('is-hidden', !enabled);
+      guestLoginButton.disabled = !enabled;
+      guestLoginButton.textContent = `Login as ${guestLogin.label || 'Guest'}`;
+    } catch (err) {
+      console.warn('Failed to load login options:', err);
+      guestLoginPanel.classList.add('is-hidden');
+      guestLoginButton.disabled = true;
+    }
+  }
   recoverExistingIncomingPlayback = ({ forceRetryAll = false } = {}) => {
     const remoteBusAudio = remotePlaybackBus?.audio || null;
     if (remoteBusAudio && typeof remoteBusAudio.play === 'function') {
@@ -2910,7 +3021,7 @@ let cachedOperatorTargets = null;
       updateMuteUiForTarget(targetKey, shouldBeMuted);
     });
 
-    if (session.kind === 'user') {
+    if (isOperatorSession()) {
       applyFeedDucking();
     }
   }
@@ -3012,7 +3123,12 @@ let cachedOperatorTargets = null;
 
   function normalizePttTarget(target) {
     if (!target || typeof target !== 'object') return null;
-    if (target.type !== 'user' && target.type !== 'conference') return null;
+    if (target.type !== 'user' && target.type !== 'conference' && target.type !== 'guest') return null;
+    if (target.type === 'guest') {
+      const guestId = String(target.id ?? '').trim();
+      if (!guestId) return null;
+      return { type: 'guest', id: guestId };
+    }
     const numericId = Number(target.id);
     return {
       type: target.type,
@@ -3051,7 +3167,7 @@ let cachedOperatorTargets = null;
   }
 
   function emitPttState(reason, overrides = {}) {
-    if (session.kind !== 'user') return;
+    if (!isOperatorSession()) return;
     if (!socket.connected) return;
     const state = getCurrentPttState(overrides);
     socket.emit('ptt-state', {
@@ -3061,7 +3177,7 @@ let cachedOperatorTargets = null;
   }
 
   function emitTalkTargetsUpdated(reason, targets = currentTargets) {
-    if (session.kind !== 'user') return;
+    if (!isOperatorSession()) return;
     if (!socket.connected) return;
     socket.emit('talk-targets-updated', {
       reason: reason || undefined,
@@ -3303,7 +3419,7 @@ let cachedOperatorTargets = null;
       if (stored.type === 'feed') {
         const feedId = Number(targetKey.split('-')[1]);
         feedAudioElements.get(feedId)?.delete(audioEl);
-        if (session.kind === 'user') {
+        if (isOperatorSession()) {
           applyFeedDucking();
         }
       } else if (stored.type === 'conference') {
@@ -3402,7 +3518,7 @@ let cachedOperatorTargets = null;
   }
 
   function shouldDimFeedEntry(entry) {
-    if (session.kind !== 'user') return false;
+    if (!isOperatorSession()) return false;
     if (!feedDuckingActive || feedDuckingFactor >= 0.999) return false;
     const feedId = Number(String(entry?.key || '').slice(5));
     if (!Number.isFinite(feedId)) return false;
@@ -3410,7 +3526,7 @@ let cachedOperatorTargets = null;
   }
 
   function shouldDimListenOnlyConferenceEntry(entry) {
-    if (session.kind !== 'user') return false;
+    if (!isOperatorSession()) return false;
     if (!feedDuckingActive || feedDuckingFactor >= 0.999) return false;
     const key = String(entry?.key || '');
     if (!listenOnlyConferenceKeys.has(key) || !key.startsWith('conf-')) return false;
@@ -3469,7 +3585,7 @@ let cachedOperatorTargets = null;
       });
     }
     updateTargetVolumeSliderUi(targetKey, clamped);
-    if (targetKey.startsWith('feed-') && session.kind === 'user') {
+    if (targetKey.startsWith('feed-') && isOperatorSession()) {
       applyFeedDucking();
     }
     emitTargetAudioStateSnapshot('target-audio-volume');
@@ -3495,14 +3611,14 @@ let cachedOperatorTargets = null;
     attemptPendingAutoplay();
     audioElements.forEach((entry) => {
       if (!entry?.gainNode || !entry.audio) return;
-      if (entry.type === 'feed' && session.kind === 'user') return;
+      if (entry.type === 'feed' && isOperatorSession()) return;
       if (mutedPeers.has(entry.key)) {
         mutePlaybackEntry(entry);
       } else {
         setPlaybackEntryLevel(entry, entry.volume ?? defaultVolume);
       }
     });
-    if (session.kind === 'user') {
+    if (isOperatorSession()) {
       applyFeedDucking();
     }
   };
@@ -3708,20 +3824,29 @@ let cachedOperatorTargets = null;
   function normalizeIncomingAddressedEntry(rawEntry) {
     if (!rawEntry || typeof rawEntry !== 'object') return null;
     const targetType = typeof rawEntry.targetType === 'string' ? rawEntry.targetType.trim().toLowerCase() : '';
-    if (targetType !== 'user' && targetType !== 'conference') return null;
+    if (targetType !== 'user' && targetType !== 'conference' && targetType !== 'guest') return null;
 
     const numericTargetId = Number(rawEntry.targetId);
-    const targetId = Number.isFinite(numericTargetId) ? numericTargetId : String(rawEntry.targetId ?? '');
+    const targetId = targetType === 'guest'
+      ? String(rawEntry.targetId ?? '').trim()
+      : Number.isFinite(numericTargetId) ? numericTargetId : String(rawEntry.targetId ?? '');
     if (targetId === '') return null;
 
     const numericFromUserId = Number(rawEntry.fromUserId);
     const at = Number(rawEntry.at);
+    const replyTargetType = typeof rawEntry.replyTargetType === 'string'
+      ? rawEntry.replyTargetType.trim().toLowerCase()
+      : '';
+    const replyTargetId = rawEntry.replyTargetId ?? null;
 
     return {
       targetType,
       targetId,
       fromUserId: Number.isFinite(numericFromUserId) ? numericFromUserId : null,
+      fromGuestId: rawEntry.fromGuestId ? String(rawEntry.fromGuestId) : null,
       fromName: typeof rawEntry.fromName === 'string' ? rawEntry.fromName : '',
+      replyTargetType: ['user', 'conference', 'guest'].includes(replyTargetType) ? replyTargetType : null,
+      replyTargetId,
       at: Number.isFinite(at) ? at : 0,
     };
   }
@@ -3733,9 +3858,11 @@ let cachedOperatorTargets = null;
     entries.forEach((rawEntry) => {
       const entry = normalizeIncomingAddressedEntry(rawEntry);
       if (!entry) return;
-      const speakerKey = Number.isFinite(Number(entry.fromUserId))
-        ? Number(entry.fromUserId)
-        : String(entry.fromName || '').trim().toLowerCase();
+      const speakerKey = entry.fromGuestId
+        ? `guest:${entry.fromGuestId}`
+        : Number.isFinite(Number(entry.fromUserId))
+          ? Number(entry.fromUserId)
+          : String(entry.fromName || '').trim().toLowerCase();
       const key = `${entry.targetType}:${entry.targetId}:${speakerKey}`;
       if (seen.has(key)) return;
       seen.add(key);
@@ -3765,11 +3892,52 @@ let cachedOperatorTargets = null;
       const socketId = resolveUserSocketId(entry.targetId);
       return `user-${socketId || entry.targetId}`;
     }
+    if (entry.targetType === 'guest') {
+      return `guest-${entry.targetId}`;
+    }
+    return null;
+  }
+
+  function resolveExplicitReplyTarget(entry) {
+    const replyType = entry?.replyTargetType;
+    if (!replyType) return null;
+    if (replyType === 'guest') {
+      const guestId = String(entry.replyTargetId ?? '').trim();
+      if (!guestId) return null;
+      return {
+        type: 'guest',
+        id: guestId,
+        label: entry.fromName || 'Guest',
+      };
+    }
+    if (replyType === 'user') {
+      const numericUserId = Number(entry.replyTargetId);
+      if (!Number.isFinite(numericUserId)) return null;
+      const socketId = resolveUserSocketId(numericUserId);
+      const onlineUser = cachedUsers.find((candidate) => Number(candidate?.userId) === numericUserId);
+      return {
+        type: 'user',
+        id: socketId || numericUserId,
+        label: onlineUser?.name || entry.fromName || String(numericUserId),
+      };
+    }
+    if (replyType === 'conference') {
+      const conferenceId = Number(entry.replyTargetId);
+      if (!Number.isFinite(conferenceId)) return null;
+      const conferenceKey = `conf-${conferenceId}`;
+      return {
+        type: 'conference',
+        id: conferenceId,
+        label: conferenceLabels.get(conferenceId) || targetLabels.get(conferenceKey) || String(conferenceId),
+      };
+    }
     return null;
   }
 
   function resolveReplyTargetFromIncomingEntry(entry) {
     if (!entry) return null;
+    const explicitReplyTarget = resolveExplicitReplyTarget(entry);
+    if (explicitReplyTarget) return explicitReplyTarget;
 
     if (entry.targetType === 'conference') {
       const conferenceId = Number(entry.targetId);
@@ -3810,7 +3978,7 @@ let cachedOperatorTargets = null;
   }
 
   function applyIncomingTalkState() {
-    if (session.kind !== 'user') return;
+    if (!isOperatorSession()) return;
 
     const nextSpeaking = new Set();
     incomingTalkState.addressedNow.forEach((entry) => {
@@ -3845,14 +4013,15 @@ let cachedOperatorTargets = null;
 
   function applySessionUI() {
     const isFeed = session.kind === 'feed';
+    const isOperator = isOperatorSession();
     document.body.classList.toggle('feed-mode', isFeed);
     ensureCustomTargetHotkeysLoaded();
-    if (session.kind !== 'user') {
+    if (!isOperator) {
       setActiveSettingsView('main');
       stopHotkeyCapture({ rerender: false });
     }
     if (shortcutSettingsOpenButton) {
-      shortcutSettingsOpenButton.hidden = session.kind !== 'user';
+      shortcutSettingsOpenButton.hidden = !isOperator;
     }
 
     if (feedBanner) {
@@ -3941,7 +4110,7 @@ let cachedOperatorTargets = null;
   }
 
   function applyFeedDucking() {
-    if (session.kind !== 'user') return;
+    if (!isOperatorSession()) return;
     const shouldDimSelf = feedDimSelf && isTalking;
     const shouldDuck = speakingPeers.size > 0 || shouldDimSelf;
     feedDuckingActive = shouldDuck;
@@ -4178,6 +4347,7 @@ let cachedOperatorTargets = null;
     localStorage.removeItem(FEED_ID_STORAGE_KEY);
     localStorage.removeItem("userName");
     localStorage.removeItem(IDENTITY_KIND_KEY);
+    clearStoredGuestSession();
     clearStoredTargetAudioPreferences();
   }
 
@@ -4308,39 +4478,40 @@ let cachedOperatorTargets = null;
   let activeRegistrationKey = null;
   let sessionResetInProgress = false;
 
-  async function registerUserWithConflictPrompt({ id, name, kind, allowPrompt = true } = {}) {
-    const first = await emitRegisterUser({ id, name, kind, force: false });
+  async function registerUserWithConflictPrompt({ id, name, kind, allowPrompt = true, guestProfileUserId = null } = {}) {
+    const first = await emitRegisterUser({ id, name, kind, guestProfileUserId, force: false });
     if (first?.conflict && kind === 'user') {
       if (!allowPrompt) return { conflict: true };
       const existingName = first?.existing?.name ? ` (${first.existing.name})` : '';
       const ok = confirm(`This user is already signed in${existingName}. Sign out the other session?`);
       if (!ok) return { cancelled: true };
-      const forced = await emitRegisterUser({ id, name, kind, force: true });
+      const forced = await emitRegisterUser({ id, name, kind, guestProfileUserId, force: true });
       return forced?.ok ? forced : forced;
     }
     return first?.ok ? first : first;
   }
 
-  function buildRegistrationKey({ id, name, kind, allowPrompt = true } = {}) {
+  function buildRegistrationKey({ id, name, kind, allowPrompt = true, guestProfileUserId = null } = {}) {
     return JSON.stringify({
       id: id ?? null,
       name: name ?? null,
       kind: kind ?? null,
+      guestProfileUserId: guestProfileUserId ?? null,
       allowPrompt: !!allowPrompt,
     });
   }
 
-  async function registerIdentity({ id, name, kind, allowPrompt = true } = {}) {
-    const key = buildRegistrationKey({ id, name, kind, allowPrompt });
+  async function registerIdentity({ id, name, kind, allowPrompt = true, guestProfileUserId = null } = {}) {
+    const key = buildRegistrationKey({ id, name, kind, allowPrompt, guestProfileUserId });
     if (activeRegistrationPromise && activeRegistrationKey === key) {
       return activeRegistrationPromise;
     }
 
     const promise = (async () => {
       if (kind === 'user') {
-        return registerUserWithConflictPrompt({ id, name, kind, allowPrompt });
+        return registerUserWithConflictPrompt({ id, name, kind, allowPrompt, guestProfileUserId });
       }
-      const result = await emitRegisterUser({ id, name, kind, force: false });
+      const result = await emitRegisterUser({ id, name, kind, guestProfileUserId, force: false });
       return result?.ok ? result : result;
     })();
 
@@ -4358,12 +4529,14 @@ let cachedOperatorTargets = null;
   }
 
   async function registerCurrentSession({ allowPromptForUser = true } = {}) {
-    if (!session?.name || session.kind === 'guest') return { skipped: true };
-    const id = session.kind === 'feed' ? session.feedId : session.userId;
+    if (!session?.name) return { skipped: true };
+    const id = getSessionRegistrationId();
+    if (!id) return { skipped: true };
     return registerIdentity({
       id,
       name: session.name,
       kind: session.kind,
+      guestProfileUserId: session.kind === 'guest' ? session.guestProfileUserId : null,
       allowPrompt: allowPromptForUser,
     });
   }
@@ -4373,6 +4546,9 @@ let cachedOperatorTargets = null;
   const storedKindRaw = localStorage.getItem(IDENTITY_KIND_KEY);
   const fallbackKind = localStorage.getItem("userId") ? "user" : "guest";
   const storedKind = storedKindRaw || fallbackKind;
+  const storedGuestSession = !storedName && storedKind !== "user" && storedKind !== "feed"
+    ? loadStoredGuestSession()
+    : null;
 
   if (storedKind === "user") {
     const storedId = localStorage.getItem("userId");
@@ -4382,14 +4558,14 @@ let cachedOperatorTargets = null;
       loginContainer.style.display = "none";
       intercomApp.style.display = "flex";
       myIdEl.textContent = storedName;
-	      registerCurrentSession()
-	        .then((res) => {
-	          if (res?.ok && session.kind === 'user') {
-	            applyPersistedTargetAudioStates(res.targetAudioStates || []);
-	          }
-	          if (res?.ok) return;
-	          hardLogoutAndReload(null, { silent: true });
-	        });
+      registerCurrentSession()
+        .then((res) => {
+          if (res?.ok && session.kind === 'user') {
+            applyPersistedTargetAudioStates(res.targetAudioStates || []);
+          }
+          if (res?.ok) return;
+          hardLogoutAndReload(null, { silent: true });
+        });
       applySessionUI();
       initializeMediaIfPossible();
       requestInitialMicrophoneAccess({ reason: 'auto-login-user' });
@@ -4409,8 +4585,24 @@ let cachedOperatorTargets = null;
       initializeMediaIfPossible();
       requestInitialMicrophoneAccess({ reason: 'auto-login-feed' });
     }
+  } else if (storedGuestSession) {
+    session = storedGuestSession;
+    console.log("Auto-login Guest:", storedGuestSession.name);
+    loginContainer.style.display = "none";
+    intercomApp.style.display = "flex";
+    myIdEl.textContent = storedGuestSession.name;
+    registerCurrentSession()
+      .then((res) => {
+        if (res?.ok) return;
+        clearStoredGuestSession();
+        hardLogoutAndReload("Guest login is no longer available.");
+      });
+    applySessionUI();
+    initializeMediaIfPossible();
+    requestInitialMicrophoneAccess({ reason: 'auto-login-guest' });
   }
 
+  loadLoginOptions().catch(() => {});
   focusLoginNameField();
 
   // Login Handler
@@ -4419,7 +4611,7 @@ let cachedOperatorTargets = null;
     const name = document.getElementById("login-username").value;
     const password = document.getElementById("login-password").value;
 
-    loginError.textContent = "";
+    setLoginError("");
 
     try {
       const res = await fetch("/login", {
@@ -4429,7 +4621,7 @@ let cachedOperatorTargets = null;
       });
 
       if (!res.ok) {
-        loginError.textContent = "Invalid username or password";
+        setLoginError("Invalid username or password");
         return;
       }
 
@@ -4443,6 +4635,7 @@ let cachedOperatorTargets = null;
         feedId: kind === 'feed' ? String(user.id) : null,
         name: user.name,
       };
+      session = nextSession;
 
       const reg = await registerIdentity({
         id: kind === 'feed' ? nextSession.feedId : nextSession.userId,
@@ -4452,15 +4645,14 @@ let cachedOperatorTargets = null;
       });
       if (!reg?.ok) {
         if (reg?.cancelled) {
-          session = { kind: "guest", userId: null, feedId: null, name: null };
+          session = createAnonymousSession();
           return;
         }
-        loginError.textContent = "Unable to sign in";
-        session = { kind: "guest", userId: null, feedId: null, name: null };
+        setLoginError("Unable to sign in");
+        session = createAnonymousSession();
         return;
       }
 
-      session = nextSession;
       feedManualStop = false;
       shouldStartFeedWhenReady = kind === 'feed';
 
@@ -4468,6 +4660,7 @@ let cachedOperatorTargets = null;
         applyPersistedTargetAudioStates(reg.targetAudioStates || []);
       }
 
+      clearStoredGuestSession();
       localStorage.setItem("userName", user.name);
       localStorage.setItem(IDENTITY_KIND_KEY, kind);
       if (kind === 'user') {
@@ -4485,8 +4678,69 @@ let cachedOperatorTargets = null;
       requestInitialMicrophoneAccess({ reason: `login-${kind}` });
       initializeMediaIfPossible();
     } catch (err) {
-      loginError.textContent = "Error logging in";
+      setLoginError("Error logging in");
       console.error("Login failed:", err);
+    }
+  });
+
+  guestLoginButton?.addEventListener('click', async () => {
+    setLoginError("");
+    guestLoginButton.disabled = true;
+    try {
+      const requestedName = guestDisplayNameInput?.value?.trim() || '';
+      const res = await fetch('/login/guest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: requestedName }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setLoginError(payload?.error || "Guest login is not available");
+        return;
+      }
+
+      const nextSession = {
+        kind: 'guest',
+        userId: null,
+        feedId: null,
+        guestId: String(payload.guestId || ''),
+        guestProfileUserId: String(payload.guestProfileUserId || ''),
+        name: payload.name || 'Guest',
+      };
+      session = nextSession;
+
+      const reg = await registerIdentity({
+        id: nextSession.guestId,
+        name: nextSession.name,
+        kind: 'guest',
+        guestProfileUserId: nextSession.guestProfileUserId,
+        allowPrompt: false,
+      });
+      if (!reg?.ok) {
+        setLoginError(reg?.error || "Unable to sign in as Guest");
+        session = createAnonymousSession();
+        clearStoredGuestSession();
+        return;
+      }
+
+      feedManualStop = false;
+      shouldStartFeedWhenReady = false;
+      clearStoredPersistentIdentity();
+      persistGuestSession(nextSession);
+
+      loginContainer.style.display = "none";
+      intercomApp.style.display = "flex";
+      myIdEl.textContent = nextSession.name;
+      applySessionUI();
+      requestInitialMicrophoneAccess({ reason: 'login-guest' });
+      initializeMediaIfPossible();
+    } catch (err) {
+      setLoginError("Error logging in as Guest");
+      console.error("Guest login failed:", err);
+    } finally {
+      if (!isGuestSessionActive()) {
+        guestLoginButton.disabled = false;
+      }
     }
   });
 
@@ -4519,17 +4773,19 @@ let cachedOperatorTargets = null;
     if (sessionResetInProgress) {
       return;
     }
-    if (session.name) {
-      if ((session.kind === 'user' && session.userId) || (session.kind === 'feed' && session.feedId)) {
-        const reg = await registerCurrentSession();
-        if (!reg?.ok) {
-          if (session.kind === 'user') {
-            hardLogoutAndReload(reg?.cancelled ? null : "You are already signed in on another device.", {
-              silent: !!reg?.cancelled,
-            });
+      if (session.name) {
+        if ((session.kind === 'user' && session.userId) || (session.kind === 'feed' && session.feedId) || isGuestSessionActive()) {
+          const reg = await registerCurrentSession();
+          if (!reg?.ok) {
+            if (session.kind === 'user') {
+              hardLogoutAndReload(reg?.cancelled ? null : "You are already signed in on another device.", {
+                silent: !!reg?.cancelled,
+              });
+            } else if (session.kind === 'guest') {
+              hardLogoutAndReload("Guest login is no longer available.");
+            }
+            return;
           }
-          return;
-        }
         if (session.kind === 'user') {
           applyPersistedTargetAudioStates(reg.targetAudioStates || []);
         }
@@ -4537,9 +4793,9 @@ let cachedOperatorTargets = null;
       myIdEl.textContent = session.name;
     }
 
-    if (!shouldInitializeAfterConnect && session.kind !== 'guest' && session.name) {
-      shouldInitializeAfterConnect = true;
-    }
+      if (!shouldInitializeAfterConnect && session.name && (session.kind === 'feed' || isOperatorSession())) {
+        shouldInitializeAfterConnect = true;
+      }
 
     if (shouldInitializeAfterConnect) {
       try {
@@ -4554,10 +4810,10 @@ let cachedOperatorTargets = null;
     }
 
     updateFeedControls();
-    if (session.kind === 'user') {
-      emitPttState('socket-connect-sync');
-    }
-  });
+      if (isOperatorSession()) {
+        emitPttState('socket-connect-sync');
+      }
+    });
 
   socket.on("session-kicked", () => {
     hardLogoutAndReload("You were signed out because you signed in somewhere else.");
@@ -4615,7 +4871,7 @@ let cachedOperatorTargets = null;
   });
 
   socket.on("user-list", async users => {
-    if (session.kind === 'user') {
+    if (isOperatorSession()) {
       await applyUserListToUi(prepareDisplayUsersWithOfflineGrace(users));
     }
   });
@@ -4634,7 +4890,7 @@ let cachedOperatorTargets = null;
   });
 
   socket.on('incoming-talk-state', ({ state } = {}) => {
-    if (session.kind !== 'user') return;
+    if (!isOperatorSession()) return;
     incomingTalkState = normalizeIncomingTalkState(state);
     applyIncomingTalkState();
     const addressedNow = Array.isArray(incomingTalkState.addressedNow)
@@ -4648,7 +4904,7 @@ let cachedOperatorTargets = null;
   });
 
   socket.on('user-targets-updated', async () => {
-    if (session.kind !== 'user') return;
+    if (!isOperatorSession()) return;
     if (cachedUsers.length) {
       await renderTargetList(cachedUsers);
     }
@@ -4801,7 +5057,7 @@ function updateCompactSessionBarMode(targetCount = null) {
   const isSmallViewport = typeof window !== 'undefined'
     ? (window.innerWidth <= 430 || window.innerHeight <= 720)
     : false;
-  const shouldCompact = session.kind === 'user' && isSmallViewport && count >= 6;
+    const shouldCompact = isOperatorSession() && isSmallViewport && count >= 6;
   document.body.classList.toggle('compact-session-bar', shouldCompact);
 }
 
@@ -4864,7 +5120,7 @@ function updateTargetLayerControls() {
   const targetEls = Array.from(list.querySelectorAll('li.target-item'));
   const isMobileViewport = typeof window !== 'undefined' && window.innerWidth <= MOBILE_TARGET_LAYER_MAX_WIDTH;
   const layerSize = getTargetLayerSize(list, targetEls);
-  const shouldPaginate = session.kind === 'user'
+    const shouldPaginate = isOperatorSession()
     && isMobileViewport
     && targetEls.length > layerSize;
 
@@ -5156,7 +5412,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   function buildTalkTargetDescriptors(users = cachedUsers) {
-    if (session.kind !== 'user') return [];
+    if (!isOperatorSession()) return [];
 
     const usersById = new Map();
     (Array.isArray(users) ? users : []).forEach((user) => {
@@ -5342,7 +5598,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   function renderTargetHotkeySettings(users = cachedUsers) {
     if (!shortcutSettingsSection || !shortcutSettingsList || !shortcutSettingsEmpty) return;
 
-    const shouldShow = session.kind === 'user';
+      const shouldShow = isOperatorSession();
     shortcutSettingsSection.hidden = !shouldShow;
     if (!shouldShow) return;
 
@@ -5501,7 +5757,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     if (!key || pendingOfflineUserTimers.has(key)) return;
     const timerId = setTimeout(() => {
       pendingOfflineUserTimers.delete(key);
-      if (session.kind !== 'user') return;
+      if (!isOperatorSession()) return;
       applyUserListToUi(buildDisplayUsersFromLatestServerState()).catch((err) => {
         console.error('Failed to apply delayed user offline state', err);
       });
@@ -5529,13 +5785,13 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   function syncRenderedTargetStateUi() {
-	    document.querySelectorAll('.target-item').forEach(li => {
-	      const key = li.id;
+    document.querySelectorAll('.target-item').forEach(li => {
+      const key = li.id;
       const icon = key.startsWith('user-')
         ? li.querySelector('.user-icon')
         : key.startsWith('conf-')
           ? li.querySelector('.conf-icon')
-        : key.startsWith('feed-')
+          : key.startsWith('feed-')
             ? li.querySelector('.feed-icon')
             : null;
       const statusEl = li.querySelector('.target-status');
@@ -5549,13 +5805,13 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
       const isMuted = mutedPeers.has(key);
       li.classList.toggle('muted', isMuted);
-	      if (icon) icon.classList.toggle('muted', isMuted);
-	    });
+      if (icon) icon.classList.toggle('muted', isMuted);
+    });
   }
 
   function buildUserTargetElement(target, usersById) {
-      const targetIdNum = Number(target.targetId);
-      if (!shouldRenderUserTargetRow(targetIdNum, usersById)) return null;
+    const targetIdNum = Number(target.targetId);
+    if (!shouldRenderUserTargetRow(targetIdNum, usersById)) return null;
 
       const onlineUser = usersById.get(targetIdNum);
       const socketId = onlineUser?.socketId || null;
@@ -5881,7 +6137,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   async function refreshRenderedUserTargets(users) {
-    if (session.kind !== 'user') return false;
+    if (!isOperatorSession()) return false;
     if (!Array.isArray(cachedOperatorTargets)) return false;
 
     const list = document.getElementById('targets-list');
@@ -5943,13 +6199,15 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   async function renderTargetList(users) {
-    if (session.kind !== 'user') return;
-    const dbUserId = session.userId;
+    if (!isOperatorSession()) return;
+    const dbUserId = getOperatorProfileUserId();
     if (!dbUserId) return;
 
     let targets;
     try {
-      targets = await fetchJSON(`/users/${dbUserId}/targets?includeMemberships=1`);
+      targets = session.kind === 'guest'
+        ? await fetchJSON('/guest/targets')
+        : await fetchJSON(`/users/${dbUserId}/targets?includeMemberships=1`);
     } catch (err) {
       console.error('Failed to fetch targets', err);
       return;
@@ -6420,9 +6678,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     applyIncomingTalkState();
     syncRenderedTargetStateUi();
 
-	    syncRenderedTargetAudioPreferences();
+    syncRenderedTargetAudioPreferences();
     refreshTargetHotkeyUi(users);
-	    refreshLastTargetLabel();
+    refreshLastTargetLabel();
     primeVisibleRemotePlaybackBuses();
     pruneTargetPlaybackBuses(collectVisibleRemoteTargetKeys());
 
@@ -6466,23 +6724,23 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     const isConference = normalizedAppData.type === 'conference';
     const isFeed = normalizedAppData.type === 'feed';
 
-	    let targetKey;
-	    let volumeStorageKey;
-	    if (isConference) {
-	      targetKey = `conf-${normalizedAppData.id}`;
-	      volumeStorageKey = `volume_conf_${normalizedAppData.id}`;
-	    } else if (isFeed) {
-	      targetKey = `feed-${normalizedAppData.id}`;
-	      volumeStorageKey = `volume_feed_${normalizedAppData.id}`;
-	    } else {
-	      const stableUserId = Number(
-	        cachedUsers.find((entry) => String(entry?.socketId) === String(peerId))?.userId ?? peerId
-	      );
-	      targetKey = `user-${peerId}`;
-	      volumeStorageKey = Number.isFinite(stableUserId)
-	        ? `volume_user_${stableUserId}`
-	        : `volume_user_${peerId}`;
-	    }
+    let targetKey;
+    let volumeStorageKey;
+    if (isConference) {
+      targetKey = `conf-${normalizedAppData.id}`;
+      volumeStorageKey = `volume_conf_${normalizedAppData.id}`;
+    } else if (isFeed) {
+      targetKey = `feed-${normalizedAppData.id}`;
+      volumeStorageKey = `volume_feed_${normalizedAppData.id}`;
+    } else {
+      const stableUserId = Number(
+        cachedUsers.find((entry) => String(entry?.socketId) === String(peerId))?.userId ?? peerId
+      );
+      targetKey = `user-${peerId}`;
+      volumeStorageKey = Number.isFinite(stableUserId)
+        ? `volume_user_${stableUserId}`
+        : `volume_user_${peerId}`;
+    }
 
     // ignore our own streams
     if (peerId === socket.id) return;
@@ -6497,7 +6755,14 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         && Number.isFinite(directTargetUserId)
         && Number(session.userId) === directTargetUserId
       );
-      if (!isDirectTargetForCurrentUser) {
+      const directTargetGuestId = String(normalizedAppData.id ?? '').trim();
+      const isDirectTargetForCurrentGuest = (
+        normalizedAppData.type === 'guest'
+        && isGuestSessionActive()
+        && directTargetGuestId
+        && String(session.guestId) === directTargetGuestId
+      );
+      if (!isDirectTargetForCurrentUser && !isDirectTargetForCurrentGuest) {
         console.log('Producer not for us, skipping');
         return;
       }
@@ -6506,6 +6771,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         hintedTargetPeer: normalizedAppData.targetPeer,
         currentSocketId: socket.id,
         directTargetUserId,
+        directTargetGuestId: isDirectTargetForCurrentGuest ? directTargetGuestId : null,
       });
     }
 
@@ -6798,9 +7064,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         consumer.on('producerclose', () => {
           const set = feedAudioElements.get(feedId);
           set?.delete(audio);
-          if (session.kind === 'user') {
-            applyFeedDucking();
-          }
+            if (isOperatorSession()) {
+              applyFeedDucking();
+            }
         });
       } else {
         if (mutedPeers.has(targetKey)) {
@@ -6836,9 +7102,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           type: entry.type,
         }).catch(() => {});
       }
-      if (isFeed && session.kind === 'user') {
-        applyFeedDucking();
-      }
+        if (isFeed && isOperatorSession()) {
+          applyFeedDucking();
+        }
 
       logReceiveDiagnostic('resume-consumer-start', {
         producerId: effectiveProducerId,
@@ -6885,7 +7151,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         if (entry.type === 'feed') {
           const feedId = Number(normalizedAppData.id);
           feedAudioElements.get(feedId)?.delete(audio);
-          if (session.kind === 'user') {
+          if (isOperatorSession()) {
             applyFeedDucking();
           }
         } else if (entry.type === 'conference') {
@@ -6917,6 +7183,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   async function requestActiveProducers() {
+    if (!isOperatorSession()) return;
     if (activeProducersSyncInFlight) return;
     activeProducersSyncInFlight = true;
     try {
@@ -6970,9 +7237,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   function startActiveProducerSync() {
     if (activeProducerSyncInterval) return;
     activeProducerSyncInterval = setInterval(() => {
-      if (!mediaInitialized) return;
-      if (session.kind !== 'user') return;
-      if (!socket.connected) return;
+        if (!mediaInitialized) return;
+        if (!isOperatorSession()) return;
+        if (!socket.connected) return;
       requestActiveProducers().catch(() => {});
     }, ACTIVE_PRODUCERS_SYNC_INTERVAL_MS);
   }
@@ -7157,7 +7424,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   socket.on('consumer-closed', ({ consumerId } = {}) => {
     const cleaned = cleanupConsumerById(consumerId);
-    if (!cleaned && mediaInitialized && session.kind === 'user') {
+    if (!cleaned && mediaInitialized && isOperatorSession()) {
       requestActiveProducers().catch(() => {});
     }
   });
@@ -7206,9 +7473,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       if (stored.type === 'feed') {
         const feedId = Number(appData?.id);
         feedAudioElements.get(feedId)?.delete(audioEl);
-        if (session.kind === 'user') {
-          applyFeedDucking();
-        }
+          if (isOperatorSession()) {
+            applyFeedDucking();
+          }
       } else if (stored.type === 'conference') {
         confAudioElements.get(appData?.id)?.delete(audioEl);
       }
@@ -7332,13 +7599,14 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     if (!target || target.id == null) return null;
     if (target.type === 'conference') return `conf-${target.id}`;
     if (target.type === 'user') return `user-${target.id}`;
+    if (target.type === 'guest') return `guest-${target.id}`;
     if (target.type === 'feed') return `feed-${target.id}`;
     return null;
   }
 
   function toKey(rawId) {
     const id = String(rawId);
-    if (id.startsWith("user-") || id.startsWith("conf-") || id.startsWith("feed-")) {
+    if (id.startsWith("user-") || id.startsWith("conf-") || id.startsWith("feed-") || id.startsWith("guest-")) {
       return id;
     }
     const numeric = Number(id);
@@ -7382,6 +7650,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     if (!normalizedTarget) return null;
 
     if (normalizedTarget.type === 'conference') {
+      return normalizedTarget;
+    }
+    if (normalizedTarget.type === 'guest') {
       return normalizedTarget;
     }
 
@@ -7505,7 +7776,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   function canUseTargetHotkeys(event) {
-    if (session.kind !== "user") return false;
+    if (!isOperatorSession()) return false;
     if (activeLockButton) return false;
     if (settingsMenuOpen) return false;
     if (activeHotkeyCaptureTargetIdentity) return false;
@@ -7560,9 +7831,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
         }
       });
-      if (session.kind === 'user') {
-        applyFeedDucking();
-      }
+        if (isOperatorSession()) {
+          applyFeedDucking();
+        }
     } else if (consumers.length) {
       consumers.forEach(c => {
         if (!c?.pause || !c?.resume) return;
@@ -7646,7 +7917,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   function activateTalkLock(target, button) {
-    if (session.kind !== 'user') return;
+    if (!isOperatorSession()) return;
     if (!target || !button) return;
     clearSuspendedLockState();
     activeLockButton = button;
@@ -7667,7 +7938,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   function suspendActiveLockState() {
-    if (session.kind !== 'user') return null;
+    if (!isOperatorSession()) return null;
     if (!activeLockButton || !activeLockTarget) return null;
     suspendedLockState = {
       target: { type: activeLockTarget.type, id: activeLockTarget.id },
@@ -7678,7 +7949,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   function scheduleRestoreSuspendedLock() {
-    if (session.kind !== 'user') return;
+    if (!isOperatorSession()) return;
     if (!suspendedLockState) return;
     cancelSuspendedLockRestore();
     suspendedLockRestoreTimer = setTimeout(() => {
@@ -7706,7 +7977,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   function toggleTalkLock(target) {
-    if (session.kind !== 'user') return;
+    if (!isOperatorSession()) return;
     if (!target) return;
     const talkBtn = findTalkButtonForTarget(target);
     if (!talkBtn) return;
@@ -7743,7 +8014,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   async function handleTalk(e, target) {
     e.preventDefault();
-    if (session.kind !== 'user') return;
+    if (!isOperatorSession()) return;
     if (!target) return;
     const normalizedTarget = resolveLiveTalkTarget(target);
     if (!normalizedTarget) {
@@ -7944,9 +8215,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     btnReply.setAttribute("aria-pressed", isActive ? "true" : "false");
   }
 
-  btnReply.addEventListener("pointerdown", e => {
-    e.preventDefault();
-    if (session.kind !== 'user') return;
+    btnReply.addEventListener("pointerdown", e => {
+      e.preventDefault();
+      if (!isOperatorSession()) return;
     if (!lastTarget) return;
     setReplyButtonActive(true);
     try { btnReply.setPointerCapture(e.pointerId); } catch {}
@@ -7963,7 +8234,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   function handleStopTalking(e) {
     e.preventDefault();
-    if (session.kind !== 'user') return;
+    if (!isOperatorSession()) return;
     const shouldRestoreSuspendedLock = Boolean(suspendedLockState) && !e?.suppressLockRestore;
     const inputKey = getTalkInputKey(e);
 
@@ -8025,7 +8296,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   // Safety stop so PTT can't get stuck on iOS/background transitions.
   function stopTalkingSafely({ respectLock = false, pointerId = null } = {}) {
-    if (session.kind !== 'user') return;
+    if (!isOperatorSession()) return;
     if (!producer && !isTalking && !pendingTalkStart) return;
     if (respectLock && activeLockButton) return;
     if (pointerId !== null) {

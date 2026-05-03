@@ -470,6 +470,11 @@
         color: #fde68a;
       }
 
+      .badge.guest-profile {
+        background: rgba(14, 165, 233, 0.18);
+        color: #bae6fd;
+      }
+
       details {
         border: 1px solid var(--border);
         border-radius: 10px;
@@ -668,6 +673,32 @@
       }
 
       .rtc-port-form button {
+        justify-self: end;
+      }
+
+      .guest-login-form {
+        display: grid;
+        grid-template-columns: minmax(12rem, 1fr) minmax(var(--config-action-width), auto);
+        gap: 0.9rem 1rem;
+        align-items: end;
+      }
+
+      .toggle-row {
+        min-height: var(--control-height);
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      .toggle-row input[type='checkbox'] {
+        width: 1.15rem;
+        height: 1.15rem;
+        accent-color: var(--primary);
+      }
+
+      .guest-login-form button {
         justify-self: end;
       }
 
@@ -899,7 +930,8 @@
           grid-template-columns: 1fr;
         }
 
-        .rtc-port-form {
+        .rtc-port-form,
+        .guest-login-form {
           grid-template-columns: 1fr;
         }
 
@@ -1215,6 +1247,23 @@
                 </div>
 
                 <button type="submit">Save RTC ports</button>
+              </form>
+            </section>
+
+            <section class="config-panel" aria-labelledby="config-guest-login-heading">
+              <h3 id="config-guest-login-heading">Guest login</h3>
+
+              <div class="setting-meta">
+                <div>Status: <strong id="guest-login-status">Loading...</strong></div>
+                <div>Shared target profile: <strong id="guest-login-profile">Loading...</strong></div>
+              </div>
+
+              <form id="guest-login-form" class="guest-login-form" autocomplete="off">
+                <label class="toggle-row" for="guest-login-enabled">
+                  <input type="checkbox" id="guest-login-enabled" />
+                  <span>Allow passwordless Guest login</span>
+                </label>
+                <button type="submit">Save Guest</button>
               </form>
             </section>
 
