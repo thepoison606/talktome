@@ -3326,6 +3326,13 @@ let cachedOperatorTargets = null;
     return speakingPeers.has(targetKey) || activeFeedKeys.has(targetKey);
   }
 
+  function updateFeedOnlineUi(targetKey) {
+    if (!isFeedKey(targetKey)) return;
+    const el = document.getElementById(targetKey);
+    if (!el) return;
+    el.classList.toggle('is-offline', !activeFeedKeys.has(targetKey));
+  }
+
   function forEachStreamKey(targetKey, callback) {
     const seen = new Set();
     const set = targetStreamMap.get(targetKey);
@@ -5922,25 +5929,19 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   function syncRenderedTargetStateUi() {
     document.querySelectorAll('.target-item').forEach(li => {
       const key = li.id;
-      const icon = key.startsWith('user-')
-        ? li.querySelector('.user-icon')
-        : key.startsWith('conf-')
-          ? li.querySelector('.conf-icon')
-          : key.startsWith('feed-')
-            ? li.querySelector('.feed-icon')
-            : null;
       const statusEl = li.querySelector('.target-status');
 
       const isSpeaking = isTargetSpeaking(key);
       li.classList.toggle('speaking', isSpeaking);
-      if (icon) icon.classList.toggle('speaking', isSpeaking);
+      getTargetIconElement(li, key)?.classList.toggle('speaking', isSpeaking);
+      if (key.startsWith('feed-')) {
+        li.classList.toggle('is-offline', !activeFeedKeys.has(key));
+      }
       if (statusEl) {
         statusEl.textContent = getSpeakerStatusText(key, isSpeaking);
       }
 
-      const isMuted = mutedPeers.has(key);
-      li.classList.toggle('muted', isMuted);
-      if (icon) icon.classList.toggle('muted', isMuted);
+      applyMuteVisualState(li, mutedPeers.has(key));
     });
   }
 
@@ -6086,10 +6087,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       const muteBtn = document.createElement('button');
       muteBtn.className = 'mute-btn';
       muteBtn.type = 'button';
-      const initialMuted = isOnline && (
-        persistedUserState?.muted
-        || mutedPeers.has(getCurrentTargetKey())
-      );
+      const initialMuted = Boolean(persistedUserState?.muted) || (isOnline && mutedPeers.has(getCurrentTargetKey()));
       muteBtn.title = initialMuted ? 'Unmute' : 'Mute';
       const muteIcon = document.createElement('img');
       muteIcon.className = 'btn-icon';
@@ -6099,22 +6097,14 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       muteBtn.appendChild(muteIcon);
       muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
       muteBtn.addEventListener('click', e => {
-        const currentSocketId = resolveCurrentUserSocketId();
-        if (!currentSocketId) return;
         e.stopPropagation();
-        toggleMute(currentSocketId);
+        toggleMute(getCurrentTargetKey());
       });
-      if (isOnline) {
-        muteBtn.classList.toggle('muted', mutedPeers.has(getCurrentTargetKey()));
-      } else {
-        muteBtn.disabled = true;
-        muteBtn.title = 'Offline';
-      }
-
       const actions = document.createElement('div');
       actions.className = 'target-actions';
       actions.classList.add('ptt-actions');
       actions.append(muteBtn, talkBtn);
+      applyMuteVisualState(li, initialMuted);
 
       if (isOnline) {
         const isLocked = isSameTarget(activeLockTarget, { type: 'user', id: socketId });
@@ -6204,7 +6194,8 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     const displayName = target.name || onlineUser?.name || `User ${targetIdNum}`;
     const targetKey = `user-${socketId || targetIdNum}`;
     const userKey = `volume_user_${targetIdNum}`;
-    const currentMuted = isOnline && mutedPeers.has(targetKey);
+    const persistedUserState = getPersistedTargetAudioState('user', targetIdNum);
+    const currentMuted = Boolean(persistedUserState?.muted) || (isOnline && mutedPeers.has(targetKey));
 
     existingRow.id = targetKey;
     existingRow.dataset.type = 'user';
@@ -6215,7 +6206,6 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     const icon = existingRow.querySelector('.user-icon');
     if (icon) {
       icon.textContent = displayName ? displayName.charAt(0).toUpperCase() : String(targetIdNum).slice(0, 2);
-      icon.classList.toggle('muted', currentMuted);
     }
 
     const label = existingRow.querySelector('.target-label');
@@ -6256,18 +6246,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       );
     }
 
-    const muteBtn = existingRow.querySelector('.mute-btn');
-    if (muteBtn) {
-      muteBtn.disabled = !isOnline;
-      muteBtn.classList.toggle('muted', currentMuted);
-      muteBtn.title = isOnline ? (currentMuted ? 'Unmute' : 'Mute') : 'Offline';
-      const muteIcon = muteBtn.querySelector('.btn-icon');
-      if (muteIcon) {
-        muteIcon.src = currentMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
-      }
-    }
-
-    existingRow.classList.toggle('muted', currentMuted);
+    applyMuteVisualState(existingRow, currentMuted);
     return true;
   }
 
@@ -6454,13 +6433,13 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       const muted = persistedConfState?.muted || mutedPeers.has(key);
       muteBtn.type = 'button';
       muteBtn.title = muted ? 'Unmute' : 'Mute';
-      if (muted) muteBtn.classList.add('muted');
       const muteIcon = document.createElement('img');
       muteIcon.className = 'btn-icon';
       muteIcon.src = muted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
       muteIcon.alt = '';
       muteIcon.setAttribute('aria-hidden', 'true');
       muteBtn.appendChild(muteIcon);
+      applyMuteVisualState(li, muted);
       muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
       muteBtn.addEventListener('click', e => {
         e.stopPropagation();
@@ -6648,6 +6627,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       const li = document.createElement('li');
       li.id = key;
       li.classList.add('target-item', 'feed-target');
+      li.classList.toggle('is-offline', !activeFeedKeys.has(key));
       li.dataset.type = 'feed';
       li.dataset.id = String(id);
 
@@ -6716,7 +6696,6 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       muteBtn.className = 'mute-btn';
       const muted = persistedFeedState?.muted || mutedPeers.has(key);
       muteBtn.type = 'button';
-      muteBtn.classList.toggle('muted', muted);
       muteBtn.title = muted ? 'Unmute' : 'Mute';
       const muteIcon = document.createElement('img');
       muteIcon.className = 'btn-icon';
@@ -6724,6 +6703,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       muteIcon.alt = '';
       muteIcon.setAttribute('aria-hidden', 'true');
       muteBtn.appendChild(muteIcon);
+      applyMuteVisualState(li, muted);
       muteBtn.addEventListener('pointerdown', e => e.stopPropagation());
       muteBtn.addEventListener('click', e => {
         e.stopPropagation();
@@ -7718,6 +7698,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
     if (isSpeaking) {
       el?.classList.add("speaking");
+      if (isFeed) {
+        el?.classList.remove("is-offline");
+      }
       icon?.classList.add("speaking");
       if (statusEl) {
         statusEl.textContent = getSpeakerStatusText(targetKey, true);
@@ -7733,6 +7716,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     }
 
     el?.classList.remove("speaking");
+    if (isFeed) {
+      updateFeedOnlineUi(targetKey);
+    }
     icon?.classList.remove("speaking");
     if (statusEl) {
       statusEl.textContent = '';
@@ -7940,24 +7926,36 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 // ---------- Toggle mute ----------
   function updateMuteUiForTarget(key, nowMuted) {
     const targetEl = document.getElementById(key);
-    const iconSelector = key.startsWith("conf-")
-        ? '.conf-icon'
-        : key.startsWith('feed-')
-          ? '.feed-icon'
-          : '.user-icon';
-
-    targetEl?.classList.toggle('muted', nowMuted);
-    targetEl?.querySelector(iconSelector)?.classList.toggle('muted', nowMuted);
-
-    const muteBtn = targetEl?.querySelector('.mute-btn');
-    if (!muteBtn) return;
-    muteBtn.classList.toggle('muted', nowMuted);
-    muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
-
-    const muteIcon = muteBtn.querySelector('.btn-icon');
-    if (muteIcon) {
-      muteIcon.src = nowMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
+    if (targetEl) {
+      applyMuteVisualState(targetEl, nowMuted);
     }
+  }
+
+  function getTargetIconElement(targetEl, key = targetEl?.id || '') {
+    const iconSelector = key.startsWith("conf-")
+      ? '.conf-icon'
+      : key.startsWith('feed-')
+        ? '.feed-icon'
+        : '.user-icon';
+    return targetEl?.querySelector(iconSelector) || null;
+  }
+
+  function applyMuteVisualState(targetEl, nowMuted) {
+    if (!targetEl) return;
+    const key = targetEl.id || '';
+    targetEl.classList.toggle('muted', nowMuted);
+    const muteBtn = targetEl?.querySelector('.mute-btn');
+    if (muteBtn) {
+      muteBtn.classList.toggle('muted', nowMuted);
+      muteBtn.title = nowMuted ? 'Unmute' : 'Mute';
+
+      const muteIcon = muteBtn.querySelector('.btn-icon');
+      if (muteIcon) {
+        muteIcon.src = nowMuted ? UI_ICONS.speakerMuted : UI_ICONS.speakerOn;
+      }
+    }
+
+    getTargetIconElement(targetEl, key)?.classList.toggle('muted', nowMuted);
   }
 
   function setMuteState(rawId) {

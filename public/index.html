@@ -892,8 +892,16 @@
         color: #e2e8f0;
       }
 
+      #targets-list li.target-item.is-offline .target-actions button {
+        opacity: 0.55;
+      }
+
+      #targets-list li.target-item.is-offline .feed-reception-btn.is-stopped {
+        color: rgba(226, 232, 240, 0.9);
+      }
+
       #targets-list li.target-item.is-offline .talk-btn,
-      #targets-list li.target-item.is-offline .mute-btn,
+      #targets-list li.target-item.is-offline .feed-reception-btn,
       #targets-list li.target-item.is-offline .volume-slider {
         cursor: not-allowed;
       }
@@ -1182,9 +1190,8 @@
         background: transparent;
       }
 
-      #targets-list .target-actions.ptt-actions .mute-btn.muted {
-        background: transparent;
-        color: rgba(226, 232, 240, 0.9);
+      #targets-list li.target-item.muted .mute-btn {
+        color: rgba(248, 113, 113, 0.95);
       }
 
       #targets-list .dim-btn.dim-off {
@@ -1204,7 +1211,7 @@
         pointer-events: none;
       }
 
-      #targets-list li.feed-target.feed-stopped .feed-icon {
+      #targets-list li.feed-target.feed-stopped:not(.is-offline) .feed-icon {
         background: #ef4444;
       }
 
@@ -1212,6 +1219,10 @@
       #targets-list li.target-item.muted .conf-icon,
       #targets-list li.target-item.muted .feed-icon {
         background: #ef4444;
+      }
+
+      #targets-list li.target-item.is-offline.muted .mute-btn {
+        color: rgba(226, 232, 240, 0.9);
       }
 
       @media (max-width: 600px) {
