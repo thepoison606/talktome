@@ -1191,6 +1191,23 @@
         color: rgba(148, 163, 184, 0.65);
         text-decoration: line-through;
       }
+
+      #targets-list .feed-reception-btn.is-stopped {
+        color: rgba(248, 113, 113, 0.95);
+      }
+
+      #targets-list .feed-reception-icon {
+        width: 30px;
+        height: 30px;
+        display: block;
+        fill: currentColor;
+        pointer-events: none;
+      }
+
+      #targets-list li.feed-target.feed-stopped .feed-icon {
+        background: #ef4444;
+      }
+
       #targets-list li.target-item.muted .user-icon,
       #targets-list li.target-item.muted .conf-icon,
       #targets-list li.target-item.muted .feed-icon {
@@ -1485,6 +1502,11 @@
         display: none !important;
       }
 
+      body.feed-dim-unsupported .feed-dim-option,
+      body.feed-dim-unsupported #targets-list .dim-btn {
+        display: none !important;
+      }
+
       body.feed-mode .settings-trigger,
       body.feed-mode .settings-body {
         display: none !important;
@@ -1605,7 +1627,7 @@
                   <option value="standard">Standard (20 ms frame)</option>
                 </select>
               </div>
-              <div class="device-selector feed-optional">
+              <div class="device-selector feed-optional feed-dim-option">
                 <label for="dim-amount-select">Dim amount</label>
                 <select id="dim-amount-select">
                   <option value="-6">-6 dB</option>
@@ -1615,11 +1637,19 @@
                   <option value="-24">-24 dB</option>
                 </select>
               </div>
-              <div class="processing-options feed-optional">
+              <div class="processing-options feed-optional feed-dim-option">
                 <label>
                   <span class="processing-inline">
                     <input type="checkbox" id="toggle-self-dim" />
                     Dim feeds while speaking
+                  </span>
+                </label>
+              </div>
+              <div class="processing-options feed-optional feed-dim-option">
+                <label>
+                  <span class="processing-inline">
+                    <input type="checkbox" id="toggle-incoming-dim" />
+                    Dim feeds when someone talks to you
                   </span>
                 </label>
               </div>

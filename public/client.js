@@ -66,6 +66,7 @@ const DEFAULT_FEED_PTIME_MS = 20;
 const FEED_DUCKING_DB_MIN = -60;
 const FEED_DUCKING_DB_MAX = -6;
 const FEED_DIM_SELF_STORAGE_KEY = 'feedDimSelf';
+const FEED_DIM_INCOMING_STORAGE_KEY = 'feedDimIncoming';
 const AUDIO_PROCESSING_STORAGE_KEY = 'audioProcessingEnabled';
 const AUDIO_PROCESSING_EXPLICIT_STORAGE_KEY = 'audioProcessingEnabledExplicit';
 const FEED_INPUT_GAIN_DB_STORAGE_KEY = 'feedInputGainDb';
@@ -172,6 +173,7 @@ let loadedTargetHotkeyStorageKey = null;
 let feedDuckingDb = DEFAULT_FEED_DUCKING_DB;
 let feedDuckingFactor = dbToLinear(feedDuckingDb);
 let feedDimSelf = false;
+let feedDimIncoming = true;
 let audioProcessingEnabled = false;
 let feedInputProcessingEnabled = false;
 let feedPtimeMs = DEFAULT_FEED_PTIME_MS;
@@ -390,6 +392,14 @@ function shouldUseLegacyIosRemoteAudioWorkaround() {
   return isiOS && !hasAudioSessionApi;
 }
 
+function shouldUseModernIPhoneFeedGainPath() {
+  return isIPhone && hasAudioSessionApi;
+}
+
+function supportsFeedDimming() {
+  return shouldUseFeedPlaybackBus() || shouldUseModernIPhoneFeedGainPath();
+}
+
 function shouldUseModernIPhonePerStreamGainPath() {
   return isIPhone && hasAudioSessionApi;
 }
@@ -407,6 +417,14 @@ if (typeof window !== 'undefined') {
     const storedSelfDim = window.localStorage?.getItem(FEED_DIM_SELF_STORAGE_KEY);
     if (storedSelfDim !== null) {
       feedDimSelf = storedSelfDim === 'true';
+    }
+    const storedIncomingDim = window.localStorage?.getItem(FEED_DIM_INCOMING_STORAGE_KEY);
+    if (storedIncomingDim !== null) {
+      feedDimIncoming = storedIncomingDim === 'true';
+    }
+    if (!supportsFeedDimming()) {
+      feedDimSelf = false;
+      feedDimIncoming = false;
     }
     const storedFeedInputProcessing = window.localStorage?.getItem(FEED_INPUT_PROCESSING_STORAGE_KEY);
     if (storedFeedInputProcessing !== null) {
@@ -593,6 +611,7 @@ let shortcutSettingsEmpty;
 let shortcutResetButton;
 let sessionSlideHintEl;
 let dimWhileSpeakingToggle;
+let dimWhenAddressedToggle;
 let audioProcessingToggle;
 let userLevelControls;
 let userInputGainSlider;
@@ -638,6 +657,10 @@ const UI_ICONS = {
   talk: '/images/walkie-talkies-white.png',
   speakerOn: '/images/speaker-white.png',
   speakerMuted: '/images/speaker-muted.png',
+};
+const FEED_RECEPTION_ICONS = {
+  play: '<svg class="feed-reception-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 5v14l11-7z"/></svg>',
+  stop: '<svg class="feed-reception-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M7 7h10v10H7z"/></svg>',
 };
 const pendingAutoplayAudios = new Set();
 const pendingAudioPlayPromises = new WeakMap();
@@ -2395,6 +2418,7 @@ function currentQualityKey() {
 
 document.addEventListener("DOMContentLoaded", () => {
   console.log("DOM loaded, initializing...");
+  document.body?.classList.toggle('feed-dim-unsupported', !supportsFeedDimming());
 
   inputSelect  = document.getElementById("input-select");
   feedInputSelect = document.getElementById("feed-input-select");
@@ -2412,6 +2436,7 @@ document.addEventListener("DOMContentLoaded", () => {
   shortcutResetButton = document.getElementById('shortcut-reset-btn');
   sessionSlideHintEl = document.getElementById('session-slide-hint');
   dimWhileSpeakingToggle = document.getElementById('toggle-self-dim');
+  dimWhenAddressedToggle = document.getElementById('toggle-incoming-dim');
   audioProcessingToggle = document.getElementById('toggle-processing');
   userLevelControls = document.getElementById('user-level-controls');
   userInputGainSlider = document.getElementById('user-input-gain');
@@ -2564,7 +2589,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function setFeedDimSelf(value, { persist = true, apply = true } = {}) {
-    const enabled = !!value;
+    const enabled = supportsFeedDimming() && !!value;
     feedDimSelf = enabled;
     if (dimWhileSpeakingToggle && dimWhileSpeakingToggle.checked !== enabled) {
       dimWhileSpeakingToggle.checked = enabled;
@@ -2585,6 +2610,31 @@ document.addEventListener("DOMContentLoaded", () => {
     dimWhileSpeakingToggle.checked = feedDimSelf;
     dimWhileSpeakingToggle.addEventListener('change', () => {
       setFeedDimSelf(dimWhileSpeakingToggle.checked);
+    });
+  }
+
+  function setFeedDimIncoming(value, { persist = true, apply = true } = {}) {
+    const enabled = supportsFeedDimming() && !!value;
+    feedDimIncoming = enabled;
+    if (dimWhenAddressedToggle && dimWhenAddressedToggle.checked !== enabled) {
+      dimWhenAddressedToggle.checked = enabled;
+    }
+    if (persist && typeof window !== 'undefined') {
+      try {
+        window.localStorage?.setItem(FEED_DIM_INCOMING_STORAGE_KEY, String(enabled));
+      } catch (err) {
+        console.warn('Unable to persist incoming dim preference:', err);
+      }
+    }
+    if (apply) {
+      applyFeedDucking();
+    }
+  }
+
+  if (dimWhenAddressedToggle) {
+    dimWhenAddressedToggle.checked = feedDimIncoming;
+    dimWhenAddressedToggle.addEventListener('change', () => {
+      setFeedDimIncoming(dimWhenAddressedToggle.checked);
     });
   }
 
@@ -2662,7 +2712,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const confAudioElements = new Map();
   const feedAudioElements = new Map();
   const targetStreamMap = new Map();
-  const feedDimmingDisabled = new Set();
+  const stoppedFeedKeys = new Set();
   const listenOnlyConferenceKeys = new Set();
   const listenOnlyConferenceDimmingDisabled = new Set();
   const activeFeedKeys = new Set();
@@ -2997,12 +3047,13 @@ let cachedOperatorTargets = null;
 
       if (isFeedKey(targetKey)) {
         forEachStreamEntry(targetKey, (entry) => {
-          if (shouldBeMuted) {
+          if (shouldBeMuted || stoppedFeedKeys.has(targetKey)) {
             muteFeedEntry(entry);
           } else {
             setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
           }
         });
+        updateFeedReceptionUi(targetKey);
         return;
       }
 
@@ -3313,6 +3364,73 @@ let cachedOperatorTargets = null;
     return collected;
   }
 
+  function emitConsumerPauseState(consumer, paused) {
+    if (!consumer?.id || !socket?.connected) return;
+    const eventName = paused ? 'pause-consumer' : 'resume-consumer';
+    try {
+      socket.emit(eventName, { consumerId: consumer.id }, (response = {}) => {
+        if (response?.error) {
+          console.warn(`Failed to ${paused ? 'pause' : 'resume'} consumer ${consumer.id}:`, response.error);
+        }
+      });
+    } catch (error) {
+      console.warn(`Failed to emit ${eventName}:`, error);
+    }
+  }
+
+  function updateFeedReceptionUi(targetKey) {
+    const stopped = stoppedFeedKeys.has(targetKey);
+    const targetEl = document.getElementById(targetKey);
+    targetEl?.classList.toggle('feed-stopped', stopped);
+
+    const button = targetEl?.querySelector('.feed-reception-btn');
+    if (!button) return;
+    button.innerHTML = stopped ? FEED_RECEPTION_ICONS.play : FEED_RECEPTION_ICONS.stop;
+    button.title = stopped ? 'Start receiving feed' : 'Stop receiving feed';
+    button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-pressed', stopped ? 'true' : 'false');
+    button.classList.toggle('is-stopped', stopped);
+  }
+
+  function setFeedReceptionStopped(targetKey, stopped) {
+    if (!isFeedKey(targetKey)) return;
+    const shouldStop = !!stopped;
+    if (shouldStop) stoppedFeedKeys.add(targetKey);
+    else stoppedFeedKeys.delete(targetKey);
+
+    const consumers = collectConsumersForTarget(targetKey);
+    consumers.forEach((consumer) => {
+      if (!consumer?.pause || !consumer?.resume) return;
+      if (shouldStop) {
+        try { consumer.pause(); } catch {}
+        emitConsumerPauseState(consumer, true);
+      } else {
+        try { consumer.resume(); } catch {}
+        emitConsumerPauseState(consumer, false);
+      }
+    });
+
+    forEachStreamEntry(targetKey, (entry) => {
+      if (shouldStop || mutedPeers.has(targetKey)) {
+        muteFeedEntry(entry);
+        return;
+      }
+      setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
+      attemptPlayAudio(entry.audio, {
+        reason: 'feed-reception-restarted',
+        targetKey,
+        streamKey: entry.streamKey,
+        consumerId: entry.consumerId,
+        type: entry.type,
+      }).catch(() => {});
+    });
+
+    updateFeedReceptionUi(targetKey);
+    if (isOperatorSession()) {
+      applyFeedDucking();
+    }
+  }
+
   function pruneIncomingStreamBookkeeping() {
     // Remove stale stream bookkeeping so orphaned audio elements cannot linger.
     for (const [targetKey, set] of Array.from(targetStreamMap.entries())) {
@@ -3519,14 +3637,15 @@ let cachedOperatorTargets = null;
 
   function shouldDimFeedEntry(entry) {
     if (!isOperatorSession()) return false;
+    if (!supportsFeedDimming()) return false;
+    if (!feedDimIncoming && !feedDimSelf) return false;
     if (!feedDuckingActive || feedDuckingFactor >= 0.999) return false;
-    const feedId = Number(String(entry?.key || '').slice(5));
-    if (!Number.isFinite(feedId)) return false;
-    return !feedDimmingDisabled.has(String(feedId));
+    return isFeedKey(entry?.key || '');
   }
 
   function shouldDimListenOnlyConferenceEntry(entry) {
     if (!isOperatorSession()) return false;
+    if (!supportsFeedDimming()) return false;
     if (!feedDuckingActive || feedDuckingFactor >= 0.999) return false;
     const key = String(entry?.key || '');
     if (!listenOnlyConferenceKeys.has(key) || !key.startsWith('conf-')) return false;
@@ -3549,6 +3668,10 @@ let cachedOperatorTargets = null;
     const clamped = Math.max(0, Math.min(1, Number(volume) || 0));
     forEachStreamEntry(targetKey, (entry) => {
       entry.volume = clamped;
+      if (isFeedKey(targetKey) && stoppedFeedKeys.has(targetKey)) {
+        muteFeedEntry(entry);
+        return;
+      }
       if (mutedPeers.has(targetKey)) {
         if (isFeedKey(targetKey)) {
           muteFeedEntry(entry);
@@ -4059,9 +4182,15 @@ let cachedOperatorTargets = null;
     }
 
     if (dimWhileSpeakingToggle) {
-      dimWhileSpeakingToggle.disabled = isFeed;
+      dimWhileSpeakingToggle.disabled = isFeed || !supportsFeedDimming();
       if (!isFeed) {
         dimWhileSpeakingToggle.checked = feedDimSelf;
+      }
+    }
+    if (dimWhenAddressedToggle) {
+      dimWhenAddressedToggle.disabled = isFeed || !supportsFeedDimming();
+      if (!isFeed) {
+        dimWhenAddressedToggle.checked = feedDimIncoming;
       }
     }
 
@@ -4111,8 +4240,10 @@ let cachedOperatorTargets = null;
 
   function applyFeedDucking() {
     if (!isOperatorSession()) return;
-    const shouldDimSelf = feedDimSelf && isTalking;
-    const shouldDuck = speakingPeers.size > 0 || shouldDimSelf;
+    const dimmingSupported = supportsFeedDimming();
+    const shouldDimSelf = dimmingSupported && feedDimSelf && isTalking;
+    const shouldDimIncoming = dimmingSupported && feedDimIncoming && speakingPeers.size > 0;
+    const shouldDuck = shouldDimIncoming || shouldDimSelf;
     feedDuckingActive = shouldDuck;
 
     for (const [feedId, audios] of feedAudioElements) {
@@ -4121,6 +4252,10 @@ let cachedOperatorTargets = null;
       for (const audioEl of audios) {
         const entry = audioEntryMap.get(audioEl);
         if (!entry) continue;
+        if (stoppedFeedKeys.has(key)) {
+          muteFeedEntry(entry);
+          continue;
+        }
         if (mutedPeers.has(key)) {
           muteFeedEntry(entry);
           continue;
@@ -6336,7 +6471,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       actions.className = 'target-actions';
       actions.classList.add('ptt-actions');
 
-      if (!canTalk) {
+      if (!canTalk && supportsFeedDimming()) {
         const dimKeyId = String(id);
         const dimBtn = document.createElement('button');
         dimBtn.className = 'lock-btn dim-btn';
@@ -6360,6 +6495,13 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           applyFeedDucking();
         });
         actions.append(muteBtn, dimBtn);
+        li.append(icon, info, actions);
+        list.appendChild(li);
+        return;
+      }
+
+      if (!canTalk) {
+        actions.append(muteBtn);
         li.append(icon, info, actions);
         list.appendChild(li);
         return;
@@ -6524,27 +6666,24 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       label.textContent = name;
       labelWrap.appendChild(label);
 
-      const dimBtn = document.createElement('button');
-      dimBtn.className = 'lock-btn dim-btn';
-      const feedKeyId = String(id);
-      const dimDisabled = feedDimmingDisabled.has(feedKeyId);
-      dimBtn.textContent = 'Dim';
-      dimBtn.type = 'button';
-      dimBtn.setAttribute('aria-pressed', dimDisabled ? 'true' : 'false');
-      dimBtn.classList.toggle('dim-off', dimDisabled);
-      dimBtn.addEventListener('pointerdown', e => e.stopPropagation());
-      dimBtn.addEventListener('click', e => {
+      const receptionBtn = document.createElement('button');
+      receptionBtn.className = 'lock-btn feed-reception-btn';
+      receptionBtn.type = 'button';
+      const updateReceptionButton = () => {
+        const stopped = stoppedFeedKeys.has(key);
+        receptionBtn.innerHTML = stopped ? FEED_RECEPTION_ICONS.play : FEED_RECEPTION_ICONS.stop;
+        receptionBtn.title = stopped ? 'Start receiving feed' : 'Stop receiving feed';
+        receptionBtn.setAttribute('aria-label', receptionBtn.title);
+        receptionBtn.setAttribute('aria-pressed', stopped ? 'true' : 'false');
+        receptionBtn.classList.toggle('is-stopped', stopped);
+        li.classList.toggle('feed-stopped', stopped);
+      };
+      updateReceptionButton();
+      receptionBtn.addEventListener('pointerdown', e => e.stopPropagation());
+      receptionBtn.addEventListener('click', e => {
         e.stopPropagation();
-        if (feedDimmingDisabled.has(feedKeyId)) {
-          feedDimmingDisabled.delete(feedKeyId);
-          dimBtn.setAttribute('aria-pressed', 'false');
-          dimBtn.classList.remove('dim-off');
-        } else {
-          feedDimmingDisabled.add(feedKeyId);
-          dimBtn.setAttribute('aria-pressed', 'true');
-          dimBtn.classList.add('dim-off');
-        }
-        applyFeedDucking();
+        setFeedReceptionStopped(key, !stoppedFeedKeys.has(key));
+        updateReceptionButton();
       });
 
       const status = document.createElement('div');
@@ -6594,7 +6733,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       const actions = document.createElement('div');
       actions.className = 'target-actions';
       actions.classList.add('ptt-actions');
-      actions.append(muteBtn, dimBtn);
+      actions.append(muteBtn, receptionBtn);
 
       li.append(icon, info, actions);
       list.appendChild(li);
@@ -6850,17 +6989,19 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
       if (!peerConsumers.has(streamKey)) peerConsumers.set(streamKey, new Set());
       peerConsumers.get(streamKey).add(consumer);
-      if (mutedPeers.has(targetKey) && !isFeedKey(targetKey)) consumer.pause();
+      if ((mutedPeers.has(targetKey) && !isFeedKey(targetKey)) || stoppedFeedKeys.has(targetKey)) {
+        try { consumer.pause(); } catch {}
+      }
 
       const stream = new MediaStream([consumer.track]);
       const feedPlayback = isFeed && shouldUseFeedPlaybackBus() ? ensureFeedPlaybackBus() : null;
       const shouldUseIPhonePerStreamGainPath = !isFeed && shouldUseModernIPhonePerStreamGainPath();
-      const shouldUseModernIPhoneFeedGainPath = isFeed && isIPhone && hasAudioSessionApi;
+      const useModernIPhoneFeedGainPath = isFeed && shouldUseModernIPhoneFeedGainPath();
       let persistentPlaybackBus = !isFeed && !shouldUseIPhonePerStreamGainPath && shouldUsePersistentRemotePlaybackBus()
         ? ensureTargetPlaybackBus(targetKey, { type: normalizedAppData.type || 'user' })
         : null;
       const shouldUseWebAudioLevelControl = !persistentPlaybackBus && (
-        shouldUseModernIPhoneFeedGainPath
+            useModernIPhoneFeedGainPath
         || (!isFeed && (shouldUseIPhonePerStreamGainPath || isiOS || isSafariBrowser))
       );
       const ctxForPlayback = (persistentPlaybackBus || shouldUseWebAudioLevelControl) ? ensureAudioContext() : null;
@@ -6944,7 +7085,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
             && !shouldUseIPhonePerStreamGainPath
             && typeof ctxForPlayback.createMediaElementSource === 'function'
           );
-          if (shouldUseModernIPhoneFeedGainPath) {
+          if (useModernIPhoneFeedGainPath) {
             mediaSource = ctxForPlayback.createMediaStreamSource(stream);
           } else if (shouldUseMediaElementGainPath) {
             mediaSource = ctxForPlayback.createMediaElementSource(audio);
@@ -7000,7 +7141,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         context: feedPlayback?.ctx || ctxForPlayback || null,
         reason: feedPlayback
           ? 'feed bus enabled'
-          : shouldUseModernIPhoneFeedGainPath
+          : useModernIPhoneFeedGainPath
             ? 'iphone feed stream gain'
           : isFeed && isAndroidBrowser
             ? 'android feed fallback'
@@ -7049,7 +7190,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       }
 
       if (isFeed) {
-        if (mutedPeers.has(targetKey)) {
+        if (mutedPeers.has(targetKey) || stoppedFeedKeys.has(targetKey)) {
           muteFeedEntry(entry);
         } else {
           setFeedEntryLevel(entry, entry.volume);
@@ -7064,9 +7205,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         consumer.on('producerclose', () => {
           const set = feedAudioElements.get(feedId);
           set?.delete(audio);
-            if (isOperatorSession()) {
-              applyFeedDucking();
-            }
+          if (isOperatorSession()) {
+            applyFeedDucking();
+          }
         });
       } else {
         if (mutedPeers.has(targetKey)) {
@@ -7102,28 +7243,37 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           type: entry.type,
         }).catch(() => {});
       }
-        if (isFeed && isOperatorSession()) {
-          applyFeedDucking();
-        }
+      if (isFeed && isOperatorSession()) {
+        applyFeedDucking();
+      }
 
-      logReceiveDiagnostic('resume-consumer-start', {
-        producerId: effectiveProducerId,
-        consumerId: consumer.id,
-        streamKey,
-        targetKey,
-      });
-      await new Promise((res) =>
-        socket.emit('resume-consumer', { consumerId: consumer.id }, res)
-      );
-      logReceiveDiagnostic('resume-consumer-done', {
-        producerId: effectiveProducerId,
-        consumerId: consumer.id,
-        streamKey,
-        targetKey,
-        elapsedMs: Math.round(((typeof performance !== 'undefined' && typeof performance.now === 'function')
-          ? performance.now()
-          : Date.now()) - consumeStartedAt),
-      });
+      if (stoppedFeedKeys.has(targetKey)) {
+        logReceiveDiagnostic('resume-consumer-skipped-stopped-feed', {
+          producerId: effectiveProducerId,
+          consumerId: consumer.id,
+          streamKey,
+          targetKey,
+        });
+      } else {
+        logReceiveDiagnostic('resume-consumer-start', {
+          producerId: effectiveProducerId,
+          consumerId: consumer.id,
+          streamKey,
+          targetKey,
+        });
+        await new Promise((res) =>
+          socket.emit('resume-consumer', { consumerId: consumer.id }, res)
+        );
+        logReceiveDiagnostic('resume-consumer-done', {
+          producerId: effectiveProducerId,
+          consumerId: consumer.id,
+          streamKey,
+          targetKey,
+          elapsedMs: Math.round(((typeof performance !== 'undefined' && typeof performance.now === 'function')
+            ? performance.now()
+            : Date.now()) - consumeStartedAt),
+        });
+      }
 
       let consumerClosed = false;
       const handleConsumerClosed = () => {
@@ -7825,7 +7975,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
     if (isFeedKey(key)) {
       forEachStreamEntry(key, (entry) => {
-        if (nowMuted) {
+        if (nowMuted || stoppedFeedKeys.has(key)) {
           muteFeedEntry(entry);
         } else {
           setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
