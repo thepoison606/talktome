@@ -2714,7 +2714,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const targetStreamMap = new Map();
   const stoppedFeedKeys = new Set();
   const listenOnlyConferenceKeys = new Set();
-  const listenOnlyConferenceDimmingDisabled = new Set();
   const activeFeedKeys = new Set();
   const focusLoginNameField = () => {
     if (!loginUsernameInput || session.name) return;
@@ -3656,9 +3655,7 @@ let cachedOperatorTargets = null;
     if (!feedDuckingActive || feedDuckingFactor >= 0.999) return false;
     const key = String(entry?.key || '');
     if (!listenOnlyConferenceKeys.has(key) || !key.startsWith('conf-')) return false;
-    const conferenceId = Number(key.slice(5));
-    if (!Number.isFinite(conferenceId)) return false;
-    return !listenOnlyConferenceDimmingDisabled.has(String(conferenceId));
+    return true;
   }
 
   function getFeedEntryLevel(entry, value) {
@@ -4279,11 +4276,6 @@ let cachedOperatorTargets = null;
     }
 
     for (const key of listenOnlyConferenceKeys) {
-      const conferenceId = Number(String(key).slice(5));
-      const tile = document.getElementById(key);
-      const dimDisabled = listenOnlyConferenceDimmingDisabled.has(String(conferenceId));
-      tile?.classList.remove('monitor-dimmed');
-
       forEachStreamEntry(key, (entry) => {
         if (mutedPeers.has(key)) {
           mutePlaybackEntry(entry);
@@ -6449,35 +6441,6 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       const actions = document.createElement('div');
       actions.className = 'target-actions';
       actions.classList.add('ptt-actions');
-
-      if (!canTalk && supportsFeedDimming()) {
-        const dimKeyId = String(id);
-        const dimBtn = document.createElement('button');
-        dimBtn.className = 'lock-btn dim-btn';
-        const dimDisabled = listenOnlyConferenceDimmingDisabled.has(dimKeyId);
-        dimBtn.textContent = 'Dim';
-        dimBtn.type = 'button';
-        dimBtn.setAttribute('aria-pressed', dimDisabled ? 'true' : 'false');
-        dimBtn.classList.toggle('dim-off', dimDisabled);
-        dimBtn.addEventListener('pointerdown', e => e.stopPropagation());
-        dimBtn.addEventListener('click', e => {
-          e.stopPropagation();
-          if (listenOnlyConferenceDimmingDisabled.has(dimKeyId)) {
-            listenOnlyConferenceDimmingDisabled.delete(dimKeyId);
-            dimBtn.setAttribute('aria-pressed', 'false');
-            dimBtn.classList.remove('dim-off');
-          } else {
-            listenOnlyConferenceDimmingDisabled.add(dimKeyId);
-            dimBtn.setAttribute('aria-pressed', 'true');
-            dimBtn.classList.add('dim-off');
-          }
-          applyFeedDucking();
-        });
-        actions.append(muteBtn, dimBtn);
-        li.append(icon, info, actions);
-        list.appendChild(li);
-        return;
-      }
 
       if (!canTalk) {
         actions.append(muteBtn);

@@ -1116,6 +1116,22 @@
         overflow: hidden;
       }
 
+      #targets-list li.monitor-only-target .target-actions.ptt-actions {
+        position: relative;
+        justify-content: flex-start;
+        width: calc(var(--ptt-btn-size, 64px) * 2);
+      }
+
+      #targets-list li.monitor-only-target .target-actions.ptt-actions::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: var(--ptt-btn-size, 64px);
+        border-left: 1px solid rgba(148, 163, 184, 0.35);
+        pointer-events: none;
+      }
+
       #targets-list .target-actions.ptt-actions button {
         width: var(--ptt-btn-size, 64px);
         height: var(--ptt-btn-size, 64px);
@@ -1192,11 +1208,6 @@
 
       #targets-list li.target-item.muted .mute-btn {
         color: rgba(248, 113, 113, 0.95);
-      }
-
-      #targets-list .dim-btn.dim-off {
-        color: rgba(148, 163, 184, 0.65);
-        text-decoration: line-through;
       }
 
       #targets-list .feed-reception-btn.is-stopped {
@@ -1513,8 +1524,7 @@
         display: none !important;
       }
 
-      body.feed-dim-unsupported .feed-dim-option,
-      body.feed-dim-unsupported #targets-list .dim-btn {
+      body.feed-dim-unsupported .feed-dim-option {
         display: none !important;
       }
 
@@ -1660,7 +1670,7 @@
                 <label>
                   <span class="processing-inline">
                     <input type="checkbox" id="toggle-incoming-dim" />
-                    Dim feeds when someone talks to you
+                    Dim When Addressed
                   </span>
                 </label>
               </div>
