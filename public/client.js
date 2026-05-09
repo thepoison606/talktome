@@ -3044,6 +3044,8 @@ let cachedOperatorTargets = null;
   let activeProducerSyncInterval = null;
   let activeProducersSyncInFlight = false;
   let pendingIncomingConsumeKeys = new Set();
+  const EARLY_CLOSED_CONSUMER_TTL_MS = 10000;
+  const earlyClosedConsumerIds = new Map();
   let slideHintShown = false;
   let slideHintTimeoutId = null;
 
@@ -3660,6 +3662,46 @@ let cachedOperatorTargets = null;
     return false;
   }
 
+  function receiveNowMs() {
+    return (typeof performance !== 'undefined' && typeof performance.now === 'function')
+      ? performance.now()
+      : Date.now();
+  }
+
+  function pruneEarlyClosedConsumers(now = receiveNowMs()) {
+    for (const [consumerId, rememberedAt] of Array.from(earlyClosedConsumerIds.entries())) {
+      if (now - rememberedAt > EARLY_CLOSED_CONSUMER_TTL_MS) {
+        earlyClosedConsumerIds.delete(consumerId);
+      }
+    }
+  }
+
+  function rememberEarlyClosedConsumer(consumerId) {
+    if (!consumerId) return;
+    const normalizedId = String(consumerId);
+    const now = receiveNowMs();
+    earlyClosedConsumerIds.set(normalizedId, now);
+    pruneEarlyClosedConsumers(now);
+    logReceiveDiagnostic('consumer-closed-deferred', {
+      consumerId: normalizedId,
+      deferredCount: earlyClosedConsumerIds.size,
+    });
+  }
+
+  function takeEarlyClosedConsumer(consumerId) {
+    if (!consumerId) return false;
+    const normalizedId = String(consumerId);
+    pruneEarlyClosedConsumers();
+    const hadEarlyClose = earlyClosedConsumerIds.delete(normalizedId);
+    if (hadEarlyClose) {
+      logReceiveDiagnostic('consumer-closed-deferred-match', {
+        consumerId: normalizedId,
+        deferredCount: earlyClosedConsumerIds.size,
+      });
+    }
+    return hadEarlyClose;
+  }
+
   function cleanupIncomingStream(targetKey, streamKey, { suppressUi = false } = {}) {
     const consumersSet = peerConsumers.get(streamKey);
     if (consumersSet) {
@@ -3706,6 +3748,7 @@ let cachedOperatorTargets = null;
     targetStreamMap.clear();
     peerConsumers.clear();
     audioElements.clear();
+    earlyClosedConsumerIds.clear();
     pendingAutoplayAudios.clear();
     activeFeedKeys.clear();
     confAudioElements.clear();
@@ -7060,6 +7103,16 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         streamKey,
         targetKey,
       });
+      if (takeEarlyClosedConsumer(consumer?.id)) {
+        try { consumer.close(); } catch {}
+        logReceiveDiagnostic('consumer-closed-before-registration', {
+          producerId: effectiveProducerId,
+          consumerId: consumer?.id || null,
+          streamKey,
+          targetKey,
+        });
+        return;
+      }
       const nowTracked = audioElements.has(streamKey)
         || peerConsumers.has(streamKey)
         || (targetStreamMap.get(targetKey)?.has(streamKey) ?? false);
@@ -7330,6 +7383,56 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         }
       }
 
+      let consumerClosed = false;
+      const handleConsumerClosed = () => {
+        if (consumerClosed) return;
+        consumerClosed = true;
+        console.log(`Producer closed for consumer ${consumer.id}`);
+
+        const consumersSet = peerConsumers.get(streamKey);
+        if (consumersSet) {
+          consumersSet.delete(consumer);
+          if (consumersSet.size === 0) {
+            peerConsumers.delete(streamKey);
+          }
+        }
+
+        unregisterStreamKey(targetKey, streamKey);
+        if (isFeed && !hasActiveStreams(targetKey)) {
+          activeFeedKeys.delete(targetKey);
+          updateSpeakerHighlight(targetKey, false);
+        }
+
+        disposePlaybackEntry(entry);
+        audioElements.delete(streamKey);
+
+        if (entry.type === 'feed') {
+          const feedId = Number(normalizedAppData.id);
+          feedAudioElements.get(feedId)?.delete(audio);
+          if (isOperatorSession()) {
+            applyFeedDucking();
+          }
+        } else if (entry.type === 'conference') {
+          confAudioElements.get(normalizedAppData.id)?.delete(audio);
+        }
+      };
+
+      consumer.on('producerclose', handleConsumerClosed);
+      consumer.on('trackended', handleConsumerClosed);
+      consumer.on('transportclose', handleConsumerClosed);
+
+      if (takeEarlyClosedConsumer(consumer.id)) {
+        logReceiveDiagnostic('consumer-closed-before-playback', {
+          producerId: effectiveProducerId,
+          consumerId: consumer.id,
+          streamKey,
+          targetKey,
+        });
+        try { consumer.close(); } catch {}
+        handleConsumerClosed();
+        return;
+      }
+
       if (usesSharedAudioElement) {
         if (micPrimed || micTrack?.readyState === 'live') {
           await warmReceiveAudioSession('incoming-producer-before-playback').catch(err => {
@@ -7377,44 +7480,6 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           ? performance.now()
           : Date.now()) - consumeStartedAt),
       });
-
-      let consumerClosed = false;
-      const handleConsumerClosed = () => {
-        if (consumerClosed) return;
-        consumerClosed = true;
-        console.log(`Producer closed for consumer ${consumer.id}`);
-
-        const consumersSet = peerConsumers.get(streamKey);
-        if (consumersSet) {
-          consumersSet.delete(consumer);
-          if (consumersSet.size === 0) {
-            peerConsumers.delete(streamKey);
-          }
-        }
-
-        unregisterStreamKey(targetKey, streamKey);
-        if (isFeed && !hasActiveStreams(targetKey)) {
-          activeFeedKeys.delete(targetKey);
-          updateSpeakerHighlight(targetKey, false);
-        }
-
-        disposePlaybackEntry(entry);
-        audioElements.delete(streamKey);
-
-        if (entry.type === 'feed') {
-          const feedId = Number(normalizedAppData.id);
-          feedAudioElements.get(feedId)?.delete(audio);
-          if (isOperatorSession()) {
-            applyFeedDucking();
-          }
-        } else if (entry.type === 'conference') {
-          confAudioElements.get(normalizedAppData.id)?.delete(audio);
-        }
-      };
-
-      consumer.on('producerclose', handleConsumerClosed);
-      consumer.on('trackended', handleConsumerClosed);
-      consumer.on('transportclose', handleConsumerClosed);
     } catch (err) {
       console.error('Error consuming:', err);
     } finally {
@@ -7677,6 +7742,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   socket.on('consumer-closed', ({ consumerId } = {}) => {
     const cleaned = cleanupConsumerById(consumerId);
+    if (!cleaned && consumerId) {
+      rememberEarlyClosedConsumer(consumerId);
+    }
     if (!cleaned && mediaInitialized && isOperatorSession()) {
       requestActiveProducers().catch(() => {});
     }
