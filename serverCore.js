@@ -4826,7 +4826,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("resume-consumer", async ({ consumerId }, callback = () => {}) => {
+  socket.on("resume-consumer", async ({ consumerId }, callback) => {
     console.log(`[RESUME] Client ${socket.id} resuming consumer ${consumerId}`);
     try {
       const consumer = peers.get(socket.id)?.consumers.get(consumerId);
@@ -4837,21 +4837,6 @@ io.on("connection", (socket) => {
       callback();
     } catch (error) {
       console.error("[RESUME] Error:", error);
-      callback({ error: error.message });
-    }
-  });
-
-  socket.on("pause-consumer", async ({ consumerId }, callback = () => {}) => {
-    console.log(`[PAUSE] Client ${socket.id} pausing consumer ${consumerId}`);
-    try {
-      const consumer = peers.get(socket.id)?.consumers.get(consumerId);
-      if (consumer) {
-        await consumer.pause();
-        console.log(`[PAUSE] Consumer ${consumerId} paused`);
-      }
-      callback({ ok: true });
-    } catch (error) {
-      console.error("[PAUSE] Error:", error);
       callback({ error: error.message });
     }
   });

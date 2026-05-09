@@ -1559,6 +1559,129 @@
       .reply-bar button {
         margin: 0;
       }
+
+      @media (orientation: landscape) and (pointer: coarse) and (max-height: 520px) {
+        :root {
+          --phone-landscape-reply-width: clamp(9.375rem, 26vw, 13.75rem);
+          --phone-landscape-target-gap: 0.375rem;
+        }
+
+        #intercom-app[style*="flex"] {
+          display: grid !important;
+          grid-template-columns: minmax(0, 1fr) var(--phone-landscape-reply-width);
+          grid-template-rows: auto auto minmax(0, 1fr);
+          grid-template-areas:
+            "session session"
+            "feed feed"
+            "targets reply";
+          column-gap: 0.5rem;
+          row-gap: 0.25rem;
+          padding-bottom: 0;
+          min-height: 0;
+        }
+
+        body.feed-mode #intercom-app {
+          display: flex !important;
+        }
+
+        .session-bar {
+          grid-area: session;
+          padding-top: 0.28rem;
+          padding-bottom: 0.28rem;
+        }
+
+        #feed-banner {
+          grid-area: feed;
+          margin: 0;
+        }
+
+        #targets-list {
+          grid-area: targets;
+          margin: 0;
+          display: flex;
+          flex-direction: column;
+          justify-content: flex-end;
+          gap: var(--phone-landscape-target-gap);
+          min-height: 0;
+          overflow: hidden;
+        }
+
+        #targets-list li.target-item {
+          --target-row-pad-y: 0.55rem;
+          --target-row-pad-x: 0.38rem;
+          --ptt-btn-size: clamp(3.25rem, 17vh, 5.5rem);
+          flex: 0 1 calc((100% - (var(--phone-landscape-target-gap) * 3)) / 4);
+          margin: 0;
+          min-height: 0;
+          border-radius: 16px;
+          gap: 0.35rem;
+        }
+
+        #targets-list .user-icon,
+        #targets-list .conf-icon,
+        #targets-list .feed-icon {
+          width: clamp(1.75rem, 8vh, 2.375rem);
+          height: clamp(1.75rem, 8vh, 2.375rem);
+          min-width: clamp(1.75rem, 8vh, 2.375rem);
+        }
+
+        #targets-list .target-info {
+          gap: 0.25rem;
+        }
+
+        #targets-list .volume-slider {
+          width: clamp(4.75rem, 16vw, 6rem);
+        }
+
+        #targets-list .target-actions {
+          gap: 0;
+        }
+
+        #targets-list .target-actions.ptt-actions {
+          align-items: center;
+          justify-content: flex-end;
+        }
+
+        #targets-list .target-actions.ptt-actions button {
+          flex: 0 0 var(--ptt-btn-size);
+          width: var(--ptt-btn-size);
+          height: var(--ptt-btn-size);
+          border-radius: 10px;
+        }
+
+        .reply-bar {
+          position: static;
+          grid-area: reply;
+          width: auto;
+          height: auto;
+          padding: 0;
+          background: transparent;
+          backdrop-filter: none;
+          align-items: stretch;
+          justify-content: stretch;
+        }
+
+        .reply-bar button {
+          width: 100%;
+          min-width: 0;
+          height: 100%;
+          min-height: 0;
+          margin: 0;
+          padding: 0;
+          border-radius: 18px;
+        }
+
+        .reply-bar button[data-label]::after {
+          inset: 0;
+          align-items: center;
+          justify-content: center;
+          padding: 0 1rem;
+          font-size: 1.15rem;
+          text-align: center;
+          white-space: normal;
+          transform: none;
+        }
+      }
     </style>
   </head>
   <body>

@@ -93,6 +93,7 @@ const FEED_PTIME_OPTIONS = Object.freeze({
 const USER_OFFLINE_GRACE_MS = 1500;
 const MOBILE_TARGET_LAYER_MAX_WIDTH = 699;
 const MOBILE_TARGET_LAYER_COMPACT_MAX_WIDTH = 414;
+const MOBILE_TARGET_LAYER_LANDSCAPE_SIZE = 4;
 const MOBILE_TARGET_LAYER_DEFAULT_SIZE = 8;
 const MOBILE_TARGET_LAYER_COMPACT_SIZE = 7;
 const TARGET_HOTKEY_STORAGE_KEY_PREFIX = 'targetHotkeys:';
@@ -194,7 +195,6 @@ const isTouchMacUA = typeof navigator !== 'undefined'
   ? navigator.maxTouchPoints > 1 && /Macintosh/.test(USER_AGENT)
   : false;
 const isAndroidBrowser = /Android/i.test(USER_AGENT);
-const isIPhone = /iPhone|iPod/i.test(USER_AGENT);
 const isMobileBrowser = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobi/i.test(USER_AGENT)
   || isTouchMacUA;
 const isiOS = typeof navigator !== 'undefined'
@@ -203,8 +203,6 @@ const isiOS = typeof navigator !== 'undefined'
 const isSafariBrowser = typeof navigator !== 'undefined'
   ? /Safari/i.test(USER_AGENT) && !/Chrome|CriOS|Edg|OPR|Firefox|FxiOS/i.test(USER_AGENT)
   : false;
-const hasAudioSessionApi = typeof navigator !== 'undefined' && !!navigator.audioSession;
-
 function createDigitHotkeyBinding(digit) {
   const value = String(digit);
   if (!/^[0-9]$/.test(value)) return null;
@@ -357,14 +355,46 @@ function logReceiveDiagnostic(event, details = {}) {
   const sharedCtx = sharedAudioContext && sharedAudioContext.state !== 'closed'
     ? sharedAudioContext
     : null;
+  const audioSession = typeof navigator !== 'undefined' ? navigator.audioSession : null;
   console.info(`[audio][recv][${event}]`, {
     at: typeof performance !== 'undefined' && typeof performance.now === 'function'
       ? Math.round(performance.now())
       : Date.now(),
     sharedAudioContextState: sharedCtx?.state || null,
+    audioSessionType: audioSession?.type || null,
+    audioSessionState: audioSession?.state || null,
+    visibilityState: typeof document !== 'undefined' ? document.visibilityState : null,
+    documentHidden: typeof document !== 'undefined' ? document.hidden : null,
+    documentHasFocus: typeof document !== 'undefined' && typeof document.hasFocus === 'function'
+      ? document.hasFocus()
+      : null,
     pendingAutoplayCount: pendingAutoplayAudios.size,
     ...details,
   });
+}
+
+function getAudioTrackSnapshot(track) {
+  if (!track) return null;
+  return {
+    enabled: track.enabled ?? null,
+    muted: track.muted ?? null,
+    readyState: track.readyState ?? null,
+    settings: typeof track.getSettings === 'function' ? track.getSettings() : null,
+  };
+}
+
+function getAudioElementSnapshot(audioEl) {
+  if (!audioEl) return null;
+  const track = audioEl.srcObject?.getAudioTracks?.()?.[0] || null;
+  return {
+    paused: audioEl.paused ?? null,
+    muted: audioEl.muted ?? null,
+    volume: audioEl.volume ?? null,
+    readyState: audioEl.readyState ?? null,
+    networkState: audioEl.networkState ?? null,
+    errorCode: audioEl.error?.code ?? null,
+    track: getAudioTrackSnapshot(track),
+  };
 }
 
 function enforcePitchLock(audioEl) {
@@ -388,20 +418,8 @@ function appendPlaybackAudioElement(audioEl) {
   return true;
 }
 
-function shouldUseLegacyIosRemoteAudioWorkaround() {
-  return isiOS && !hasAudioSessionApi;
-}
-
-function shouldUseModernIPhoneFeedGainPath() {
-  return isIPhone && hasAudioSessionApi;
-}
-
 function supportsFeedDimming() {
-  return shouldUseFeedPlaybackBus() || shouldUseModernIPhoneFeedGainPath();
-}
-
-function shouldUseModernIPhonePerStreamGainPath() {
-  return isIPhone && hasAudioSessionApi;
+  return shouldUseFeedPlaybackBus();
 }
 
 if (typeof window !== 'undefined') {
@@ -664,6 +682,7 @@ const FEED_RECEPTION_ICONS = {
 };
 const pendingAutoplayAudios = new Set();
 const pendingAudioPlayPromises = new WeakMap();
+const playbackAudioDiagnostics = new WeakSet();
 let sharedAudioContext = null;
 let feedProcessingAudioContext = null;
 let onAudioContextRunning = null;
@@ -680,6 +699,19 @@ let settingsMenuOpen = false;
 let stopHotkeyCaptureHandler = () => {};
 let renderTargetHotkeySettingsHandler = () => {};
 let refreshTargetHotkeyUiHandler = () => {};
+
+function attachPlaybackAudioDiagnostics(audioEl, label) {
+  if (!audioEl || playbackAudioDiagnostics.has(audioEl)) return;
+  playbackAudioDiagnostics.add(audioEl);
+  ['pause', 'play', 'playing', 'waiting', 'stalled', 'suspend', 'emptied', 'ended', 'error'].forEach(eventName => {
+    audioEl.addEventListener(eventName, () => {
+      logReceiveDiagnostic(`audio-${eventName}`, {
+        label,
+        audio: getAudioElementSnapshot(audioEl),
+      });
+    });
+  });
+}
 
 function clampFeedDuckingDb(value) {
   if (!Number.isFinite(value)) return DEFAULT_FEED_DUCKING_DB;
@@ -740,10 +772,18 @@ function createManagedAudioContext({ label = 'AudioContext', onRunning = null } 
   if (!AudioCtx) return null;
   try {
     const ctx = new AudioCtx({ latencyHint: 'interactive', sampleRate: 48000 });
-    if (typeof onRunning === 'function' && typeof ctx.addEventListener === 'function') {
+    if (typeof ctx.addEventListener === 'function') {
       ctx.addEventListener('statechange', () => {
+        logReceiveDiagnostic('audio-context-statechange', {
+          label,
+          state: ctx.state,
+          remotePlaybackBus: getAudioElementSnapshot(remotePlaybackBus?.audio || null),
+          micTrack: getAudioTrackSnapshot(micTrack),
+        });
         if (ctx.state === 'running') {
-          onRunning();
+          if (typeof onRunning === 'function') {
+            onRunning();
+          }
         }
       });
     }
@@ -845,7 +885,7 @@ function ensureFeedPlaybackBus() {
 }
 
 function shouldUsePersistentRemotePlaybackBus() {
-  return shouldUseLegacyIosRemoteAudioWorkaround();
+  return isiOS || isSafariBrowser;
 }
 
 function disposeRemotePlaybackBus() {
@@ -889,6 +929,7 @@ function ensureRemotePlaybackBus() {
     audio.setAttribute('autoplay', 'true');
     audio.dataset.remotePlaybackBus = 'true';
     enforcePitchLock(audio);
+    attachPlaybackAudioDiagnostics(audio, 'remote-playback-bus');
     if (supportsAudioOutputSelection() && preferredOutputDeviceId && typeof audio.setSinkId === 'function') {
       audio.setSinkId(preferredOutputDeviceId).catch(err => {
         console.warn('Failed to apply audio output device to remote playback bus:', err);
@@ -1009,13 +1050,9 @@ function pruneTargetPlaybackBuses(allowedTargetKeys = null) {
 }
 
 function shouldUseFeedPlaybackBus() {
-  // Feed playback should stay on plain <audio> elements on mobile browsers.
-  // The shared WebAudio feed bus is more fragile there, especially on iOS when
-  // the device locks or Safari backgrounds the page.
-  if (isiOS || isAndroidBrowser) {
-    return false;
-  }
-  return true;
+  // Android browsers have been the least reliable path for the shared WebAudio
+  // feed bus. Keep feeds on plain <audio> playback there.
+  return !isAndroidBrowser;
 }
 
 function logRemoteAudioPlaybackDecision({
@@ -1616,7 +1653,11 @@ async function requestInitialMicrophoneAccess({ reason = 'startup' } = {}) {
 
     if (!settingsMenuOpen && !producer && !feedStreaming && !isTalking) {
       try { track.enabled = false; } catch {}
-      scheduleMicCleanup();
+      if (shouldKeepReceiveAudioSessionWarm()) {
+        keepMicTrackWarmForReceiveAudio('initial-mic-access');
+      } else {
+        scheduleMicCleanup();
+      }
     }
 
     return track;
@@ -2052,6 +2093,40 @@ function handleUserActivation() {
   recoverExistingIncomingPlayback({ forceRetryAll: true });
 }
 
+function installReceiveAudioSessionDiagnostics() {
+  if (!(isiOS || isSafariBrowser)) return;
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+  ['visibilitychange'].forEach(eventName => {
+    document.addEventListener(eventName, () => {
+      logReceiveDiagnostic(`document-${eventName}`, {
+        remotePlaybackBus: getAudioElementSnapshot(remotePlaybackBus?.audio || null),
+        micTrack: getAudioTrackSnapshot(micTrack),
+      });
+    });
+  });
+  ['focus', 'blur', 'pagehide', 'pageshow'].forEach(eventName => {
+    window.addEventListener(eventName, () => {
+      logReceiveDiagnostic(`window-${eventName}`, {
+        remotePlaybackBus: getAudioElementSnapshot(remotePlaybackBus?.audio || null),
+        micTrack: getAudioTrackSnapshot(micTrack),
+      });
+    });
+  });
+
+  const audioSession = typeof navigator !== 'undefined' ? navigator.audioSession : null;
+  if (audioSession && typeof audioSession.addEventListener === 'function') {
+    audioSession.addEventListener('statechange', () => {
+      logReceiveDiagnostic('audio-session-statechange', {
+        remotePlaybackBus: getAudioElementSnapshot(remotePlaybackBus?.audio || null),
+        micTrack: getAudioTrackSnapshot(micTrack),
+      });
+    });
+  }
+}
+
+installReceiveAudioSessionDiagnostics();
+
 USER_ACTIVATION_EVENTS.forEach(event => {
   window.addEventListener(event, handleUserActivation, { capture: true });
 });
@@ -2220,7 +2295,27 @@ function cleanupMicTrack() {
   micDeviceId = null;
 }
 
+function shouldKeepReceiveAudioSessionWarm() {
+  return isiOS && isSafariBrowser && session.kind !== 'feed';
+}
+
+function keepMicTrackWarmForReceiveAudio(reason = 'receive-audio-session') {
+  if (micCleanupTimer) {
+    clearTimeout(micCleanupTimer);
+    micCleanupTimer = null;
+  }
+  logReceiveDiagnostic('mic-kept-warm-for-receive-audio', {
+    reason,
+    micTrack: getAudioTrackSnapshot(micTrack),
+  });
+}
+
 function scheduleMicCleanup() {
+  if (shouldKeepReceiveAudioSessionWarm() && micTrack?.readyState === 'live') {
+    keepMicTrackWarmForReceiveAudio('skip-idle-cleanup');
+    return;
+  }
+
   if (micCleanupTimer) {
     clearTimeout(micCleanupTimer);
   }
@@ -2340,6 +2435,24 @@ async function ensureMicTrack(audioConstraints, selectedDeviceId) {
   });
 
   return micTrack;
+}
+
+async function warmReceiveAudioSession(reason = 'receive-audio-session') {
+  if (!shouldKeepReceiveAudioSessionWarm()) return micTrack;
+  if (!navigator.mediaDevices?.getUserMedia) return micTrack;
+  if (micTrack?.readyState === 'live') {
+    try { micTrack.enabled = false; } catch {}
+    keepMicTrackWarmForReceiveAudio(reason);
+    return micTrack;
+  }
+
+  const { constraints, selectedDeviceId } = getCurrentAudioConstraints();
+  const track = await ensureMicTrack(constraints, selectedDeviceId);
+  if (track) {
+    try { track.enabled = false; } catch {}
+  }
+  keepMicTrackWarmForReceiveAudio(reason);
+  return track;
 }
 
 async function primeVoiceProcessingMode() {
@@ -2860,14 +2973,18 @@ document.addEventListener("DOMContentLoaded", () => {
         isAndroidBrowser,
         isMobileBrowser,
         isiOS,
+        visibilityState: document.visibilityState,
+        documentHidden: document.hidden,
+        documentHasFocus: typeof document.hasFocus === 'function' ? document.hasFocus() : null,
+        audioSession: {
+          supported: !!navigator.audioSession,
+          type: navigator.audioSession?.type || null,
+          state: navigator.audioSession?.state || null,
+        },
         sharedAudioContextState: sharedCtx?.state || null,
         pendingAutoplayCount: pendingAutoplayAudios.size,
-        remotePlaybackBus: {
-          paused: remotePlaybackBus?.audio?.paused ?? null,
-          muted: remotePlaybackBus?.audio?.muted ?? null,
-          volume: remotePlaybackBus?.audio?.volume ?? null,
-          trackReadyState: remotePlaybackBus?.audio?.srcObject?.getAudioTracks?.()?.[0]?.readyState ?? null,
-        },
+        remotePlaybackBus: getAudioElementSnapshot(remotePlaybackBus?.audio || null),
+        micTrack: getAudioTrackSnapshot(micTrack),
         playbackBuses: Array.from(targetPlaybackBuses.entries()).map(([targetKey, bus]) => ({
           targetKey,
           type: bus?.type || null,
@@ -2876,6 +2993,26 @@ document.addEventListener("DOMContentLoaded", () => {
         entries,
       };
       console.info('[audio][dump]', snapshot);
+      return snapshot;
+    };
+    window.talktomeWarmReceiveAudioSession = async (reason = 'manual-debug') => {
+      const track = await warmReceiveAudioSession(reason);
+      const snapshot = window.talktomeDumpAudioState?.() || null;
+      logReceiveDiagnostic('manual-warm-receive-audio-session', {
+        reason,
+        micTrack: getAudioTrackSnapshot(track),
+      });
+      return snapshot;
+    };
+    window.talktomeSetAudioSessionType = (type = 'play-and-record') => {
+      if (!navigator.audioSession) {
+        throw new Error('navigator.audioSession is not available');
+      }
+      navigator.audioSession.type = type;
+      const snapshot = window.talktomeDumpAudioState?.() || null;
+      logReceiveDiagnostic('manual-set-audio-session-type', {
+        type,
+      });
       return snapshot;
     };
   }
@@ -5191,15 +5328,25 @@ function updateCompactSessionBarMode(targetCount = null) {
   const isSmallViewport = typeof window !== 'undefined'
     ? (window.innerWidth <= 430 || window.innerHeight <= 720)
     : false;
-    const shouldCompact = isOperatorSession() && isSmallViewport && count >= 6;
+  const shouldCompact = isOperatorSession() && isSmallViewport && count >= 6;
   document.body.classList.toggle('compact-session-bar', shouldCompact);
 }
 
 function getMobileTargetLayerSize() {
   if (typeof window === 'undefined') return MOBILE_TARGET_LAYER_DEFAULT_SIZE;
+  if (isPhoneLandscapeViewport()) {
+    return MOBILE_TARGET_LAYER_LANDSCAPE_SIZE;
+  }
   return window.innerWidth <= MOBILE_TARGET_LAYER_COMPACT_MAX_WIDTH
     ? MOBILE_TARGET_LAYER_COMPACT_SIZE
     : MOBILE_TARGET_LAYER_DEFAULT_SIZE;
+}
+
+function isPhoneLandscapeViewport() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return false;
+  }
+  return window.matchMedia('(orientation: landscape) and (pointer: coarse) and (max-height: 520px)').matches;
 }
 
 function getDynamicTargetLayerSize(list, targetEls) {
@@ -5252,9 +5399,10 @@ function updateTargetLayerControls() {
   }
 
   const targetEls = Array.from(list.querySelectorAll('li.target-item'));
-  const isMobileViewport = typeof window !== 'undefined' && window.innerWidth <= MOBILE_TARGET_LAYER_MAX_WIDTH;
+  const isMobileViewport = typeof window !== 'undefined'
+    && (window.innerWidth <= MOBILE_TARGET_LAYER_MAX_WIDTH || isPhoneLandscapeViewport());
   const layerSize = getTargetLayerSize(list, targetEls);
-    const shouldPaginate = isOperatorSession()
+  const shouldPaginate = isOperatorSession()
     && isMobileViewport
     && targetEls.length > layerSize;
 
@@ -6932,21 +7080,14 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
       if (!peerConsumers.has(streamKey)) peerConsumers.set(streamKey, new Set());
       peerConsumers.get(streamKey).add(consumer);
-      if ((mutedPeers.has(targetKey) && !isFeedKey(targetKey)) || stoppedFeedKeys.has(targetKey)) {
-        try { consumer.pause(); } catch {}
-      }
+      if (mutedPeers.has(targetKey) && !isFeedKey(targetKey)) consumer.pause();
 
       const stream = new MediaStream([consumer.track]);
       const feedPlayback = isFeed && shouldUseFeedPlaybackBus() ? ensureFeedPlaybackBus() : null;
-      const shouldUseIPhonePerStreamGainPath = !isFeed && shouldUseModernIPhonePerStreamGainPath();
-      const useModernIPhoneFeedGainPath = isFeed && shouldUseModernIPhoneFeedGainPath();
-      let persistentPlaybackBus = !isFeed && !shouldUseIPhonePerStreamGainPath && shouldUsePersistentRemotePlaybackBus()
+      let persistentPlaybackBus = !isFeed && shouldUsePersistentRemotePlaybackBus()
         ? ensureTargetPlaybackBus(targetKey, { type: normalizedAppData.type || 'user' })
         : null;
-      const shouldUseWebAudioLevelControl = !persistentPlaybackBus && (
-            useModernIPhoneFeedGainPath
-        || (!isFeed && (shouldUseIPhonePerStreamGainPath || isiOS || isSafariBrowser))
-      );
+      const shouldUseWebAudioLevelControl = !isFeed && !persistentPlaybackBus && (isiOS || isSafariBrowser);
       const ctxForPlayback = (persistentPlaybackBus || shouldUseWebAudioLevelControl) ? ensureAudioContext() : null;
 
       const initVolRaw = getStoredVolume(volumeStorageKey);
@@ -6960,6 +7101,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         nextAudio.setAttribute('playsinline', 'true');
         nextAudio.setAttribute('autoplay', 'true');
         enforcePitchLock(nextAudio);
+        attachPlaybackAudioDiagnostics(nextAudio, 'incoming-audio-element');
         if (supportsAudioOutputSelection() && preferredOutputDeviceId && typeof nextAudio.setSinkId === 'function') {
           nextAudio.setSinkId(preferredOutputDeviceId).catch(err => {
             console.warn('Failed to apply audio output device to new audio element:', err);
@@ -6969,6 +7111,35 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       };
 
       let audio = persistentPlaybackBus?.audio || createIncomingAudioElement();
+      if (consumer.track && typeof consumer.track.addEventListener === 'function') {
+        consumer.track.addEventListener('mute', () => {
+          logReceiveDiagnostic('consumer-track-mute', {
+            producerId: effectiveProducerId,
+            consumerId: consumer.id,
+            streamKey,
+            targetKey,
+            track: getAudioTrackSnapshot(consumer.track),
+          });
+        });
+        consumer.track.addEventListener('unmute', () => {
+          logReceiveDiagnostic('consumer-track-unmute', {
+            producerId: effectiveProducerId,
+            consumerId: consumer.id,
+            streamKey,
+            targetKey,
+            track: getAudioTrackSnapshot(consumer.track),
+          });
+        });
+        consumer.track.addEventListener('ended', () => {
+          logReceiveDiagnostic('consumer-track-ended', {
+            producerId: effectiveProducerId,
+            consumerId: consumer.id,
+            streamKey,
+            targetKey,
+            track: getAudioTrackSnapshot(consumer.track),
+          });
+        });
+      }
 
       let gainNode = null;
       let mediaSource = null;
@@ -7023,14 +7194,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
       if (!gainNode && ctxForPlayback && !feedPlayback && !persistentPlaybackBus) {
         try {
-          const shouldUseMediaElementGainPath = (
-            isSafariBrowser
-            && !shouldUseIPhonePerStreamGainPath
-            && typeof ctxForPlayback.createMediaElementSource === 'function'
-          );
-          if (useModernIPhoneFeedGainPath) {
-            mediaSource = ctxForPlayback.createMediaStreamSource(stream);
-          } else if (shouldUseMediaElementGainPath) {
+          if (isSafariBrowser && typeof ctxForPlayback.createMediaElementSource === 'function') {
             mediaSource = ctxForPlayback.createMediaElementSource(audio);
             usesMediaElementSource = true;
           } else {
@@ -7084,19 +7248,13 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         context: feedPlayback?.ctx || ctxForPlayback || null,
         reason: feedPlayback
           ? 'feed bus enabled'
-          : useModernIPhoneFeedGainPath
-            ? 'iphone feed stream gain'
           : isFeed && isAndroidBrowser
             ? 'android feed fallback'
             : usesSharedAudioElement
               ? 'persistent target playback bus'
             : ctxForPlayback
               ? usesMediaElementSource
-                ? isFeed
-                  ? 'feed media element gain'
-                  : 'safari media element gain'
-                : isIPhone
-                  ? 'iphone media stream gain'
+                ? 'safari media element gain'
                 : 'ios remote gain control'
               : 'default direct playback',
       });
@@ -7133,7 +7291,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       }
 
       if (isFeed) {
-        if (mutedPeers.has(targetKey) || stoppedFeedKeys.has(targetKey)) {
+        if (mutedPeers.has(targetKey)) {
           muteFeedEntry(entry);
         } else {
           setFeedEntryLevel(entry, entry.volume);
@@ -7173,6 +7331,17 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       }
 
       if (usesSharedAudioElement) {
+        if (micPrimed || micTrack?.readyState === 'live') {
+          await warmReceiveAudioSession('incoming-producer-before-playback').catch(err => {
+            logReceiveDiagnostic('warm-receive-audio-session-failed', {
+              producerId: effectiveProducerId,
+              consumerId: consumer.id,
+              streamKey,
+              targetKey,
+              error: err?.message || String(err),
+            });
+          });
+        }
         primeTargetPlaybackBus(targetKey, {
           type: entry.type,
           reason: 'incoming-producer-playback-bus',
@@ -7190,33 +7359,24 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         applyFeedDucking();
       }
 
-      if (stoppedFeedKeys.has(targetKey)) {
-        logReceiveDiagnostic('resume-consumer-skipped-stopped-feed', {
-          producerId: effectiveProducerId,
-          consumerId: consumer.id,
-          streamKey,
-          targetKey,
-        });
-      } else {
-        logReceiveDiagnostic('resume-consumer-start', {
-          producerId: effectiveProducerId,
-          consumerId: consumer.id,
-          streamKey,
-          targetKey,
-        });
-        await new Promise((res) =>
-          socket.emit('resume-consumer', { consumerId: consumer.id }, res)
-        );
-        logReceiveDiagnostic('resume-consumer-done', {
-          producerId: effectiveProducerId,
-          consumerId: consumer.id,
-          streamKey,
-          targetKey,
-          elapsedMs: Math.round(((typeof performance !== 'undefined' && typeof performance.now === 'function')
-            ? performance.now()
-            : Date.now()) - consumeStartedAt),
-        });
-      }
+      logReceiveDiagnostic('resume-consumer-start', {
+        producerId: effectiveProducerId,
+        consumerId: consumer.id,
+        streamKey,
+        targetKey,
+      });
+      await new Promise((res) =>
+        socket.emit('resume-consumer', { consumerId: consumer.id }, res)
+      );
+      logReceiveDiagnostic('resume-consumer-done', {
+        producerId: effectiveProducerId,
+        consumerId: consumer.id,
+        streamKey,
+        targetKey,
+        elapsedMs: Math.round(((typeof performance !== 'undefined' && typeof performance.now === 'function')
+          ? performance.now()
+          : Date.now()) - consumeStartedAt),
+      });
 
       let consumerClosed = false;
       const handleConsumerClosed = () => {
