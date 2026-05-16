@@ -82,6 +82,15 @@ const USER_INPUT_GAIN_DB_MIN = -30;
 const USER_INPUT_GAIN_DB_MAX = 40;
 const USER_METER_MIN_DB = -60;
 const USER_CLIP_THRESHOLD_DB = -0.5;
+const VOICE_TRIGGER_ENABLED_STORAGE_KEY = 'voiceTriggerEnabled';
+const VOICE_TRIGGER_TARGET_STORAGE_KEY = 'voiceTriggerTarget';
+const VOICE_TRIGGER_THRESHOLD_DB_STORAGE_KEY = 'voiceTriggerThresholdDb';
+const VOICE_TRIGGER_DEFAULT_THRESHOLD_DB = -32;
+const VOICE_TRIGGER_MIN_DB = -60;
+const VOICE_TRIGGER_MAX_DB = -6;
+const VOICE_TRIGGER_ATTACK_MS = 80;
+const VOICE_TRIGGER_RELEASE_MS = 700;
+const VOICE_TRIGGER_HYSTERESIS_DB = 6;
 const FEED_METER_TEXT_UPDATE_INTERVAL_MS = 160;
 const USER_METER_TEXT_UPDATE_INTERVAL_MS = 160;
 const METER_TEXT_DB_THRESHOLD = 0.5;
@@ -187,6 +196,9 @@ let feedInputGainDb = 0;
 let feedInputGainLinear = dbToLinear(feedInputGainDb);
 let userInputGainDb = 18;
 let userInputGainLinear = dbToLinear(userInputGainDb);
+let voiceTriggerEnabled = false;
+let voiceTriggerTargetIdentity = '';
+let voiceTriggerThresholdDb = VOICE_TRIGGER_DEFAULT_THRESHOLD_DB;
 let preferredInputDeviceId = '';
 let preferredInputDeviceExplicit = false;
 let preferredOutputDeviceId = '';
@@ -497,6 +509,21 @@ if (typeof window !== 'undefined') {
         userInputGainLinear = dbToLinear(userInputGainDb);
       }
     }
+    const storedVoiceTriggerEnabled = window.localStorage?.getItem(VOICE_TRIGGER_ENABLED_STORAGE_KEY);
+    if (storedVoiceTriggerEnabled !== null) {
+      voiceTriggerEnabled = storedVoiceTriggerEnabled === 'true';
+    }
+    const storedVoiceTriggerTarget = window.localStorage?.getItem(VOICE_TRIGGER_TARGET_STORAGE_KEY);
+    if (storedVoiceTriggerTarget !== null) {
+      voiceTriggerTargetIdentity = String(storedVoiceTriggerTarget || '').trim();
+    }
+    const storedVoiceTriggerThreshold = window.localStorage?.getItem(VOICE_TRIGGER_THRESHOLD_DB_STORAGE_KEY);
+    if (storedVoiceTriggerThreshold !== null) {
+      const parsedVoiceTriggerThreshold = parseFloat(storedVoiceTriggerThreshold);
+      if (!Number.isNaN(parsedVoiceTriggerThreshold)) {
+        voiceTriggerThresholdDb = clampVoiceTriggerThresholdDb(parsedVoiceTriggerThreshold);
+      }
+    }
   } catch (err) {
     console.warn('Unable to restore feed dim level from storage:', err);
   }
@@ -637,6 +664,12 @@ let userInputGainValueDisplay;
 let userMeterBarEl;
 let userMeterClipEl;
 let userMeterValueEl;
+let voiceTriggerControls;
+let voiceTriggerToggle;
+let voiceTriggerTargetSelect;
+let voiceTriggerThresholdSlider;
+let voiceTriggerThresholdValueDisplay;
+let voiceTriggerStatusEl;
 let feedInputGainSlider;
 let feedInputGainValueDisplay;
 let feedInputProcessingToggle;
@@ -693,12 +726,18 @@ let targetPlaybackBuses = new Map();
 let remotePlaybackBus = null;
 let targetHasActiveStreams = () => false;
 let userProcessingChain = null;
+let voiceTriggerMonitorChain = null;
+let voiceTriggerRafId = null;
+let voiceTriggerActive = false;
+let voiceTriggerAboveSince = 0;
+let voiceTriggerBelowSince = 0;
 let settingsMonitorActive = false;
 let settingsMonitorPromise = null;
 let settingsMenuOpen = false;
 let stopHotkeyCaptureHandler = () => {};
 let renderTargetHotkeySettingsHandler = () => {};
 let refreshTargetHotkeyUiHandler = () => {};
+let restartVoiceTriggerMonitorHandler = () => {};
 
 function attachPlaybackAudioDiagnostics(audioEl, label) {
   if (!audioEl || playbackAudioDiagnostics.has(audioEl)) return;
@@ -731,6 +770,11 @@ function clampFeedPtimeMs(value) {
 function clampUserInputGainDb(value) {
   if (!Number.isFinite(value)) return 0;
   return Math.min(USER_INPUT_GAIN_DB_MAX, Math.max(USER_INPUT_GAIN_DB_MIN, value));
+}
+
+function clampVoiceTriggerThresholdDb(value) {
+  if (!Number.isFinite(value)) return VOICE_TRIGGER_DEFAULT_THRESHOLD_DB;
+  return Math.min(VOICE_TRIGGER_MAX_DB, Math.max(VOICE_TRIGGER_MIN_DB, value));
 }
 
 function dbToLinear(dbValue) {
@@ -1121,6 +1165,7 @@ function setAudioProcessingEnabled(enabled, { persist = true, updateUI = true, r
     if (settingsMenuOpen) {
       startInputMonitor();
     }
+    restartVoiceTriggerMonitorHandler();
   } else if (settingsMenuOpen) {
     startInputMonitor();
   }
@@ -1651,7 +1696,7 @@ async function requestInitialMicrophoneAccess({ reason = 'startup' } = {}) {
     const track = await ensureMicTrack(constraints, selectedDeviceId);
     if (!track) return null;
 
-    if (!settingsMenuOpen && !producer && !feedStreaming && !isTalking) {
+    if (!settingsMenuOpen && !producer && !feedStreaming && !isTalking && !(voiceTriggerEnabled && isOperatorSession())) {
       try { track.enabled = false; } catch {}
       if (shouldKeepReceiveAudioSessionWarm()) {
         keepMicTrackWarmForReceiveAudio('initial-mic-access');
@@ -1681,7 +1726,9 @@ async function startInputMonitor() {
       if (!track) return null;
       if (!settingsMenuOpen) {
         if (!producer && !feedStreaming && !isTalking) {
-          try { track.enabled = false; } catch {}
+          if (!(voiceTriggerEnabled && isOperatorSession())) {
+            try { track.enabled = false; } catch {}
+          }
         }
         return null;
       }
@@ -1727,7 +1774,7 @@ function stopInputMonitor() {
   }
   settingsMonitorActive = false;
 
-  if (producer || feedStreaming || isTalking) {
+  if (producer || feedStreaming || isTalking || (voiceTriggerEnabled && isOperatorSession())) {
     return;
   }
 
@@ -2061,6 +2108,93 @@ function ensureUserProcessingChain(track) {
   return userProcessingChain;
 }
 
+function destroyVoiceTriggerMonitorChain() {
+  if (!voiceTriggerMonitorChain) return;
+  try { voiceTriggerMonitorChain.sourceNode?.disconnect(); } catch {}
+  try { voiceTriggerMonitorChain.analyser?.disconnect(); } catch {}
+  try { voiceTriggerMonitorChain.sinkGain?.disconnect(); } catch {}
+  voiceTriggerMonitorChain = null;
+}
+
+function ensureVoiceTriggerMonitorChain(track) {
+  if (!track || track.readyState !== 'live') return null;
+
+  if (
+    !audioProcessingEnabled
+    && userProcessingChain
+    && userProcessingChain.originalTrack === track
+    && userProcessingChain.analyser
+    && userProcessingChain.meterData
+  ) {
+    destroyVoiceTriggerMonitorChain();
+    return {
+      analyser: userProcessingChain.analyser,
+      meterData: userProcessingChain.meterData,
+      shared: true,
+    };
+  }
+
+  if (voiceTriggerMonitorChain && voiceTriggerMonitorChain.originalTrack === track) {
+    return voiceTriggerMonitorChain;
+  }
+
+  destroyVoiceTriggerMonitorChain();
+
+  const ctx = ensureAudioContext();
+  if (!ctx) return null;
+
+  let sourceStream;
+  let sourceNode;
+  let analyser;
+  let sinkGain;
+
+  try {
+    sourceStream = new MediaStream([track]);
+    sourceNode = ctx.createMediaStreamSource(sourceStream);
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.8;
+    sinkGain = ctx.createGain();
+    sinkGain.gain.value = 0;
+    sourceNode.connect(analyser);
+    analyser.connect(sinkGain);
+    sinkGain.connect(ctx.destination);
+  } catch (err) {
+    console.warn('Failed to set up voice trigger monitor:', err);
+    try { sourceNode?.disconnect(); } catch {}
+    try { analyser?.disconnect(); } catch {}
+    try { sinkGain?.disconnect(); } catch {}
+    return null;
+  }
+
+  voiceTriggerMonitorChain = {
+    originalTrack: track,
+    sourceStream,
+    sourceNode,
+    analyser,
+    sinkGain,
+    meterData: new Float32Array(analyser.fftSize),
+  };
+
+  return voiceTriggerMonitorChain;
+}
+
+function getPeakDbFromAnalyser(analyser, meterData) {
+  if (!analyser || !meterData) return -Infinity;
+  analyser.getFloatTimeDomainData(meterData);
+
+  let peak = 0;
+  for (let i = 0; i < meterData.length; i += 1) {
+    const sample = meterData[i];
+    if (!Number.isFinite(sample)) continue;
+    const abs = Math.abs(sample);
+    if (abs > peak) peak = abs;
+  }
+
+  const peakDb = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
+  return Number.isFinite(peakDb) ? peakDb : -Infinity;
+}
+
 function attemptPendingAutoplay() {
   pendingAutoplayAudios.forEach(audio => {
     attemptPlayAudio(audio, { reason: 'pending-autoplay-retry' })
@@ -2278,6 +2412,7 @@ function cleanupMicTrack() {
 
   destroyFeedProcessing();
   destroyUserProcessing();
+  destroyVoiceTriggerMonitorChain();
 
   if (micTrack) {
     try { micTrack.stop(); } catch {}
@@ -2311,6 +2446,10 @@ function keepMicTrackWarmForReceiveAudio(reason = 'receive-audio-session') {
 }
 
 function scheduleMicCleanup() {
+  if (voiceTriggerEnabled && isOperatorSession()) {
+    return;
+  }
+
   if (shouldKeepReceiveAudioSessionWarm() && micTrack?.readyState === 'live') {
     keepMicTrackWarmForReceiveAudio('skip-idle-cleanup');
     return;
@@ -2557,6 +2696,12 @@ document.addEventListener("DOMContentLoaded", () => {
   userMeterBarEl = document.getElementById('user-meter-bar');
   userMeterClipEl = document.getElementById('user-meter-clip');
   userMeterValueEl = document.getElementById('user-meter-value');
+  voiceTriggerControls = document.getElementById('voice-trigger-controls');
+  voiceTriggerToggle = document.getElementById('toggle-voice-trigger');
+  voiceTriggerTargetSelect = document.getElementById('voice-trigger-target');
+  voiceTriggerThresholdSlider = document.getElementById('voice-trigger-threshold');
+  voiceTriggerThresholdValueDisplay = document.getElementById('voice-trigger-threshold-value');
+  voiceTriggerStatusEl = document.getElementById('voice-trigger-status');
   feedInputProcessingToggle = document.getElementById('toggle-feed-input-processing');
   feedPtimeSelect = document.getElementById('feed-ptime-select');
   feedLevelControls = document.getElementById('feed-level-controls');
@@ -2643,6 +2788,34 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  updateVoiceTriggerThresholdUI();
+  updateVoiceTriggerControlsState();
+
+  if (voiceTriggerToggle) {
+    voiceTriggerToggle.checked = voiceTriggerEnabled;
+    voiceTriggerToggle.addEventListener('change', () => {
+      setVoiceTriggerEnabled(voiceTriggerToggle.checked);
+    });
+  }
+
+  if (voiceTriggerTargetSelect) {
+    voiceTriggerTargetSelect.addEventListener('change', () => {
+      setVoiceTriggerTargetIdentity(voiceTriggerTargetSelect.value);
+      if (voiceTriggerEnabled) {
+        startVoiceTriggerMonitoring();
+      }
+    });
+  }
+
+  if (voiceTriggerThresholdSlider) {
+    voiceTriggerThresholdSlider.addEventListener('input', () => {
+      setVoiceTriggerThresholdDb(voiceTriggerThresholdSlider.value, { persist: false });
+    });
+    voiceTriggerThresholdSlider.addEventListener('change', () => {
+      setVoiceTriggerThresholdDb(voiceTriggerThresholdSlider.value);
+    });
+  }
+
   if (audioProcessingToggle) {
     audioProcessingToggle.checked = syncAudioProcessingOptions();
     audioProcessingToggle.addEventListener('change', () => {
@@ -2666,6 +2839,9 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       localStorage.setItem('audioQualityProfile', qualitySelect.value);
       cleanupMicTrack();
+      if (voiceTriggerEnabled) {
+        startVoiceTriggerMonitoring();
+      }
     });
   } else if (!storedQuality || !QUALITY_PROFILES[storedQuality]) {
     localStorage.setItem('audioQualityProfile', 'ultra-low');
@@ -2770,6 +2946,9 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     } else {
       cleanupMicTrack();
+      if (voiceTriggerEnabled) {
+        startVoiceTriggerMonitoring();
+      }
     }
   };
 
@@ -4382,6 +4561,16 @@ let cachedOperatorTargets = null;
     updateFeedPtimeUI();
     applyUserGainControlState();
     updateFeedControls();
+    updateVoiceTriggerTargetOptions(cachedUsers);
+    if (!isOperator || isFeed) {
+      stopVoiceTriggerMonitoring();
+      updateVoiceTriggerControlsState();
+    } else {
+      updateVoiceTriggerControlsState();
+      if (voiceTriggerEnabled) {
+        startVoiceTriggerMonitoring();
+      }
+    }
     renderTargetHotkeySettings(cachedUsers);
   }
 
@@ -5790,6 +5979,316 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     return descriptors.filter((entry) => entry.identity);
   }
 
+  function parseTalkTargetIdentity(identity) {
+    const raw = String(identity || '').trim();
+    const [type, id] = raw.split(':');
+    if ((type !== 'user' && type !== 'conference') || !id) return null;
+    const numericId = Number(id);
+    return {
+      type,
+      id: Number.isFinite(numericId) ? numericId : id,
+    };
+  }
+
+  function getVoiceTriggerTarget() {
+    return parseTalkTargetIdentity(voiceTriggerTargetIdentity);
+  }
+
+  function updateVoiceTriggerThresholdUI() {
+    const threshold = clampVoiceTriggerThresholdDb(voiceTriggerThresholdDb);
+    if (voiceTriggerThresholdSlider) {
+      voiceTriggerThresholdSlider.value = String(Math.round(threshold));
+    }
+    if (voiceTriggerThresholdValueDisplay) {
+      voiceTriggerThresholdValueDisplay.textContent = formatDbDisplay(threshold);
+    }
+  }
+
+  function setVoiceTriggerState(state = 'idle') {
+    const normalizedState = state === 'triggering'
+      ? 'triggering'
+      : state === 'armed'
+        ? 'armed'
+        : 'idle';
+    if (voiceTriggerControls) {
+      voiceTriggerControls.dataset.triggerState = normalizedState;
+      voiceTriggerControls.classList.toggle('is-triggering', normalizedState === 'triggering');
+    }
+    if (voiceTriggerStatusEl) {
+      voiceTriggerStatusEl.dataset.triggerState = normalizedState;
+    }
+  }
+
+  function updateVoiceTriggerControlsState() {
+    const enabledForSession = isOperatorSession() && session.kind !== 'feed';
+    if (voiceTriggerControls) {
+      voiceTriggerControls.hidden = !enabledForSession;
+    }
+    if (voiceTriggerToggle) {
+      voiceTriggerToggle.checked = enabledForSession && voiceTriggerEnabled;
+      voiceTriggerToggle.disabled = !enabledForSession;
+    }
+    if (voiceTriggerTargetSelect) {
+      voiceTriggerTargetSelect.disabled = !enabledForSession;
+    }
+    if (voiceTriggerThresholdSlider) {
+      voiceTriggerThresholdSlider.disabled = !enabledForSession;
+    }
+    if (!enabledForSession) {
+      setVoiceTriggerState('idle');
+    } else if (!voiceTriggerEnabled) {
+      setVoiceTriggerState('idle');
+    } else if (!getVoiceTriggerTarget()) {
+      setVoiceTriggerState('idle');
+    }
+  }
+
+  function updateVoiceTriggerTargetOptions(users = cachedUsers) {
+    if (!voiceTriggerTargetSelect) return;
+    if (!Array.isArray(cachedOperatorTargets)) {
+      updateVoiceTriggerControlsState();
+      return;
+    }
+
+    const previousValue = voiceTriggerTargetIdentity || voiceTriggerTargetSelect.value || '';
+    const descriptors = buildTalkTargetDescriptors(users)
+      .filter((descriptor) => descriptor.kind === 'target' && descriptor.target);
+    const validIdentities = new Set(descriptors.map((descriptor) => descriptor.identity));
+
+    voiceTriggerTargetSelect.innerHTML = '';
+    const emptyOption = document.createElement('option');
+    emptyOption.value = '';
+    emptyOption.textContent = 'Select target';
+    voiceTriggerTargetSelect.appendChild(emptyOption);
+
+    descriptors.forEach((descriptor) => {
+      const option = document.createElement('option');
+      option.value = descriptor.identity;
+      option.textContent = `${descriptor.label} (${descriptor.kindLabel})`;
+      voiceTriggerTargetSelect.appendChild(option);
+    });
+
+    if (previousValue && validIdentities.has(previousValue)) {
+      voiceTriggerTargetIdentity = previousValue;
+      voiceTriggerTargetSelect.value = previousValue;
+    } else {
+      voiceTriggerTargetIdentity = '';
+      voiceTriggerTargetSelect.value = '';
+    }
+
+    updateVoiceTriggerControlsState();
+    if (voiceTriggerEnabled && getVoiceTriggerTarget()) {
+      startVoiceTriggerMonitoring();
+    }
+  }
+
+  function stopVoiceTriggerTalk() {
+    if (!voiceTriggerActive) return;
+    voiceTriggerActive = false;
+    voiceTriggerAboveSince = 0;
+    voiceTriggerBelowSince = 0;
+    handleStopTalking({
+      preventDefault() {},
+      currentTarget: null,
+      talkInputKey: 'voice-trigger',
+      suppressLockRestore: true,
+    });
+  }
+
+  function stopVoiceTriggerMonitoring({ stopTalk = true } = {}) {
+    if (voiceTriggerRafId !== null) {
+      cancelAnimationFrame(voiceTriggerRafId);
+      voiceTriggerRafId = null;
+    }
+    voiceTriggerAboveSince = 0;
+    voiceTriggerBelowSince = 0;
+    if (stopTalk) {
+      stopVoiceTriggerTalk();
+    } else {
+      voiceTriggerActive = false;
+    }
+    destroyVoiceTriggerMonitorChain();
+    if (!settingsMenuOpen && !producer && !isTalking && !pendingTalkStart && micTrack) {
+      try { micTrack.enabled = false; } catch {}
+      scheduleMicCleanup();
+    }
+    updateVoiceTriggerControlsState();
+  }
+
+  async function startVoiceTriggerMonitoring() {
+    if (!voiceTriggerEnabled || !isOperatorSession() || session.kind === 'feed') {
+      stopVoiceTriggerMonitoring();
+      return;
+    }
+
+    updateVoiceTriggerControlsState();
+    if (!getVoiceTriggerTarget()) return;
+    if (voiceTriggerRafId !== null) return;
+
+    const { constraints, selectedDeviceId } = getCurrentAudioConstraints();
+    let track;
+    try {
+      track = await ensureMicTrack(constraints, selectedDeviceId);
+    } catch (err) {
+      console.warn('Failed to start level trigger monitoring:', err);
+      setVoiceTriggerState('idle');
+      return;
+    }
+    if (!track || !voiceTriggerEnabled) return;
+
+    track.enabled = true;
+    if (!audioProcessingEnabled) {
+      ensureUserProcessingChain(track);
+    }
+
+    const tick = () => {
+      voiceTriggerRafId = null;
+      if (!voiceTriggerEnabled || !isOperatorSession() || session.kind === 'feed') {
+        stopVoiceTriggerMonitoring();
+        return;
+      }
+
+      const target = getVoiceTriggerTarget();
+      if (!target) {
+        setVoiceTriggerState('idle');
+        voiceTriggerRafId = requestAnimationFrame(tick);
+        return;
+      }
+      const liveTarget = resolveLiveTalkTarget(target);
+      if (!liveTarget) {
+        if (voiceTriggerActive) {
+          stopVoiceTriggerTalk();
+        }
+        setVoiceTriggerState('idle');
+        voiceTriggerRafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      if (!micTrack || micTrack.readyState !== 'live') {
+        startVoiceTriggerMonitoring();
+        return;
+      }
+
+      try { micTrack.enabled = true; } catch {}
+
+      const monitor = ensureVoiceTriggerMonitorChain(micTrack);
+      if (!monitor) {
+        setVoiceTriggerState('idle');
+        voiceTriggerRafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      const peakDb = getPeakDbFromAnalyser(monitor.analyser, monitor.meterData);
+      const now = nowMs();
+      const startThreshold = clampVoiceTriggerThresholdDb(voiceTriggerThresholdDb);
+      const stopThreshold = Math.max(VOICE_TRIGGER_MIN_DB, startThreshold - VOICE_TRIGGER_HYSTERESIS_DB);
+
+      if (!voiceTriggerActive) {
+        if (Number.isFinite(peakDb) && peakDb >= startThreshold) {
+          if (!voiceTriggerAboveSince) {
+            voiceTriggerAboveSince = now;
+          }
+          if (
+            now - voiceTriggerAboveSince >= VOICE_TRIGGER_ATTACK_MS
+            && !producer
+            && !pendingTalkStart
+            && !isTalking
+            && !activeLockButton
+          ) {
+            voiceTriggerActive = true;
+            voiceTriggerBelowSince = 0;
+            setVoiceTriggerState('triggering');
+            handleTalk({
+              preventDefault() {},
+              currentTarget: null,
+              talkInputKey: 'voice-trigger',
+            }, liveTarget);
+          }
+        } else {
+          voiceTriggerAboveSince = 0;
+          setVoiceTriggerState('armed');
+        }
+      } else if (!Number.isFinite(peakDb) || peakDb < stopThreshold) {
+        if (!voiceTriggerBelowSince) {
+          voiceTriggerBelowSince = now;
+        }
+        if (now - voiceTriggerBelowSince >= VOICE_TRIGGER_RELEASE_MS) {
+          stopVoiceTriggerTalk();
+          setVoiceTriggerState('armed');
+        }
+      } else {
+        voiceTriggerBelowSince = 0;
+        setVoiceTriggerState('triggering');
+      }
+
+      voiceTriggerRafId = requestAnimationFrame(tick);
+    };
+
+    setVoiceTriggerState('armed');
+    voiceTriggerRafId = requestAnimationFrame(tick);
+  }
+
+  function setVoiceTriggerEnabled(enabled, { persist = true } = {}) {
+    voiceTriggerEnabled = !!enabled && isOperatorSession() && session.kind !== 'feed';
+    if (voiceTriggerToggle) {
+      voiceTriggerToggle.checked = voiceTriggerEnabled;
+    }
+    if (persist && typeof window !== 'undefined') {
+      try {
+        window.localStorage?.setItem(VOICE_TRIGGER_ENABLED_STORAGE_KEY, String(voiceTriggerEnabled));
+      } catch (err) {
+        console.warn('Unable to persist level trigger state:', err);
+      }
+    }
+    updateVoiceTriggerControlsState();
+    if (voiceTriggerEnabled) {
+      startVoiceTriggerMonitoring();
+    } else {
+      stopVoiceTriggerMonitoring();
+    }
+  }
+
+  function setVoiceTriggerTargetIdentity(identity, { persist = true } = {}) {
+    voiceTriggerTargetIdentity = String(identity || '').trim();
+    if (voiceTriggerTargetSelect && voiceTriggerTargetSelect.value !== voiceTriggerTargetIdentity) {
+      voiceTriggerTargetSelect.value = voiceTriggerTargetIdentity;
+    }
+    if (persist && typeof window !== 'undefined') {
+      try {
+        if (voiceTriggerTargetIdentity) {
+          window.localStorage?.setItem(VOICE_TRIGGER_TARGET_STORAGE_KEY, voiceTriggerTargetIdentity);
+        } else {
+          window.localStorage?.removeItem(VOICE_TRIGGER_TARGET_STORAGE_KEY);
+        }
+      } catch (err) {
+        console.warn('Unable to persist level trigger target:', err);
+      }
+    }
+    if (voiceTriggerActive) {
+      stopVoiceTriggerTalk();
+    }
+    updateVoiceTriggerControlsState();
+  }
+
+  function setVoiceTriggerThresholdDb(dbValue, { persist = true } = {}) {
+    voiceTriggerThresholdDb = clampVoiceTriggerThresholdDb(Number(dbValue));
+    updateVoiceTriggerThresholdUI();
+    if (persist && typeof window !== 'undefined') {
+      try {
+        window.localStorage?.setItem(VOICE_TRIGGER_THRESHOLD_DB_STORAGE_KEY, String(voiceTriggerThresholdDb));
+      } catch (err) {
+        console.warn('Unable to persist level trigger threshold:', err);
+      }
+    }
+  }
+
+  restartVoiceTriggerMonitorHandler = () => {
+    stopVoiceTriggerMonitoring();
+    if (voiceTriggerEnabled) {
+      startVoiceTriggerMonitoring();
+    }
+  };
+
   function rebuildTargetHotkeyAssignments(users = cachedUsers) {
     ensureCustomTargetHotkeysLoaded();
     targetHotkeys.clear();
@@ -6052,6 +6551,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       await renderTargetList(users);
     } else {
       await refreshRenderedUserTargets(users);
+      updateVoiceTriggerTargetOptions(users);
     }
     applyIncomingTalkState();
     primeVisibleRemotePlaybackBuses();
@@ -6534,6 +7034,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     });
     rebuildUserTargetLabels(users);
     rebuildTargetHotkeyAssignments(users);
+    updateVoiceTriggerTargetOptions(users);
 
     const conferenceNames = new Map();
     targets
@@ -8419,7 +8920,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         if (pendingTalkStart === pendingStart) {
           pendingTalkStart = null;
         }
-        track.enabled = false;
+        if (!(voiceTriggerEnabled && isOperatorSession())) {
+          track.enabled = false;
+        }
         scheduleMicCleanup();
         applyFeedDucking();
         return;
@@ -8439,7 +8942,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           pendingTalkStart = null;
         }
         finalTrack.enabled = false;
-        track.enabled = false;
+        if (!(voiceTriggerEnabled && isOperatorSession())) {
+          track.enabled = false;
+        }
         scheduleMicCleanup();
         applyFeedDucking();
         return;
@@ -8472,7 +8977,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         if (processedTrack && processedTrack !== track) {
           processedTrack.enabled = false;
         }
-        track.enabled = false;
+        if (!(voiceTriggerEnabled && isOperatorSession())) {
+          track.enabled = false;
+        }
         scheduleMicCleanup();
         return;
       }
@@ -8486,7 +8993,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         }
         isTalking = false;
         currentTargetPeer = null;
-        if (micTrack) {
+        if (micTrack && !(voiceTriggerEnabled && isOperatorSession())) {
           micTrack.enabled = false;
         }
         if (processedTrack && processedTrack !== micTrack) {
@@ -8524,7 +9031,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       clearLockState();
       isTalking = false;
       currentTargetPeer = null;
-      if (micTrack) {
+      if (micTrack && !(voiceTriggerEnabled && isOperatorSession())) {
         micTrack.enabled = false;
       }
       if (userProcessingChain?.outputTrack) {
@@ -8612,7 +9119,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       producer = null;
     }
 
-    if (micTrack) {
+    if (micTrack && !(voiceTriggerEnabled && isOperatorSession())) {
       micTrack.enabled = false;
     }
     if (userProcessingChain?.outputTrack) {
