@@ -6,6 +6,14 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
+    "radio:ptt": "node gateway/radioGateway.js ptt",
+    "radio:play": "node gateway/radioGateway.js play",
+    "radio:monitor": "node gateway/radioGateway.js monitor-rx",
+    "radio:record": "node gateway/radioGateway.js record-rx",
+    "radio:calibrate": "node gateway/radioGateway.js calibrate-rx",
+    "radio:stream": "node gateway/radioGateway.js stream",
+    "radio:stream-rx": "node gateway/radioGateway.js stream-rx",
+    "gateway:sync": "scripts/sync-gateway-to-pi.sh",
     "prebuild:pkg": "npm rebuild better-sqlite3 --target=18.20.4 --runtime=node --dist-url=https://nodejs.org/dist",
     "build:win64": "npm run prebuild:pkg && npx --no-install pkg package.json --targets node18-win-x64 --output talktome_win64 --assets \"public/**/*\" --assets \"node_modules/socket.io/client-dist/**/*\" --assets \"node_modules/mediasoup/worker/out/Release/*\" --assets \"node_modules/better-sqlite3/build/Release/better_sqlite3.node\" && node scripts/copy-runtime-deps.js win64 && node scripts/postbuild-pkg.js",
     "build:mac_arm64": "npm run prebuild:pkg && npx --no-install pkg package.json --targets node18-macos-arm64 --output talktome_arm64 --assets \"public/**/*\" --assets \"node_modules/socket.io/client-dist/**/*\" --assets \"node_modules/mediasoup/worker/out/Release/mediasoup-worker*\" --assets \"node_modules/better-sqlite3/build/Release/better_sqlite3.node\" && node scripts/copy-runtime-deps.js mac_arm64 && node scripts/postbuild-pkg.js",
@@ -26,7 +34,8 @@
     "mediasoup-client": "^3.11.0",
     "qrcode": "^1.5.4",
     "selfsigned": "^2.4.1",
-    "socket.io": "^4.5.1"
+    "socket.io": "^4.5.1",
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "esbuild": "^0.25.5",

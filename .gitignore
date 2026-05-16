@@ -11,6 +11,7 @@ fernet.key
 .env
 .env.*
 config.json
+gateway/radio-config.json
 
 # Dependency directories
 node_modules/

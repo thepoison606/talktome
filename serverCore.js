@@ -972,6 +972,10 @@ function getPeerActiveTalkProducers(peer) {
 }
 
 function getPeerActiveTalkTargets(peer) {
+  if (peer?.pttTalking) {
+    return normalizeRuntimeTalkTargets(peer.activeTalkTargets);
+  }
+
   const activeProducers = getPeerActiveTalkProducers(peer);
   if (activeProducers.length === 0) {
     return [];
@@ -996,6 +1000,18 @@ function getPeerActiveTalkTargets(peer) {
 function getPeerActiveTalkInfo(peer) {
   if (!isOperatorPeer(peer)) {
     return null;
+  }
+
+  if (peer.pttTalking) {
+    const targets = normalizeRuntimeTalkTargets(peer.activeTalkTargets);
+    if (targets.length === 0) {
+      return null;
+    }
+    return {
+      target: targets[0],
+      targets,
+      at: Number(peer.pttStartedAt) || Date.now(),
+    };
   }
 
   const activeProducers = getPeerActiveTalkProducers(peer);
@@ -3622,6 +3638,35 @@ if (HTTP_PORT !== null) {
 
 let worker, router;
 const peers = new Map();
+const GATEWAY_OPUS_PAYLOAD_TYPE = 100;
+const GATEWAY_OPUS_SSRC = 11111111;
+
+function buildGatewayAudioRtpParameters({
+  payloadType = GATEWAY_OPUS_PAYLOAD_TYPE,
+  ssrc = GATEWAY_OPUS_SSRC,
+  cname = "talktome-radio-gateway",
+} = {}) {
+  return {
+    codecs: [
+      {
+        mimeType: "audio/opus",
+        payloadType,
+        clockRate: 48000,
+        channels: 2,
+        parameters: {
+          "sprop-stereo": 0,
+        },
+        rtcpFeedback: [],
+      },
+    ],
+    encodings: [{ ssrc }],
+    rtcp: {
+      cname,
+      reducedSize: true,
+      mux: true,
+    },
+  };
+}
 
 function warnIfDockerAnnouncedIpLooksInternal(announcedIp) {
   if (process.env.PUBLIC_IP) return;
@@ -3910,6 +3955,8 @@ io.on("connection", (socket) => {
     consumers: new Map(),
     producers: new Map(),
     activeTalkTargets: [],
+    pttTalking: false,
+    pttStartedAt: 0,
   });
 
   // Emit lists
@@ -4139,6 +4186,17 @@ io.on("connection", (socket) => {
     }
 
     const normalizedTargets = normalizeRuntimeTalkTargets(payload.targets);
+    const wasTalking = Boolean(peer.pttTalking);
+    peer.pttTalking = Boolean(payload.talking && normalizedTargets.length > 0);
+    if (peer.pttTalking) {
+      peer.activeTalkTargets = normalizedTargets;
+      if (!wasTalking) {
+        peer.pttStartedAt = Date.now();
+      }
+    } else {
+      peer.pttStartedAt = 0;
+    }
+
     if (normalizedTargets.length > 0) {
       patch.lastTargets = normalizedTargets;
     }
@@ -4154,6 +4212,7 @@ io.on("connection", (socket) => {
       reason: "ptt-state",
       fallbackName: peer.name || null,
     });
+    broadcastRuntimeUserStates("ptt-state");
   });
 
   socket.on("talk-targets-updated", async (payload = {}) => {
@@ -4364,7 +4423,7 @@ io.on("connection", (socket) => {
     disconnectUserPeerForLogout({ socketId: socket.id });
   });
 
-  socket.on("producer-close", ({ producerId }) => {
+  socket.on("producer-close", ({ producerId } = {}, callback = () => {}) => {
     console.log(
         `[SIGNAL] producer-close received from client ${socket.id} for producer ${producerId}`
     );
@@ -4373,6 +4432,7 @@ io.on("connection", (socket) => {
     const producer = peer?.producers.get(producerId);
     if (!producer) {
       console.warn(`[SIGNAL] No producer found with ID ${producerId}.`);
+      callback({ ok: false, error: "Producer not found" });
       return;
     }
 
@@ -4393,6 +4453,7 @@ io.on("connection", (socket) => {
     });
 
     console.log(`[SIGNAL] producer-closed an alle anderen gesendet`);
+    callback({ ok: true });
   });
 
   socket.on("pause-producer", async ({ producerId } = {}, callback = () => {}) => {
@@ -4583,6 +4644,233 @@ io.on("connection", (socket) => {
       callback();
     } catch (error) {
       console.error("[CONNECT] Error:", error);
+      callback({ error: error.message });
+    }
+  });
+
+  socket.on("create-plain-send-transport", async (_, callback = () => {}) => {
+    console.log(`[GATEWAY] Client ${socket.id} requests plain send transport`);
+    try {
+      if (!router) {
+        return callback({ error: "Router not initialized, try again" });
+      }
+
+      const peer = peers.get(socket.id);
+      if (!peer) {
+        return callback({ error: "Peer not registered" });
+      }
+
+      const mediaRoute = resolveTransportAnnouncedAddress();
+      if (mediaRoute.error || !mediaRoute.announcedAddress) {
+        console.error("[GATEWAY] No usable announced IP:", mediaRoute.error || "unknown media network error");
+        return callback({ error: mediaRoute.error || "No usable announced IP available" });
+      }
+
+      if (peer.plainSendTransport && !peer.plainSendTransport.closed) {
+        try {
+          peer.plainSendTransport.close();
+        } catch {}
+      }
+
+      const transport = await router.createPlainTransport({
+        listenIp: {
+          ip: "0.0.0.0",
+          announcedIp: mediaRoute.announcedAddress,
+        },
+        rtcpMux: true,
+        comedia: true,
+      });
+
+      peer.plainSendTransport = transport;
+      transport.observer.on("close", () => {
+        if (peer.plainSendTransport === transport) {
+          peer.plainSendTransport = null;
+        }
+      });
+
+      callback({
+        id: transport.id,
+        ip: mediaRoute.announcedAddress,
+        port: transport.tuple.localPort,
+        protocol: transport.tuple.protocol,
+        rtcpMux: true,
+        comedia: true,
+        payloadType: GATEWAY_OPUS_PAYLOAD_TYPE,
+        ssrc: GATEWAY_OPUS_SSRC,
+      });
+    } catch (error) {
+      console.error("[GATEWAY] Error creating plain send transport:", error);
+      callback({ error: error.message });
+    }
+  });
+
+  socket.on("produce-plain", async ({ kind = "audio", appData, rtpParameters } = {}, callback = () => {}) => {
+    console.log(`[GATEWAY] Client ${socket.id} wants to produce plain ${kind}`, appData);
+    try {
+      const peer = peers.get(socket.id);
+      if (!peer) {
+        return callback({ error: "Peer not registered" });
+      }
+
+      const transport = peer.plainSendTransport;
+      if (!transport || transport.closed) {
+        return callback({ error: "Plain send transport not ready" });
+      }
+
+      const { type, id: targetId } = appData || {};
+      const validTypes = ["talk", "user", "conference", "guest", "feed"];
+      const requiresTargetId = type !== "talk";
+      if (!type || !validTypes.includes(type) || (requiresTargetId && !targetId)) {
+        return callback({
+          error: "Invalid appData: expected routing metadata for talk, user, conference, guest, or feed.",
+        });
+      }
+
+      if (peer.kind === "feed") {
+        if (type !== "feed" || peer.feedId === null || String(peer.feedId) !== String(targetId)) {
+          return callback({ error: "Feeds can only produce their assigned feed" });
+        }
+      }
+
+      const existingPlainProducers = Array.from(peer.producers.values()).filter((existingProducer) => (
+        existingProducer?.appData?.type === type
+        && String(existingProducer?.appData?.id) === String(targetId)
+      ));
+      for (const existingProducer of existingPlainProducers) {
+        try {
+          existingProducer.close();
+        } catch (closeError) {
+          console.warn(`[GATEWAY] Failed to close previous plain producer ${existingProducer?.id}:`, closeError);
+        }
+      }
+
+      const producer = await transport.produce({
+        kind,
+        rtpParameters: rtpParameters || buildGatewayAudioRtpParameters(),
+        appData,
+      });
+
+      producer.__startedAt = Date.now();
+      peer.producers.set(producer.id, producer);
+      syncPeerCompanionState(peer, { reason: "plain-produce-started" });
+      broadcastRuntimeUserStates("plain-produce-started");
+
+      callback({ id: producer.id });
+
+      announceProducerToRecipients({
+        producerId: producer.id,
+        appData,
+        speakerSocketId: socket.id,
+      });
+
+      producer.observer.on("pause", () => {
+        syncPeerCompanionState(peer, { reason: "plain-produce-paused" });
+        broadcastRuntimeUserStates("plain-produce-paused");
+      });
+
+      producer.observer.on("resume", () => {
+        producer.__startedAt = Date.now();
+        syncPeerCompanionState(peer, { reason: "plain-produce-resumed" });
+        broadcastRuntimeUserStates("plain-produce-resumed");
+        announceProducerToRecipients({
+          producerId: producer.id,
+          appData,
+          speakerSocketId: socket.id,
+        });
+      });
+
+      producer.on("close", () => {
+        peer.producers.delete(producer.id);
+        syncPeerCompanionState(peer, { reason: "plain-produce-closed" });
+        broadcastRuntimeUserStates("plain-produce-closed");
+        socket.broadcast.emit("producer-closed", {
+          peerId: socket.id,
+          producerId: producer.id,
+          appData,
+        });
+      });
+
+      producer.on("transportclose", () => {
+        peer.producers.delete(producer.id);
+        syncPeerCompanionState(peer, { reason: "plain-produce-transport-closed" });
+        broadcastRuntimeUserStates("plain-produce-transport-closed");
+      });
+    } catch (error) {
+      console.error("[GATEWAY] Plain produce error:", error);
+      callback({ error: error.message });
+    }
+  });
+
+  socket.on("consume-plain", async ({ producerId, ip, port, rtpCapabilities } = {}, callback = () => {}) => {
+    console.log(`[GATEWAY] Client ${socket.id} wants plain consume producer ${producerId} to ${ip}:${port}`);
+    try {
+      if (!router) {
+        return callback({ error: "Router not initialized, try again" });
+      }
+
+      const peer = peers.get(socket.id);
+      if (!peer) {
+        return callback({ error: "Peer not registered" });
+      }
+
+      const targetIp = String(ip || "").trim();
+      const targetPort = Number(port);
+      if (!targetIp || !Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) {
+        return callback({ error: "Invalid plain consume target ip/port" });
+      }
+
+      let producerPeer = null;
+      for (const [peerId, candidatePeer] of peers) {
+        if (candidatePeer.producers.has(producerId)) {
+          producerPeer = peerId;
+          break;
+        }
+      }
+      if (!producerPeer) {
+        return callback({ error: "Producer not found" });
+      }
+
+      const capabilities = rtpCapabilities || router.rtpCapabilities;
+      if (!router.canConsume({ producerId, rtpCapabilities: capabilities })) {
+        return callback({ error: "Cannot consume" });
+      }
+
+      const transport = await router.createPlainTransport({
+        listenIp: { ip: "0.0.0.0" },
+        rtcpMux: true,
+        comedia: false,
+      });
+      await transport.connect({ ip: targetIp, port: targetPort });
+
+      const consumer = await transport.consume({
+        producerId,
+        rtpCapabilities: capabilities,
+        paused: true,
+      });
+      consumer.__plainTransport = transport;
+      peer.consumers.set(consumer.id, consumer);
+
+      const cleanup = () => {
+        peer.consumers.delete(consumer.id);
+        try {
+          if (!transport.closed) transport.close();
+        } catch {}
+      };
+
+      consumer.on("transportclose", cleanup);
+      consumer.on("producerclose", () => {
+        cleanup();
+        socket.emit("consumer-closed", { consumerId: consumer.id, producerId });
+      });
+
+      callback({
+        id: consumer.id,
+        producerId,
+        kind: consumer.kind,
+        rtpParameters: consumer.rtpParameters,
+      });
+    } catch (error) {
+      console.error("[GATEWAY] Plain consume error:", error);
       callback({ error: error.message });
     }
   });
@@ -4837,6 +5125,28 @@ io.on("connection", (socket) => {
       callback();
     } catch (error) {
       console.error("[RESUME] Error:", error);
+      callback({ error: error.message });
+    }
+  });
+
+  socket.on("close-consumer", ({ consumerId } = {}, callback = () => {}) => {
+    console.log(`[CONSUME] Client ${socket.id} closing consumer ${consumerId}`);
+    try {
+      const peer = peers.get(socket.id);
+      const consumer = peer?.consumers.get(consumerId);
+      if (consumer) {
+        const plainTransport = consumer.__plainTransport || null;
+        try {
+          consumer.close();
+        } catch {}
+        peer.consumers.delete(consumer.id);
+        try {
+          if (plainTransport && !plainTransport.closed) plainTransport.close();
+        } catch {}
+      }
+      callback({ ok: true });
+    } catch (error) {
+      console.error("[CONSUME] Close error:", error);
       callback({ error: error.message });
     }
   });

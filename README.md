@@ -148,3 +148,52 @@ The matching user UI turns red while on-air.
 
 - `Space`: Reply
 - Number keys: talk to targets in list order
+
+## Radio Gateway Prototype
+
+The repository includes a generic hardware gateway helper for bridging Talk To Me to an external radio or intercom device. It expects a Linux gateway host with ALSA audio I/O, an audio interface connected to the external device, and an optional GPIO-controlled PTT circuit.
+
+The helper can control PTT through `pinctrl`, monitor receive audio level, and stream bidirectional audio between the external device and a Talk To Me conference.
+
+Commands:
+
+```bash
+npm run radio:ptt -- 2
+npm run radio:play -- test.wav
+npm run radio:monitor
+npm run radio:record
+npm run radio:calibrate
+TALKTOME_SERVER_URL=https://<SERVER-IP>:8443 TALKTOME_GATEWAY_USER_ID=<USER-ID> TALKTOME_GATEWAY_CONFERENCE_ID=<CONFERENCE-ID> npm run radio:stream
+```
+
+Run `npm run radio:calibrate` on the gateway host to measure idle noise, remote PTT without speech, and quiet speech. It writes `gateway/radio-config.json`; environment variables still override that file.
+
+Defaults can be configured in `gateway/radio-config.json` or overridden with environment variables:
+
+```bash
+TALKTOME_RADIO_CONFIG=gateway/radio-config.json
+TALKTOME_RADIO_GPIO=17
+TALKTOME_RADIO_AUDIO_DEVICE=plughw:CARD=CODEC,DEV=0
+TALKTOME_RADIO_RX_ON_THRESHOLD=0.002
+TALKTOME_RADIO_RX_OFF_THRESHOLD=0.003
+TALKTOME_RADIO_RX_HANG_MS=600
+TALKTOME_RADIO_RX_PRE_ROLL_MS=500
+TALKTOME_RADIO_RX_RESUME_LEAD_MS=150
+TALKTOME_RADIO_RX_WARMUP_MS=500
+TALKTOME_RADIO_RX_GAIN_DB=6
+TALKTOME_RADIO_TX_ENABLED=true
+TALKTOME_RADIO_TX_RTP_IP=<auto-detected-gateway-ip>
+TALKTOME_RADIO_TX_RTP_PORT=5006
+TALKTOME_RADIO_TX_GAIN_DB=0
+TALKTOME_RADIO_RX_SEGMENTS_DIR=gateway/rx-segments
+TALKTOME_SERVER_URL=https://talktome.local:8443
+TALKTOME_GATEWAY_USER_ID=1
+TALKTOME_GATEWAY_CONFERENCE_ID=1
+TALKTOME_GATEWAY_NAME=Radio Gateway
+```
+
+Sync gateway changes from a development machine to a gateway host without pushing to GitHub:
+
+```bash
+TALKTOME_GATEWAY_HOST=user@gateway-host.local npm run gateway:sync
+```
