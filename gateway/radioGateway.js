@@ -66,6 +66,9 @@ const config = {
   txRtpIp: stringSetting("TALKTOME_RADIO_TX_RTP_IP", "txRtpIp", getDefaultTxRtpIp()),
   txRtpPort: numberSetting("TALKTOME_RADIO_TX_RTP_PORT", "txRtpPort", 5006),
   txGainDb: numberSetting("TALKTOME_RADIO_TX_GAIN_DB", "txGainDb", 0),
+  txReleaseHoldMs: numberSetting("TALKTOME_RADIO_TX_RELEASE_HOLD_MS", "txReleaseHoldMs", 900),
+  txStopGraceMs: numberSetting("TALKTOME_RADIO_TX_STOP_GRACE_MS", "txStopGraceMs", 150),
+  txRxMuteTailMs: numberSetting("TALKTOME_RADIO_TX_RX_MUTE_TAIL_MS", "txRxMuteTailMs", 600),
   rxSegmentsDir: stringSetting("TALKTOME_RADIO_RX_SEGMENTS_DIR", "rxSegmentsDir", "gateway/rx-segments"),
   talkToMeUrl: stringSetting("TALKTOME_SERVER_URL", "talkToMeUrl", "https://localhost:8443"),
   gatewayUserId: stringSetting("TALKTOME_GATEWAY_USER_ID", "gatewayUserId", ""),
@@ -390,16 +393,44 @@ function waitForProcessClose(child, timeoutMs = 1500) {
   });
 }
 
-function startTalkToRadioTx(socket) {
+function startTalkToRadioTx(socket, options = {}) {
   if (!config.txEnabled) {
     console.log("[radio-gateway] TX path disabled");
     return () => {};
   }
 
   let activeTx = null;
+  let pendingTxProducer = null;
   let txQueue = Promise.resolve();
   let txPortOffset = 0;
   let txPttActive = false;
+  let txPttDesired = false;
+  let txPttQueue = Promise.resolve();
+  let txReleaseTimer = null;
+
+  function cancelTxRelease() {
+    if (txReleaseTimer) {
+      clearTimeout(txReleaseTimer);
+      txReleaseTimer = null;
+    }
+  }
+
+  function scheduleTxRelease(reason) {
+    cancelTxRelease();
+    txReleaseTimer = setTimeout(() => {
+      txReleaseTimer = null;
+      pendingTxProducer = null;
+      void setTxPttActive(false, reason).catch((error) => {
+        console.error(`[radio-gateway] failed to release radio TX PTT: ${error.message}`);
+      });
+    }, Math.max(0, config.txReleaseHoldMs));
+  }
+
+  function setTxActivity(active) {
+    if (typeof options.onTxActivityChange === "function") {
+      options.onTxActivityChange(Boolean(active));
+    }
+  }
 
   function enqueueTxTask(task) {
     txQueue = txQueue.then(task, task);
@@ -413,22 +444,46 @@ function startTalkToRadioTx(socket) {
     return port;
   }
 
-  async function setTxPttActive(enabled, reason) {
-    if (enabled === txPttActive) return;
-    await initPtt();
-    if (enabled) {
-      console.log(`[radio-gateway] radio TX PTT on (${reason})`);
+  function setTxPttActive(enabled, reason) {
+    txPttDesired = Boolean(enabled);
+    txPttQueue = txPttQueue.then(() => applyTxPttState(reason), () => applyTxPttState(reason));
+    return txPttQueue.catch((error) => {
+      console.error(`[radio-gateway] failed to ${enabled ? "enable" : "release"} radio TX PTT (${reason}): ${error.message}`);
+      throw error;
+    });
+  }
+
+  async function applyTxPttState(reason) {
+    if (txPttDesired) {
+      if (txPttActive) return;
+      await initPtt();
       await setPtt(true);
       txPttActive = true;
+      setTxActivity(true);
+      console.log(`[radio-gateway] radio TX PTT on (${reason})`);
       return;
     }
 
-    console.log(`[radio-gateway] radio TX PTT off (${reason})`);
+    if (!txPttActive) return;
     await delay(config.pttTailMs);
-    await setPtt(false).catch((error) => {
-      console.error(`[radio-gateway] failed to release TX PTT: ${error.message}`);
-    });
+    if (txPttDesired) return;
+    await setPtt(false);
     txPttActive = false;
+    setTxActivity(false);
+    console.log(`[radio-gateway] radio TX PTT off (${reason})`);
+  }
+
+  async function startPendingTx(reason) {
+    if (activeTx || !pendingTxProducer) return;
+    const payload = pendingTxProducer;
+    pendingTxProducer = null;
+    console.log(`[radio-gateway] starting pending radio TX (${reason})`);
+    try {
+      await startTxForProducer(payload);
+    } catch (error) {
+      console.error(`[radio-gateway] failed to start pending radio TX: ${error.message}`);
+      await stopTx("pending-start-failed", { keepPtt: true });
+    }
   }
 
   async function stopTx(reason = "stop", { keepPtt = true } = {}) {
@@ -449,7 +504,7 @@ function startTalkToRadioTx(socket) {
     try {
       session.ffmpeg?.kill("SIGTERM");
     } catch {}
-    const closed = await waitForProcessClose(session.ffmpeg);
+    const closed = await waitForProcessClose(session.ffmpeg, config.txStopGraceMs);
     if (!closed) {
       try {
         session.ffmpeg?.kill("SIGKILL");
@@ -463,6 +518,7 @@ function startTalkToRadioTx(socket) {
     if (activeTx === session) {
       activeTx = null;
     }
+    await startPendingTx(reason);
   }
 
   async function startTxForProducer(payload) {
@@ -470,7 +526,8 @@ function startTalkToRadioTx(socket) {
     if (!producerId) return;
     if (payload.peerId === socket.id) return;
     if (activeTx) {
-      console.warn(`[radio-gateway] already transmitting, ignoring producer ${producerId}`);
+      pendingTxProducer = payload;
+      console.log(`[radio-gateway] queued pending radio TX producer ${producerId}`);
       return;
     }
 
@@ -491,12 +548,20 @@ function startTalkToRadioTx(socket) {
 
     ffmpeg.on("error", (error) => {
       console.error(`[radio-gateway] failed to start TX ffmpeg: ${error.message}`);
-      void enqueueTxTask(() => stopTx("ffmpeg-error", { keepPtt: true }));
+      void enqueueTxTask(async () => {
+        if (activeTx === session) {
+          await stopTx("ffmpeg-error", { keepPtt: true });
+        }
+      });
     });
     ffmpeg.on("exit", (code, signal) => {
       if (activeTx === session && code !== 0 && signal !== "SIGTERM") {
         console.error(`[radio-gateway] TX ffmpeg exited with ${signal || code}`);
-        void enqueueTxTask(() => stopTx("ffmpeg-exit", { keepPtt: true }));
+        void enqueueTxTask(async () => {
+          if (activeTx === session) {
+            await stopTx("ffmpeg-exit", { keepPtt: true });
+          }
+        });
       }
     });
 
@@ -513,6 +578,12 @@ function startTalkToRadioTx(socket) {
   }
 
   socket.on("new-producer", (payload) => {
+    cancelTxRelease();
+    if (payload?.peerId !== socket.id) {
+      void setTxPttActive(true, "new-producer").catch((error) => {
+        console.error(`[radio-gateway] failed to prepare radio TX PTT: ${error.message}`);
+      });
+    }
     void enqueueTxTask(() => startTxForProducer(payload)).catch((error) => {
       console.error(`[radio-gateway] failed to start radio TX: ${error.message}`);
       return stopTx("start-failed");
@@ -521,6 +592,9 @@ function startTalkToRadioTx(socket) {
 
   socket.on("producer-closed", ({ producerId } = {}) => {
     void enqueueTxTask(async () => {
+      if (pendingTxProducer?.producerId && String(pendingTxProducer.producerId) === String(producerId)) {
+        pendingTxProducer = null;
+      }
       if (activeTx?.producerId && String(activeTx.producerId) === String(producerId)) {
         await stopTx("producer-closed", { keepPtt: true });
       }
@@ -539,7 +613,15 @@ function startTalkToRadioTx(socket) {
 
   socket.on("incoming-talk-state", ({ state } = {}) => {
     const addressedNow = Array.isArray(state?.addressedNow) ? state.addressedNow : [];
-    void enqueueTxTask(() => setTxPttActive(addressedNow.length > 0, "server-talk-state"));
+    const shouldTransmit = addressedNow.length > 0;
+    cancelTxRelease();
+    if (!shouldTransmit) {
+      scheduleTxRelease("server-talk-state");
+      return;
+    }
+    void enqueueTxTask(() => setTxPttActive(true, "server-talk-state")).catch((error) => {
+      console.error(`[radio-gateway] failed to queue radio TX PTT on: ${error.message}`);
+    });
   });
 
   void emitNoPayloadWithAck(socket, "request-active-producers", 5000)
@@ -563,6 +645,7 @@ function startTalkToRadioTx(socket) {
     socket.off("producer-closed");
     socket.off("consumer-closed");
     socket.off("incoming-talk-state");
+    cancelTxRelease();
     await enqueueTxTask(() => stopTx("shutdown", { keepPtt: false }));
   };
 }
@@ -593,7 +676,14 @@ async function runRxStreamSession() {
     force: true,
   });
   console.log(`[radio-gateway] registered user ${config.gatewayName} (${userId})`);
-  const cleanupTx = startTalkToRadioTx(socket);
+  let txRxMuted = false;
+  let txRxMuteUntil = 0;
+  const cleanupTx = startTalkToRadioTx(socket, {
+    onTxActivityChange(active) {
+      txRxMuted = Boolean(active);
+      txRxMuteUntil = active ? Number.POSITIVE_INFINITY : Date.now() + Math.max(0, config.txRxMuteTailMs);
+    },
+  });
 
   const transportInfo = await emitWithAck(socket, "create-plain-send-transport", {});
   console.log(`[radio-gateway] plain RTP target ${transportInfo.ip}:${transportInfo.port}`);
@@ -671,6 +761,15 @@ async function runRxStreamSession() {
 
     const rms = calculateRms(chunk);
     const now = Date.now();
+    const rxMutedByTx = txRxMuted || now < txRxMuteUntil;
+    if (rxMutedByTx) {
+      if (rxActive) {
+        rxActive = false;
+        console.log(JSON.stringify({ event: "rx-muted", rms, at: new Date(now).toISOString() }));
+        void setProducerPaused(true);
+      }
+      return;
+    }
 
     if (!rxActive && rms >= config.rxOnThreshold) {
       rxActive = true;
