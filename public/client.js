@@ -3007,8 +3007,14 @@ document.addEventListener("DOMContentLoaded", () => {
   const stoppedFeedKeys = new Set();
   const listenOnlyConferenceKeys = new Set();
   const activeFeedKeys = new Set();
+  let guestLoginEnabled = false;
+  const isMobileLoginViewport = () => (
+    window.matchMedia?.('(pointer: coarse)').matches
+    || window.matchMedia?.('(max-width: 700px)').matches
+  );
   const focusLoginNameField = () => {
     if (!loginUsernameInput || session.name) return;
+    if (guestLoginEnabled && isMobileLoginViewport()) return;
     window.requestAnimationFrame(() => {
       try {
         loginUsernameInput.focus();
@@ -3079,13 +3085,17 @@ document.addEventListener("DOMContentLoaded", () => {
       const payload = await res.json();
       const guestLogin = payload?.guestLogin || {};
       const enabled = guestLogin.enabled === true;
+      guestLoginEnabled = enabled;
       guestLoginPanel.classList.toggle('is-hidden', !enabled);
       guestLoginButton.disabled = !enabled;
       guestLoginButton.textContent = `Login as ${guestLogin.label || 'Guest'}`;
+      return { guestLoginEnabled: enabled };
     } catch (err) {
       console.warn('Failed to load login options:', err);
+      guestLoginEnabled = false;
       guestLoginPanel.classList.add('is-hidden');
       guestLoginButton.disabled = true;
+      return { guestLoginEnabled: false };
     }
   }
   recoverExistingIncomingPlayback = ({ forceRetryAll = false } = {}) => {
@@ -5105,8 +5115,9 @@ let cachedOperatorTargets = null;
     requestInitialMicrophoneAccess({ reason: 'auto-login-guest' });
   }
 
-  loadLoginOptions().catch(() => {});
-  focusLoginNameField();
+  loadLoginOptions()
+    .catch(() => ({ guestLoginEnabled: false }))
+    .finally(() => focusLoginNameField());
 
   // Login Handler
   loginForm.addEventListener("submit", async (e) => {
