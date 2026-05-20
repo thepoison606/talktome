@@ -2136,6 +2136,48 @@ function buildHttpsConnectUrl(host) {
   return `https://${trimmed}:${HTTPS_PORT}`;
 }
 
+function normalizePublicConnectUrl(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  try {
+    const url = new URL(trimmed);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    url.pathname = "/";
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
+function getFirstForwardedValue(value) {
+  if (Array.isArray(value)) {
+    return getFirstForwardedValue(value[0]);
+  }
+  if (typeof value !== "string") return "";
+  return value.split(",")[0].trim();
+}
+
+function resolveAdminPublicConnectUrl(req) {
+  const configured = normalizePublicConnectUrl(
+    process.env.TALKTOME_PUBLIC_URL || process.env.PUBLIC_URL
+  );
+  if (configured) return configured;
+
+  const forwardedHost = getFirstForwardedValue(req?.headers?.["x-forwarded-host"]);
+  const host = forwardedHost || getFirstForwardedValue(req?.headers?.host);
+  if (!host) return "";
+
+  const forwardedProto = getFirstForwardedValue(req?.headers?.["x-forwarded-proto"]);
+  const proto = forwardedProto || (req?.socket?.encrypted ? "https" : "http");
+  if (!["http", "https"].includes(proto)) return "";
+
+  return normalizePublicConnectUrl(`${proto}://${host}`);
+}
+
 function resolvePreferredAdminQrIpAddress(activeAddress) {
   const candidates = [];
   const seen = new Set();
@@ -2155,9 +2197,10 @@ function resolvePreferredAdminQrIpAddress(activeAddress) {
   return candidates.find(isLikelyIPv4Address) || null;
 }
 
-async function buildAdminMediaNetworkQrPayload(activeAddress) {
+async function buildAdminMediaNetworkQrPayload(activeAddress, req = null) {
   const qrIpAddress = resolvePreferredAdminQrIpAddress(activeAddress);
-  const qrUrl = buildHttpsConnectUrl(qrIpAddress);
+  const publicConnectUrl = resolveAdminPublicConnectUrl(req);
+  const qrUrl = publicConnectUrl || buildHttpsConnectUrl(qrIpAddress);
   const activeMdnsHost = mdnsHostname || "off";
   const mdnsUrl = mdnsHostname ? buildHttpsConnectUrl(mdnsHostname) : "";
 
@@ -2182,6 +2225,7 @@ async function buildAdminMediaNetworkQrPayload(activeAddress) {
     httpsPort: HTTPS_PORT,
     activeMdnsHost,
     qrIpAddress,
+    publicConnectUrl: publicConnectUrl || null,
     qrUrl: qrUrl || null,
     mdnsUrl: mdnsUrl || null,
     qrCodeDataUrl,
@@ -2200,7 +2244,7 @@ app.get("/admin/settings/media-network", requireAdmin, async (req, res) => {
       || saved.interfaceName !== active.interfaceName
       || (saved.mode === "manual" ? saved.announcedAddress : "") !== (active.mode === "manual" ? (active.announcedAddress || "") : "")
     );
-  const qrPayload = await buildAdminMediaNetworkQrPayload(active.announcedAddress);
+  const qrPayload = await buildAdminMediaNetworkQrPayload(active.announcedAddress, req);
 
   res.json({
     mediaNetworkMode: saved.mode,

@@ -478,23 +478,75 @@ async function ensureAdminSession() {
 }
 
 async function loadData() {
-  // 1) Daten holen
   await loadGuestLoginSettings();
-  const users       = await fetchJSON('/users');
-  const conferences = await fetchJSON('/conferences');
-  const feeds       = await fetchJSON('/feeds');
+  const { users, conferences, feeds } = await fetchAdminCollections();
   await loadMdnsSettings();
   await loadMediaNetworkSettings();
   await loadRtcPortSettings();
+  await renderUserList(users, conferences, feeds);
+  renderFeedList(feeds);
+  await renderConferenceList(conferences, users);
+}
 
-  // 2) Container referenzieren und leeren
-  const userList   = document.getElementById('user-list');
-  const confList   = document.getElementById('conf-list');
-  const feedList   = document.getElementById('feed-list');
-  userList.innerHTML   = '';
-  confList.innerHTML   = '';
-  feedList.innerHTML   = '';
+async function fetchAdminCollections() {
+  const [users, conferences, feeds] = await Promise.all([
+    fetchJSON('/users'),
+    fetchJSON('/conferences'),
+    fetchJSON('/feeds'),
+  ]);
 
+  return { users, conferences, feeds };
+}
+
+function getOpenListState() {
+  return {
+    users: [...document.querySelectorAll('[id^="user-nested-"].is-open')]
+      .map(el => el.id.replace('user-nested-', '')),
+    conferences: [...document.querySelectorAll('[id^="conf-controls-"].is-open')]
+      .map(el => el.id.replace('conf-controls-', '')),
+  };
+}
+
+async function restoreOpenListState(state = {}) {
+  for (const userId of state.users || []) {
+    const container = document.getElementById(`user-nested-${userId}`);
+    const button = document.getElementById(`user-toggle-${userId}`);
+    if (!container) continue;
+    await renderUserConferenceList(userId);
+    container.classList.add('is-open');
+    if (button) button.setAttribute('aria-expanded', 'true');
+  }
+
+  for (const confId of state.conferences || []) {
+    const container = document.getElementById(`conf-controls-${confId}`);
+    const button = document.getElementById(`conf-toggle-${confId}`);
+    if (!container) continue;
+    await renderConferenceParticipantList(confId);
+    container.classList.add('is-open');
+    if (button) button.setAttribute('aria-expanded', 'true');
+  }
+}
+
+async function refreshAdminLists({ users: refreshUsers = false, conferences: refreshConferences = false, feeds: refreshFeeds = false } = {}) {
+  const openState = getOpenListState();
+  const { users, conferences, feeds } = await fetchAdminCollections();
+
+  if (refreshUsers) {
+    await renderUserList(users, conferences, feeds);
+  }
+  if (refreshFeeds) {
+    renderFeedList(feeds);
+  }
+  if (refreshConferences) {
+    await renderConferenceList(conferences, users);
+  }
+
+  await restoreOpenListState(openState);
+}
+
+async function renderUserList(users, conferences, feeds) {
+  const userList = document.getElementById('user-list');
+  userList.innerHTML = '';
 
   for (const user of users) {
     const safeName = escapeHtml(user.name);
@@ -576,9 +628,17 @@ async function loadData() {
     `;
 
     userList.appendChild(li);
+  }
+
+  await Promise.all(users.map(async (user) => {
     await updateUserConferenceOptions(user.id, conferences);
     await loadUserTargets(user.id, users, conferences, feeds);
-  }
+  }));
+}
+
+function renderFeedList(feeds) {
+  const feedList = document.getElementById('feed-list');
+  feedList.innerHTML = '';
 
   for (const feed of feeds) {
     const safeName = escapeHtml(feed.name);
@@ -599,6 +659,11 @@ async function loadData() {
     `;
     feedList.appendChild(li);
   }
+}
+
+async function renderConferenceList(conferences, users) {
+  const confList = document.getElementById('conf-list');
+  confList.innerHTML = '';
 
   for (const conf of conferences) {
     const safeName = escapeHtml(conf.name);
@@ -639,8 +704,9 @@ async function loadData() {
       </div>
     `;
     confList.appendChild(li);
-    await updateConferenceParticipantOptions(conf.id, users);
   }
+
+  await Promise.all(conferences.map(conf => updateConferenceParticipantOptions(conf.id, users)));
 }
 
 async function loadMdnsSettings() {
@@ -882,6 +948,36 @@ async function updateConferenceParticipantOptions(confId, allUsers, previousInde
   selectNextByIndex(select, previousIndex);
 }
 
+async function renderUserConferenceList(userId) {
+  const confUl = document.getElementById(`user-confs-${userId}`);
+  if (!confUl) return;
+
+  const confs = await fetchJSON(`/users/${userId}/conferences`);
+  confUl.innerHTML = confs.length
+    ? confs.map(c => `
+        <li class="list-chip">
+          <span class="chip-label">${escapeHtml(c.name)}</span>
+          <button type="button" class="small danger" onclick="confirmUnassign(${userId}, ${c.id})">Remove</button>
+        </li>
+      `).join('')
+    : '<li class="list-chip"><span class="chip-label">No conferences assigned yet</span></li>';
+}
+
+async function renderConferenceParticipantList(confId) {
+  const usersUl = document.getElementById(`conf-users-${confId}`);
+  if (!usersUl) return;
+
+  const users = await fetchJSON(`/conferences/${confId}/users`);
+  usersUl.innerHTML = users.length
+    ? users.map(u => `
+        <li class="list-chip">
+          <span class="chip-label">${escapeHtml(u.name)}</span>
+          <button type="button" class="small danger" onclick="confirmUnassign(${u.id},${confId})">Remove</button>
+        </li>
+      `).join('')
+    : '<li class="list-chip"><span class="chip-label">No participants yet</span></li>';
+}
+
 // Fetch and render targets + rebuild the “type → id” dropdown
 async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
   const targets = await fetchJSON(`/users/${userId}/targets`);
@@ -1087,7 +1183,7 @@ window.editFeed = async function(feedId, currentName) {
       showMessage('⚠️ Feed name already exists!', 'warning', 'feed');
     } else if (res.ok) {
       showMessage('✅ Feed updated', 'success', 'feed');
-      loadData();
+      await refreshAdminLists({ users: true, feeds: true });
     } else {
       showMessage('❌ Failed to update feed', 'error', 'feed');
     }
@@ -1131,7 +1227,7 @@ window.deleteFeed = async function(feedId) {
     const res = await authedFetch(`/feeds/${feedId}`, { method: 'DELETE' });
     if (res.ok) {
       showMessage('✅ Feed deleted', 'success', 'feed');
-      loadData();
+      await refreshAdminLists({ users: true, feeds: true });
     } else {
       showMessage('❌ Failed to delete feed', 'error', 'feed');
     }
@@ -1155,7 +1251,7 @@ window.editUser = async function (userId, currentName) {
 
     if (res.ok) {
       showMessage('✅ User updated', 'success', 'user');
-      loadData();
+      await refreshAdminLists({ users: true, conferences: true });
     } else {
       showMessage('❌ Failed to update user', 'error', 'user');
     }
@@ -1167,22 +1263,12 @@ window.editUser = async function (userId, currentName) {
 
 window.toggleUserConfs = async function (userId, toggleBtn) {
   const targetDiv = document.getElementById(`user-nested-${userId}`);
-  const confUl    = document.getElementById(`user-confs-${userId}`);
   const button    = toggleBtn || document.getElementById(`user-toggle-${userId}`);
   const willOpen  = !targetDiv.classList.contains('is-open');
 
   if (willOpen) {
     try {
-      const confs = await fetchJSON(`/users/${userId}/conferences`);
-      confUl.innerHTML = confs.length
-        ? confs.map(c => `
-            <li class="list-chip">
-              <span class="chip-label">${escapeHtml(c.name)}</span>
-              <button type="button" class="small danger" onclick="confirmUnassign(${userId}, ${c.id})">Remove</button>
-            </li>
-          `).join('')
-        : '<li class="list-chip"><span class="chip-label">No conferences assigned yet</span></li>';
-
+      await renderUserConferenceList(userId);
       targetDiv.classList.add('is-open');
     } catch (err) {
       showMessage('❌ Failed to load conferences', 'error', 'user');
@@ -1215,7 +1301,7 @@ window.editConference = async function(confId, currentName) {
       showMessage('⚠️ Conference name already exists!', 'warning', 'conf');
     } else if (res.ok) {
       showMessage('✅ Conference updated', 'success', 'conf');
-      loadData();
+      await refreshAdminLists({ users: true, conferences: true });
     } else {
       showMessage('❌ Failed to update conference', 'error', 'conf');
     }
@@ -1228,21 +1314,12 @@ window.editConference = async function(confId, currentName) {
 
 window.toggleConfUsers = async function (confId, toggleBtn) {
   const nested   = document.getElementById(`conf-controls-${confId}`);
-  const usersUl  = document.getElementById(`conf-users-${confId}`);
   const button   = toggleBtn || document.getElementById(`conf-toggle-${confId}`);
   const willOpen = !nested.classList.contains('is-open');
 
   if (willOpen) {
     try {
-      const users = await fetchJSON(`/conferences/${confId}/users`);
-      usersUl.innerHTML = users.length
-        ? users.map(u => `
-            <li class="list-chip">
-              <span class="chip-label">${escapeHtml(u.name)}</span>
-              <button type="button" class="small danger" onclick="confirmUnassign(${u.id},${confId})">Remove</button>
-            </li>
-          `).join('')
-        : '<li class="list-chip"><span class="chip-label">No participants yet</span></li>';
+      await renderConferenceParticipantList(confId);
       nested.classList.add('is-open');
     } catch (err) {
       showMessage('❌ Failed to load participants', 'error', 'conf');
@@ -1273,7 +1350,20 @@ window.unassignUser = async function (userId, confId) {
     });
     if (res.ok) {
       showMessage('✅ User removed from conference', 'success', 'user');
-      loadData();
+      const [users, confs] = await Promise.all([
+        fetchJSON('/users'),
+        fetchJSON('/conferences'),
+      ]);
+      await Promise.all([
+        updateUserConferenceOptions(userId, confs),
+        updateConferenceParticipantOptions(confId, users),
+        document.getElementById(`user-nested-${userId}`)?.classList.contains('is-open')
+          ? renderUserConferenceList(userId)
+          : Promise.resolve(),
+        document.getElementById(`conf-controls-${confId}`)?.classList.contains('is-open')
+          ? renderConferenceParticipantList(confId)
+          : Promise.resolve(),
+      ]);
     } else if (res.status === 404) {
       showMessage('⚠️ Relationship not found', 'warning', 'user');
     } else {
@@ -1292,7 +1382,7 @@ window.deleteUser = async function (userId) {
     });
     if (res.ok) {
       showMessage('✅ User deleted', 'success', 'user');
-      loadData();
+      await refreshAdminLists({ users: true, conferences: true });
     } else {
       const payload = await res.json().catch(() => ({}));
       showMessage(payload.error ? `❌ ${payload.error}` : '❌ Failed to delete user', 'error', 'user');
@@ -1314,7 +1404,7 @@ window.toggleAdminRole = async function (userId, shouldMakeAdmin) {
     });
     if (res.ok) {
       showMessage('✅ Admin role updated', 'success', 'user');
-      loadData();
+      await refreshAdminLists({ users: true, conferences: true });
     } else {
       const payload = await res.json().catch(() => ({}));
       showMessage(payload.error ? `❌ ${payload.error}` : '❌ Failed to update admin role', 'error', 'user');
@@ -1333,7 +1423,7 @@ window.deleteConference = async function (confId) {
     });
     if (res.ok) {
       showMessage('✅ Conference deleted', 'success', 'conf');
-      loadData();
+      await refreshAdminLists({ users: true, conferences: true });
     } else {
       showMessage('❌ Failed to delete conference', 'error', 'conf');
     }
@@ -1360,7 +1450,7 @@ document.getElementById('user-form').addEventListener('submit', async (e) => {
       showMessage('⚠️ Username already exists!', 'warning', 'user');
     } else if (res.ok) {
       showMessage('✅ User created', 'success', 'user');
-      loadData();
+      await refreshAdminLists({ users: true, conferences: true });
     } else {
       showMessage('❌ Failed to create user', 'error', 'user');
     }
@@ -1385,7 +1475,7 @@ document.getElementById('conf-form').addEventListener('submit', async (e) => {
       showMessage('⚠️ Conference already exists!', 'warning', 'conf');
     } else if (res.ok) {
       showMessage('✅ Conference created', 'success', 'conf');
-      loadData();
+      await refreshAdminLists({ users: true, conferences: true });
     } else {
       showMessage('❌ Failed to create conference', 'error', 'conf');
     }
@@ -1411,7 +1501,7 @@ document.getElementById('feed-form').addEventListener('submit', async (e) => {
       showMessage('⚠️ Feed already exists!', 'warning', 'feed');
     } else if (res.ok) {
       showMessage('✅ Feed created', 'success', 'feed');
-      loadData();
+      await refreshAdminLists({ users: true, feeds: true });
     } else {
       showMessage('❌ Failed to create feed', 'error', 'feed');
     }
@@ -1555,7 +1645,8 @@ if (guestLoginForm) {
         'success',
         'config'
       );
-      await loadData();
+      await loadGuestLoginSettings();
+      await refreshAdminLists({ users: true, conferences: true });
     } catch (err) {
       console.error('Failed to save Guest login:', err);
       showMessage('❌ Failed to save Guest login', 'error', 'config');
@@ -1649,13 +1740,20 @@ window.assignUserToConference = async function(userId) {
     });
     if (res.ok) {
       showMessage('✅ User assigned to conference', 'success', 'user');
-      const confs = await fetchJSON('/conferences');
-      await updateUserConferenceOptions(userId, confs, prevIndex);
-      const container = document.getElementById(`user-nested-${userId}`);
-      if (container?.classList.contains('is-open')) {
-        await toggleUserConfs(userId);
-        await toggleUserConfs(userId);
-      }
+      const [users, confs] = await Promise.all([
+        fetchJSON('/users'),
+        fetchJSON('/conferences'),
+      ]);
+      await Promise.all([
+        updateUserConferenceOptions(userId, confs, prevIndex),
+        updateConferenceParticipantOptions(confId, users),
+        document.getElementById(`user-nested-${userId}`)?.classList.contains('is-open')
+          ? renderUserConferenceList(userId)
+          : Promise.resolve(),
+        document.getElementById(`conf-controls-${confId}`)?.classList.contains('is-open')
+          ? renderConferenceParticipantList(confId)
+          : Promise.resolve(),
+      ]);
     } else {
       showMessage('❌ Failed to assign user to conference', 'error', 'user');
     }
@@ -1678,14 +1776,20 @@ window.assignConferenceParticipant = async function(confId) {
     });
     if (res.ok) {
       showMessage('✅ User assigned to conference', 'success', 'conf');
-      const users = await fetchJSON('/users');
-      await updateConferenceParticipantOptions(confId, users, prevIndex);
-
-      const container = document.getElementById(`conf-controls-${confId}`);
-      if (container?.classList.contains('is-open')) {
-        await toggleConfUsers(confId);
-        await toggleConfUsers(confId);
-      }
+      const [users, confs] = await Promise.all([
+        fetchJSON('/users'),
+        fetchJSON('/conferences'),
+      ]);
+      await Promise.all([
+        updateConferenceParticipantOptions(confId, users, prevIndex),
+        updateUserConferenceOptions(userId, confs),
+        document.getElementById(`conf-controls-${confId}`)?.classList.contains('is-open')
+          ? renderConferenceParticipantList(confId)
+          : Promise.resolve(),
+        document.getElementById(`user-nested-${userId}`)?.classList.contains('is-open')
+          ? renderUserConferenceList(userId)
+          : Promise.resolve(),
+      ]);
     } else {
       showMessage('❌ Failed to assign user to conference', 'error', 'conf');
     }
