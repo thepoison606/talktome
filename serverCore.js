@@ -1490,23 +1490,23 @@ function findUserPeerByUserId(userId) {
 
 function disconnectUserPeerForLogout({ userId = null, socketId = null } = {}) {
   const normalizedUserId = Number(userId);
+  const hasUserId = Number.isFinite(normalizedUserId);
   const normalizedSocketId =
     typeof socketId === "string" && socketId.trim() ? socketId.trim() : null;
 
   let target = null;
   if (normalizedSocketId) {
     const peer = peers.get(normalizedSocketId);
-    if (
-      peer &&
-      peer.kind === "user" &&
-      Number.isFinite(normalizedUserId) &&
-      String(peer.userId) === String(normalizedUserId)
-    ) {
-      target = { socketId: normalizedSocketId, peer };
+    if (!peer || peer.kind !== "user") {
+      return false;
     }
+    if (hasUserId && String(peer.userId) !== String(normalizedUserId)) {
+      return false;
+    }
+    target = { socketId: normalizedSocketId, peer };
   }
 
-  if (!target && Number.isFinite(normalizedUserId)) {
+  if (!target && hasUserId) {
     target = findUserPeerByUserId(normalizedUserId);
   }
 
@@ -2846,10 +2846,17 @@ app.post("/api/v1/client/logout", (req, res) => {
     return res.sendStatus(204);
   }
 
-  const disconnected = disconnectUserPeerForLogout({ userId, socketId });
+  const disconnected = socketId
+    ? disconnectUserPeerForLogout({ userId, socketId })
+    : false;
 
   // Fallback: if no live peer was found, reflect offline immediately for companion.
-  if (!disconnected && isCompanionAddressableUserId(userId)) {
+  if (
+    !disconnected
+    && !socketId
+    && !findUserPeerByUserId(userId)
+    && isCompanionAddressableUserId(userId)
+  ) {
     const userName = getUserById(userId)?.name || null;
     updateCompanionUserState(
       userId,
@@ -5236,21 +5243,24 @@ io.on("connection", (socket) => {
     peers.delete(socket.id);
 
     if (disconnectedUserId !== null) {
-      updateCompanionUserState(disconnectedUserId, {
-        userName: disconnectedUserName,
-        online: false,
-        socketId: null,
-        talking: false,
-        talkLocked: false,
-        currentTarget: null,
-        currentTargets: [],
-        targetAudioStates: [],
-        lastSpokeAt: Date.now(),
-      }, {
-        reason: "user-offline",
-        fallbackName: disconnectedUserName,
-      });
-      failPendingCommandsForUser(disconnectedUserId, "user-disconnected");
+      const replacementPeer = findUserPeerByUserId(disconnectedUserId);
+      if (!replacementPeer) {
+        updateCompanionUserState(disconnectedUserId, {
+          userName: disconnectedUserName,
+          online: false,
+          socketId: null,
+          talking: false,
+          talkLocked: false,
+          currentTarget: null,
+          currentTargets: [],
+          targetAudioStates: [],
+          lastSpokeAt: Date.now(),
+        }, {
+          reason: "user-offline",
+          fallbackName: disconnectedUserName,
+        });
+        failPendingCommandsForUser(disconnectedUserId, "user-disconnected");
+      }
     }
 
     emitUserListToOperators();

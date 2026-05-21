@@ -5021,8 +5021,9 @@ let cachedOperatorTargets = null;
     }
   }
 
-  async function hardLogoutAndReload(message = null, { silent = false } = {}) {
+  async function hardLogoutAndReload(message = null, { silent = false, notifyServer = true } = {}) {
     sessionResetInProgress = true;
+    suppressLogoutBeacon = !notifyServer;
     try {
       if (!silent && message) alert(message);
     } catch {}
@@ -5031,12 +5032,22 @@ let cachedOperatorTargets = null;
         stopFeedStream({ manual: true });
       }
     } catch {}
-    await notifyServerLogoutAndDisconnect();
+    if (notifyServer) {
+      await notifyServerLogoutAndDisconnect();
+    } else if (socket?.connected) {
+      try {
+        socket.disconnect();
+      } catch {}
+    }
     clearStoredIdentity();
+    if (!notifyServer) {
+      session = createAnonymousSession();
+    }
     location.reload();
   }
 
   window.addEventListener("pagehide", () => {
+    if (suppressLogoutBeacon) return;
     sendLogoutBeacon();
     if (socket?.connected) {
       try {
@@ -5069,6 +5080,7 @@ let cachedOperatorTargets = null;
   let activeRegistrationPromise = null;
   let activeRegistrationKey = null;
   let sessionResetInProgress = false;
+  let suppressLogoutBeacon = false;
 
   async function registerUserWithConflictPrompt({ id, name, kind, allowPrompt = true, guestProfileUserId = null } = {}) {
     const first = await emitRegisterUser({ id, name, kind, guestProfileUserId, force: false });
@@ -5156,7 +5168,10 @@ let cachedOperatorTargets = null;
             applyPersistedTargetAudioStates(res.targetAudioStates || []);
           }
           if (res?.ok) return;
-          hardLogoutAndReload(null, { silent: true });
+          hardLogoutAndReload(null, {
+            silent: true,
+            notifyServer: !res?.cancelled,
+          });
         });
       applySessionUI();
       initializeMediaIfPossible();
@@ -5228,7 +5243,6 @@ let cachedOperatorTargets = null;
         feedId: kind === 'feed' ? String(user.id) : null,
         name: user.name,
       };
-      session = nextSession;
 
       const reg = await registerIdentity({
         id: kind === 'feed' ? nextSession.feedId : nextSession.userId,
@@ -5238,14 +5252,13 @@ let cachedOperatorTargets = null;
       });
       if (!reg?.ok) {
         if (reg?.cancelled) {
-          session = createAnonymousSession();
           return;
         }
         setLoginError("Unable to sign in");
-        session = createAnonymousSession();
         return;
       }
 
+      session = nextSession;
       feedManualStop = false;
       shouldStartFeedWhenReady = kind === 'feed';
 
@@ -5300,7 +5313,6 @@ let cachedOperatorTargets = null;
         guestProfileUserId: String(payload.guestProfileUserId || ''),
         name: payload.name || 'Guest',
       };
-      session = nextSession;
 
       const reg = await registerIdentity({
         id: nextSession.guestId,
@@ -5311,11 +5323,11 @@ let cachedOperatorTargets = null;
       });
       if (!reg?.ok) {
         setLoginError(reg?.error || "Unable to sign in as Guest");
-        session = createAnonymousSession();
         clearStoredGuestSession();
         return;
       }
 
+      session = nextSession;
       feedManualStop = false;
       shouldStartFeedWhenReady = false;
       clearStoredPersistentIdentity();
@@ -5373,6 +5385,7 @@ let cachedOperatorTargets = null;
             if (session.kind === 'user') {
               hardLogoutAndReload(reg?.cancelled ? null : "You are already signed in on another device.", {
                 silent: !!reg?.cancelled,
+                notifyServer: !reg?.cancelled,
               });
             } else if (session.kind === 'guest') {
               hardLogoutAndReload("Guest login is no longer available.");
@@ -5409,7 +5422,9 @@ let cachedOperatorTargets = null;
     });
 
   socket.on("session-kicked", () => {
-    hardLogoutAndReload("You were signed out because you signed in somewhere else.");
+    hardLogoutAndReload("You were signed out because you signed in somewhere else.", {
+      notifyServer: false,
+    });
   });
 
   socket.on("disconnect", () => {
