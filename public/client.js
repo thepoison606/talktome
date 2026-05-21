@@ -936,6 +936,8 @@ function disposeRemotePlaybackBus() {
   if (!remotePlaybackBus) return;
   pendingAutoplayAudios.delete(remotePlaybackBus.audio);
   pendingAudioPlayPromises.delete(remotePlaybackBus.audio);
+  try { remotePlaybackBus.silenceSource?.stop?.(); } catch {}
+  try { remotePlaybackBus.silenceSource?.disconnect?.(); } catch {}
   try { remotePlaybackBus.mixNode?.disconnect(); } catch {}
   try { remotePlaybackBus.destinationNode?.disconnect?.(); } catch {}
   try { remotePlaybackBus.audio?.pause?.(); } catch {}
@@ -946,6 +948,24 @@ function disposeRemotePlaybackBus() {
     }
   } catch {}
   remotePlaybackBus = null;
+}
+
+function createRemotePlaybackBusSilenceSource(ctx, outputNode) {
+  if (!ctx || !outputNode) return null;
+  try {
+    const sampleRate = Number(ctx.sampleRate) || 48000;
+    const frameCount = Math.max(1, Math.round(sampleRate * 0.02));
+    const buffer = ctx.createBuffer(1, frameCount, sampleRate);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    source.connect(outputNode);
+    source.start(0);
+    return source;
+  } catch (err) {
+    console.warn('Failed to initialize silent remote playback source:', err);
+    return null;
+  }
 }
 
 function ensureRemotePlaybackBus() {
@@ -964,6 +984,7 @@ function ensureRemotePlaybackBus() {
     const destinationNode = ctx.createMediaStreamDestination();
     mixNode.gain.value = 1;
     mixNode.connect(destinationNode);
+    const silenceSource = createRemotePlaybackBusSilenceSource(ctx, mixNode);
 
     const audio = document.createElement('audio');
     audio.srcObject = destinationNode.stream;
@@ -985,6 +1006,7 @@ function ensureRemotePlaybackBus() {
       ctx,
       mixNode,
       destinationNode,
+      silenceSource,
       audio,
     };
     return remotePlaybackBus;
@@ -3235,6 +3257,7 @@ let cachedOperatorTargets = null;
   let pendingIncomingConsumeKeys = new Set();
   const EARLY_CLOSED_CONSUMER_TTL_MS = 10000;
   const earlyClosedConsumerIds = new Map();
+  const earlyClosedStreamKeys = new Map();
   let slideHintShown = false;
   let slideHintTimeoutId = null;
 
@@ -3712,6 +3735,15 @@ let cachedOperatorTargets = null;
     }
   }
 
+  function closeConsumerOnServer(consumerId) {
+    if (!consumerId || !socket?.connected) return;
+    try {
+      socket.emit('close-consumer', { consumerId }, () => {});
+    } catch (error) {
+      console.warn('Failed to emit close-consumer:', error);
+    }
+  }
+
   function updateFeedReceptionUi(targetKey) {
     const stopped = stoppedFeedKeys.has(targetKey);
     const targetEl = document.getElementById(targetKey);
@@ -3891,6 +3923,49 @@ let cachedOperatorTargets = null;
     return hadEarlyClose;
   }
 
+  function pruneEarlyClosedStreams(now = receiveNowMs()) {
+    for (const [streamKey, entry] of Array.from(earlyClosedStreamKeys.entries())) {
+      const rememberedAt = typeof entry === 'number' ? entry : entry?.rememberedAt;
+      if (!Number.isFinite(rememberedAt) || now - rememberedAt > EARLY_CLOSED_CONSUMER_TTL_MS) {
+        earlyClosedStreamKeys.delete(streamKey);
+      }
+    }
+  }
+
+  function rememberEarlyClosedStream(streamKey, details = {}) {
+    if (!streamKey) return;
+    const normalizedKey = String(streamKey);
+    const now = receiveNowMs();
+    earlyClosedStreamKeys.set(normalizedKey, {
+      rememberedAt: now,
+      producerId: details.producerId || null,
+      peerId: details.peerId || null,
+      targetKey: details.targetKey || null,
+    });
+    pruneEarlyClosedStreams(now);
+    logReceiveDiagnostic('producer-closed-deferred', {
+      streamKey: normalizedKey,
+      producerId: details.producerId || null,
+      peerId: details.peerId || null,
+      targetKey: details.targetKey || null,
+      deferredCount: earlyClosedStreamKeys.size,
+    });
+  }
+
+  function takeEarlyClosedStream(streamKey) {
+    if (!streamKey) return false;
+    const normalizedKey = String(streamKey);
+    pruneEarlyClosedStreams();
+    const hadEarlyClose = earlyClosedStreamKeys.delete(normalizedKey);
+    if (hadEarlyClose) {
+      logReceiveDiagnostic('producer-closed-deferred-match', {
+        streamKey: normalizedKey,
+        deferredCount: earlyClosedStreamKeys.size,
+      });
+    }
+    return hadEarlyClose;
+  }
+
   function cleanupIncomingStream(targetKey, streamKey, { suppressUi = false } = {}) {
     const consumersSet = peerConsumers.get(streamKey);
     if (consumersSet) {
@@ -3938,6 +4013,7 @@ let cachedOperatorTargets = null;
     peerConsumers.clear();
     audioElements.clear();
     earlyClosedConsumerIds.clear();
+    earlyClosedStreamKeys.clear();
     pendingAutoplayAudios.clear();
     activeFeedKeys.clear();
     confAudioElements.clear();
@@ -3999,6 +4075,9 @@ let cachedOperatorTargets = null;
       entry.stream = null;
     }
     if (entry.usesSharedAudioElement) {
+      if (entry.playbackGainNode?.gain && entry.key && !hasActiveStreams(entry.key)) {
+        try { entry.playbackGainNode.gain.value = 0; } catch {}
+      }
       return;
     }
     if (!entry.audio) return;
@@ -7570,6 +7649,15 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       type: normalizedAppData.type || null,
       targetId: normalizedAppData.id ?? null,
     });
+    if (takeEarlyClosedStream(streamKey)) {
+      logReceiveDiagnostic('consume-skipped-closed-producer', {
+        producerId: effectiveProducerId,
+        peerId,
+        streamKey,
+        targetKey,
+      });
+      return;
+    }
     const alreadyTracked = audioElements.has(streamKey)
       || peerConsumers.has(streamKey)
       || (targetStreamMap.get(targetKey)?.has(streamKey) ?? false);
@@ -7592,7 +7680,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       });
       const { error, ...consumeParams } = await new Promise((resolve) =>
         socket.emit('consume', {
-          producerId,
+          producerId: effectiveProducerId,
           rtpCapabilities: device.rtpCapabilities,
         }, resolve)
       );
@@ -7607,6 +7695,20 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           : Date.now()) - consumeStartedAt),
       });
 
+      if (takeEarlyClosedStream(streamKey)) {
+        if (consumeParams.id) {
+          closeConsumerOnServer(consumeParams.id);
+        }
+        logReceiveDiagnostic('consume-response-after-producer-close', {
+          producerId: effectiveProducerId,
+          consumerId: consumeParams.id || null,
+          peerId,
+          streamKey,
+          targetKey,
+        });
+        return;
+      }
+
       const consumer = await recvTransport.consume(consumeParams);
       logReceiveDiagnostic('consumer-created', {
         producerId: effectiveProducerId,
@@ -7615,8 +7717,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         streamKey,
         targetKey,
       });
-      if (takeEarlyClosedConsumer(consumer?.id)) {
+      if (takeEarlyClosedConsumer(consumer?.id) || takeEarlyClosedStream(streamKey)) {
         try { consumer.close(); } catch {}
+        closeConsumerOnServer(consumer?.id);
         logReceiveDiagnostic('consumer-closed-before-registration', {
           producerId: effectiveProducerId,
           consumerId: consumer?.id || null,
@@ -7630,6 +7733,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         || (targetStreamMap.get(targetKey)?.has(streamKey) ?? false);
       if (nowTracked) {
         try { consumer.close(); } catch {}
+        closeConsumerOnServer(consumer?.id);
         logReceiveDiagnostic('consumer-closed-duplicate', {
           producerId: effectiveProducerId,
           consumerId: consumer?.id || null,
@@ -7933,7 +8037,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       consumer.on('trackended', handleConsumerClosed);
       consumer.on('transportclose', handleConsumerClosed);
 
-      if (takeEarlyClosedConsumer(consumer.id)) {
+      if (takeEarlyClosedConsumer(consumer.id) || takeEarlyClosedStream(streamKey)) {
         logReceiveDiagnostic('consumer-closed-before-playback', {
           producerId: effectiveProducerId,
           consumerId: consumer.id,
@@ -7941,6 +8045,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           targetKey,
         });
         try { consumer.close(); } catch {}
+        closeConsumerOnServer(consumer.id);
         handleConsumerClosed();
         return;
       }
@@ -7993,6 +8098,15 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           : Date.now()) - consumeStartedAt),
       });
     } catch (err) {
+      if (err?.message === 'Producer not found') {
+        logReceiveDiagnostic('consume-skipped-producer-not-found', {
+          producerId: effectiveProducerId,
+          peerId,
+          streamKey,
+          targetKey,
+        });
+        return;
+      }
       console.error('Error consuming:', err);
     } finally {
       pendingIncomingConsumeKeys.delete(streamKey);
@@ -8274,11 +8388,19 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       key = `user-${peerId}`;
     }
 
-    const streamKey = makeStreamKey(key, producerId || appData?.producerId);
+    const closedProducerId = producerId || appData?.producerId || null;
+    const streamKey = makeStreamKey(key, closedProducerId);
 
     // 2️⃣ Continue only if we were actually consuming this key
     const consumersSet = peerConsumers.get(streamKey);
     if (!consumersSet || consumersSet.size === 0) {
+      if (closedProducerId) {
+        rememberEarlyClosedStream(streamKey, {
+          producerId: closedProducerId,
+          peerId,
+          targetKey: key,
+        });
+      }
       unregisterStreamKey(key, streamKey);
       if (isFeedKey(key) && !hasActiveStreams(key)) {
         activeFeedKeys.delete(key);
