@@ -1,5 +1,44 @@
 const socket = io();
 
+function setupPasswordVisibilityToggles(root = document) {
+  root.querySelectorAll('[data-password-toggle]').forEach((button) => {
+    if (button.dataset.passwordToggleReady === 'true') return;
+    const inputId = button.dataset.passwordToggle;
+    const input = inputId ? document.getElementById(inputId) : null;
+    if (!input) return;
+
+    const updateButtonState = () => {
+      const isVisible = input.type === 'text';
+      const label = isVisible ? 'Hide password' : 'Show password';
+      button.setAttribute('aria-label', label);
+      button.setAttribute('aria-pressed', String(isVisible));
+      button.title = label;
+    };
+
+    button.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+    });
+
+    button.addEventListener('click', () => {
+      const shouldShow = input.type === 'password';
+      const selectionStart = input.selectionStart;
+      const selectionEnd = input.selectionEnd;
+      input.type = shouldShow ? 'text' : 'password';
+      updateButtonState();
+      if (selectionStart !== null && selectionEnd !== null) {
+        try {
+          input.setSelectionRange(selectionStart, selectionEnd);
+        } catch {}
+      }
+    });
+
+    button.dataset.passwordToggleReady = 'true';
+    updateButtonState();
+  });
+}
+
+setupPasswordVisibilityToggles();
+
 socket.on("cut-camera", (value) => {
   document.body.classList.toggle("cut-camera", value);
 });

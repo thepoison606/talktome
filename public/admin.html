@@ -1045,7 +1045,16 @@
           </div>
           <div class="login-field">
             <label for="admin-password">Password</label>
-            <input type="password" id="admin-password" class="login-input" autocomplete="current-password" required />
+            <div class="password-input-wrap">
+              <input type="password" id="admin-password" class="login-input" autocomplete="current-password" required />
+              <button type="button" class="password-toggle" data-password-toggle="admin-password" aria-label="Show password" aria-controls="admin-password" aria-pressed="false" title="Show password">
+                <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M2.75 12S6.1 5.75 12 5.75 21.25 12 21.25 12 17.9 18.25 12 18.25 2.75 12 2.75 12Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M12 15.25A3.25 3.25 0 1 0 12 8.75 3.25 3.25 0 0 0 12 15.25Z" stroke="currentColor" stroke-width="1.8"/>
+                  <path class="password-toggle__slash" d="M4.75 4.75L19.25 19.25" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+              </button>
+            </div>
           </div>
           <button type="submit" class="login-submit">Login</button>
         </form>
@@ -1078,12 +1087,21 @@
             <form id="user-form" class="inline-form" autocomplete="off">
               <div class="field-group">
                 <label for="username">Name</label>
-                <input type="text" id="username" placeholder="e.g. Anna" required />
+                <input type="text" id="username" required />
               </div>
 
               <div class="field-group">
                 <label for="password">Password</label>
-                <input type="password" id="password" placeholder="Password" required />
+                <div class="password-input-wrap">
+                  <input type="password" id="password" autocomplete="new-password" required />
+                  <button type="button" class="password-toggle" data-password-toggle="password" aria-label="Show password" aria-controls="password" aria-pressed="false" title="Show password">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M2.75 12S6.1 5.75 12 5.75 21.25 12 21.25 12 17.9 18.25 12 18.25 2.75 12 2.75 12Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                      <path d="M12 15.25A3.25 3.25 0 1 0 12 8.75 3.25 3.25 0 0 0 12 15.25Z" stroke="currentColor" stroke-width="1.8"/>
+                      <path class="password-toggle__slash" d="M4.75 4.75L19.25 19.25" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    </svg>
+                  </button>
+                </div>
               </div>
 
               <button type="submit">Add User</button>
@@ -1115,7 +1133,7 @@
             <form id="conf-form" class="inline-form" autocomplete="off">
               <div class="field-group">
                 <label for="confname">Conference</label>
-                <input type="text" id="confname" placeholder="e.g. Cameras" required />
+                <input type="text" id="confname" required />
               </div>
               <button type="submit">Add Conference</button>
             </form>
@@ -1141,11 +1159,20 @@
             <form id="feed-form" class="inline-form" autocomplete="off">
               <div class="field-group">
                 <label for="feedname">Feed name</label>
-                <input type="text" id="feedname" placeholder="e.g. Music Bus" required />
+                <input type="text" id="feedname" required />
               </div>
               <div class="field-group">
                 <label for="feedpassword">Password</label>
-                <input type="password" id="feedpassword" placeholder="Password" required />
+                <div class="password-input-wrap">
+                  <input type="password" id="feedpassword" autocomplete="new-password" required />
+                  <button type="button" class="password-toggle" data-password-toggle="feedpassword" aria-label="Show password" aria-controls="feedpassword" aria-pressed="false" title="Show password">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M2.75 12S6.1 5.75 12 5.75 21.25 12 21.25 12 17.9 18.25 12 18.25 2.75 12 2.75 12Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                      <path d="M12 15.25A3.25 3.25 0 1 0 12 8.75 3.25 3.25 0 0 0 12 15.25Z" stroke="currentColor" stroke-width="1.8"/>
+                      <path class="password-toggle__slash" d="M4.75 4.75L19.25 19.25" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                    </svg>
+                  </button>
+                </div>
               </div>
               <button type="submit">Add Feed</button>
             </form>
@@ -1216,7 +1243,7 @@
 
                 <div class="field-group field-group--stacked" id="media-announced-address-group">
                   <label for="media-announced-address">Announced IP / hostname</label>
-                  <input type="text" id="media-announced-address" placeholder="e.g. 192.168.178.197" />
+                  <input type="text" id="media-announced-address" />
                 </div>
 
                 <div id="media-network-actions">
@@ -1280,7 +1307,7 @@
               <form id="mdns-form" class="inline-form" autocomplete="off">
                 <div class="field-group field-group--stacked">
                   <label for="mdns-host">mDNS name</label>
-                  <input type="text" id="mdns-host" placeholder="e.g. intercom.local or off" required />
+                  <input type="text" id="mdns-host" required />
                 </div>
                 <button type="submit">Save mDNS name</button>
               </form>

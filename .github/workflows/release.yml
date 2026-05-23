@@ -61,11 +61,10 @@ jobs:
           echo "ZIP_NAME=${RELEASE_DIR}.zip" >> "$GITHUB_ENV"
           node scripts/create-release-dir.js "$RELEASE_DIR" "${{ matrix.executable_name }}" "${{ matrix.worker_name }}"
 
-      - name: Create zip and checksum
+      - name: Create zip
         shell: bash
         run: |
           python - <<'PY'
-          import hashlib
           import os
           import pathlib
           import zipfile
@@ -76,10 +75,6 @@ jobs:
           with zipfile.ZipFile(zip_name, "w", compression=zipfile.ZIP_DEFLATED) as zf:
               for path in release_dir.rglob("*"):
                   zf.write(path, path.relative_to(release_dir))
-
-          digest = hashlib.sha256(zip_name.read_bytes()).hexdigest()
-          checksum_path = zip_name.with_suffix(".sha256")
-          checksum_path.write_text(f"{digest}  {zip_name.name}\n", encoding="utf-8")
           PY
 
       - name: Upload workflow artifact
@@ -96,7 +91,6 @@ jobs:
           name: ${{ env.RELEASE_DIR }}_release_payload
           path: |
             ${{ env.ZIP_NAME }}
-            ${{ env.RELEASE_DIR }}.sha256
 
   docker:
     name: Build Docker image (${{ matrix.arch }})
