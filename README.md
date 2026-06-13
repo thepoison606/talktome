@@ -6,11 +6,11 @@ Local WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
 
 ## Features
 
-- Browser-based intercom with direct targets, conferences, reply, talk lock and keyboard shortcuts.
+- Browser-based intercom with direct targets, conferences, reply and talk lock.
 - Admin UI for users, feeds, conferences, target order, network config, RTC port range, backups and Guest login.
 - Optional program-audio feeds with volume and mute controls.
-- Camera tally and remote control through HTTP API and the Bitfocus Companion module.
-- Optional passwordless Guest login with shared Guest targets.
+- Camera tally and remote control through HTTP API.
+- Remote control via Bitfocus Companion module and keyboard shortcuts.
 
 ## Quick Start
 
