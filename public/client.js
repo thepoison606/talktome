@@ -968,7 +968,18 @@ function ensureFeedPlaybackBus() {
 }
 
 function shouldUsePersistentRemotePlaybackBus() {
+  if (shouldUseAdaptiveReceivePlayback()) return false;
   return isiOS || isSafariBrowser;
+}
+
+function shouldUseAdaptiveReceivePlayback() {
+  return isiOS || isSafariBrowser;
+}
+
+function shouldUseAdaptivePlainReceivePlayback() {
+  return shouldUseAdaptiveReceivePlayback()
+    && typeof document !== 'undefined'
+    && document.visibilityState === 'hidden';
 }
 
 function disposeRemotePlaybackBus() {
@@ -4060,6 +4071,35 @@ let cachedOperatorTargets = null;
     targetPlaybackBuses.forEach((bus) => disposeTargetPlaybackBus(bus));
     targetPlaybackBuses.clear();
     disposeRemotePlaybackBus();
+  }
+
+  let lastAdaptiveReceiveVisibilityState = document.visibilityState;
+
+  function refreshAdaptiveReceivePlaybackForVisibility(reason = 'visibilitychange') {
+    if (!shouldUseAdaptiveReceivePlayback()) return;
+    const nextVisibilityState = document.visibilityState;
+    if (nextVisibilityState === lastAdaptiveReceiveVisibilityState) return;
+    lastAdaptiveReceiveVisibilityState = nextVisibilityState;
+
+    for (const [targetKey, set] of Array.from(targetStreamMap.entries())) {
+      for (const streamKey of Array.from(set)) {
+        cleanupIncomingStream(targetKey, streamKey, { suppressUi: true });
+      }
+    }
+    pruneTargetPlaybackBuses(new Set());
+    syncRenderedTargetStateUi();
+
+    console.info('[audio][recv][adaptive-visibility-refresh]', {
+      reason,
+      visibilityState: nextVisibilityState,
+      receivePath: shouldUseAdaptivePlainReceivePlayback()
+        ? 'plain-audio-element'
+        : 'web-audio-gain-or-feed-bus',
+    });
+
+    if (mediaInitialized) {
+      requestActiveProducers().catch(() => {});
+    }
   }
 
   function disconnectPlaybackNodes(entry) {
@@ -7806,11 +7846,15 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       if (mutedPeers.has(targetKey) && !isFeedKey(targetKey)) consumer.pause();
 
       const stream = new MediaStream([consumer.track]);
-      const feedPlayback = isFeed && shouldUseFeedPlaybackBus() ? ensureFeedPlaybackBus() : null;
-      let persistentPlaybackBus = !isFeed && shouldUsePersistentRemotePlaybackBus()
+      const adaptivePlainReceive = shouldUseAdaptivePlainReceivePlayback();
+      const adaptiveDirectReceive = !isFeed && shouldUseAdaptiveReceivePlayback() && !adaptivePlainReceive;
+      const feedPlayback = isFeed && !adaptivePlainReceive && shouldUseFeedPlaybackBus() ? ensureFeedPlaybackBus() : null;
+      let persistentPlaybackBus = !isFeed && !adaptivePlainReceive && !adaptiveDirectReceive && shouldUsePersistentRemotePlaybackBus()
         ? ensureTargetPlaybackBus(targetKey, { type: normalizedAppData.type || 'user' })
         : null;
-      const shouldUseWebAudioLevelControl = !isFeed && !persistentPlaybackBus && (isiOS || isSafariBrowser);
+      const shouldUseWebAudioLevelControl = !isFeed && !persistentPlaybackBus && !adaptivePlainReceive && (
+        adaptiveDirectReceive || isiOS || isSafariBrowser
+      );
       const ctxForPlayback = (persistentPlaybackBus || shouldUseWebAudioLevelControl) ? ensureAudioContext() : null;
 
       const initVolRaw = getStoredVolume(volumeStorageKey);
@@ -7917,7 +7961,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
       if (!gainNode && ctxForPlayback && !feedPlayback && !persistentPlaybackBus) {
         try {
-          if (isSafariBrowser && typeof ctxForPlayback.createMediaElementSource === 'function') {
+          if (!adaptiveDirectReceive && isSafariBrowser && typeof ctxForPlayback.createMediaElementSource === 'function') {
             mediaSource = ctxForPlayback.createMediaElementSource(audio);
             usesMediaElementSource = true;
           } else {
@@ -7965,7 +8009,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           : usesSharedAudioElement
             ? 'persistent-target-playback-bus'
           : ctxForPlayback
-            ? 'web-audio-gain'
+            ? adaptiveDirectReceive
+              ? 'adaptive-direct-web-audio-gain'
+              : 'web-audio-gain'
             : 'plain-audio-element',
         audio,
         context: feedPlayback?.ctx || ctxForPlayback || null,
@@ -7976,10 +8022,14 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
             : usesSharedAudioElement
               ? 'persistent target playback bus'
             : ctxForPlayback
-              ? usesMediaElementSource
+              ? adaptiveDirectReceive
+                ? 'adaptive visible webaudio gain'
+                : usesMediaElementSource
                 ? 'safari media element gain'
                 : 'ios remote gain control'
-              : 'default direct playback',
+              : adaptivePlainReceive
+                ? 'adaptive hidden plain audio'
+                : 'default direct playback',
       });
 
       if (!usesSharedAudioElement) {
@@ -9345,6 +9395,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   function stopTalkingIfHidden() {
+    refreshAdaptiveReceivePlaybackForVisibility('visibilitychange');
     if (document.visibilityState === 'hidden') {
       // When switching tabs, the document becomes hidden. Don't force-stop if
       // talk lock is active.
