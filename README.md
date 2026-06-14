@@ -14,10 +14,31 @@ Local WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
 
 ## Quick Start
 
+Choose one way to run Talk To Me:
+
+- **macOS / Windows release:** easiest local install for a dedicated intercom computer.
+- **Docker:** best for a small server, NAS, mini PC, or always-on host.
+- **Source:** for development.
+
 ### Desktop Releases
 
 Prebuilt macOS and Windows packages are available on the
 [GitHub Releases page](https://github.com/thepoison606/talktome/releases).
+
+### First Start
+
+1. Start Talk To Me and open the shown HTTPS URL, usually `https://<HOST-IP>:8443/`.
+2. Accept the browser warning for the self-signed local certificate.
+3. Open `https://<HOST-IP>:8443/admin`.
+4. Log in with the initial admin account:
+   - Username: `admin`
+   - Password: `admin`
+5. Change the admin password when prompted.
+6. In Admin, create users, feeds and conferences, then assign targets to the users who should talk to each other.
+7. Operators log in at `/` with their user credentials and allow microphone access.
+
+If clients can open the page but audio does not connect, check Admin `Config`,
+the announced media address and the RTC port range/firewall rules.
 
 ### Docker
 
