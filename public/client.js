@@ -5360,6 +5360,7 @@ let cachedOperatorTargets = null;
       intercomApp.style.display = "flex";
       myIdEl.textContent = user.name;
       applySessionUI();
+      await syncOperatorTargetsFromLatestUserList(`login-${kind}`);
       requestInitialMicrophoneAccess({ reason: `login-${kind}` });
       initializeMediaIfPossible();
     } catch (err) {
@@ -5416,6 +5417,7 @@ let cachedOperatorTargets = null;
       intercomApp.style.display = "flex";
       myIdEl.textContent = nextSession.name;
       applySessionUI();
+      await syncOperatorTargetsFromLatestUserList('login-guest');
       requestInitialMicrophoneAccess({ reason: 'login-guest' });
       initializeMediaIfPossible();
     } catch (err) {
@@ -5558,8 +5560,9 @@ let cachedOperatorTargets = null;
   });
 
   socket.on("user-list", async users => {
+    const displayUsers = prepareDisplayUsersWithOfflineGrace(users);
     if (isOperatorSession()) {
-      await applyUserListToUi(prepareDisplayUsersWithOfflineGrace(users));
+      await applyUserListToUi(displayUsers);
     }
   });
 
@@ -6791,6 +6794,15 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     });
 
     return buildDisplayUsersFromLatestServerState();
+  }
+
+  async function syncOperatorTargetsFromLatestUserList(reason = 'operator-target-sync') {
+    if (!isOperatorSession()) return;
+    try {
+      await applyUserListToUi(buildDisplayUsersFromLatestServerState());
+    } catch (err) {
+      console.error(`Failed to sync targets after ${reason}`, err);
+    }
   }
 
   function syncRenderedTargetStateUi() {
