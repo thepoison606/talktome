@@ -110,14 +110,6 @@ State is stored in SQLite `app.db`; config, certificates and generated API keys 
 
 Back up this directory before upgrades if you need to preserve accounts and routing.
 
-## Admin
-
-First boot creates a superadmin user:
-
-- Username: `admin`
-- Password: `admin`
-
-The first admin login at `/admin` forces a password change. Admin sessions use an httpOnly `admin_session` cookie.
 
 ## Users, Feeds And Guests
 
