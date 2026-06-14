@@ -14,6 +14,11 @@ Local WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
 
 ## Quick Start
 
+### Desktop Releases
+
+Prebuilt macOS and Windows packages are available on the
+[GitHub Releases page](https://github.com/thepoison606/talktome/releases).
+
 ### Docker
 
 Replace `<HOST-IP>` with the LAN address clients use to reach this host.
