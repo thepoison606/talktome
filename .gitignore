@@ -36,6 +36,7 @@ talktome-macos*
 worker/
 dist/
 build/
+bridge-client/src-tauri/target/
 coverage/
 .nyc_output/
 *.tgz
@@ -44,6 +45,7 @@ coverage/
 yarn.lock
 pnpm-lock.yaml
 package-lock.json
+!bridge-client/package-lock.json
 
 # IDE / editor metadata
 .idea/

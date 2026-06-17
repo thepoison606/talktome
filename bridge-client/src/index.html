@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Talk To Me Bridge</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="status-panel">
+        <div>
+          <p class="eyebrow">Bridge client spike</p>
+          <h1>Talk To Me Bridge</h1>
+        </div>
+        <div class="status-pill" id="connection-status">Local probe</div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Local bridge ports</h2>
+          </div>
+          <div class="button-row">
+            <button id="add-port" type="button">Add port</button>
+            <button id="stop-all-ports" type="button" disabled>Stop all</button>
+          </div>
+        </div>
+
+        <div class="local-port-list" id="local-port-list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Audio devices</h2>
+          </div>
+          <button id="refresh-devices" type="button">Refresh</button>
+        </div>
+        <div class="summary-grid" id="device-summary"></div>
+        <div class="device-list" id="device-list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Bridge ports</h2>
+          </div>
+        </div>
+        <div class="ports-grid" id="bridge-ports"></div>
+      </section>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

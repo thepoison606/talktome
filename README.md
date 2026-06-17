@@ -162,6 +162,20 @@ The matching user UI turns red while on-air.
 - `Space`: Reply
 - Number keys: talk to targets in list order
 
+## Native Bridge Client Prototype
+
+`bridge-client/` contains an experimental Tauri/Rust desktop spike for Dante and other multichannel audio interfaces on macOS and Windows.
+
+Current scope:
+
+- native input/output device enumeration through CPAL
+- supported stream configs, max channel counts, 48 kHz availability and stereo channel-pair detection
+- F32/48 kHz input stream probe with live RMS levels
+- multiple local bridge-port rows with loopback from selected input pairs to selected output pairs
+- a bridge-port status/model shape for future Admin-provided routing
+
+It does not yet connect to the Talk To Me server, WebRTC/mediasoup, or admin-provided routing. See `bridge-client/README.md` for local development commands and next milestones.
+
 ## Radio Gateway Prototype
 
 The repository includes a generic hardware gateway helper for bridging Talk To Me to an external radio or intercom device. It expects a Linux gateway host with ALSA audio I/O, an audio interface connected to the external device, and an optional GPIO-controlled PTT circuit.

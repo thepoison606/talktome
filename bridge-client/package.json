@@ -1,0 +1,16 @@
+{
+  "name": "talktome-bridge-client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "dev:ui": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "build:ui": "vite build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.4",
+    "vite": "^7.0.0"
+  }
+}
