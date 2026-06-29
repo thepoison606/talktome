@@ -123,7 +123,7 @@ tar -xJf "$FFMPEG_ARCHIVE" -C "$BUILD_ROOT"
     --enable-encoder=libopus,pcm_f32le \
     --enable-parser=opus \
     --enable-filter=aformat,aresample,anull,volume
-  make -j"$JOBS" ffmpeg
+  make -j"$JOBS" ffmpeg.exe
 )
 
 cp "$BUILD_ROOT/ffmpeg-$FFMPEG_VERSION/ffmpeg.exe" "$OUTPUT"
