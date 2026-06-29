@@ -2,14 +2,196 @@ const db = require('./db');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 
-const ALL_CONFERENCE_NAME = 'All';
+const BRIDGE_ENDPOINT_TEXT_LIMIT = 200;
+
+function normalizeBridgeText(value) {
+  if (value === null || value === undefined) return '';
+  return String(value).trim().slice(0, BRIDGE_ENDPOINT_TEXT_LIMIT);
+}
+
+function normalizeBridgeChannel(value, label) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return number;
+}
+
+function validateBridgePair(left, right, label) {
+  if ((left === null) !== (right === null)) {
+    throw new Error(`${label} channel selection must include left and right channels`);
+  }
+  if (left !== null && right !== left && right !== left + 1) {
+    throw new Error(`${label} channel selection must use one mono channel or an adjacent stereo pair`);
+  }
+}
+
+function normalizeBridgeEndpointConfig(config = {}) {
+  const enabled = Boolean(config.enabled);
+  const bridgeDevice = normalizeBridgeText(config.bridgeDevice);
+  const inputDevice = normalizeBridgeText(config.inputDevice);
+  const inputLeftChannel = normalizeBridgeChannel(config.inputLeftChannel, 'Input left channel');
+  const inputRightChannel = normalizeBridgeChannel(config.inputRightChannel, 'Input right channel');
+  const outputDevice = normalizeBridgeText(config.outputDevice);
+  const outputLeftChannel = normalizeBridgeChannel(config.outputLeftChannel, 'Output left channel');
+  const outputRightChannel = normalizeBridgeChannel(config.outputRightChannel, 'Output right channel');
+  validateBridgePair(inputLeftChannel, inputRightChannel, 'Input');
+  validateBridgePair(outputLeftChannel, outputRightChannel, 'Output');
+
+  if (enabled) {
+    if (!bridgeDevice) {
+      throw new Error('Bridge device is required when bridge endpoint is enabled');
+    }
+    if (!inputDevice) {
+      throw new Error('Input device is required when bridge endpoint is enabled');
+    }
+    if (inputLeftChannel === null) {
+      throw new Error('Input channel is required when bridge endpoint is enabled');
+    }
+    if (!outputDevice) {
+      throw new Error('Output device is required when bridge endpoint is enabled');
+    }
+    if (outputLeftChannel === null) {
+      throw new Error('Output channel is required when bridge endpoint is enabled');
+    }
+  }
+
+  return {
+    enabled,
+    bridgeDevice,
+    inputDevice,
+    inputLeftChannel,
+    inputRightChannel,
+    outputDevice,
+    outputLeftChannel,
+    outputRightChannel,
+  };
+}
+
+function normalizeFeedBridgeEndpointConfig(config = {}) {
+  const enabled = Boolean(config.enabled);
+  const bridgeDevice = normalizeBridgeText(config.bridgeDevice);
+  const inputDevice = normalizeBridgeText(config.inputDevice);
+  const inputLeftChannel = normalizeBridgeChannel(config.inputLeftChannel, 'Input left channel');
+  const inputRightChannel = normalizeBridgeChannel(config.inputRightChannel, 'Input right channel');
+  validateBridgePair(inputLeftChannel, inputRightChannel, 'Input');
+
+  if (enabled) {
+    if (!bridgeDevice) {
+      throw new Error('Bridge device is required when bridge endpoint is enabled');
+    }
+    if (!inputDevice) {
+      throw new Error('Input device is required when bridge endpoint is enabled');
+    }
+    if (inputLeftChannel === null) {
+      throw new Error('Input channel is required when bridge endpoint is enabled');
+    }
+  }
+
+  return {
+    enabled,
+    bridgeDevice,
+    inputDevice,
+    inputLeftChannel,
+    inputRightChannel,
+  };
+}
 
 function getAllUsers() {
-  return db.prepare('SELECT id, name, is_admin, is_superadmin, is_guest_profile FROM users ORDER BY is_guest_profile, name COLLATE NOCASE').all();
+  return db.prepare(`
+    SELECT
+      users.id,
+      users.name,
+      users.is_admin,
+      users.is_superadmin,
+      users.is_guest_profile,
+      users.last_online_at,
+      COALESCE(user_bridge_endpoints.enabled, 0) AS bridge_enabled,
+      COALESCE(user_bridge_endpoints.bridge_device, '') AS bridge_device,
+      COALESCE(user_bridge_endpoints.input_device, '') AS bridge_input_device,
+      user_bridge_endpoints.input_left_channel AS bridge_input_left_channel,
+      user_bridge_endpoints.input_right_channel AS bridge_input_right_channel,
+      COALESCE(user_bridge_endpoints.output_device, '') AS bridge_output_device,
+      user_bridge_endpoints.output_left_channel AS bridge_output_left_channel,
+      user_bridge_endpoints.output_right_channel AS bridge_output_right_channel,
+      user_bridge_endpoints.updated_at AS bridge_updated_at
+    FROM users
+    LEFT JOIN user_bridge_endpoints ON user_bridge_endpoints.user_id = users.id
+    ORDER BY users.is_guest_profile, users.name COLLATE NOCASE
+  `).all();
 }
 
 function getUserById(id) {
-  return db.prepare('SELECT id, name, is_admin, is_superadmin, admin_must_change, is_guest_profile FROM users WHERE id = ?').get(id);
+  return db.prepare(`
+    SELECT
+      users.id,
+      users.name,
+      users.is_admin,
+      users.is_superadmin,
+      users.admin_must_change,
+      users.is_guest_profile,
+      users.last_online_at,
+      COALESCE(user_bridge_endpoints.enabled, 0) AS bridge_enabled,
+      COALESCE(user_bridge_endpoints.bridge_device, '') AS bridge_device,
+      COALESCE(user_bridge_endpoints.input_device, '') AS bridge_input_device,
+      user_bridge_endpoints.input_left_channel AS bridge_input_left_channel,
+      user_bridge_endpoints.input_right_channel AS bridge_input_right_channel,
+      COALESCE(user_bridge_endpoints.output_device, '') AS bridge_output_device,
+      user_bridge_endpoints.output_left_channel AS bridge_output_left_channel,
+      user_bridge_endpoints.output_right_channel AS bridge_output_right_channel,
+      user_bridge_endpoints.updated_at AS bridge_updated_at
+    FROM users
+    LEFT JOIN user_bridge_endpoints ON user_bridge_endpoints.user_id = users.id
+    WHERE users.id = ?
+  `).get(id);
+}
+
+function getBridgeEndpointsForDevice(bridgeDevice) {
+  const normalizedBridgeDevice = normalizeBridgeText(bridgeDevice);
+  if (!normalizedBridgeDevice) return [];
+
+  return db.prepare(`
+    SELECT
+      users.id AS user_id,
+      users.name AS user_name,
+      user_bridge_endpoints.bridge_device,
+      user_bridge_endpoints.input_device,
+      user_bridge_endpoints.input_left_channel,
+      user_bridge_endpoints.input_right_channel,
+      user_bridge_endpoints.output_device,
+      user_bridge_endpoints.output_left_channel,
+      user_bridge_endpoints.output_right_channel,
+      user_bridge_endpoints.updated_at
+    FROM user_bridge_endpoints
+    JOIN users ON users.id = user_bridge_endpoints.user_id
+    WHERE user_bridge_endpoints.enabled = 1
+      AND user_bridge_endpoints.bridge_device = ?
+      AND users.is_superadmin = 0
+      AND users.is_guest_profile = 0
+    ORDER BY users.name COLLATE NOCASE, users.id
+  `).all(normalizedBridgeDevice);
+}
+
+function getFeedBridgeEndpointsForDevice(bridgeDevice) {
+  const normalizedBridgeDevice = normalizeBridgeText(bridgeDevice);
+  if (!normalizedBridgeDevice) return [];
+
+  return db.prepare(`
+    SELECT
+      feeds.id AS feed_id,
+      feeds.name AS feed_name,
+      feed_bridge_endpoints.bridge_device,
+      feed_bridge_endpoints.input_device,
+      feed_bridge_endpoints.input_left_channel,
+      feed_bridge_endpoints.input_right_channel,
+      feed_bridge_endpoints.updated_at
+    FROM feed_bridge_endpoints
+    JOIN feeds ON feeds.id = feed_bridge_endpoints.feed_id
+    WHERE feed_bridge_endpoints.enabled = 1
+      AND feed_bridge_endpoints.bridge_device = ?
+    ORDER BY feeds.name COLLATE NOCASE, feeds.id
+  `).all(normalizedBridgeDevice);
 }
 
 function getAllConferences() {
@@ -17,13 +199,26 @@ function getAllConferences() {
 }
 
 function getAllFeeds() {
-  return db.prepare('SELECT id, name FROM feeds ORDER BY name COLLATE NOCASE').all();
+  return db.prepare(`
+    SELECT
+      feeds.id,
+      feeds.name,
+      COALESCE(feed_bridge_endpoints.enabled, 0) AS bridge_enabled,
+      COALESCE(feed_bridge_endpoints.bridge_device, '') AS bridge_device,
+      COALESCE(feed_bridge_endpoints.input_device, '') AS bridge_input_device,
+      feed_bridge_endpoints.input_left_channel AS bridge_input_left_channel,
+      feed_bridge_endpoints.input_right_channel AS bridge_input_right_channel,
+      feed_bridge_endpoints.updated_at AS bridge_updated_at
+    FROM feeds
+    LEFT JOIN feed_bridge_endpoints ON feed_bridge_endpoints.feed_id = feeds.id
+    ORDER BY feeds.name COLLATE NOCASE
+  `).all();
 }
 
 function exportDatabaseSnapshot() {
   return {
     users: db.prepare(`
-      SELECT id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile
+      SELECT id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, last_online_at
       FROM users
       ORDER BY id
     `).all(),
@@ -67,6 +262,33 @@ function exportDatabaseSnapshot() {
       FROM user_target_audio_state
       ORDER BY user_id, target_type, target_id
     `).all(),
+    userBridgeEndpoints: db.prepare(`
+      SELECT
+        user_id,
+        enabled,
+        bridge_device,
+        input_device,
+        input_left_channel,
+        input_right_channel,
+        output_device,
+        output_left_channel,
+        output_right_channel,
+        updated_at
+      FROM user_bridge_endpoints
+      ORDER BY user_id
+    `).all(),
+    feedBridgeEndpoints: db.prepare(`
+      SELECT
+        feed_id,
+        enabled,
+        bridge_device,
+        input_device,
+        input_left_channel,
+        input_right_channel,
+        updated_at
+      FROM feed_bridge_endpoints
+      ORDER BY feed_id
+    `).all(),
     applePttChannels: db.prepare(`
       SELECT user_id, channel_uuid, channel_name, updated_at
       FROM apple_ptt_channels
@@ -94,6 +316,8 @@ function importDatabaseSnapshot(snapshot) {
   const userFeedTargets = Array.isArray(snapshot.userFeedTargets) ? snapshot.userFeedTargets : [];
   const userTargetOrder = Array.isArray(snapshot.userTargetOrder) ? snapshot.userTargetOrder : [];
   const userTargetAudioState = Array.isArray(snapshot.userTargetAudioState) ? snapshot.userTargetAudioState : [];
+  const userBridgeEndpoints = Array.isArray(snapshot.userBridgeEndpoints) ? snapshot.userBridgeEndpoints : [];
+  const feedBridgeEndpoints = Array.isArray(snapshot.feedBridgeEndpoints) ? snapshot.feedBridgeEndpoints : [];
   const applePttChannels = Array.isArray(snapshot.applePttChannels) ? snapshot.applePttChannels : [];
   const applePttRegistrations = Array.isArray(snapshot.applePttRegistrations) ? snapshot.applePttRegistrations : [];
 
@@ -110,6 +334,8 @@ function importDatabaseSnapshot(snapshot) {
     db.prepare('DELETE FROM user_feed_targets').run();
     db.prepare('DELETE FROM user_conference').run();
     db.prepare('DELETE FROM user_target_audio_state').run();
+    db.prepare('DELETE FROM user_bridge_endpoints').run();
+    db.prepare('DELETE FROM feed_bridge_endpoints').run();
     db.prepare('DELETE FROM feeds').run();
     db.prepare('DELETE FROM conferences').run();
     db.prepare('DELETE FROM users').run();
@@ -121,8 +347,8 @@ function importDatabaseSnapshot(snapshot) {
     }
 
     const insertUser = db.prepare(`
-      INSERT INTO users (id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, last_online_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertConference = db.prepare(`
       INSERT INTO conferences (id, name)
@@ -156,6 +382,33 @@ function importDatabaseSnapshot(snapshot) {
       INSERT INTO user_target_audio_state (user_id, target_type, target_id, muted, volume, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
     `);
+    const insertBridgeEndpoint = db.prepare(`
+      INSERT INTO user_bridge_endpoints (
+        user_id,
+        enabled,
+        bridge_device,
+        input_device,
+        input_left_channel,
+        input_right_channel,
+        output_device,
+        output_left_channel,
+        output_right_channel,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertFeedBridgeEndpoint = db.prepare(`
+      INSERT INTO feed_bridge_endpoints (
+        feed_id,
+        enabled,
+        bridge_device,
+        input_device,
+        input_left_channel,
+        input_right_channel,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
     const insertApplePttChannel = db.prepare(`
       INSERT INTO apple_ptt_channels (user_id, channel_uuid, channel_name, updated_at)
       VALUES (?, ?, ?, ?)
@@ -173,7 +426,8 @@ function importDatabaseSnapshot(snapshot) {
         row.is_admin ? 1 : 0,
         row.is_superadmin ? 1 : 0,
         row.admin_must_change ? 1 : 0,
-        row.is_guest_profile ? 1 : 0
+        row.is_guest_profile ? 1 : 0,
+        row.last_online_at ? String(row.last_online_at) : null
       );
     });
 
@@ -221,6 +475,50 @@ function importDatabaseSnapshot(snapshot) {
       );
     });
 
+    userBridgeEndpoints.forEach((row) => {
+      const normalized = normalizeBridgeEndpointConfig({
+        enabled: row.enabled,
+        bridgeDevice: row.bridge_device,
+        inputDevice: row.input_device,
+        inputLeftChannel: row.input_left_channel,
+        inputRightChannel: row.input_right_channel,
+        outputDevice: row.output_device,
+        outputLeftChannel: row.output_left_channel,
+        outputRightChannel: row.output_right_channel,
+      });
+      insertBridgeEndpoint.run(
+        Number(row.user_id),
+        normalized.enabled ? 1 : 0,
+        normalized.bridgeDevice,
+        normalized.inputDevice,
+        normalized.inputLeftChannel,
+        normalized.inputRightChannel,
+        normalized.outputDevice,
+        normalized.outputLeftChannel,
+        normalized.outputRightChannel,
+        String(row.updated_at || new Date().toISOString())
+      );
+    });
+
+    feedBridgeEndpoints.forEach((row) => {
+      const normalized = normalizeFeedBridgeEndpointConfig({
+        enabled: row.enabled,
+        bridgeDevice: row.bridge_device,
+        inputDevice: row.input_device,
+        inputLeftChannel: row.input_left_channel,
+        inputRightChannel: row.input_right_channel,
+      });
+      insertFeedBridgeEndpoint.run(
+        Number(row.feed_id),
+        normalized.enabled ? 1 : 0,
+        normalized.bridgeDevice,
+        normalized.inputDevice,
+        normalized.inputLeftChannel,
+        normalized.inputRightChannel,
+        String(row.updated_at || new Date().toISOString())
+      );
+    });
+
     applePttChannels.forEach((row) => {
       insertApplePttChannel.run(
         Number(row.user_id),
@@ -240,7 +538,6 @@ function importDatabaseSnapshot(snapshot) {
       );
     });
 
-    ensureAllConference();
     ensureDefaultAdmin();
   });
 
@@ -428,6 +725,95 @@ function setAdminMustChange(id, mustChange) {
   return result.changes > 0;
 }
 
+function updateUserBridgeEndpoint(userId, config = {}) {
+  const numericUserId = Number(userId);
+  if (!Number.isInteger(numericUserId) || numericUserId < 1) {
+    throw new Error('Invalid user id');
+  }
+
+  const normalized = normalizeBridgeEndpointConfig(config);
+  const now = new Date().toISOString();
+  const stmt = db.prepare(`
+    INSERT INTO user_bridge_endpoints (
+      user_id,
+      enabled,
+      bridge_device,
+      input_device,
+      input_left_channel,
+      input_right_channel,
+      output_device,
+      output_left_channel,
+      output_right_channel,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      enabled = excluded.enabled,
+      bridge_device = excluded.bridge_device,
+      input_device = excluded.input_device,
+      input_left_channel = excluded.input_left_channel,
+      input_right_channel = excluded.input_right_channel,
+      output_device = excluded.output_device,
+      output_left_channel = excluded.output_left_channel,
+      output_right_channel = excluded.output_right_channel,
+      updated_at = excluded.updated_at
+  `);
+
+  const result = stmt.run(
+    numericUserId,
+    normalized.enabled ? 1 : 0,
+    normalized.bridgeDevice,
+    normalized.inputDevice,
+    normalized.inputLeftChannel,
+    normalized.inputRightChannel,
+    normalized.outputDevice,
+    normalized.outputLeftChannel,
+    normalized.outputRightChannel,
+    now
+  );
+  return result.changes > 0;
+}
+
+function updateFeedBridgeEndpoint(feedId, config = {}) {
+  const numericFeedId = Number(feedId);
+  if (!Number.isInteger(numericFeedId) || numericFeedId < 1) {
+    throw new Error('Invalid feed id');
+  }
+
+  const normalized = normalizeFeedBridgeEndpointConfig(config);
+  const now = new Date().toISOString();
+  const stmt = db.prepare(`
+    INSERT INTO feed_bridge_endpoints (
+      feed_id,
+      enabled,
+      bridge_device,
+      input_device,
+      input_left_channel,
+      input_right_channel,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(feed_id) DO UPDATE SET
+      enabled = excluded.enabled,
+      bridge_device = excluded.bridge_device,
+      input_device = excluded.input_device,
+      input_left_channel = excluded.input_left_channel,
+      input_right_channel = excluded.input_right_channel,
+      updated_at = excluded.updated_at
+  `);
+
+  const result = stmt.run(
+    numericFeedId,
+    normalized.enabled ? 1 : 0,
+    normalized.bridgeDevice,
+    normalized.inputDevice,
+    normalized.inputLeftChannel,
+    normalized.inputRightChannel,
+    now
+  );
+  return result.changes > 0;
+}
+
 function updateFeedName(id, name) {
   const stmt = db.prepare('UPDATE feeds SET name = ? WHERE id = ?');
   const result = stmt.run(name, id);
@@ -441,22 +827,42 @@ function updateFeedPassword(id, password) {
   return result.changes > 0;
 }
 
+function updateUserLastOnline(userId, at = new Date().toISOString()) {
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId)) return false;
+  const timestamp = typeof at === 'string' && at.trim()
+    ? at.trim()
+    : new Date().toISOString();
+  const result = db.prepare('UPDATE users SET last_online_at = ? WHERE id = ?')
+    .run(timestamp, numericUserId);
+  return result.changes > 0;
+}
+
 function deleteUser(userId) {
   db.prepare('DELETE FROM user_feed_targets WHERE user_id = ?').run(userId);
   db.prepare('DELETE FROM user_target_order WHERE user_id = ?').run(userId);
   db.prepare('DELETE FROM user_conference WHERE user_id = ?').run(userId);
+  db.prepare('DELETE FROM user_bridge_endpoints WHERE user_id = ?').run(userId);
   db.prepare('DELETE FROM users WHERE id = ?').run(userId);
 }
 
 function deleteConference(confId) {
-  db.prepare('DELETE FROM user_conference WHERE conference_id = ?').run(confId);
-  db.prepare('DELETE FROM conferences WHERE id = ?').run(confId);
+  const tx = db.transaction((id) => {
+    db.prepare("DELETE FROM user_target_order WHERE target_type = 'conference' AND target_id = ?").run(id);
+    db.prepare("DELETE FROM user_target_audio_state WHERE target_type = 'conference' AND target_id = ?").run(id);
+    db.prepare('DELETE FROM user_conf_targets WHERE target_conf = ?').run(id);
+    db.prepare('DELETE FROM user_conference WHERE conference_id = ?').run(id);
+    db.prepare('DELETE FROM conferences WHERE id = ?').run(id);
+  });
+  tx(confId);
 }
 
 function deleteFeed(feedId) {
   const tx = db.transaction(id => {
     db.prepare('DELETE FROM user_feed_targets WHERE feed_id = ?').run(id);
     db.prepare("DELETE FROM user_target_order WHERE target_type = 'feed' AND target_id = ?").run(id);
+    db.prepare("DELETE FROM user_target_audio_state WHERE target_type = 'feed' AND target_id = ?").run(id);
+    db.prepare('DELETE FROM feed_bridge_endpoints WHERE feed_id = ?').run(id);
     db.prepare('DELETE FROM feeds WHERE id = ?').run(id);
   });
   tx(feedId);
@@ -633,22 +1039,6 @@ const updateUserTargetOrder = db.transaction((userId, items) => {
   });
 });
 
-function ensureAllConference() {
-  let row = db.prepare('SELECT id FROM conferences WHERE name = ?').get(ALL_CONFERENCE_NAME);
-  if (!row) {
-    const insert = db.prepare('INSERT INTO conferences (name) VALUES (?)');
-    const result = insert.run(ALL_CONFERENCE_NAME);
-    row = { id: result.lastInsertRowid };
-  }
-
-  db.prepare("DELETE FROM user_target_order WHERE target_type = 'global'").run();
-}
-
-function getAllConferenceId() {
-  const row = db.prepare('SELECT id FROM conferences WHERE name = ?').get(ALL_CONFERENCE_NAME);
-  return row?.id ?? null;
-}
-
 function getFeedIdsForUser(userId) {
   return db.prepare('SELECT feed_id FROM user_feed_targets WHERE user_id = ?').all(userId).map(row => row.feed_id);
 }
@@ -749,12 +1139,7 @@ function ensureDefaultAdmin() {
     VALUES (?, ?, 1, 1, 1)
   `);
   const result = stmt.run('admin', hash);
-  const userId = result.lastInsertRowid;
-  const allConference = db.prepare('SELECT id FROM conferences WHERE name = ?').get(ALL_CONFERENCE_NAME);
-  if (allConference) {
-    addUserToConference(userId, allConference.id);
-  }
-  return userId;
+  return result.lastInsertRowid;
 }
 
 function normalizeUserTargetAudioStates(states = []) {
@@ -834,7 +1219,53 @@ function replaceUserTargetAudioStates(userId, states = []) {
   tx();
 }
 
-ensureAllConference();
+function ensureAppMetaTable() {
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS app_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `).run();
+}
+
+function getAppMeta(key) {
+  ensureAppMetaTable();
+  const row = db.prepare('SELECT value FROM app_meta WHERE key = ?').get(String(key));
+  return row ? row.value : null;
+}
+
+function setAppMeta(key, value) {
+  ensureAppMetaTable();
+  db.prepare(`
+    INSERT INTO app_meta (key, value)
+    VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(String(key), String(value));
+}
+
+function cleanupLegacyDefaultConference() {
+  ensureAppMetaTable();
+  if (getAppMeta('legacy_default_all_conference_removed') === '1') return;
+
+  const legacyAllConferences = db.prepare(`
+    SELECT id
+    FROM conferences
+    WHERE LOWER(name) = 'all'
+    ORDER BY id
+  `).all();
+
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM user_target_order WHERE target_type = 'global'").run();
+    legacyAllConferences
+      .map((row) => Number(row.id))
+      .filter(Number.isFinite)
+      .forEach((id) => deleteConference(id));
+    setAppMeta('legacy_default_all_conference_removed', '1');
+  });
+  tx();
+}
+
+cleanupLegacyDefaultConference();
 ensureDefaultAdmin();
 
 
@@ -842,6 +1273,8 @@ ensureDefaultAdmin();
 module.exports = {
   getAllUsers,
   getUserById,
+  getBridgeEndpointsForDevice,
+  getFeedBridgeEndpointsForDevice,
   getGuestProfileUser,
   getOrCreateGuestProfile,
   getAllConferences,
@@ -859,9 +1292,12 @@ module.exports = {
   updateAdminPassword,
   updateFeedName,
   updateFeedPassword,
+  updateUserLastOnline,
   setUserAdminRole,
   setUserSuperAdmin,
   setAdminMustChange,
+  updateUserBridgeEndpoint,
+  updateFeedBridgeEndpoint,
   deleteUser,
   deleteConference,
   deleteFeed,
@@ -875,7 +1311,6 @@ module.exports = {
   updateUserTargetOrder,
   getUserTargetAudioStates,
   replaceUserTargetAudioStates,
-  getAllConferenceId,
   getFeedIdsForUser,
   getUsersForFeed,
   getOrCreateApplePttChannelForUser,

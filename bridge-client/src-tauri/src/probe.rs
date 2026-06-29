@@ -350,7 +350,7 @@ fn handle_input(data: &[f32], config: InputCallbackConfig, shared: &ProbeShared)
         || config.left_index >= config.channels
         || config.right_index >= config.channels
     {
-        shared.set_error("input channel pair is outside the active stream config".to_string());
+        shared.set_error("input channel selection is outside the active stream config".to_string());
         return;
     }
 
@@ -413,7 +413,7 @@ fn handle_output(
     data.fill(0.0);
 
     if channels == 0 || left_index >= channels || right_index >= channels {
-        shared.set_error("output channel pair is outside the active stream config".to_string());
+        shared.set_error("output channel selection is outside the active stream config".to_string());
         return;
     }
 
@@ -422,8 +422,12 @@ fn handle_output(
     if let Ok(mut buffer) = shared.loopback_buffer.lock() {
         for frame in data.chunks_exact_mut(channels) {
             if let Some(stereo_frame) = buffer.pop_front() {
-                frame[left_index] = stereo_frame.left;
-                frame[right_index] = stereo_frame.right;
+                if left_index == right_index {
+                    frame[left_index] = (stereo_frame.left + stereo_frame.right) * 0.5;
+                } else {
+                    frame[left_index] = stereo_frame.left;
+                    frame[right_index] = stereo_frame.right;
+                }
             } else {
                 underruns = underruns.saturating_add(1);
             }
@@ -480,9 +484,9 @@ fn validate_channel_pair(left: u16, right: u16, label: &str) -> Result<(), Strin
         return Err(format!("{label} channels are one-based and must be >= 1"));
     }
 
-    if right != left + 1 {
+    if right != left && right != left + 1 {
         return Err(format!(
-            "{label} channel pair must be adjacent, got {left}/{right}"
+            "{label} channel selection must be one mono channel or adjacent stereo, got {left}/{right}"
         ));
     }
 

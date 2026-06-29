@@ -16,9 +16,15 @@
         "label": "main",
         "title": "Talk To Me Bridge",
         "width": 820,
-        "height": 680,
+        "height": 820,
         "minWidth": 680,
-        "minHeight": 520
+        "minHeight": 620,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true
       }
     ],
     "security": {
@@ -27,6 +33,9 @@
   },
   "bundle": {
     "active": false,
-    "targets": "all"
+    "targets": "all",
+    "externalBin": [
+      "binaries/ffmpeg"
+    ]
   }
 }

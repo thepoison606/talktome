@@ -100,6 +100,29 @@ db.exec(`
                                                            PRIMARY KEY (user_id, target_type, target_id)
     );
 
+    CREATE TABLE IF NOT EXISTS user_bridge_endpoints (
+                                                          user_id              INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                                                          enabled              INTEGER NOT NULL DEFAULT 0,
+                                                          bridge_device        TEXT    NOT NULL DEFAULT '',
+                                                          input_device         TEXT    NOT NULL DEFAULT '',
+                                                          input_left_channel   INTEGER,
+                                                          input_right_channel  INTEGER,
+                                                          output_device        TEXT    NOT NULL DEFAULT '',
+                                                          output_left_channel  INTEGER,
+                                                          output_right_channel INTEGER,
+                                                          updated_at           TEXT    NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS feed_bridge_endpoints (
+                                                          feed_id              INTEGER PRIMARY KEY REFERENCES feeds(id) ON DELETE CASCADE,
+                                                          enabled              INTEGER NOT NULL DEFAULT 0,
+                                                          bridge_device        TEXT    NOT NULL DEFAULT '',
+                                                          input_device         TEXT    NOT NULL DEFAULT '',
+                                                          input_left_channel   INTEGER,
+                                                          input_right_channel  INTEGER,
+                                                          updated_at           TEXT    NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS apple_ptt_channels (
                                                       user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                                                       channel_uuid TEXT    NOT NULL UNIQUE,
@@ -131,5 +154,6 @@ ensureColumn("users", "is_admin", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("users", "is_superadmin", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("users", "admin_must_change", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("users", "is_guest_profile", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("users", "last_online_at", "TEXT");
 
 module.exports = db;

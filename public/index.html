@@ -73,7 +73,7 @@
         -webkit-user-select: none;
       }
 
-      .session-info span {
+      .session-info #my-id {
         font-weight: 600;
         word-break: break-word;
       }
@@ -1772,7 +1772,7 @@
     <!-- Intercom App (initially hidden until login) -->
       <div id="intercom-app" style="display: none;">
         <div class="session-bar">
-          <div class="session-info">Logged in as <span id="my-id">Connecting...</span></div>
+          <div class="session-info" aria-live="polite"><span id="session-info-prefix">Logged in as </span><span id="my-id">Connecting...</span></div>
           <div id="session-slide-hint" class="session-slide-hint" aria-hidden="true">← Slide to lock</div>
           <div id="target-layer-switcher" class="target-layer-switcher" hidden>
             <button id="target-layer-button" type="button" aria-label="Switch target layer">Layer 1/1</button>

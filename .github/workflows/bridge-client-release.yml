@@ -1,0 +1,104 @@
+name: Bridge Client Builds
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Bridge ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-14
+            ffmpeg_source: macos-lgpl
+            artifact_name: talktome_bridge_macos_arm64
+            artifact_path: |
+              bridge-client/src-tauri/target/release/talktome-bridge-client
+              bridge-client/src-tauri/target/release/bundle/**/*
+          - name: Windows x64
+            os: windows-latest
+            ffmpeg_source: windows-lgpl
+            artifact_name: talktome_bridge_windows_x64
+            artifact_path: |
+              bridge-client/src-tauri/target/release/talktome-bridge-client.exe
+              bridge-client/src-tauri/target/release/bundle/**/*
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: bridge-client/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        working-directory: bridge-client
+        run: npm ci
+
+      - name: Setup MSYS2
+        if: matrix.ffmpeg_source == 'windows-lgpl'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            diffutils
+            tar
+            gzip
+            xz
+            curl
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-nasm
+
+      - name: Build LGPL FFmpeg sidecar from source
+        if: matrix.ffmpeg_source == 'macos-lgpl'
+        working-directory: bridge-client
+        run: scripts/build-ffmpeg-lgpl-macos.sh --release
+
+      - name: Build Bridge with source-built FFmpeg
+        if: matrix.ffmpeg_source == 'macos-lgpl'
+        working-directory: bridge-client
+        env:
+          FFMPEG_SIDECAR_SOURCE: ${{ github.workspace }}/bridge-client/.ffmpeg-sidecars/ffmpeg-aarch64-apple-darwin
+        run: npm run build:release
+
+      - name: Build LGPL FFmpeg sidecar from source
+        if: matrix.ffmpeg_source == 'windows-lgpl'
+        shell: msys2 {0}
+        working-directory: bridge-client
+        run: scripts/build-ffmpeg-lgpl-mingw.sh --release
+
+      - name: Build Bridge with source-built FFmpeg
+        if: matrix.ffmpeg_source == 'windows-lgpl'
+        working-directory: bridge-client
+        env:
+          FFMPEG_SIDECAR_SOURCE: ${{ github.workspace }}/bridge-client/.ffmpeg-sidecars/ffmpeg-x86_64-pc-windows-msvc.exe
+        run: npm run build:release
+
+      - name: Upload Bridge artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact_name }}
+          if-no-files-found: error
+          path: ${{ matrix.artifact_path }}

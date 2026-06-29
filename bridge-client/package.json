@@ -4,10 +4,14 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
-    "build": "tauri build",
+    "dev": "npm run prepare:ffmpeg -- --optional && tauri dev",
+    "build": "npm run prepare:ffmpeg && tauri build",
+    "build:release": "npm run prepare:ffmpeg -- --release --force && tauri build",
+    "build:ffmpeg:macos": "scripts/build-ffmpeg-lgpl-macos.sh",
+    "build:ffmpeg:windows": "scripts/build-ffmpeg-lgpl-mingw.sh",
     "dev:ui": "vite --host 127.0.0.1 --port 1420 --strictPort",
-    "build:ui": "vite build"
+    "build:ui": "vite build",
+    "prepare:ffmpeg": "node scripts/prepare-ffmpeg-sidecar.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.4",

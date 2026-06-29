@@ -28,6 +28,7 @@
         --media-network-action-width: 14rem;
         --media-network-download-width: 2.6rem;
         --media-network-qr-gap: 0.45rem;
+        --admin-content-width: 1800px;
       }
 
       * {
@@ -56,27 +57,74 @@
       }
 
       .admin-bar {
-        padding: 1.25rem 2rem 0;
-        max-width: 1100px;
-        margin: 0 auto;
-        display: flex;
-        justify-content: space-between;
+        position: fixed;
+        top: 0;
+        left: 50%;
+        z-index: 100;
+        width: min(calc(100% - 1.5rem), var(--admin-content-width));
+        padding: 0.58rem 1.15rem;
+        transform: translateX(-50%);
+        display: grid;
+        grid-template-columns: minmax(10rem, 1fr) auto minmax(10rem, 1fr);
         align-items: center;
         gap: 1rem;
+        background: rgba(11, 17, 32, 0.94);
+        border-bottom: 1px solid var(--border);
+        backdrop-filter: blur(12px);
       }
 
       .admin-bar__meta {
         color: var(--muted);
-        font-size: 0.95rem;
+        font-size: 0.9rem;
       }
 
       .admin-bar__meta strong {
         color: var(--text);
       }
 
+      .admin-bar__nav {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.15rem;
+        min-width: 0;
+      }
+
+      .admin-bar__nav a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 2.15rem;
+        padding: 0.34rem 0.7rem;
+        color: var(--muted);
+        font-size: 0.86rem;
+        font-weight: 600;
+        text-decoration: none;
+        white-space: nowrap;
+        border-bottom: 2px solid transparent;
+        transition: color 0.15s ease, border-color 0.15s ease;
+      }
+
+      .admin-bar__nav a:hover,
+      .admin-bar__nav a:focus-visible {
+        color: var(--text);
+      }
+
+      .admin-bar__nav a[aria-current='location'] {
+        color: #fff;
+        border-bottom-color: var(--primary);
+      }
+
+      #admin-logout {
+        justify-self: end;
+        min-height: 2.15rem;
+        padding: 0.34rem 0.8rem;
+        font-size: 0.86rem;
+      }
+
       main {
-        padding: 1.5rem 2rem 3rem;
-        max-width: 1100px;
+        width: min(calc(100% - 3rem), var(--admin-content-width));
+        padding: 4.55rem 0 3rem;
+        max-width: var(--admin-content-width);
         margin: 0 auto;
         display: grid;
         gap: 1.35rem;
@@ -84,20 +132,26 @@
 
       .flash-message {
         display: none;
+        position: fixed;
+        top: 4.85rem;
+        right: max(1rem, calc((100vw - var(--admin-content-width)) / 2 + 1rem));
+        z-index: 300;
+        max-width: min(34rem, calc(100vw - 2rem));
         padding: 0.4rem 0.75rem;
         border-radius: 999px;
         font-weight: 600;
         font-size: 0.9rem;
         margin-left: auto;
+        box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+        pointer-events: none;
       }
 
       .card-header .flash-message {
-        margin: 0 0 0 auto;
-        align-self: center;
+        margin: 0;
       }
 
       main > .flash-message {
-        margin: 0 0 1.5rem 0;
+        margin: 0;
       }
 
       .flash-message.is-visible {
@@ -127,20 +181,49 @@
         border: 1px solid var(--border);
       }
 
+      main > .card {
+        scroll-margin-top: 5.2rem;
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+        padding: 0;
+      }
+
+      main > .card:not(.admin-view-active) {
+        display: none;
+      }
+
+      main > .card > .card-header {
+        min-height: 0;
+        margin-bottom: 0;
+        padding-bottom: 0;
+        border-bottom: 0;
+        justify-content: flex-end;
+      }
+
+      main > .card > .card-header .card-header__title {
+        display: none;
+      }
+
       .card-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
         gap: 1rem;
-        margin-bottom: 1rem;
+        margin-bottom: 1.25rem;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid var(--border);
       }
 
       .card.card--collapsed .card-header {
         margin-bottom: 0;
+        padding-bottom: 0;
+        border-bottom: 0;
       }
 
       .card--toggleable {
-        cursor: pointer;
+        cursor: default;
         user-select: none;
       }
 
@@ -151,7 +234,7 @@
       }
 
       .card-header--toggleable {
-        cursor: pointer;
+        cursor: default;
         user-select: none;
       }
 
@@ -160,7 +243,7 @@
         align-items: center;
         gap: 0.55rem;
         min-width: 0;
-        cursor: pointer;
+        cursor: default;
         user-select: none;
       }
 
@@ -172,7 +255,7 @@
       .card-collapse-toggle {
         appearance: none;
         -webkit-appearance: none;
-        display: inline-flex;
+        display: none;
         align-items: center;
         justify-content: center;
         width: 1.5rem;
@@ -360,16 +443,16 @@
         margin: 0;
         padding: 0;
         display: grid;
-        gap: 0.75rem;
+        gap: 0.5rem;
       }
 
       .list-item {
         border: 1px solid var(--border);
         border-radius: 10px;
         background: var(--surface);
-        padding: 0.75rem 1rem;
+        padding: 0.5rem 0.75rem;
         display: grid;
-        gap: 0.5rem;
+        gap: 0.35rem;
         box-shadow: 0 12px 28px rgba(15, 23, 42, 0.25);
       }
 
@@ -377,7 +460,7 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 0.75rem;
+        gap: 0.55rem;
       }
 
       .list-item-header--toggleable {
@@ -390,6 +473,11 @@
         user-select: none;
       }
 
+      .list-item--jump-highlight {
+        border-color: rgba(37, 99, 235, 0.75);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+      }
+
       .list-item--toggleable .nested,
       .list-item--toggleable .inline-controls {
         cursor: auto;
@@ -400,7 +488,7 @@
         display: flex;
         align-items: center;
         justify-content: flex-start;
-        gap: 0.75rem;
+        gap: 0.55rem;
         font-weight: 600;
       }
 
@@ -475,6 +563,11 @@
         color: #bae6fd;
       }
 
+      .badge.bridge {
+        background: rgba(59, 130, 246, 0.18);
+        color: #bfdbfe;
+      }
+
       details {
         border: 1px solid var(--border);
         border-radius: 10px;
@@ -508,6 +601,61 @@
 
       .nested-block + .nested-block {
         margin-top: 1.5rem;
+      }
+
+      .bridge-config-form {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.7rem;
+        align-items: end;
+        margin-top: 0.55rem;
+      }
+
+      .bridge-config-form .bridge-instance-field {
+        grid-column: 1 / -1;
+      }
+
+      .bridge-config-form .toggle-row {
+        grid-column: 1 / -1;
+        margin: 0;
+      }
+
+      .bridge-config-options {
+        display: contents;
+      }
+
+      .bridge-config-options[hidden] {
+        display: none;
+      }
+
+      .bridge-config-form .field-group {
+        display: grid;
+        align-items: stretch;
+        gap: 0.35rem;
+      }
+
+      .bridge-config-form .field-group label {
+        white-space: normal;
+      }
+
+      .bridge-channel-row {
+        display: grid;
+        grid-column: 1 / -1;
+        grid-template-columns: minmax(0, 1fr) minmax(8rem, 12rem);
+        gap: 0.5rem;
+      }
+
+      .bridge-channel-row .field-group:first-child {
+        min-width: 0;
+      }
+
+      .bridge-config-form select {
+        min-width: 0;
+        width: 100%;
+      }
+
+      .bridge-config-form button {
+        justify-self: start;
       }
 
       .nested ul {
@@ -550,6 +698,7 @@
       }
 
       .config-panel {
+        min-width: 0;
         border: 1px solid var(--border);
         border-radius: 10px;
         background: rgba(15, 23, 42, 0.55);
@@ -595,7 +744,7 @@
 
       #media-network-form {
         display: grid;
-        grid-template-columns: minmax(12rem, 18rem) minmax(14rem, 24rem) auto;
+        grid-template-columns: minmax(10rem, 1fr) minmax(12rem, 1.25fr) auto;
         gap: 0.9rem 1rem;
         align-items: end;
       }
@@ -700,6 +849,42 @@
 
       .guest-login-form button {
         justify-self: end;
+      }
+
+      @media (min-width: 1280px) {
+        .config-layout {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          align-items: stretch;
+        }
+
+        .config-transfer-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .config-layout > .config-panel:nth-of-type(1) {
+          grid-column: 1;
+          grid-row: 1 / span 2;
+        }
+
+        .config-layout > .config-panel:nth-of-type(2) {
+          grid-column: 2;
+          grid-row: 1;
+        }
+
+        .config-layout > .config-panel:nth-of-type(3) {
+          grid-column: 1;
+          grid-row: 3;
+        }
+
+        .config-layout > .config-panel:nth-of-type(4) {
+          grid-column: 2;
+          grid-row: 2 / span 2;
+        }
+
+        .config-layout > .config-panel:nth-of-type(5) {
+          grid-column: 1;
+          grid-row: 4;
+        }
       }
 
       .media-network-qr-card {
@@ -868,11 +1053,14 @@
         display: flex;
         gap: 0.75rem;
         align-items: center;
+        min-width: 0;
+        flex-wrap: wrap;
       }
 
       .config-import-actions input[type='file'] {
         flex: 1 1 auto;
         min-width: 0;
+        max-width: 100%;
       }
 
       .drag-handle {
@@ -913,13 +1101,511 @@
         color: var(--muted);
       }
 
+      .target-matrix-wrap {
+        max-width: 100%;
+        max-height: min(70vh, 48rem);
+        overflow: auto;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        cursor: crosshair;
+      }
+
+      .target-matrix-wrap.is-painting {
+        cursor: crosshair;
+        user-select: none;
+      }
+
+      .target-matrix-wrap.is-painting .target-matrix-toggle {
+        cursor: crosshair;
+      }
+
+      .target-matrix {
+        --matrix-cell-size: 1.9rem;
+        width: var(--matrix-table-width);
+        table-layout: fixed;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: 0.84rem;
+      }
+
+      .target-matrix th,
+      .target-matrix td {
+        min-width: 7rem;
+        height: 3.2rem;
+        padding: 0.45rem 0.6rem;
+        text-align: center;
+        border-right: 1px solid var(--border);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .target-matrix tr:last-child td,
+      .target-matrix tr:last-child th {
+        border-bottom: 0;
+      }
+
+      .target-matrix th:last-child,
+      .target-matrix td:last-child {
+        border-right: 0;
+      }
+
+      .target-matrix thead th {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        color: var(--text);
+        background: #172033;
+      }
+
+      .target-matrix thead tr:nth-child(2) th {
+        top: 1.65rem;
+      }
+
+      .target-matrix .target-matrix__corner,
+      .target-matrix .target-matrix__user-name {
+        position: sticky;
+        left: 0;
+        min-width: 7.5rem;
+        max-width: 7.5rem;
+        text-align: left;
+        z-index: 3;
+        background: #172033;
+      }
+
+      .target-matrix .target-matrix__corner {
+        z-index: 4;
+        padding: 0;
+        overflow: hidden;
+      }
+
+      .target-matrix .target-matrix__corner::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          to top right,
+          transparent calc(50% - 0.5px),
+          rgba(148, 163, 184, 0.5) 50%,
+          transparent calc(50% + 0.5px)
+        );
+        pointer-events: none;
+      }
+
+      .target-matrix__corner-label {
+        position: absolute;
+        z-index: 1;
+        color: var(--muted);
+        font-size: 0.68rem;
+        font-weight: 700;
+        line-height: 1;
+        text-transform: uppercase;
+      }
+
+      .target-matrix__corner-label--users {
+        bottom: 0.55rem;
+        left: 0.55rem;
+      }
+
+      .target-matrix__corner-label--targets {
+        top: 0.55rem;
+        right: 0.55rem;
+      }
+
+      .target-matrix .target-matrix__group {
+        height: 1.65rem;
+        min-width: 0;
+        width: 0;
+        max-width: none;
+        padding-block: 0.1rem;
+        padding-inline: 0.1rem;
+        color: var(--muted);
+        font-size: 0.62rem;
+        text-transform: uppercase;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+
+      .target-matrix col.target-matrix__profile-column {
+        width: 7.5rem;
+      }
+
+      .target-matrix col.target-matrix__target-col {
+        width: var(--matrix-cell-size);
+      }
+
+      .target-matrix .target-matrix__group--users {
+        border-top: 2px solid #3b82f6;
+      }
+
+      .target-matrix .target-matrix__group--conferences {
+        border-top: 2px solid #22c55e;
+      }
+
+      .target-matrix .target-matrix__group--feeds {
+        border-top: 2px solid #f59e0b;
+      }
+
+      .target-matrix__column-label {
+        display: block;
+        max-width: 8rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .target-matrix th.target-matrix__target-column,
+      .target-matrix td.target-matrix__target-column {
+        width: var(--matrix-cell-size);
+        min-width: var(--matrix-cell-size);
+        max-width: var(--matrix-cell-size);
+        padding-inline: 0.1rem;
+      }
+
+      .target-matrix tbody tr,
+      .target-matrix tbody th,
+      .target-matrix tbody td {
+        height: var(--matrix-cell-size);
+        min-height: var(--matrix-cell-size);
+        max-height: var(--matrix-cell-size);
+        padding-block: 0;
+        line-height: 1;
+      }
+
+      .target-matrix thead th.target-matrix__target-column {
+        height: 6.25rem;
+        vertical-align: bottom;
+      }
+
+      .target-matrix__target-column .target-matrix__column-label {
+        width: 1.2rem;
+        max-width: none;
+        max-height: 5.5rem;
+        margin: 0 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        writing-mode: vertical-rl;
+        transform: rotate(180deg);
+      }
+
+      .target-matrix tbody tr:hover td,
+      .target-matrix tbody tr:hover .target-matrix__user-name {
+        background: #1b2639;
+      }
+
+      .target-matrix .target-matrix__target-column.is-column-highlighted {
+        background: #1b2639;
+      }
+
+      .target-matrix td.target-matrix__unavailable {
+        color: #475569;
+        background: rgba(15, 23, 42, 0.58);
+      }
+
+      .target-matrix-toggle {
+        position: absolute;
+        inset: 0;
+        width: auto;
+        height: auto;
+        min-height: 0;
+        max-height: none;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        cursor: crosshair;
+        transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+      }
+
+      .target-matrix td.target-matrix__coupling {
+        position: relative;
+        padding: 0;
+      }
+
+      .target-matrix-toggle:hover {
+        background: transparent;
+        transform: none;
+      }
+
+      .target-matrix-toggle[aria-pressed='true'] {
+        background: var(--primary);
+        box-shadow: none;
+      }
+
+      .target-matrix-toggle[aria-pressed='true']:hover {
+        background: var(--primary);
+      }
+
+      .target-matrix-toggle:focus-visible {
+        outline: none;
+        box-shadow: inset 0 0 0 3px rgba(147, 197, 253, 0.9);
+      }
+
+      .target-matrix-toggle:disabled {
+        cursor: crosshair;
+      }
+
+      .target-matrix-empty {
+        margin: 0;
+        padding: 1rem;
+        color: var(--muted);
+      }
+
+      .matrix-subheading {
+        margin: 0 0 0.55rem;
+        font-size: 0.9rem;
+        color: var(--text);
+      }
+
+      .matrix-subheading--secondary {
+        margin-top: 1.5rem;
+      }
+
+      .status-summary {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+        margin-bottom: 1.4rem;
+        border-top: 1px solid var(--border);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .status-summary__item {
+        min-width: 0;
+        padding: 0.8rem 1rem;
+        border-right: 1px solid var(--border);
+      }
+
+      .status-summary__item:last-child {
+        border-right: 0;
+      }
+
+      .status-summary__label {
+        display: block;
+        margin-bottom: 0.2rem;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .status-summary__value {
+        color: var(--text);
+        font-size: 1.1rem;
+        font-weight: 700;
+      }
+
+      .status-summary__server-state {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .status-group + .status-group {
+        margin-top: 1.5rem;
+      }
+
+      .status-group__heading {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 1rem;
+        margin: 0 0 0.55rem;
+      }
+
+      .status-group__heading h3 {
+        margin: 0;
+        font-size: 0.95rem;
+      }
+
+      .status-group__count,
+      .status-version {
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+
+      .status-table-wrap {
+        max-width: 100%;
+        overflow-x: auto;
+      }
+
+      .status-table {
+        width: 100%;
+        min-width: 52rem;
+        table-layout: fixed;
+        border-collapse: collapse;
+        font-size: 0.84rem;
+      }
+
+      .status-table th,
+      .status-table td {
+        padding: 0.62rem 0.7rem;
+        text-align: left;
+        vertical-align: middle;
+        border-bottom: 1px solid var(--border);
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .status-table th {
+        color: var(--muted);
+        font-size: 0.68rem;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .status-table tbody tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .status-indicator {
+        display: inline-grid;
+        grid-template-columns: 0.58rem minmax(0, 1fr);
+        align-items: center;
+        gap: 0.45rem;
+        max-width: 100%;
+        white-space: nowrap;
+      }
+
+      .status-indicator span:last-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .status-indicator__dot {
+        width: 0.58rem;
+        height: 0.58rem;
+        flex: 0 0 auto;
+        border-radius: 50%;
+        background: #64748b;
+      }
+
+      @keyframes statusTalkingLedBlink {
+        0%,
+        49% {
+          background: var(--success);
+          box-shadow:
+            0 0 0 3px rgba(34, 197, 94, 0.14),
+            0 0 10px rgba(34, 197, 94, 0.4);
+        }
+
+        50%,
+        100% {
+          background: #8b5cf6;
+          box-shadow:
+            0 0 0 3px rgba(139, 92, 246, 0.18),
+            0 0 10px rgba(139, 92, 246, 0.35);
+        }
+      }
+
+      .status-indicator__dot.is-online {
+        background: var(--success);
+        box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14);
+      }
+
+      .status-indicator__dot.is-offline {
+        background: var(--danger);
+        box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.14);
+      }
+
+      .status-indicator__dot.is-warning {
+        background: var(--accent);
+        box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16);
+      }
+
+      .status-indicator__dot.is-talking {
+        background: var(--success);
+        animation: statusTalkingLedBlink 1.6s steps(1, end) infinite;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .status-indicator__dot.is-talking {
+          animation: none;
+          background: #8b5cf6;
+          box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.18);
+        }
+      }
+
+      .status-primary {
+        color: var(--text);
+        font-weight: 650;
+      }
+
+      .status-user-link {
+        min-height: 0;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .status-user-link:hover,
+      .status-user-link:focus-visible {
+        color: #fff;
+        background: transparent;
+        text-decoration: underline;
+        transform: none;
+      }
+
+      .status-user-link:focus-visible {
+        outline: 2px solid rgba(37, 99, 235, 0.55);
+        outline-offset: 2px;
+      }
+
+      .status-secondary {
+        display: block;
+        margin-top: 0.12rem;
+        color: var(--muted);
+        font-size: 0.75rem;
+      }
+
+      .status-empty {
+        color: var(--muted);
+        text-align: center !important;
+      }
+
+      .status-version {
+        margin: 1rem 0 0;
+        text-align: right;
+      }
+
       @media (max-width: 768px) {
+        .admin-bar {
+          grid-template-columns: minmax(0, 1fr) auto;
+          padding: 0.56rem 0.9rem;
+        }
+
+        .admin-bar__nav {
+          grid-column: 1 / -1;
+          grid-row: 2;
+          justify-content: flex-start;
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+
+        .admin-bar__nav::-webkit-scrollbar {
+          display: none;
+        }
+
+        main > .card {
+          scroll-margin-top: 8rem;
+        }
+
         main {
-          padding: 1.25rem 1.25rem 3rem;
+          width: min(calc(100% - 1.5rem), var(--admin-content-width));
+          padding: 6.75rem 0 3rem;
         }
 
         .card {
           padding: 1.5rem;
+        }
+
+        main > .card {
+          padding: 0;
         }
 
         .config-transfer-grid {
@@ -1014,6 +1700,47 @@
           flex: 1 1 auto;
         }
 
+        .status-table {
+          min-width: 0;
+        }
+
+        .status-table col:nth-child(1) {
+          width: 9rem !important;
+        }
+
+        .status-table col:nth-child(2) {
+          width: auto !important;
+        }
+
+        .status-table col:nth-child(n + 3),
+        .status-table th:nth-child(n + 3),
+        .status-table td:nth-child(n + 3) {
+          display: none;
+        }
+
+        .status-table th,
+        .status-table td {
+          overflow: visible;
+          text-overflow: clip;
+        }
+
+        .bridge-config-form {
+          grid-template-columns: 1fr;
+        }
+
+        .bridge-channel-row {
+          grid-column: 1;
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .bridge-channel-row .field-group:first-child {
+          grid-column: 1 / -1;
+        }
+
+        .bridge-config-form button {
+          width: 100%;
+        }
+
         form.inline-form button {
           align-self: stretch;
         }
@@ -1065,13 +1792,195 @@
 
     <div id="admin-bar" class="admin-bar is-hidden">
       <div class="admin-bar__meta">Logged in as <strong id="admin-name-label"></strong></div>
+      <nav class="admin-bar__nav" aria-label="Admin sections">
+        <a href="#status" data-admin-nav="status">Status</a>
+        <a href="#users" data-admin-nav="users">Users</a>
+        <a href="#conferences" data-admin-nav="conferences">Conferences</a>
+        <a href="#feeds" data-admin-nav="feeds">Feeds</a>
+        <a href="#matrix" data-admin-nav="matrix">Matrix</a>
+        <a href="#config" data-admin-nav="config">Config</a>
+      </nav>
       <button id="admin-logout" type="button">Logout</button>
     </div>
 
     <main id="admin-app" class="is-hidden">
       <div id="message" class="flash-message"></div>
 
-      <section class="card" aria-labelledby="users-heading">
+      <section id="status-section" class="card" aria-labelledby="status-heading">
+        <div class="card-header card-header--toggleable">
+          <div class="card-header__title">
+            <button id="status-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="true" aria-controls="status-section-body" aria-label="Collapse status section"></button>
+            <h2 id="status-heading">Status</h2>
+          </div>
+          <div class="card-header__actions">
+            <div id="status-message" class="flash-message"></div>
+          </div>
+        </div>
+
+        <div id="status-section-body" class="card-section-body">
+          <div class="status-summary" aria-label="System status summary">
+            <div class="status-summary__item">
+              <span class="status-summary__label">Users</span>
+              <span id="status-summary-users" class="status-summary__value">-</span>
+            </div>
+            <div class="status-summary__item">
+              <span class="status-summary__label">Bridges</span>
+              <span id="status-summary-bridges" class="status-summary__value">-</span>
+            </div>
+            <div class="status-summary__item">
+              <span class="status-summary__label">Companion</span>
+              <span id="status-summary-companions" class="status-summary__value">-</span>
+            </div>
+            <div class="status-summary__item">
+              <span class="status-summary__label">Feeds</span>
+              <span id="status-summary-feeds" class="status-summary__value">-</span>
+            </div>
+            <div class="status-summary__item">
+              <span class="status-summary__label">Guests</span>
+              <span id="status-summary-guests" class="status-summary__value">-</span>
+            </div>
+            <div class="status-summary__item">
+              <span class="status-summary__label">Server uptime</span>
+              <span class="status-summary__server-state">
+                <span id="status-server-dot" class="status-indicator__dot" role="img" aria-label="Server status unknown"></span>
+                <span id="status-summary-uptime" class="status-summary__value">-</span>
+              </span>
+            </div>
+          </div>
+
+          <div class="status-group">
+            <div class="status-group__heading">
+              <h3>Users</h3>
+              <span id="status-users-count" class="status-group__count"></span>
+            </div>
+            <div class="status-table-wrap">
+              <table class="status-table status-table--users">
+                <colgroup>
+                  <col style="width: 9.8rem;">
+                  <col style="width: 16rem;">
+                  <col style="width: 18%;">
+                  <col style="width: 20%;">
+                  <col style="width: 18%;">
+                  <col style="width: 18%;">
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Name</th>
+                    <th>Client</th>
+                    <th>Address</th>
+                    <th>Connected since</th>
+                    <th>Last seen</th>
+                  </tr>
+                </thead>
+                <tbody id="status-users-body">
+                  <tr><td colspan="6" class="status-empty">Loading status...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="status-group">
+            <div class="status-group__heading">
+              <h3>Feeds</h3>
+              <span id="status-feeds-count" class="status-group__count"></span>
+            </div>
+            <div class="status-table-wrap">
+              <table class="status-table status-table--feeds">
+                <colgroup>
+                  <col style="width: 9.8rem;">
+                  <col style="width: 16rem;">
+                  <col style="width: 18%;">
+                  <col style="width: 20%;">
+                  <col style="width: 18%;">
+                  <col style="width: 18%;">
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Name</th>
+                    <th>Client</th>
+                    <th>Address</th>
+                    <th>Connected since</th>
+                    <th>Last seen</th>
+                  </tr>
+                </thead>
+                <tbody id="status-feeds-body">
+                  <tr><td colspan="6" class="status-empty">No feeds configured.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="status-group">
+            <div class="status-group__heading">
+              <h3>Bridge instances</h3>
+              <span id="status-bridges-count" class="status-group__count"></span>
+            </div>
+            <div class="status-table-wrap">
+              <table class="status-table status-table--bridges">
+                <colgroup>
+                  <col style="width: 9.8rem;">
+                  <col style="width: 16rem;">
+                  <col style="width: 18%;">
+                  <col style="width: 20%;">
+                  <col style="width: 18%;">
+                  <col style="width: 18%;">
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Name</th>
+                    <th>Client</th>
+                    <th>Address</th>
+                    <th>Connected since</th>
+                    <th>Last seen</th>
+                  </tr>
+                </thead>
+                <tbody id="status-bridges-body">
+                  <tr><td colspan="6" class="status-empty">No bridge announced.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="status-group">
+            <div class="status-group__heading">
+              <h3>Companion connections</h3>
+              <span id="status-companions-count" class="status-group__count"></span>
+            </div>
+            <div class="status-table-wrap">
+              <table class="status-table status-table--companions">
+                <colgroup>
+                  <col style="width: 9.8rem;">
+                  <col style="width: 16rem;">
+                  <col style="width: 18%;">
+                  <col style="width: 20%;">
+                  <col style="width: 18%;">
+                  <col style="width: 18%;">
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Name</th>
+                    <th>Client</th>
+                    <th>Address</th>
+                    <th>Connected since</th>
+                    <th>Last seen</th>
+                  </tr>
+                </thead>
+                <tbody id="status-companions-body">
+                  <tr><td colspan="6" class="status-empty">No Companion instance connected.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <p id="status-version" class="status-version"></p>
+        </div>
+      </section>
+
+      <section id="users-section" class="card" aria-labelledby="users-heading">
         <div class="card-header card-header--toggleable">
           <div class="card-header__title">
             <button id="users-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="true" aria-controls="users-section-body" aria-label="Collapse users section"></button>
@@ -1112,7 +2021,7 @@
         </div>
       </section>
 
-      <section class="card" aria-labelledby="conferences-heading">
+      <section id="conferences-section" class="card" aria-labelledby="conferences-heading">
         <div class="card-header card-header--toggleable">
           <div class="card-header__title">
             <button id="conferences-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="true" aria-controls="conferences-section-body" aria-label="Collapse conferences section"></button>
@@ -1143,7 +2052,7 @@
         </div>
       </section>
 
-      <section class="card" aria-labelledby="feeds-heading">
+      <section id="feeds-section" class="card" aria-labelledby="feeds-heading">
         <div class="card-header card-header--toggleable">
           <div class="card-header__title">
             <button id="feeds-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="true" aria-controls="feeds-section-body" aria-label="Collapse feeds section"></button>
@@ -1182,7 +2091,33 @@
         </div>
       </section>
 
-      <section class="card" aria-labelledby="config-heading">
+      <section id="matrix-section" class="card" aria-labelledby="matrix-heading">
+        <div class="card-header card-header--toggleable">
+          <div class="card-header__title">
+            <button id="matrix-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="true" aria-controls="matrix-section-body" aria-label="Collapse matrix section"></button>
+            <h2 id="matrix-heading">Matrix</h2>
+          </div>
+          <div class="card-header__actions">
+            <div id="matrix-message" class="flash-message"></div>
+          </div>
+        </div>
+
+        <div id="matrix-section-body" class="card-section-body">
+          <div class="section-note">
+            Click and drag to set multiple targets at once.
+          </div>
+          <h3 class="matrix-subheading">Target buttons</h3>
+          <div id="target-matrix-container" class="target-matrix-wrap" aria-live="polite">
+            <p class="target-matrix-empty">Loading target matrix...</p>
+          </div>
+          <h3 class="matrix-subheading matrix-subheading--secondary">Conference memberships</h3>
+          <div id="conference-membership-matrix-container" class="target-matrix-wrap" aria-live="polite">
+            <p class="target-matrix-empty">Loading conference memberships...</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="config-section" class="card" aria-labelledby="config-heading">
         <div class="card-header card-header--toggleable">
           <div class="card-header__title">
             <button id="config-section-toggle" type="button" class="card-collapse-toggle" aria-expanded="false" aria-controls="config-section-body" aria-label="Expand config section"></button>

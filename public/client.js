@@ -1,4 +1,11 @@
-const socket = io();
+const socket = io({
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 500,
+  reconnectionDelayMax: 5000,
+  randomizationFactor: 0.5,
+  timeout: 10000,
+});
 
 function setupPasswordVisibilityToggles(root = document) {
   root.querySelectorAll('[data-password-toggle]').forEach((button) => {
@@ -739,6 +746,7 @@ let feedManualStop = false;
 let shouldStartFeedWhenReady = false;
 let isTalking = false;
 let pendingTalkStart = null;
+let warmTalkProducerPromise = null;
 let activeHotkeyCaptureTargetIdentity = null;
 let activeSettingsView = 'main';
 const USER_ACTIVATION_EVENTS = ['pointerdown', 'mousedown', 'click', 'touchstart', 'keydown'];
@@ -1775,6 +1783,12 @@ async function requestInitialMicrophoneAccess({ reason = 'startup' } = {}) {
       } else {
         scheduleMicCleanup();
       }
+    }
+
+    if (mediaInitialized && isOperatorSession() && session.kind === 'user') {
+      ensureWarmTalkProducer(`initial-mic-access:${reason}`).catch((error) => {
+        console.warn('Failed to pre-warm talk producer after microphone access:', error);
+      });
     }
 
     return track;
@@ -3056,6 +3070,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const targetLayerButton = document.getElementById('target-layer-button');
 
   const myIdEl = document.getElementById("my-id");
+  const sessionInfoPrefixEl = document.getElementById('session-info-prefix');
+  function setSessionDisplay(text, { connectionStatus = false } = {}) {
+    if (sessionInfoPrefixEl) sessionInfoPrefixEl.hidden = connectionStatus;
+    myIdEl.textContent = text;
+  }
   const btnReply = document.getElementById("reply");
   if (btnReply) {
     btnReply.setAttribute("aria-pressed", "false");
@@ -3293,6 +3312,7 @@ let cachedOperatorTargets = null;
   let incomingTalkState = { addressedNow: [], replyTarget: null };
   let mediaInitialized = false;
   let initializingMediaPromise = null;
+  let mediaStateGeneration = 0;
   let shouldInitializeAfterConnect = false;
   let activeLockButton = null;
   let activeLockTarget = null;
@@ -3610,7 +3630,7 @@ let cachedOperatorTargets = null;
       ? overrides.targets
       : (currentTargets.length > 0 ? currentTargets : (baseTarget ? [baseTarget] : []));
     return {
-      talking: typeof overrides.talking === 'boolean' ? overrides.talking : Boolean(isTalking || producer),
+      talking: typeof overrides.talking === 'boolean' ? overrides.talking : Boolean(isTalking || pendingTalkStart),
       lockActive: typeof overrides.lockActive === 'boolean' ? overrides.lockActive : Boolean(activeLockButton),
       target: normalizePttTarget(baseTarget),
       targets: normalizePttTargets(baseTargets),
@@ -3634,6 +3654,137 @@ let cachedOperatorTargets = null;
       reason: reason || undefined,
       targets: normalizePttTargets(targets),
     });
+  }
+
+  function emitSocketAck(eventName, payload = {}, { timeoutMs = 3000 } = {}) {
+    if (!socket.connected) {
+      return Promise.reject(new Error('Socket is not connected'));
+    }
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const timer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        reject(new Error(`${eventName} timeout`));
+      }, timeoutMs);
+      try {
+        socket.emit(eventName, payload, (response = {}) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          if (response?.error) {
+            reject(new Error(response.error));
+          } else {
+            resolve(response);
+          }
+        });
+      } catch (error) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        reject(error);
+      }
+    });
+  }
+
+  async function pauseTalkProducer(producerToPause) {
+    if (!producerToPause || producerToPause.closed) return;
+    try { producerToPause.pause?.(); } catch {}
+    await emitSocketAck('pause-producer', { producerId: producerToPause.id });
+  }
+
+  async function resumeTalkProducer(producerToResume) {
+    if (!producerToResume || producerToResume.closed) {
+      throw new Error('Talk producer is not available');
+    }
+    try { producerToResume.resume?.(); } catch {}
+    await emitSocketAck('resume-producer', { producerId: producerToResume.id });
+  }
+
+  function attachTalkProducerCloseHandler(talkProducer, processedTrack = null) {
+    talkProducer.on('close', () => {
+      if (producer === talkProducer) {
+        producer = null;
+      }
+      isTalking = false;
+      currentTargetPeer = null;
+      if (micTrack && !(voiceTriggerEnabled && isOperatorSession())) {
+        micTrack.enabled = false;
+      }
+      if (processedTrack && processedTrack !== micTrack) {
+        processedTrack.enabled = false;
+      }
+      scheduleMicCleanup();
+      clearPressedTalkPointers();
+      setReplyButtonActive(false);
+      clearHotkeyActiveStyles();
+      pressedHotkeyBindings.clear();
+      setSelfTalkingKey(null);
+      if (activeLockButton || activeLockTarget) {
+        clearLockState();
+      }
+    });
+  }
+
+  async function ensureWarmTalkProducer(reason = 'warm-talk-producer') {
+    if (!isOperatorSession() || session.kind !== 'user') return null;
+    if (producer && !producer.closed) return producer;
+    if (pendingTalkStart || isTalking || feedStreaming) return null;
+    if (!mediaInitialized || !sendTransport || sendTransport.closed) return null;
+    if (warmTalkProducerPromise) return warmTalkProducerPromise;
+
+    warmTalkProducerPromise = (async () => {
+      const qualityKey = currentQualityKey();
+      const profile = QUALITY_PROFILES[qualityKey] || QUALITY_PROFILES['low-latency'];
+      const selectedDeviceId = getSelectedDeviceId();
+      const audioConstraints = {
+        echoCancellation: audioProcessingOptions.echoCancellation,
+        noiseSuppression: audioProcessingOptions.noiseSuppression,
+        autoGainControl: audioProcessingOptions.autoGainControl,
+        ...(profile?.constraints || {}),
+        ...(selectedDeviceId ? { deviceId: { exact: selectedDeviceId } } : {})
+      };
+      const track = await ensureMicTrack(audioConstraints, selectedDeviceId);
+      if (!track || pendingTalkStart || isTalking || producer) return producer || null;
+      track.enabled = false;
+
+      let processedTrack = null;
+      if (!audioProcessingEnabled) {
+        const processing = ensureUserProcessingChain(track);
+        processedTrack = processing?.outputTrack || null;
+      }
+      const finalTrack = processedTrack || track;
+      finalTrack.enabled = false;
+
+      const newProducer = await sendTransport.produce({
+        track: finalTrack,
+        appData: { type: 'talk' },
+        codecOptions: profile?.codecOptions ? { ...profile.codecOptions } : undefined,
+        encodings: profile?.encodings ? profile.encodings.map(enc => ({ ...enc })) : undefined,
+        stopTracks: false,
+      });
+
+      producer = newProducer;
+      attachTalkProducerCloseHandler(newProducer, processedTrack);
+      try {
+        await pauseTalkProducer(newProducer);
+      } catch (error) {
+        console.warn(`Failed to pause warm talk producer (${reason}):`, error);
+        notifyServerProducerClosed(newProducer.id, { context: 'warm-talk-pause-failed' });
+        newProducer.close();
+        if (producer === newProducer) {
+          producer = null;
+        }
+        return null;
+      }
+      return producer;
+    })();
+
+    try {
+      return await warmTalkProducerPromise;
+    } finally {
+      warmTalkProducerPromise = null;
+    }
   }
 
   function emitApiCommandResult(eventName, {
@@ -4980,9 +5131,17 @@ let cachedOperatorTargets = null;
       return initializingMediaPromise;
     }
 
+    const generation = mediaStateGeneration;
     initializingMediaPromise = (async () => {
       await initializeMediaSoup();
+      if (generation !== mediaStateGeneration || !socket.connected) {
+        closeMediaTransportState();
+        throw new Error('Media initialization was superseded by a connection reset');
+      }
       mediaInitialized = true;
+      if (isOperatorSession() && session.kind === 'user' && micTrack?.readyState === 'live') {
+        await ensureWarmTalkProducer('media-initialized');
+      }
     })();
 
     try {
@@ -4993,6 +5152,24 @@ let cachedOperatorTargets = null;
     } finally {
       initializingMediaPromise = null;
     }
+  }
+
+  function closeMediaTransportState() {
+    mediaStateGeneration += 1;
+    try {
+      producer?.close();
+    } catch {}
+    try {
+      sendTransport?.close();
+    } catch {}
+    try {
+      recvTransport?.close();
+    } catch {}
+    producer = null;
+    sendTransport = null;
+    recvTransport = null;
+    device = null;
+    mediaInitialized = false;
   }
 
   function notifyServerProducerClosed(producerId, { context = 'producer-close' } = {}) {
@@ -5009,6 +5186,10 @@ let cachedOperatorTargets = null;
     if (socket.connected) {
       ensureMediaInitialized().catch(err => {
         console.error('Media initialization failed:', err);
+        if (session?.name && !sessionResetInProgress) {
+          setSessionDisplay('Reconnecting...', { connectionStatus: true });
+          scheduleReconnectRecovery('media-initialization');
+        }
       });
     }
   }
@@ -5160,10 +5341,19 @@ let cachedOperatorTargets = null;
   let activeRegistrationKey = null;
   let sessionResetInProgress = false;
   let suppressLogoutBeacon = false;
+  let reconnectRecoveryTimer = null;
+  let reconnectRecoveryAttempt = 0;
+  let reconnectRecoveryPromise = null;
+  let connectionGeneration = 0;
+  let lastConnectedSocketId = null;
+  let previousSocketId = null;
 
   async function registerUserWithConflictPrompt({ id, name, kind, allowPrompt = true, guestProfileUserId = null } = {}) {
     const first = await emitRegisterUser({ id, name, kind, guestProfileUserId, force: false });
     if (first?.conflict && kind === 'user') {
+      if (previousSocketId && first?.existing?.socketId === previousSocketId) {
+        return emitRegisterUser({ id, name, kind, guestProfileUserId, force: true });
+      }
       if (!allowPrompt) return { conflict: true };
       const existingName = first?.existing?.name ? ` (${first.existing.name})` : '';
       const ok = confirm(`This user is already signed in${existingName}. Sign out the other session?`);
@@ -5224,6 +5414,135 @@ let cachedOperatorTargets = null;
     });
   }
 
+  function clearReconnectRecovery({ resetAttempt = false } = {}) {
+    if (reconnectRecoveryTimer) {
+      clearTimeout(reconnectRecoveryTimer);
+      reconnectRecoveryTimer = null;
+    }
+    if (resetAttempt) {
+      reconnectRecoveryAttempt = 0;
+    }
+  }
+
+  function scheduleReconnectRecovery(reason = 'retry') {
+    if (sessionResetInProgress || !session?.name) return;
+    clearReconnectRecovery();
+    const attempt = reconnectRecoveryAttempt++;
+    const delay = Math.min(500 * (2 ** attempt), 10000);
+    console.warn(`Scheduling session recovery in ${delay} ms (${reason})`);
+    reconnectRecoveryTimer = setTimeout(() => {
+      reconnectRecoveryTimer = null;
+      if (sessionResetInProgress || !session?.name) return;
+      if (!socket.connected) {
+        socket.connect();
+        return;
+      }
+      recoverConnectedSession(`retry:${reason}`).catch((err) => {
+        console.error('Session recovery retry failed:', err);
+        scheduleReconnectRecovery('retry-error');
+      });
+    }, delay);
+  }
+
+  function isPermanentGuestRegistrationFailure(result) {
+    if (session?.kind !== 'guest') return false;
+    return /guest login is disabled|invalid guest profile/i.test(String(result?.error || ''));
+  }
+
+  async function recoverConnectedSession(reason = 'socket-connect') {
+    if (reconnectRecoveryPromise) return reconnectRecoveryPromise;
+
+    const generation = connectionGeneration;
+    const recovery = (async () => {
+      if (sessionResetInProgress || !socket.connected) return false;
+
+      if (session?.name) {
+        const hasIdentity = (session.kind === 'user' && session.userId)
+          || (session.kind === 'feed' && session.feedId)
+          || isGuestSessionActive();
+        if (hasIdentity) {
+          const registration = await registerCurrentSession();
+          if (generation !== connectionGeneration || !socket.connected) return false;
+          if (!registration?.ok) {
+            if (registration?.conflict || registration?.cancelled) {
+              if (session.kind === 'user') {
+                await hardLogoutAndReload(
+                  registration.cancelled ? null : 'You are already signed in on another device.',
+                  {
+                    silent: !!registration.cancelled,
+                    notifyServer: !registration.cancelled,
+                  }
+                );
+              }
+              return false;
+            }
+            if (isPermanentGuestRegistrationFailure(registration)) {
+              await hardLogoutAndReload('Guest login is no longer available.');
+              return false;
+            }
+            setSessionDisplay('Reconnecting...', { connectionStatus: true });
+            scheduleReconnectRecovery(`registration:${registration?.error || 'failed'}`);
+            return false;
+          }
+          if (session.kind === 'user') {
+            applyPersistedTargetAudioStates(registration.targetAudioStates || []);
+          }
+        }
+        setSessionDisplay(session.name);
+      }
+
+      if (!shouldInitializeAfterConnect && session.name && (session.kind === 'feed' || isOperatorSession())) {
+        shouldInitializeAfterConnect = true;
+      }
+
+      if (shouldInitializeAfterConnect) {
+        try {
+          await ensureMediaInitialized();
+          if (generation !== connectionGeneration || !socket.connected) return false;
+        } catch (err) {
+          if (generation !== connectionGeneration) return false;
+          console.error(`Media initialization failed during ${reason}:`, err);
+          setSessionDisplay('Reconnecting...', { connectionStatus: true });
+          scheduleReconnectRecovery('media-initialization');
+          return false;
+        }
+      }
+
+      if (session.kind === 'feed' && !feedManualStop) {
+        shouldStartFeedWhenReady = true;
+      }
+      updateFeedControls();
+      if (isOperatorSession()) {
+        emitPttState('socket-connect-sync');
+      }
+      clearReconnectRecovery({ resetAttempt: true });
+      previousSocketId = null;
+      return true;
+    })();
+
+    reconnectRecoveryPromise = recovery;
+    try {
+      return await recovery;
+    } finally {
+      if (reconnectRecoveryPromise === recovery) {
+        reconnectRecoveryPromise = null;
+      }
+    }
+  }
+
+  function requestSessionRecovery(reason = 'client-lifecycle') {
+    if (sessionResetInProgress || !session?.name) return;
+    if (!socket.connected) {
+      socket.connect();
+      return;
+    }
+    if (mediaInitialized) return;
+    recoverConnectedSession(reason).catch((err) => {
+      console.error(`Session recovery failed during ${reason}:`, err);
+      scheduleReconnectRecovery(reason);
+    });
+  }
+
   // Check Auto-Login
   const storedName = localStorage.getItem("userName");
   const storedKindRaw = localStorage.getItem(IDENTITY_KIND_KEY);
@@ -5240,20 +5559,10 @@ let cachedOperatorTargets = null;
       console.log("Auto-login as:", storedName);
       loginContainer.style.display = "none";
       intercomApp.style.display = "flex";
-      myIdEl.textContent = storedName;
-      registerCurrentSession()
-        .then((res) => {
-          if (res?.ok && session.kind === 'user') {
-            applyPersistedTargetAudioStates(res.targetAudioStates || []);
-          }
-          if (res?.ok) return;
-          hardLogoutAndReload(null, {
-            silent: true,
-            notifyServer: !res?.cancelled,
-          });
-        });
+      setSessionDisplay(storedName);
       applySessionUI();
-      initializeMediaIfPossible();
+      shouldInitializeAfterConnect = true;
+      requestSessionRecovery('auto-login-user');
       requestInitialMicrophoneAccess({ reason: 'auto-login-user' });
     }
   } else if (storedKind === "feed") {
@@ -5263,12 +5572,12 @@ let cachedOperatorTargets = null;
       console.log("Auto-login feed:", storedName);
       loginContainer.style.display = "none";
       intercomApp.style.display = "flex";
-      myIdEl.textContent = storedName;
+      setSessionDisplay(storedName);
       feedManualStop = false;
       shouldStartFeedWhenReady = true;
-      registerCurrentSession().catch(() => {});
       applySessionUI();
-      initializeMediaIfPossible();
+      shouldInitializeAfterConnect = true;
+      requestSessionRecovery('auto-login-feed');
       requestInitialMicrophoneAccess({ reason: 'auto-login-feed' });
     }
   } else if (storedGuestSession) {
@@ -5276,15 +5585,10 @@ let cachedOperatorTargets = null;
     console.log("Auto-login Guest:", storedGuestSession.name);
     loginContainer.style.display = "none";
     intercomApp.style.display = "flex";
-    myIdEl.textContent = storedGuestSession.name;
-    registerCurrentSession()
-      .then((res) => {
-        if (res?.ok) return;
-        clearStoredGuestSession();
-        hardLogoutAndReload("Guest login is no longer available.");
-      });
+    setSessionDisplay(storedGuestSession.name);
     applySessionUI();
-    initializeMediaIfPossible();
+    shouldInitializeAfterConnect = true;
+    requestSessionRecovery('auto-login-guest');
     requestInitialMicrophoneAccess({ reason: 'auto-login-guest' });
   }
 
@@ -5358,7 +5662,7 @@ let cachedOperatorTargets = null;
 
       loginContainer.style.display = "none";
       intercomApp.style.display = "flex";
-      myIdEl.textContent = user.name;
+      setSessionDisplay(user.name);
       applySessionUI();
       await syncOperatorTargetsFromLatestUserList(`login-${kind}`);
       requestInitialMicrophoneAccess({ reason: `login-${kind}` });
@@ -5415,7 +5719,7 @@ let cachedOperatorTargets = null;
 
       loginContainer.style.display = "none";
       intercomApp.style.display = "flex";
-      myIdEl.textContent = nextSession.name;
+      setSessionDisplay(nextSession.name);
       applySessionUI();
       await syncOperatorTargetsFromLatestUserList('login-guest');
       requestInitialMicrophoneAccess({ reason: 'login-guest' });
@@ -5456,51 +5760,9 @@ let cachedOperatorTargets = null;
   // Signaling Events
   socket.on("connect", async () => {
     console.log("Connected to signaling server as", socket.id);
-    if (sessionResetInProgress) {
-      return;
-    }
-      if (session.name) {
-        if ((session.kind === 'user' && session.userId) || (session.kind === 'feed' && session.feedId) || isGuestSessionActive()) {
-          const reg = await registerCurrentSession();
-          if (!reg?.ok) {
-            if (session.kind === 'user') {
-              hardLogoutAndReload(reg?.cancelled ? null : "You are already signed in on another device.", {
-                silent: !!reg?.cancelled,
-                notifyServer: !reg?.cancelled,
-              });
-            } else if (session.kind === 'guest') {
-              hardLogoutAndReload("Guest login is no longer available.");
-            }
-            return;
-          }
-        if (session.kind === 'user') {
-          applyPersistedTargetAudioStates(reg.targetAudioStates || []);
-        }
-      }
-      myIdEl.textContent = session.name;
-    }
-
-      if (!shouldInitializeAfterConnect && session.name && (session.kind === 'feed' || isOperatorSession())) {
-        shouldInitializeAfterConnect = true;
-      }
-
-    if (shouldInitializeAfterConnect) {
-      try {
-        await ensureMediaInitialized();
-      } catch (err) {
-        console.error('Media initialization on connect failed:', err);
-      }
-    }
-
-    if (session.kind === 'feed' && !feedManualStop) {
-      shouldStartFeedWhenReady = true;
-    }
-
-    updateFeedControls();
-      if (isOperatorSession()) {
-        emitPttState('socket-connect-sync');
-      }
-    });
+    lastConnectedSocketId = socket.id;
+    await recoverConnectedSession('socket-connect');
+  });
 
   socket.on("session-kicked", () => {
     hardLogoutAndReload("You were signed out because you signed in somewhere else.", {
@@ -5508,9 +5770,16 @@ let cachedOperatorTargets = null;
     });
   });
 
-  socket.on("disconnect", () => {
-    console.log("Disconnected from server");
-    myIdEl.textContent = "Disconnected";
+  socket.on("disconnect", (reason) => {
+    console.log("Disconnected from server:", reason);
+    previousSocketId = lastConnectedSocketId;
+    lastConnectedSocketId = null;
+    connectionGeneration += 1;
+    clearReconnectRecovery();
+    activeRegistrationPromise = null;
+    activeRegistrationKey = null;
+    reconnectRecoveryPromise = null;
+    setSessionDisplay('Disconnected', { connectionStatus: true });
     pendingOfflineUserTimers.forEach((timerId) => clearTimeout(timerId));
     pendingOfflineUserTimers.clear();
     latestServerUsers = [];
@@ -5542,12 +5811,7 @@ let cachedOperatorTargets = null;
     });
     clearReplyTarget();
 
-    mediaInitialized = false;
-    initializingMediaPromise = null;
-    device = null;
-    sendTransport = null;
-    recvTransport = null;
-    producer = null;
+    closeMediaTransportState();
     pendingProducerQueue.length = 0;
 
     if (session.kind === 'feed') {
@@ -5556,6 +5820,10 @@ let cachedOperatorTargets = null;
         shouldStartFeedWhenReady = true;
       }
       updateFeedControls();
+    }
+
+    if (!sessionResetInProgress && session?.name && reason === 'io server disconnect') {
+      setTimeout(() => socket.connect(), 500);
     }
   });
 
@@ -8463,7 +8731,8 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     } catch (err) {
       console.error("=== ✗ MediaSoup initialization failed ===");
       console.error("Error:", err);
-      alert("Initialization failed: " + err.message);
+      closeMediaTransportState();
+      throw err;
     }
   }
 
@@ -8695,14 +8964,14 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   function updateOutgoingTalkHighlight(target, isActive) {
     if (!target) return;
-    let selector = null;
+    let targetId = null;
     if (target.type === 'conference') {
-      selector = `#conf-${target.id}`;
+      targetId = `conf-${target.id}`;
     } else if (target.type === 'user') {
-      selector = `#user-${target.id}`;
+      targetId = `user-${target.id}`;
     }
-    if (!selector) return;
-    document.querySelector(selector)?.classList.toggle('talking-to', Boolean(isActive));
+    if (!targetId) return;
+    document.getElementById(targetId)?.classList.toggle('talking-to', Boolean(isActive));
   }
 
   function getTalkInputKey(event) {
@@ -9018,10 +9287,10 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   function findTalkButtonForTarget(target) {
     if (!target) return null;
     if (target.type === 'user') {
-      return document.querySelector(`#user-${target.id} .talk-btn`);
+      return document.getElementById(`user-${target.id}`)?.querySelector('.talk-btn') || null;
     }
     if (target.type === 'conference') {
-      return document.querySelector(`#conf-${target.id} .talk-btn`);
+      return document.getElementById(`conf-${target.id}`)?.querySelector('.talk-btn') || null;
     }
     return null;
   }
@@ -9122,7 +9391,47 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     const targetKey = keyFromTarget(effectiveTargets[0] || normalizedTarget);
     showSlideToLockHint(targetKey);
 
-    if (producer || pendingTalkStart) {
+    if (!producer && warmTalkProducerPromise) {
+      await warmTalkProducerPromise.catch(() => null);
+    }
+
+    if (producer && !producer.closed) {
+      emitTalkTargetsUpdated('talk-targets-updated', effectiveTargets);
+      if (micTrack?.readyState === 'live') {
+        micTrack.enabled = true;
+      }
+      if (userProcessingChain?.outputTrack) {
+        userProcessingChain.outputTrack.enabled = true;
+      }
+      setCurrentTalkTargets(effectiveTargets);
+      currentTargetPeer = null;
+      isTalking = true;
+      refreshSelfTalkingKey();
+      try {
+        await resumeTalkProducer(producer);
+        emitPttState('talk-started', {
+          talking: true,
+          lockActive: Boolean(activeLockButton),
+          target: effectiveTargets[0] || null,
+          targets: effectiveTargets,
+        });
+      } catch (error) {
+        console.error('Failed to resume talk producer:', error);
+        isTalking = false;
+        setSelfTalkingKey(null);
+        emitTalkTargetsUpdated('talk-targets-cleared', []);
+        emitPttState('talk-start-failed', {
+          talking: false,
+          lockActive: Boolean(activeLockButton),
+          target: null,
+          targets: [],
+        });
+      }
+      if (feedDimSelf) applyFeedDucking();
+      return;
+    }
+
+    if (pendingTalkStart) {
       emitTalkTargetsUpdated('talk-targets-updated', effectiveTargets);
       emitPttState('talk-targets-updated', {
         talking: true,
@@ -9130,9 +9439,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         target: effectiveTargets[0] || null,
         targets: effectiveTargets,
       });
-      if (feedDimSelf) {
-        applyFeedDucking();
-      }
+      if (feedDimSelf) applyFeedDucking();
       return;
     }
 
@@ -9236,28 +9543,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       pendingTalkStart = null;
       producer = newProducer;
 
-      newProducer.on('close', () => {
-        if (producer === newProducer) {
-          producer = null;
-        }
-        isTalking = false;
-        currentTargetPeer = null;
-        if (micTrack && !(voiceTriggerEnabled && isOperatorSession())) {
-          micTrack.enabled = false;
-        }
-        if (processedTrack && processedTrack !== micTrack) {
-          processedTrack.enabled = false;
-        }
-        scheduleMicCleanup();
-        clearPressedTalkPointers();
-        setReplyButtonActive(false);
-        clearHotkeyActiveStyles();
-        pressedHotkeyBindings.clear();
-        setSelfTalkingKey(null);
-        if (activeLockButton || activeLockTarget) {
-          clearLockState();
-        }
-      });
+      attachTalkProducerCloseHandler(newProducer, processedTrack);
 
       emitTalkTargetsUpdated('talk-targets-started', currentTargets.length > 0 ? currentTargets : activeTargets);
       emitPttState('talk-started', {
@@ -9362,10 +9648,18 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     clearLockState();
     emitTalkTargetsUpdated('talk-targets-cleared', []);
 
-    if (producer) {
-      notifyServerProducerClosed(producer.id, { context: 'talk-stop' });
-      producer.close();
-      producer = null;
+    if (producer && !producer.closed) {
+      pauseTalkProducer(producer).catch((error) => {
+        console.warn('Failed to pause talk producer, closing it instead:', error);
+        const staleProducer = producer;
+        if (staleProducer && !staleProducer.closed) {
+          notifyServerProducerClosed(staleProducer.id, { context: 'talk-stop-pause-failed' });
+          staleProducer.close();
+        }
+        if (producer === staleProducer) {
+          producer = null;
+        }
+      });
     }
 
     if (micTrack && !(voiceTriggerEnabled && isOperatorSession())) {
@@ -9415,6 +9709,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       return;
     }
     if (document.visibilityState === 'visible') {
+      requestSessionRecovery('visibility-visible');
       pruneIncomingStreamBookkeeping();
       primeVisibleRemotePlaybackBuses({ forceRetry: true });
       const sharedCtx = sharedAudioContext && sharedAudioContext.state !== 'closed'
@@ -9437,6 +9732,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   window.addEventListener('pagehide', () => stopTalkingSafely());
   window.addEventListener('blur', () => stopTalkingSafely({ respectLock: true }));
   window.addEventListener('focus', () => {
+    requestSessionRecovery('window-focus');
     pruneIncomingStreamBookkeeping();
     const sharedCtx = sharedAudioContext && sharedAudioContext.state !== 'closed'
       ? sharedAudioContext
@@ -9453,6 +9749,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     }
   });
   window.addEventListener('pageshow', () => {
+    requestSessionRecovery('pageshow');
     const sharedCtx = sharedAudioContext && sharedAudioContext.state !== 'closed'
       ? sharedAudioContext
       : null;
@@ -9470,6 +9767,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       }, 250);
     }
   });
+  window.addEventListener('online', () => requestSessionRecovery('network-online'));
   const handleGlobalPointerRelease = (e) => {
     const pointerId = Number.isFinite(Number(e?.pointerId)) ? Number(e.pointerId) : null;
     stopTalkingSafely({ respectLock: true, pointerId });

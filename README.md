@@ -14,11 +14,11 @@ Local WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
 
 ## Quick Start
 
-Choose one way to run Talk To Me:
+Choose one way to run the application:
 
-- **macOS / Windows release:** easiest local install for a dedicated intercom computer -> [GitHub Releases page](https://github.com/thepoison606/talktome/releases).
-- **Docker:** best for a small server, NAS, mini PC, or always-on host.
-- **Source:** for development.
+- **[macOS / Windows release:](https://github.com/thepoison606/talktome/releases)** easiest local install
+- **[Docker:](https://hub.docker.com/r/thepoison606/talktome)**
+- **Source:** for development
 
 ### First Start
 

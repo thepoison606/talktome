@@ -193,6 +193,15 @@ fn config_range_from(config: SupportedStreamConfigRange) -> AudioConfigRange {
 
 fn build_channel_pairs(max_channels: u16) -> Vec<ChannelPair> {
     let mut pairs = Vec::new();
+
+    for channel in 1..=max_channels {
+        pairs.push(ChannelPair {
+            label: format!("{channel}"),
+            left_channel: channel,
+            right_channel: channel,
+        });
+    }
+
     let pair_count = max_channels / 2;
 
     for pair_index in 0..pair_count {

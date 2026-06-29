@@ -7,10 +7,43 @@ const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const os = require("os");
 const dgram = require("dgram");
+const childProcess = require("child_process");
 const selfsigned = require("selfsigned");
 const QRCode = require("qrcode");
 const { getDataDir } = require("./dataPaths");
 const { ApplePttPushService } = require("./applePttPushService");
+
+function resolveServerAppVersion() {
+  let version = process.env.TALKTOME_VERSION || process.env.npm_package_version || "";
+
+  try {
+    version = version || require("./package.json").version || "";
+  } catch {
+    // Keep status endpoint available even if package metadata is unavailable in a packaged build.
+  }
+
+  if (!process.pkg) {
+    try {
+      const gitVersion = childProcess.execFileSync(
+        "git",
+        ["describe", "--tags", "--always", "--dirty"],
+        {
+          cwd: __dirname,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 1000,
+        }
+      ).trim();
+      if (gitVersion) version = gitVersion;
+    } catch {
+      // Git metadata is not available in packaged installs.
+    }
+  }
+
+  return version || "unknown";
+}
+
+const SERVER_APP_VERSION = resolveServerAppVersion();
 
 const workerName = process.platform === "win32" ? "mediasoup-worker.exe" : "mediasoup-worker";
 
@@ -79,12 +112,17 @@ const {
   updateConferenceName,
   updateUserPassword,
   updateAdminPassword,
+  updateFeedName,
+  updateFeedPassword,
+  updateUserLastOnline,
   getGuestProfileUser,
   getOrCreateGuestProfile,
   getUsersForConference,
   getConferencesForUser,
   getAllUsers,
   getUserById,
+  getBridgeEndpointsForDevice,
+  getFeedBridgeEndpointsForDevice,
   getAllConferences,
   getAllFeeds,
   deleteUser,
@@ -100,14 +138,15 @@ const {
   updateUserTargetOrder,
   getUserTargetAudioStates,
   replaceUserTargetAudioStates,
-  getAllConferenceId,
   getFeedIdsForUser,
   getUsersForFeed,
+  updateFeedBridgeEndpoint,
   getOrCreateApplePttChannelForUser,
   registerApplePttPushToken,
   unregisterApplePttPushToken,
   getApplePttRegistrationsForUsers,
   setUserAdminRole,
+  updateUserBridgeEndpoint,
   exportDatabaseSnapshot,
   importDatabaseSnapshot
 } = require("./dbHandler");
@@ -120,10 +159,63 @@ const execPublicDir = path.join(execDir, "public");
 const snapshotPublicDir = path.join(__dirname, "public");
 const dataDir = getDataDir();
 const dataConfigPath = path.join(dataDir, "config.json");
+const bridgeTokenPath = path.join(dataDir, "bridge-tokens.json");
 const legacyConfigPath = path.join(__dirname, "config.json");
 const legacyPkgConfigPath = path.join(execDir, "config.json");
 const DEFAULT_RTC_PORT_START = 40000;
 const DEFAULT_RTC_PORT_COUNT = 10000;
+const BRIDGE_REGISTRY_STALE_MS = 45_000;
+const BRIDGE_CONTROL_SESSION_STALE_MS = 30_000;
+const SERVER_STARTED_AT = Date.now();
+
+const bridgeRegistry = new Map();
+const bridgeControlSessions = new Map();
+
+function loadBridgeTokenStore() {
+  try {
+    if (!fs.existsSync(bridgeTokenPath)) return new Map();
+    const parsed = JSON.parse(fs.readFileSync(bridgeTokenPath, "utf8"));
+    if (!parsed || typeof parsed !== "object") return new Map();
+    const entries = Object.entries(parsed)
+      .map(([id, value]) => {
+        const normalizedId = normalizeBridgeId(id);
+        const token = typeof value?.token === "string" ? value.token.trim() : "";
+        const tokenHash = typeof value?.tokenHash === "string" ? value.tokenHash.trim() : "";
+        if (!normalizedId || !token || !tokenHash) return null;
+        return [normalizedId, {
+          token,
+          tokenHash,
+          createdAt: typeof value.createdAt === "string" ? value.createdAt : new Date().toISOString(),
+          updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : null,
+        }];
+      })
+      .filter(Boolean);
+    return new Map(entries);
+  } catch (err) {
+    console.warn(`[BRIDGE] Failed to load bridge token store: ${err.message}`);
+    return new Map();
+  }
+}
+
+function saveBridgeTokenStore() {
+  try {
+    fs.mkdirSync(path.dirname(bridgeTokenPath), { recursive: true });
+    const payload = {};
+    for (const [id, entry] of bridgeTokenStore.entries()) {
+      payload[id] = {
+        token: entry.token,
+        tokenHash: entry.tokenHash,
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt,
+      };
+    }
+    fs.writeFileSync(bridgeTokenPath, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
+  } catch (err) {
+    console.warn(`[BRIDGE] Failed to persist bridge token store: ${err.message}`);
+  }
+}
+
+const bridgeTokenStore = loadBridgeTokenStore();
 
 function copyDirRecursive(srcDir, destDir) {
   if (!fs.existsSync(srcDir)) {
@@ -510,6 +602,9 @@ if (fs.existsSync(nodeModulesDir)) {
 
 const ADMIN_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const adminSessions = new Map();
+const adminStatusStreams = new Set();
+let adminStatusBroadcastTimer = null;
+let pendingAdminStatusReason = "status-changed";
 
 function parseCookieHeader(header) {
   const cookies = {};
@@ -567,17 +662,84 @@ function requireSuperAdmin(req, res, next) {
   next();
 }
 
+function writeAdminStatusEvent(stream, event, payload) {
+  try {
+    stream.res.write(`event: ${event}\n`);
+    stream.res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    return true;
+  } catch {
+    adminStatusStreams.delete(stream);
+    clearInterval(stream.heartbeat);
+    return false;
+  }
+}
+
+function scheduleAdminStatusBroadcast(reason = "status-changed") {
+  if (adminStatusStreams.size === 0) return;
+  pendingAdminStatusReason = reason;
+  if (adminStatusBroadcastTimer !== null) return;
+  adminStatusBroadcastTimer = setTimeout(() => {
+    adminStatusBroadcastTimer = null;
+    const payload = {
+      reason: pendingAdminStatusReason,
+      snapshot: buildAdminStatusSnapshot(),
+    };
+    for (const stream of [...adminStatusStreams]) {
+      writeAdminStatusEvent(stream, "status", payload);
+    }
+  }, 75);
+}
+
+function closeAdminStatusStreamsForToken(token, event = "auth-expired") {
+  if (!token) return;
+  for (const stream of [...adminStatusStreams]) {
+    if (stream.token !== token) continue;
+    writeAdminStatusEvent(stream, event, { reason: event });
+    adminStatusStreams.delete(stream);
+    clearInterval(stream.heartbeat);
+    try {
+      stream.res.end();
+    } catch {}
+  }
+}
+
 const COMPANION_DEFAULT_WAIT_MS = 1500;
 const COMPANION_MAX_WAIT_MS = 10000;
 const COMPANION_PENDING_TTL_MS = 30000;
 const COMPANION_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const COMPANION_DEFAULT_VOLUME_STEP = 0.1;
+const COMPANION_STATUS_STALE_MS = 45000;
 const COMPANION_API_KEY_FILE = path.join(getDataDir(), "companion_api_key");
 
 const companionUserState = new Map();
 const companionPendingCommands = new Map();
 const companionSessions = new Map();
 let companionNamespace = null;
+
+function markCompanionSocketSeen(socket) {
+  if (!socket) return;
+  const now = Date.now();
+  socket.data.lastSeenAt = now;
+  socket.data.lastSeenAtIso = new Date(now).toISOString();
+  if (socket.data.statusStaleTimer) {
+    clearTimeout(socket.data.statusStaleTimer);
+  }
+  socket.data.statusStaleTimer = setTimeout(() => {
+    scheduleAdminStatusBroadcast("companion-stale");
+  }, COMPANION_STATUS_STALE_MS + 250);
+}
+
+function clearCompanionStatusTimer(socket) {
+  if (!socket?.data?.statusStaleTimer) return;
+  clearTimeout(socket.data.statusStaleTimer);
+  socket.data.statusStaleTimer = null;
+}
+
+function isCompanionSocketOnline(socket, now = Date.now()) {
+  if (!socket?.connected) return false;
+  const lastSeenAt = Number(socket.data?.lastSeenAt || socket.data?.connectedAt || 0);
+  return lastSeenAt > 0 && now - lastSeenAt <= COMPANION_STATUS_STALE_MS;
+}
 
 function readCompanionApiKeyFromEnv() {
   if (typeof process.env.COMPANION_API_KEY !== "string") {
@@ -731,6 +893,72 @@ function hasCompanionGlobalAccess(auth) {
   return Boolean(auth && (auth.type === "api-key" || auth.isSuperadmin));
 }
 
+function generateBridgeToken() {
+  return `ttm_bridge_${crypto.randomBytes(32).toString("hex")}`;
+}
+
+function hashBridgeToken(token) {
+  return crypto.createHash("sha256").update(String(token || ""), "utf8").digest("hex");
+}
+
+function isValidBridgeTokenHash(candidate, expectedHash) {
+  if (typeof candidate !== "string" || !candidate || typeof expectedHash !== "string" || !expectedHash) {
+    return false;
+  }
+  const left = Buffer.from(hashBridgeToken(candidate), "hex");
+  const right = Buffer.from(expectedHash, "hex");
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function resolveBridgeTokenAuth(candidate) {
+  if (typeof candidate !== "string" || !candidate.trim()) return null;
+  for (const entry of bridgeRegistry.values()) {
+    if (isValidBridgeTokenHash(candidate.trim(), entry.tokenHash)) {
+      return {
+        type: "bridge-token",
+        bridgeId: entry.id,
+        isAdmin: false,
+        isSuperadmin: false,
+      };
+    }
+  }
+  for (const [bridgeId, entry] of bridgeTokenStore.entries()) {
+    if (isValidBridgeTokenHash(candidate.trim(), entry.tokenHash)) {
+      return {
+        type: "bridge-token",
+        bridgeId,
+        isAdmin: false,
+        isSuperadmin: false,
+      };
+    }
+  }
+  return null;
+}
+
+function resolveBridgeApiAuth(candidate) {
+  const companionAuth = resolveCompanionAuth(candidate);
+  if (companionAuth) {
+    return {
+      type: "companion",
+      companionAuth,
+      isAdmin: companionAuth.isAdmin,
+      isSuperadmin: companionAuth.isSuperadmin,
+    };
+  }
+  return resolveBridgeTokenAuth(candidate);
+}
+
+function hasBridgeGlobalAccess(auth) {
+  return Boolean(auth?.type === "companion" && hasCompanionGlobalAccess(auth.companionAuth));
+}
+
+function canBridgeAuthAccessBridge(auth, bridgeId) {
+  if (hasBridgeGlobalAccess(auth)) return true;
+  if (auth?.type !== "bridge-token") return false;
+  return normalizeBridgeId(auth.bridgeId) === normalizeBridgeId(bridgeId);
+}
+
 function canCompanionControlUser(auth, userId) {
   if (!auth || !Number.isFinite(Number(userId))) return false;
   if (hasCompanionGlobalAccess(auth)) return true;
@@ -764,6 +992,180 @@ function requireCompanionApiKey(req, res, next) {
     return res.status(401).json({ error: "Companion authentication required" });
   }
   req.companionAuth = auth;
+  next();
+}
+
+function requireBridgeApiAuth(req, res, next) {
+  const candidate = extractCompanionApiKeyFromRequest(req);
+  const auth = resolveBridgeApiAuth(candidate);
+  if (!candidate || !auth) {
+    return res.status(401).json({ error: "Bridge authentication required" });
+  }
+  req.bridgeApiAuth = auth;
+  req.companionAuth = auth.type === "companion" ? auth.companionAuth : null;
+  next();
+}
+
+function normalizeBridgeRegistryText(value, fallback = "") {
+  if (value === null || value === undefined) return fallback;
+  const normalized = String(value).trim();
+  return normalized ? normalized.slice(0, 200) : fallback;
+}
+
+function normalizeBridgeRegistryChannel(value) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1 || number > 512) return null;
+  return number;
+}
+
+function sanitizeBridgeChannelPairs(pairs = []) {
+  if (!Array.isArray(pairs)) return [];
+  const result = [];
+  for (const pair of pairs.slice(0, 1024)) {
+    const left = normalizeBridgeRegistryChannel(pair?.left_channel ?? pair?.leftChannel);
+    const right = normalizeBridgeRegistryChannel(pair?.right_channel ?? pair?.rightChannel);
+    if (left === null || right === null || (right !== left && right !== left + 1)) continue;
+    result.push({
+      label: normalizeBridgeRegistryText(pair?.label, right === left ? `${left}` : `${left}/${right}`),
+      left_channel: left,
+      right_channel: right,
+    });
+  }
+  return result;
+}
+
+function buildBridgeChannelOptions(maxChannels, pairs = []) {
+  const normalizedMaxChannels = Number(maxChannels);
+  const result = [];
+  const seen = new Set();
+  const addOption = (left, right, label = null) => {
+    if (!Number.isInteger(left) || !Number.isInteger(right) || left < 1 || right < 1) return;
+    const key = `${left}:${right}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push({
+      label: normalizeBridgeRegistryText(label, left === right ? `${left}` : `${left}/${right}`),
+      left_channel: left,
+      right_channel: right,
+    });
+  };
+
+  for (const pair of pairs) {
+    addOption(pair.left_channel, pair.right_channel, pair.label);
+  }
+
+  if (Number.isInteger(normalizedMaxChannels) && normalizedMaxChannels > 0) {
+    for (let channel = 1; channel <= normalizedMaxChannels; channel += 1) {
+      addOption(channel, channel);
+    }
+    for (let left = 1; left < normalizedMaxChannels; left += 2) {
+      addOption(left, left + 1);
+    }
+  }
+
+  return result;
+}
+
+function sanitizeBridgeInventory(inventory = {}) {
+  const devices = Array.isArray(inventory.devices) ? inventory.devices : [];
+  return {
+    host: normalizeBridgeRegistryText(inventory.host, "unknown"),
+    devices: devices.slice(0, 256).map((device, index) => {
+      const direction = device?.direction === "output" ? "output" : "input";
+      const id = normalizeBridgeRegistryText(device?.id, `${direction}-${index}`);
+      const name = normalizeBridgeRegistryText(device?.name, id);
+      const maxChannels = normalizeBridgeRegistryChannel(device?.max_channels ?? device?.maxChannels) || 0;
+      const channelPairs = sanitizeBridgeChannelPairs(device?.channel_pairs ?? device?.channelPairs);
+      return {
+        id,
+        name,
+        direction,
+        is_default: Boolean(device?.is_default ?? device?.isDefault),
+        max_channels: maxChannels,
+        supports_48k: Boolean(device?.supports_48k ?? device?.supports48k),
+        channel_pairs: buildBridgeChannelOptions(maxChannels, channelPairs),
+      };
+    }),
+  };
+}
+
+function normalizeBridgeId(value) {
+  const normalized = normalizeBridgeRegistryText(value);
+  if (!normalized) return crypto.randomUUID();
+  return normalized.replace(/[^a-zA-Z0-9_.:-]/g, "-").slice(0, 120) || crypto.randomUUID();
+}
+
+function serializeBridgeRegistryEntry(entry, now = Date.now()) {
+  return {
+    id: entry.id,
+    name: entry.name,
+    platform: entry.platform || "unknown",
+    host: entry.inventory.host,
+    inventory: entry.inventory,
+    connectedAt: entry.firstSeenAtIso || entry.lastSeenAtIso,
+    lastSeenAt: entry.lastSeenAtIso,
+    remoteAddress: entry.remoteAddress || null,
+    stale: now - entry.lastSeenAtMs > BRIDGE_REGISTRY_STALE_MS,
+  };
+}
+
+function getBridgeRegistrySnapshot() {
+  const now = Date.now();
+  return [...bridgeRegistry.values()]
+    .sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" }))
+    .map((entry) => serializeBridgeRegistryEntry(entry, now));
+}
+
+function buildBridgeRuntimeConfig(bridgeId) {
+  const normalizedBridgeId = normalizeBridgeId(bridgeId);
+  const userPorts = getBridgeEndpointsForDevice(normalizedBridgeId).map((row) => ({
+    id: `user-${row.user_id}`,
+    kind: "user",
+    userId: Number(row.user_id),
+    feedId: null,
+    label: row.user_name || `User ${row.user_id}`,
+    enabled: true,
+    input: {
+      deviceId: row.input_device,
+      leftChannel: Number(row.input_left_channel),
+      rightChannel: Number(row.input_right_channel),
+    },
+    output: {
+      deviceId: row.output_device,
+      leftChannel: Number(row.output_left_channel),
+      rightChannel: Number(row.output_right_channel),
+    },
+    updatedAt: row.updated_at || null,
+  }));
+  const feedPorts = getFeedBridgeEndpointsForDevice(normalizedBridgeId).map((row) => ({
+    id: `feed-${row.feed_id}`,
+    kind: "feed",
+    userId: null,
+    feedId: Number(row.feed_id),
+    label: row.feed_name || `Feed ${row.feed_id}`,
+    enabled: true,
+    input: {
+      deviceId: row.input_device,
+      leftChannel: Number(row.input_left_channel),
+      rightChannel: Number(row.input_right_channel),
+    },
+    output: null,
+    updatedAt: row.updated_at || null,
+  }));
+  const ports = [...userPorts, ...feedPorts];
+  const signature = JSON.stringify(ports);
+  return {
+    bridgeId: normalizedBridgeId,
+    revision: crypto.createHash("sha256").update(signature).digest("hex").slice(0, 16),
+    ports,
+  };
+}
+
+function allowBridgeCors(req, res, next) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "authorization,x-api-key,content-type");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 }
 
@@ -959,16 +1361,20 @@ function isLiveTalkProducerAppData(appData) {
   return type === "talk" || type === "user" || type === "conference" || type === "guest";
 }
 
-function getPeerActiveTalkProducers(peer) {
+function getPeerTalkProducers(peer, { includePaused = false } = {}) {
   if (!isOperatorPeer(peer)) {
     return [];
   }
 
   return Array.from(peer.producers.values()).filter((producer) => (
     producer
-    && !producer.paused
+    && (includePaused || !producer.paused)
     && isLiveTalkProducerAppData(producer.appData)
   ));
+}
+
+function getPeerActiveTalkProducers(peer) {
+  return getPeerTalkProducers(peer);
 }
 
 function getPeerActiveTalkTargets(peer) {
@@ -1390,6 +1796,14 @@ function parseCompanionWaitMs(raw) {
   return Math.min(COMPANION_MAX_WAIT_MS, Math.max(100, Math.round(parsed)));
 }
 
+function resolveLegacyAllConferenceId() {
+  const legacy = (getAllConferences() || []).find((conference) => (
+    String(conference?.name || '').trim().toLowerCase() === 'all'
+  ));
+  const id = Number(legacy?.id);
+  return Number.isFinite(id) ? id : null;
+}
+
 function normalizeTalkCommandInput(input = {}) {
   let { action, targetType = "conference", targetId = null, inputKey = null } = input || {};
 
@@ -1397,24 +1811,24 @@ function normalizeTalkCommandInput(input = {}) {
     return { ok: false, status: 400, error: "action must be press, release, or lock-toggle" };
   }
 
-  const allConferenceId = getAllConferenceId();
   const normalizedType = typeof targetType === "string" ? targetType.trim().toLowerCase() : "conference";
   targetType = normalizedType;
 
   if (targetType === "reply") {
     targetId = undefined;
   } else {
-    if (targetType === "global" || targetType === "all") {
+    const isLegacyAllTarget = targetType === "all" || targetType === "global";
+    if (isLegacyAllTarget) {
+      const allConferenceId = resolveLegacyAllConferenceId();
+      if (allConferenceId === null) {
+        return {
+          ok: false,
+          status: 404,
+          error: "Conference 'All' not found. Create a conference and select it explicitly.",
+        };
+      }
       targetType = "conference";
       targetId = allConferenceId;
-    }
-
-    if (targetType === "conference" && (targetId === null || targetId === undefined || targetId === "")) {
-      targetId = allConferenceId;
-    }
-
-    if (targetType === "conference" && (targetId === null || targetId === undefined)) {
-      return { ok: false, status: 500, error: "All conference not configured" };
     }
 
     if (targetType === "conference" || targetType === "user") {
@@ -1425,7 +1839,7 @@ function normalizeTalkCommandInput(input = {}) {
       }
       targetId = numericTargetId;
     } else {
-      return { ok: false, status: 400, error: "targetType must be conference, user, reply, global, or all" };
+      return { ok: false, status: 400, error: "targetType must be conference, user, or reply" };
     }
   }
 
@@ -1482,6 +1896,16 @@ function findUserPeerByUserId(userId) {
   const key = String(userId);
   for (const [socketId, peer] of peers) {
     if (peer?.kind === "user" && peer.userId != null && String(peer.userId) === key) {
+      return { socketId, peer };
+    }
+  }
+  return null;
+}
+
+function findFeedPeerByFeedId(feedId) {
+  const key = String(feedId);
+  for (const [socketId, peer] of peers) {
+    if (peer?.kind === "feed" && peer.feedId != null && String(peer.feedId) === key) {
       return { socketId, peer };
     }
   }
@@ -1593,7 +2017,6 @@ function buildCompanionUserState(userId, fallbackName = null, incomingSnapshot =
 }
 
 function buildOperatorTargetsForUser(userId) {
-  const allConferenceId = getAllConferenceId();
   const explicitTargets = getUserTargets(userId) || [];
   const conferenceMemberships = getConferencesForUser(userId) || [];
   const explicitConferenceIds = new Set();
@@ -1625,7 +2048,6 @@ function buildOperatorTargetsForUser(userId) {
     .filter((conference) => (
       Number.isFinite(conference.targetId)
       && !explicitConferenceIds.has(conference.targetId)
-      && (allConferenceId === null || conference.targetId !== Number(allConferenceId))
     ))
     .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base" }))
     .forEach((conference) => {
@@ -1636,12 +2058,7 @@ function buildOperatorTargetsForUser(userId) {
 }
 
 function filterSystemInternalTargets(targets = []) {
-  const allConferenceId = getAllConferenceId();
-  if (allConferenceId === null) return Array.isArray(targets) ? targets : [];
-  return (Array.isArray(targets) ? targets : []).filter((target) => !(
-    target?.targetType === "conference"
-    && Number(target?.targetId) === Number(allConferenceId)
-  ));
+  return Array.isArray(targets) ? targets : [];
 }
 
 function isCompanionAddressableUser(user) {
@@ -1769,6 +2186,7 @@ function broadcastRuntimeUserStates(reason = "runtime-state-changed") {
   for (const user of getCompanionAddressableUsers()) {
     emitCompanionUserState(user.id, reason, user.name, incomingSnapshot);
   }
+  scheduleAdminStatusBroadcast(reason);
 }
 
 function registerCompanionPendingCommand(meta = {}) {
@@ -2037,6 +2455,14 @@ app.post("/login/guest", (req, res) => {
   }
 });
 
+app.get("/api/v1/health", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    serverStartedAt: new Date(SERVER_STARTED_AT).toISOString(),
+  });
+});
+
 app.post("/admin/login", (req, res) => {
   const { name, password } = req.body || {};
   if (!name || !password) {
@@ -2074,6 +2500,7 @@ app.post("/admin/login", (req, res) => {
 
 app.post("/admin/logout", requireAdmin, (req, res) => {
   if (req.adminToken) {
+    closeAdminStatusStreamsForToken(req.adminToken, "logged-out");
     adminSessions.delete(req.adminToken);
   }
   res.clearCookie("admin_session", { httpOnly: true, sameSite: "lax", secure: true });
@@ -2112,6 +2539,295 @@ app.get("/admin/me", (req, res) => {
 
 app.get("/admin/api-key", requireAdmin, (req, res) => {
   res.json({ apiKey: companionApiKey });
+});
+
+function statusIsoTimestamp(value) {
+  const timestamp = Number(value);
+  return Number.isFinite(timestamp) && timestamp > 0
+    ? new Date(timestamp).toISOString()
+    : null;
+}
+
+function statusRemoteAddress(socket) {
+  const rawAddress = socket?.handshake?.address
+    || socket?.request?.socket?.remoteAddress
+    || null;
+  return typeof rawAddress === "string"
+    ? rawAddress.replace(/^::ffff:/, "")
+    : null;
+}
+
+function describeStatusClient(socket) {
+  const userAgent = String(socket?.handshake?.headers?.["user-agent"] || "");
+  if (!userAgent) return "Unknown client";
+
+  let browser = "Browser";
+  if (/EdgiOS|Edg\//i.test(userAgent)) browser = "Edge";
+  else if (/CriOS|Chrome\//i.test(userAgent)) browser = "Chrome";
+  else if (/FxiOS|Firefox\//i.test(userAgent)) browser = "Firefox";
+  else if (/Safari\//i.test(userAgent)) browser = "Safari";
+
+  let platform = "";
+  if (/iPhone/i.test(userAgent)) platform = "iPhone";
+  else if (/iPad/i.test(userAgent)) platform = "iPad";
+  else if (/Android/i.test(userAgent)) platform = "Android";
+  else if (/Windows/i.test(userAgent)) platform = "Win";
+  else if (/Macintosh|Mac OS X/i.test(userAgent)) platform = "macOS";
+  else if (/Linux/i.test(userAgent)) platform = "Linux";
+
+  return platform ? `${platform} ${browser}` : browser;
+}
+
+function normalizeBridgePlatform(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "macos" || normalized === "darwin" || normalized === "mac") return "macos";
+  if (normalized === "windows" || normalized === "win32" || normalized === "win") return "windows";
+  if (normalized === "linux") return "linux";
+  return "unknown";
+}
+
+function describeBridgeStatusClient(platform, host) {
+  const normalizedPlatform = normalizeBridgePlatform(platform);
+  if (normalizedPlatform === "macos") return "macOS Bridge";
+  if (normalizedPlatform === "windows") return "Win Bridge";
+  if (normalizedPlatform === "linux") return "Linux Bridge";
+
+  const normalizedHost = String(host || "").toLowerCase();
+  if (normalizedHost.includes("coreaudio")) return "macOS Bridge";
+  if (normalizedHost.includes("wasapi") || normalizedHost.includes("asio")) return "Win Bridge";
+  if (normalizedHost.includes("alsa") || normalizedHost.includes("pulse") || normalizedHost.includes("jack")) {
+    return "Linux Bridge";
+  }
+  return "Bridge";
+}
+
+function bridgeInventoryHasAssignment(bridge, direction, assignment) {
+  const deviceId = String(assignment?.deviceId || "");
+  if (!deviceId) return false;
+  const leftChannel = Number(assignment?.leftChannel);
+  const rightChannel = Number(assignment?.rightChannel);
+  const requiredChannel = Math.max(leftChannel, rightChannel);
+  const devices = Array.isArray(bridge?.inventory?.devices) ? bridge.inventory.devices : [];
+  const device = devices.find((entry) => (
+    entry.direction === direction
+    && String(entry.id || "") === deviceId
+  ));
+  if (!device) return false;
+  if (!Number.isInteger(leftChannel) || !Number.isInteger(rightChannel)) return false;
+  if (leftChannel < 1 || rightChannel < 1) return false;
+  const maxChannels = Number(device.max_channels ?? device.maxChannels ?? 0);
+  if (maxChannels < requiredChannel) return false;
+  return Boolean(device.supports_48k ?? device.supports48k);
+}
+
+function buildBridgeDeviceIssues(bridge, users = [], feeds = []) {
+  if (!bridge?.id || bridge.stale) return [];
+  const bridgeId = String(bridge.id);
+  const issues = [];
+
+  for (const user of users) {
+    if (!user.bridge_enabled || String(user.bridge_device || "") !== bridgeId) continue;
+    const inputOk = bridgeInventoryHasAssignment(bridge, "input", {
+      deviceId: user.bridge_input_device,
+      leftChannel: user.bridge_input_left_channel,
+      rightChannel: user.bridge_input_right_channel,
+    });
+    const outputOk = bridgeInventoryHasAssignment(bridge, "output", {
+      deviceId: user.bridge_output_device,
+      leftChannel: user.bridge_output_left_channel,
+      rightChannel: user.bridge_output_right_channel,
+    });
+    if (!inputOk) issues.push(`${user.name}: input device missing`);
+    if (!outputOk) issues.push(`${user.name}: output device missing`);
+  }
+
+  for (const feed of feeds) {
+    if (!feed.bridge_enabled || String(feed.bridge_device || "") !== bridgeId) continue;
+    const inputOk = bridgeInventoryHasAssignment(bridge, "input", {
+      deviceId: feed.bridge_input_device,
+      leftChannel: feed.bridge_input_left_channel,
+      rightChannel: feed.bridge_input_right_channel,
+    });
+    if (!inputOk) issues.push(`${feed.name}: input device missing`);
+  }
+
+  return issues;
+}
+
+function buildAdminStatusSnapshot() {
+  const now = Date.now();
+  const allUsers = getAllUsers();
+  const allFeeds = getAllFeeds();
+  const users = allUsers
+    .filter((user) => !user.is_superadmin && !user.is_guest_profile)
+    .map((user) => {
+      const found = findUserPeerByUserId(user.id);
+      const peer = found?.peer || null;
+      const online = Boolean(peer);
+      const isBridge = Boolean(peer?.isBridgePeer);
+      const activeTargets = peer ? getPeerActiveTalkTargets(peer) : [];
+      const bridge = isBridge
+        ? bridgeRegistry.get(String(peer.bridgeId)) || null
+        : null;
+
+      return {
+        id: Number(user.id),
+        name: user.name,
+        online,
+        talking: online && activeTargets.length > 0,
+        connectionType: online ? (isBridge ? "bridge" : "browser") : null,
+        configuredAsBridge: Boolean(user.bridge_enabled),
+        bridgeName: bridge?.name || (isBridge ? peer.bridgeId : null),
+        connectedAt: online ? statusIsoTimestamp(peer.connectedAt) : null,
+        lastOnlineAt: user.last_online_at || null,
+        client: online
+          ? (isBridge
+              ? `${describeBridgeStatusClient(bridge?.platform, bridge?.host)}: ${bridge?.name || peer.bridgeId || "unknown"}`
+              : describeStatusClient(peer.socket))
+          : null,
+        remoteAddress: online && !isBridge ? statusRemoteAddress(peer.socket) : null,
+      };
+    });
+
+  const feeds = allFeeds.map((feed) => {
+    const found = findFeedPeerByFeedId(feed.id);
+    const peer = found?.peer || null;
+    const online = Boolean(peer);
+    const isBridge = Boolean(peer?.isBridgePeer);
+    const bridge = isBridge
+      ? bridgeRegistry.get(String(peer.bridgeId)) || null
+      : null;
+
+    return {
+      id: Number(feed.id),
+      name: feed.name,
+      online,
+      connectionType: online ? (isBridge ? "bridge" : "browser") : null,
+      configuredAsBridge: Boolean(feed.bridge_enabled),
+      bridgeName: bridge?.name || (isBridge ? peer.bridgeId : null),
+      connectedAt: online ? statusIsoTimestamp(peer.connectedAt) : null,
+      lastSeenAt: online ? statusIsoTimestamp(peer.lastSeenAt || peer.connectedAt) : null,
+      client: online
+        ? (isBridge
+            ? `${describeBridgeStatusClient(bridge?.platform, bridge?.host)}: ${bridge?.name || peer.bridgeId || "unknown"}`
+            : describeStatusClient(peer.socket))
+        : null,
+      remoteAddress: online && !isBridge ? statusRemoteAddress(peer.socket) : null,
+    };
+  });
+
+  const bridges = getBridgeRegistrySnapshot().map((bridge) => {
+    const devices = Array.isArray(bridge.inventory?.devices) ? bridge.inventory.devices : [];
+    const deviceIssues = buildBridgeDeviceIssues(bridge, allUsers, allFeeds);
+    return {
+      id: bridge.id,
+      name: bridge.name,
+      platform: bridge.platform,
+      host: bridge.host,
+      online: !bridge.stale,
+      stale: bridge.stale,
+      connectedAt: bridge.connectedAt,
+      lastSeenAt: bridge.lastSeenAt,
+      remoteAddress: bridge.remoteAddress,
+      client: describeBridgeStatusClient(bridge.platform, bridge.host),
+      inventory: bridge.inventory,
+      deviceMissing: deviceIssues.length > 0,
+      deviceIssues,
+      inputDevices: devices.filter((device) => device.direction === "input").length,
+      outputDevices: devices.filter((device) => device.direction === "output").length,
+    };
+  });
+
+  const companionSockets = companionNamespace?.sockets
+    ? [...companionNamespace.sockets.values()]
+    : [];
+  const companions = companionSockets.map((socket) => {
+    const auth = socket.data?.companionAuth || {};
+    const fallbackName = auth.type === "session" && auth.userName
+      ? `Companion for ${auth.userName}`
+      : `Companion ${String(socket.id).slice(0, 8)}`;
+    return {
+      id: socket.id,
+      name: socket.data?.instanceName || fallbackName,
+      online: isCompanionSocketOnline(socket, now),
+      authType: auth.type || "unknown",
+      scope: auth.type === "api-key" ? "Global API key" : (auth.userName || "User session"),
+      userId: auth.userId ?? null,
+      connectedAt: statusIsoTimestamp(socket.data?.connectedAt),
+      lastSeenAt: statusIsoTimestamp(socket.data?.lastSeenAt || socket.data?.connectedAt),
+      remoteAddress: statusRemoteAddress(socket),
+      client: describeStatusClient(socket),
+    };
+  });
+
+  const livePeers = [...peers.values()];
+  return {
+    appVersion: SERVER_APP_VERSION,
+    generatedAt: new Date(now).toISOString(),
+    serverStartedAt: statusIsoTimestamp(SERVER_STARTED_AT),
+    users,
+    feeds,
+    bridges,
+    companions,
+    summary: {
+      usersOnline: users.filter((user) => user.online).length,
+      usersTotal: users.length,
+      feedsOnline: feeds.filter((feed) => feed.online).length,
+      feedsTotal: feeds.length,
+      bridgesOnline: bridges.filter((bridge) => bridge.online).length,
+      bridgesTotal: bridges.length,
+      companionsOnline: companions.filter((companion) => companion.online).length,
+      guestsOnline: livePeers.filter((peer) => peer.kind === "guest" && peer.guestId).length,
+    },
+  };
+}
+
+app.get("/admin/status", requireAdmin, (req, res) => {
+  res.json(buildAdminStatusSnapshot());
+});
+
+app.get("/admin/status/events", requireAdmin, (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+  req.socket?.setTimeout?.(0);
+
+  const stream = {
+    res,
+    token: req.adminToken,
+    heartbeat: null,
+  };
+  adminStatusStreams.add(stream);
+  res.write("retry: 3000\n\n");
+  writeAdminStatusEvent(stream, "status", {
+    reason: "initial",
+    snapshot: buildAdminStatusSnapshot(),
+  });
+
+  stream.heartbeat = setInterval(() => {
+    const session = adminSessions.get(stream.token);
+    if (!session || session.expiresAt <= Date.now()) {
+      closeAdminStatusStreamsForToken(stream.token);
+      return;
+    }
+    try {
+      res.write(": heartbeat\n\n");
+    } catch {
+      adminStatusStreams.delete(stream);
+      clearInterval(stream.heartbeat);
+    }
+  }, 25_000);
+
+  req.on("close", () => {
+    adminStatusStreams.delete(stream);
+    clearInterval(stream.heartbeat);
+  });
+});
+
+app.get("/admin/bridges", requireAdmin, (req, res) => {
+  res.json({ bridges: getBridgeRegistrySnapshot() });
 });
 
 app.get("/admin/settings/mdns", requireAdmin, (req, res) => {
@@ -2654,6 +3370,7 @@ app.post("/users", requireAdmin, (req, res) => {
   const { name, password } = req.body;
   try {
     const id = createUser(name, password);
+    scheduleAdminStatusBroadcast("user-created");
     res.json({ id });
   } catch (err) {
     if (err.message.includes("UNIQUE")) {
@@ -2820,6 +3537,499 @@ app.get("/api/v1/companion/conferences", requireCompanionApiKey, (req, res) => {
 app.get("/api/v1/companion/feeds", requireCompanionApiKey, (req, res) => {
   res.json(getAllFeeds());
 });
+
+app.use("/api/v1/bridge", allowBridgeCors);
+
+app.post("/api/v1/bridge/announce", requireBridgeApiAuth, (req, res) => {
+  const body = req.body || {};
+  const inventory = sanitizeBridgeInventory(body.inventory || {});
+  const id = normalizeBridgeId(body.bridgeId || body.id);
+  if (!canBridgeAuthAccessBridge(req.bridgeApiAuth, id)) {
+    return res.status(403).json({ error: "Bridge registration requires global API key access or this bridge token" });
+  }
+  const name = normalizeBridgeRegistryText(body.bridgeName || body.name, id);
+  const platform = normalizeBridgePlatform(body.platform);
+  const now = Date.now();
+  const previousEntry = bridgeRegistry.get(id);
+  const previousOnline = previousEntry && now - Number(previousEntry.lastSeenAtMs || 0) <= BRIDGE_REGISTRY_STALE_MS;
+  const firstSeenAtMs = previousOnline
+    ? Number(previousEntry.firstSeenAtMs || previousEntry.lastSeenAtMs || now)
+    : now;
+  const remoteAddress = normalizeBridgeRegistryText(resolveBridgeRequestIp(req), null);
+  if (previousEntry?.staleTimer) clearTimeout(previousEntry.staleTimer);
+  const storedToken = bridgeTokenStore.get(id)?.token || "";
+  const bridgeToken = previousEntry?.token || storedToken || generateBridgeToken();
+  const bridgeTokenEntry = {
+    token: bridgeToken,
+    tokenHash: hashBridgeToken(bridgeToken),
+    createdAt: bridgeTokenStore.get(id)?.createdAt || new Date(now).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+  };
+  bridgeTokenStore.set(id, bridgeTokenEntry);
+  saveBridgeTokenStore();
+  const entry = {
+    id,
+    name,
+    platform,
+    inventory,
+    remoteAddress,
+    token: bridgeToken,
+    tokenHash: bridgeTokenEntry.tokenHash,
+    firstSeenAtMs,
+    firstSeenAtIso: new Date(firstSeenAtMs).toISOString(),
+    lastSeenAtMs: now,
+    lastSeenAtIso: new Date(now).toISOString(),
+    staleTimer: null,
+  };
+  entry.staleTimer = setTimeout(() => {
+    scheduleAdminStatusBroadcast("bridge-stale");
+  }, BRIDGE_REGISTRY_STALE_MS + 100);
+  bridgeRegistry.set(id, entry);
+  scheduleAdminStatusBroadcast("bridge-announced");
+
+  res.json({
+    bridge: serializeBridgeRegistryEntry(entry, now),
+    bridgeToken,
+    config: buildBridgeRuntimeConfig(id),
+  });
+});
+
+app.get("/api/v1/bridge/:bridgeId/config", requireBridgeApiAuth, (req, res) => {
+  if (!canBridgeAuthAccessBridge(req.bridgeApiAuth, req.params.bridgeId)) {
+    return res.status(403).json({ error: "Bridge config requires global API key access or this bridge token" });
+  }
+  res.json(buildBridgeRuntimeConfig(req.params.bridgeId));
+});
+
+app.post("/api/v1/bridge/sessions", requireBridgeApiAuth, (req, res) => {
+  if (!canBridgeAuthAccessBridge(req.bridgeApiAuth, req.body?.bridgeId)) {
+    return res.status(403).json({ error: "Bridge sessions require global API key access or this bridge token" });
+  }
+  try {
+    const session = createBridgeControlSession({
+      bridgeId: req.body?.bridgeId,
+      userId: req.body?.userId,
+      feedId: req.body?.feedId,
+      portId: req.body?.portId,
+      remoteAddress: resolveBridgeRequestIp(req),
+    });
+    res.json({
+      sessionId: session.id,
+      port: session.port,
+    });
+  } catch (error) {
+    res.status(400).json({ error: error?.message || "Failed to create bridge session" });
+  }
+});
+
+app.delete(
+  "/api/v1/bridge/sessions/:sessionId",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  (req, res) => {
+    closeBridgeControlSession(req.bridgeSession.id);
+    res.json({ ok: true });
+  }
+);
+
+app.get(
+  "/api/v1/bridge/sessions/:sessionId/events",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  (req, res) => {
+    const events = req.bridgeSession.events.splice(0, 100);
+    res.json({ events });
+  }
+);
+
+app.get(
+  "/api/v1/bridge/sessions/:sessionId/events/stream",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  (req, res) => {
+    const session = req.bridgeSession;
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+    req.socket?.setTimeout?.(0);
+
+    const stream = {
+      res,
+      heartbeat: null,
+    };
+    session.eventStreams.add(stream);
+    res.write("retry: 1000\n\n");
+
+    const queuedEvents = session.events.splice(0, 100);
+    for (const event of queuedEvents) {
+      writeSseEvent(res, "bridge-event", event);
+    }
+
+    stream.heartbeat = setInterval(() => {
+      if (session.closed) {
+        clearInterval(stream.heartbeat);
+        session.eventStreams.delete(stream);
+        try {
+          res.end();
+        } catch {}
+        return;
+      }
+      try {
+        res.write(": heartbeat\n\n");
+      } catch {
+        session.eventStreams.delete(stream);
+        clearInterval(stream.heartbeat);
+      }
+    }, 25_000);
+
+    req.on("close", () => {
+      session.eventStreams.delete(stream);
+      clearInterval(stream.heartbeat);
+    });
+  }
+);
+
+app.get(
+  "/api/v1/bridge/sessions/:sessionId/active-producers",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  (req, res) => {
+    res.json({
+      producers: listActiveProducersForPeer(req.bridgePeer, req.bridgeSession.id),
+    });
+  }
+);
+
+app.post(
+  "/api/v1/bridge/sessions/:sessionId/plain-send-transport",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  async (req, res) => {
+    try {
+      if (!router) return res.status(503).json({ error: "Router not initialized" });
+      const peer = req.bridgePeer;
+      const mediaRoute = resolveTransportAnnouncedAddress();
+      if (mediaRoute.error || !mediaRoute.announcedAddress) {
+        return res.status(500).json({ error: mediaRoute.error || "No announced media IP" });
+      }
+      if (peer.plainSendTransport && !peer.plainSendTransport.closed) {
+        try {
+          peer.plainSendTransport.close();
+        } catch {}
+      }
+      const transport = await router.createPlainTransport({
+        listenIp: {
+          ip: "0.0.0.0",
+          announcedIp: mediaRoute.announcedAddress,
+        },
+        rtcpMux: true,
+        comedia: true,
+      });
+      peer.plainSendTransport = transport;
+      transport.observer.on("close", () => {
+        if (peer.plainSendTransport === transport) peer.plainSendTransport = null;
+      });
+      res.json({
+        id: transport.id,
+        ip: mediaRoute.announcedAddress,
+        port: transport.tuple.localPort,
+        protocol: transport.tuple.protocol,
+        payloadType: GATEWAY_OPUS_PAYLOAD_TYPE,
+        ssrc: GATEWAY_OPUS_SSRC
+          + (req.bridgePeer.kind === "feed"
+            ? 10000 + Number(req.bridgePeer.feedId || 0)
+            : Number(req.bridgePeer.userId || 0)),
+      });
+    } catch (error) {
+      res.status(500).json({ error: error?.message || "Failed to create plain send transport" });
+    }
+  }
+);
+
+app.post(
+  "/api/v1/bridge/sessions/:sessionId/producers",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  async (req, res) => {
+    try {
+      const peer = req.bridgePeer;
+      const transport = peer.plainSendTransport;
+      if (!transport || transport.closed) {
+        return res.status(409).json({ error: "Plain send transport not ready" });
+      }
+      const producerAppData = peer.kind === "feed"
+        ? { type: "feed", id: Number(peer.feedId) }
+        : { type: "talk" };
+      const producerCname = peer.kind === "feed"
+        ? `talktome-bridge-feed-${peer.feedId}`
+        : `talktome-bridge-${peer.userId}`;
+      for (const [existingId, existing] of peer.producers.entries()) {
+        const existingType = String(existing?.appData?.type || "");
+        const isSameProducerKind = peer.kind === "feed"
+          ? existingType === "feed" && String(existing?.appData?.id) === String(peer.feedId)
+          : existingType === "talk";
+        if (isSameProducerKind) {
+          try {
+            existing.close();
+          } catch {}
+          peer.producers.delete(existingId);
+        }
+      }
+      const payloadType = Number(req.body?.payloadType || GATEWAY_OPUS_PAYLOAD_TYPE);
+      const fallbackSsrc = GATEWAY_OPUS_SSRC + (
+        peer.kind === "feed" ? 10000 + Number(peer.feedId || 0) : Number(peer.userId || 0)
+      );
+      const ssrc = Number(req.body?.ssrc || fallbackSsrc);
+      const producer = await transport.produce({
+        kind: "audio",
+        rtpParameters: buildGatewayAudioRtpParameters({
+          payloadType,
+          ssrc,
+          cname: producerCname,
+          stereo: true,
+        }),
+        appData: producerAppData,
+      });
+      producer.__startedAt = Date.now();
+      peer.producers.set(producer.id, producer);
+      producer.__recipientDeliveries = new Map();
+      producer.observer.on("pause", () => {
+        syncPeerCompanionState(peer, { reason: "bridge-producer-paused" });
+        broadcastRuntimeUserStates("bridge-producer-paused");
+      });
+      producer.observer.on("resume", () => {
+        producer.__startedAt = Date.now();
+        announceProducerToRecipients({
+          producerId: producer.id,
+          appData: producer.appData,
+          speakerSocketId: req.bridgeSession.id,
+        });
+        syncPeerCompanionState(peer, { reason: "bridge-producer-resumed" });
+        broadcastRuntimeUserStates("bridge-producer-resumed");
+      });
+      producer.on("transportclose", () => {
+        peer.producers.delete(producer.id);
+      });
+      if (peer.kind === "feed") {
+        announceProducerToRecipients({
+          producerId: producer.id,
+          appData: producer.appData,
+          speakerSocketId: req.bridgeSession.id,
+        });
+        syncPeerCompanionState(peer, { reason: "bridge-feed-producer-started" });
+        broadcastRuntimeUserStates("bridge-feed-producer-started");
+      } else {
+        await producer.pause();
+      }
+      res.json({ id: producer.id });
+    } catch (error) {
+      res.status(500).json({ error: error?.message || "Failed to create bridge producer" });
+    }
+  }
+);
+
+app.post(
+  "/api/v1/bridge/sessions/:sessionId/producers/:producerId/:action",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  async (req, res) => {
+    const producer = req.bridgePeer.producers.get(req.params.producerId);
+    if (!producer) return res.status(404).json({ error: "Producer not found" });
+    try {
+      if (req.params.action === "pause") {
+        await producer.pause();
+      } else if (req.params.action === "resume") {
+        await producer.resume();
+      } else {
+        return res.status(400).json({ error: "Action must be pause or resume" });
+      }
+      res.json({ ok: true, paused: producer.paused });
+    } catch (error) {
+      res.status(500).json({ error: error?.message || "Failed to change producer state" });
+    }
+  }
+);
+
+app.post(
+  "/api/v1/bridge/sessions/:sessionId/talk-state",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  (req, res) => {
+    const peer = req.bridgePeer;
+    if (peer.kind !== "user") {
+      return res.status(400).json({ error: "Talk state is only supported for user bridge sessions" });
+    }
+    const targets = normalizeRuntimeTalkTargets(req.body?.targets);
+    const talking = Boolean(req.body?.talking && targets.length > 0);
+    peer.activeTalkTargets = talking ? targets : [];
+    peer.pttTalking = talking;
+    peer.pttStartedAt = talking ? (peer.pttStartedAt || Date.now()) : 0;
+    updateCompanionUserState(peer.userId, {
+      userName: peer.name,
+      online: true,
+      socketId: req.bridgeSession.id,
+      talking,
+      talkLocked: Boolean(req.body?.lockActive),
+      currentTarget: talking ? targets[0] : null,
+      currentTargets: talking ? targets : [],
+      lastTarget: targets[0] || undefined,
+      lastTargets: targets.length ? targets : undefined,
+    }, {
+      reason: "bridge-talk-state",
+      fallbackName: peer.name,
+    });
+    if (talking) {
+      for (const producer of getPeerActiveTalkProducers(peer)) {
+        syncProducerRecipients({ producer, speakerSocketId: req.bridgeSession.id });
+      }
+    }
+    syncPeerCompanionState(peer, { reason: "bridge-talk-state" });
+    broadcastRuntimeUserStates("bridge-talk-state");
+    res.json({ ok: true, talking, targets });
+  }
+);
+
+app.post(
+  "/api/v1/bridge/sessions/:sessionId/command-result",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  (req, res) => {
+    if (req.bridgePeer.kind !== "user") {
+      return res.status(400).json({ error: "Command results are only supported for user bridge sessions" });
+    }
+    const payload = req.body || {};
+    const commandId = typeof payload.commandId === "string" ? payload.commandId : null;
+    if (commandId) {
+      const result = {
+        commandId,
+        userId: req.bridgePeer.userId,
+        userName: req.bridgePeer.name,
+        socketId: req.bridgeSession.id,
+        ok: Boolean(payload.ok),
+        action: payload.action || null,
+        targetType: payload.targetType || null,
+        targetId: payload.targetId ?? null,
+        reason: payload.reason || null,
+        at: new Date().toISOString(),
+      };
+      updateCompanionUserState(req.bridgePeer.userId, {
+        lastCommandId: commandId,
+        lastCommandResult: result.ok ? "ok" : (result.reason || "failed"),
+      }, {
+        reason: "bridge-command-result",
+        fallbackName: req.bridgePeer.name,
+      });
+      result.state = buildCompanionUserState(req.bridgePeer.userId, req.bridgePeer.name);
+      settleCompanionPendingCommand(commandId, result);
+      emitCompanionEvent("command-result", result);
+    }
+    res.json({ ok: true });
+  }
+);
+
+app.post(
+  "/api/v1/bridge/sessions/:sessionId/consumers",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  async (req, res) => {
+    try {
+      if (req.bridgePeer.kind !== "user") {
+        return res.status(400).json({ error: "Bridge consumers are only supported for user bridge sessions" });
+      }
+      if (!router) return res.status(503).json({ error: "Router not initialized" });
+      const producerId = String(req.body?.producerId || "");
+      const targetPort = Number(req.body?.port);
+      const targetIp = resolveBridgeRequestIp(req);
+      if (!producerId || !targetIp || !Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) {
+        return res.status(400).json({ error: "Invalid bridge consumer target" });
+      }
+      let producerPeerId = null;
+      for (const [peerId, peer] of peers) {
+        if (peer.producers.has(producerId)) {
+          producerPeerId = peerId;
+          break;
+        }
+      }
+      if (!producerPeerId) return res.status(404).json({ error: "Producer not found" });
+      if (!router.canConsume({ producerId, rtpCapabilities: router.rtpCapabilities })) {
+        return res.status(409).json({ error: "Cannot consume producer" });
+      }
+      const transport = await router.createPlainTransport({
+        listenIp: { ip: "0.0.0.0" },
+        rtcpMux: true,
+        comedia: false,
+      });
+      await transport.connect({ ip: targetIp, port: targetPort });
+      const consumer = await transport.consume({
+        producerId,
+        rtpCapabilities: router.rtpCapabilities,
+        paused: true,
+      });
+      consumer.__plainTransport = transport;
+      req.bridgePeer.consumers.set(consumer.id, consumer);
+      const cleanup = () => {
+        req.bridgePeer?.consumers.delete(consumer.id);
+        try {
+          if (!transport.closed) transport.close();
+        } catch {}
+      };
+      consumer.on("transportclose", cleanup);
+      consumer.on("producerclose", () => {
+        cleanup();
+        queueBridgeControlEvent(req.bridgeSession, "consumer-closed", {
+          consumerId: consumer.id,
+          producerId,
+        });
+      });
+      res.json({
+        id: consumer.id,
+        producerId,
+        kind: consumer.kind,
+        rtpParameters: consumer.rtpParameters,
+      });
+    } catch (error) {
+      res.status(500).json({ error: error?.message || "Failed to create bridge consumer" });
+    }
+  }
+);
+
+app.post(
+  "/api/v1/bridge/sessions/:sessionId/consumers/:consumerId/resume",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  async (req, res) => {
+    const consumer = req.bridgePeer.consumers.get(req.params.consumerId);
+    if (!consumer) return res.status(404).json({ error: "Consumer not found" });
+    try {
+      await consumer.resume();
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(500).json({ error: error?.message || "Failed to resume bridge consumer" });
+    }
+  }
+);
+
+app.delete(
+  "/api/v1/bridge/sessions/:sessionId/consumers/:consumerId",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  (req, res) => {
+    const consumer = req.bridgePeer.consumers.get(req.params.consumerId);
+    if (consumer) {
+      const transport = consumer.__plainTransport;
+      try {
+        consumer.close();
+      } catch {}
+      req.bridgePeer.consumers.delete(consumer.id);
+      try {
+        if (transport && !transport.closed) transport.close();
+      } catch {}
+    }
+    res.json({ ok: true });
+  }
+);
 
 app.get("/api/v1/companion/users/:id/targets", requireCompanionApiKey, (req, res) => {
   const userId = Number(req.params.id);
@@ -3049,6 +4259,7 @@ app.put("/users/:id", requireAdmin, (req, res) => {
   try {
     const success = updateUserName(req.params.id, name);
     if (!success) return res.status(404).json({ error: "User not found" });
+    scheduleAdminStatusBroadcast("user-renamed");
     res.sendStatus(204);
   } catch (err) {
     if (err.message.includes("UNIQUE")) {
@@ -3082,13 +4293,71 @@ app.put('/users/:id/password', requireAdmin, (req, res) => {
   }
 });
 
+app.put('/users/:id/bridge-endpoint', requireAdmin, (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isInteger(userId) || userId < 1) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+
+  try {
+    const user = getUserById(userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (user.is_guest_profile) {
+      return res.status(403).json({ error: 'Guest profile cannot be a bridge endpoint' });
+    }
+    if (user.is_superadmin) {
+      return res.status(403).json({ error: 'Superadmin cannot be a bridge endpoint' });
+    }
+
+    const updated = updateUserBridgeEndpoint(userId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'User not found' });
+    scheduleAdminStatusBroadcast("bridge-endpoint-updated");
+    res.sendStatus(204);
+  } catch (err) {
+    const message = String(err?.message || 'Invalid bridge endpoint config');
+    if (
+      message.includes('channel') ||
+      message.includes('required') ||
+      message.includes('Invalid user id')
+    ) {
+      return res.status(400).json({ error: message });
+    }
+    console.error('Error updating bridge endpoint:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/feeds/:id/bridge-endpoint', requireAdmin, (req, res) => {
+  const feedId = Number(req.params.id);
+  if (!Number.isInteger(feedId) || feedId < 1) {
+    return res.status(400).json({ error: 'Invalid feed id' });
+  }
+
+  try {
+    const feed = getAllFeeds().find((entry) => Number(entry.id) === feedId);
+    if (!feed) return res.status(404).json({ error: 'Feed not found' });
+
+    const updated = updateFeedBridgeEndpoint(feedId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'Feed not found' });
+    scheduleAdminStatusBroadcast("bridge-feed-endpoint-updated");
+    res.sendStatus(204);
+  } catch (err) {
+    const message = String(err?.message || 'Invalid bridge endpoint config');
+    if (
+      message.includes('channel') ||
+      message.includes('required') ||
+      message.includes('Invalid feed id')
+    ) {
+      return res.status(400).json({ error: message });
+    }
+    console.error('Error updating feed bridge endpoint:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Rename conference
 app.put('/conferences/:id', requireAdmin, (req, res) => {
   const { name } = req.body;
-  const allId = getAllConferenceId();
-  if (allId !== null && Number(req.params.id) === Number(allId)) {
-    return res.status(400).json({ error: "Cannot rename the All conference" });
-  }
   try {
     const success = updateConferenceName(req.params.id, name);
     if (!success) return res.status(404).json({ error: 'Conference not found' });
@@ -3169,6 +4438,7 @@ app.delete("/users/:id", requireAdmin, (req, res) => {
       return res.status(403).json({ error: "Guest profile cannot be deleted" });
     }
     deleteUser(req.params.id);
+    scheduleAdminStatusBroadcast("user-deleted");
     res.sendStatus(204);
   } catch (err) {
     res.status(500).json({ error: "Failed to delete user" });
@@ -3188,16 +4458,13 @@ app.delete("/feeds/:id", requireAdmin, (req, res) => {
 
 // Delete conference (generic)
 app.delete("/conferences/:id", requireAdmin, (req, res) => {
-  const allId = getAllConferenceId();
-  if (allId !== null && Number(req.params.id) === Number(allId)) {
-    return res.status(400).json({ error: "Cannot delete the All conference" });
-  }
   try {
     deleteConference(req.params.id);
     broadcastRuntimeUserStates("conference-deleted");
     res.sendStatus(204);
   } catch (err) {
-    res.status(500).json({ error: "Failed to delete conference" });
+    console.error('Error deleting conference:', err);
+    res.status(500).json({ error: err?.message || "Failed to delete conference" });
   }
 });
 
@@ -3331,9 +4598,29 @@ companionNamespace.use((socket, next) => {
   next();
 });
 companionNamespace.on("connection", (socket) => {
+  socket.data.connectedAt = Date.now();
+  markCompanionSocketSeen(socket);
+  const announcedName = socket.handshake?.auth?.instanceName
+    || socket.handshake?.auth?.clientName
+    || socket.handshake?.auth?.name;
+  socket.data.instanceName = typeof announcedName === "string" && announcedName.trim()
+    ? announcedName.trim().slice(0, 120)
+    : null;
+  socket.onAny(() => {
+    markCompanionSocketSeen(socket);
+  });
+  socket.conn?.on?.("packet", () => {
+    markCompanionSocketSeen(socket);
+  });
+  scheduleAdminStatusBroadcast("companion-connected");
   socket.emit("snapshot", buildCompanionSnapshotForAuth(socket.data?.companionAuth || null));
   socket.on("request-snapshot", () => {
+    markCompanionSocketSeen(socket);
     socket.emit("snapshot", buildCompanionSnapshotForAuth(socket.data?.companionAuth || null));
+  });
+  socket.on("disconnect", () => {
+    clearCompanionStatusTimer(socket);
+    scheduleAdminStatusBroadcast("companion-disconnected");
   });
 });
 
@@ -3696,6 +4983,7 @@ function buildGatewayAudioRtpParameters({
   payloadType = GATEWAY_OPUS_PAYLOAD_TYPE,
   ssrc = GATEWAY_OPUS_SSRC,
   cname = "talktome-radio-gateway",
+  stereo = false,
 } = {}) {
   return {
     codecs: [
@@ -3705,7 +4993,8 @@ function buildGatewayAudioRtpParameters({
         clockRate: 48000,
         channels: 2,
         parameters: {
-          "sprop-stereo": 0,
+          "sprop-stereo": stereo ? 1 : 0,
+          ...(stereo ? { stereo: 1 } : {}),
         },
         rtcpFeedback: [],
       },
@@ -3718,6 +5007,322 @@ function buildGatewayAudioRtpParameters({
     },
   };
 }
+
+function queueBridgeControlEvent(session, event, payload = {}) {
+  if (!session || session.closed) return;
+  const relevantEvents = new Set([
+    "new-producer",
+    "producer-closed",
+    "consumer-closed",
+    "incoming-talk-state",
+    "api-talk-command",
+    "api-target-audio-command",
+    "session-kicked",
+  ]);
+  if (!relevantEvents.has(event)) return;
+  const entry = {
+    id: crypto.randomUUID(),
+    event,
+    payload,
+    at: new Date().toISOString(),
+  };
+  const deliveredStreams = writeBridgeControlEventToStreams(session, entry);
+  if (deliveredStreams > 0) return;
+
+  session.events.push(entry);
+  if (session.events.length > 250) {
+    session.events.splice(0, session.events.length - 250);
+  }
+}
+
+function writeSseEvent(res, event, payload) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function writeBridgeControlEventToStreams(session, entry) {
+  if (!session?.eventStreams?.size) return 0;
+  let delivered = 0;
+  for (const stream of [...session.eventStreams]) {
+    try {
+      writeSseEvent(stream.res, "bridge-event", entry);
+      delivered += 1;
+    } catch {
+      session.eventStreams.delete(stream);
+      clearInterval(stream.heartbeat);
+    }
+  }
+  return delivered;
+}
+
+function closeBridgeControlSession(sessionId, reason = "bridge-session-closed") {
+  const session = bridgeControlSessions.get(String(sessionId));
+  if (!session || session.closed) return false;
+  session.closed = true;
+  for (const stream of [...(session.eventStreams || [])]) {
+    try {
+      writeSseEvent(stream.res, "session-closed", { reason });
+      stream.res.end();
+    } catch {}
+    clearInterval(stream.heartbeat);
+  }
+  session.eventStreams?.clear();
+
+  const peer = peers.get(session.id);
+  const disconnectedUserId = peer?.userId ?? null;
+  const disconnectedUserName = peer?.name || null;
+  if (peer) {
+    for (const producer of peer.producers.values()) {
+      try {
+        producer.close();
+      } catch {}
+    }
+    for (const consumer of peer.consumers.values()) {
+      try {
+        consumer.close();
+      } catch {}
+      try {
+        if (consumer.__plainTransport && !consumer.__plainTransport.closed) {
+          consumer.__plainTransport.close();
+        }
+      } catch {}
+    }
+    try {
+      if (peer.plainSendTransport && !peer.plainSendTransport.closed) {
+        peer.plainSendTransport.close();
+      }
+    } catch {}
+  }
+
+  peers.delete(session.id);
+  bridgeControlSessions.delete(session.id);
+
+  if (disconnectedUserId !== null && !findUserPeerByUserId(disconnectedUserId)) {
+    updateUserLastOnline(disconnectedUserId);
+    updateCompanionUserState(disconnectedUserId, {
+      userName: disconnectedUserName,
+      online: false,
+      socketId: null,
+      talking: false,
+      talkLocked: false,
+      currentTarget: null,
+      currentTargets: [],
+      targetAudioStates: [],
+      lastSpokeAt: Date.now(),
+    }, {
+      reason,
+      fallbackName: disconnectedUserName,
+    });
+    failPendingCommandsForUser(disconnectedUserId, reason);
+  }
+
+  emitUserListToOperators();
+  broadcastRuntimeUserStates(reason);
+  return true;
+}
+
+function createBridgeControlSession({ bridgeId, userId = null, feedId = null, portId = null, remoteAddress = null }) {
+  const config = buildBridgeRuntimeConfig(bridgeId);
+  const normalizedPortId = typeof portId === "string" && portId.trim() ? portId.trim() : null;
+  const numericUserId = userId !== null && userId !== undefined ? Number(userId) : null;
+  const numericFeedId = feedId !== null && feedId !== undefined ? Number(feedId) : null;
+  const port = config.ports.find((entry) => {
+    if (normalizedPortId) return String(entry.id) === normalizedPortId;
+    if (Number.isFinite(numericUserId)) {
+      return entry.kind === "user" && Number(entry.userId) === numericUserId;
+    }
+    if (Number.isFinite(numericFeedId)) {
+      return entry.kind === "feed" && Number(entry.feedId) === numericFeedId;
+    }
+    return false;
+  });
+  if (!port) {
+    throw new Error("Bridge endpoint is not configured for this bridge");
+  }
+
+  const isFeedPort = port.kind === "feed";
+  const existing = isFeedPort
+    ? findFeedPeerByFeedId(port.feedId)
+    : findUserPeerByUserId(port.userId);
+  if (existing) {
+    try {
+      existing.peer?.socket?.emit("session-kicked", {
+        reason: "bridge-session-replaced",
+      });
+    } catch {}
+    const existingBridgeSession = bridgeControlSessions.get(existing.socketId);
+    if (existingBridgeSession) {
+      closeBridgeControlSession(existing.socketId, "bridge-session-replaced");
+    } else {
+      try {
+        existing.peer?.socket?.disconnect(true);
+      } catch {}
+    }
+  }
+
+  const entityType = isFeedPort ? "feed" : "user";
+  const entityId = isFeedPort ? Number(port.feedId) : Number(port.userId);
+  const id = `bridge:${normalizeBridgeId(bridgeId)}:${entityType}:${entityId}:${crypto.randomUUID()}`;
+  const session = {
+    id,
+    bridgeId: normalizeBridgeId(bridgeId),
+    kind: entityType,
+    userId: isFeedPort ? null : Number(port.userId),
+    feedId: isFeedPort ? Number(port.feedId) : null,
+    port,
+    events: [],
+    eventStreams: new Set(),
+    createdAt: Date.now(),
+    lastSeenAt: Date.now(),
+    closed: false,
+  };
+  const registryEntry = bridgeRegistry.get(session.bridgeId);
+  const normalizedRemoteAddress = normalizeBridgeRegistryText(remoteAddress, null);
+  if (registryEntry && normalizedRemoteAddress) {
+    registryEntry.remoteAddress = normalizedRemoteAddress;
+  }
+  const virtualSocket = {
+    id,
+    emit(event, payload) {
+      const eventPayload = event === "new-producer" && payload?.peerId && payload?.producerId
+        ? buildBridgeProducerPayload(payload.peerId, payload.producerId, payload.appData)
+        : payload;
+      queueBridgeControlEvent(session, event, eventPayload);
+      return true;
+    },
+    disconnect() {
+      closeBridgeControlSession(id, "bridge-session-disconnected");
+    },
+  };
+  const peer = {
+    socket: virtualSocket,
+    userId: isFeedPort ? null : Number(port.userId),
+    feedId: isFeedPort ? Number(port.feedId) : null,
+    guestId: null,
+    guestProfileUserId: null,
+    name: port.label,
+    kind: entityType,
+    consumers: new Map(),
+    producers: new Map(),
+    activeTalkTargets: [],
+    pttTalking: false,
+    pttStartedAt: 0,
+    plainSendTransport: null,
+    isBridgePeer: true,
+    bridgeId: session.bridgeId,
+    connectedAt: session.createdAt,
+  };
+  session.peer = peer;
+  bridgeControlSessions.set(id, session);
+  peers.set(id, peer);
+
+  if (!isFeedPort) {
+    updateUserLastOnline(peer.userId);
+    updateCompanionUserState(peer.userId, {
+      userName: peer.name,
+      online: true,
+      socketId: id,
+      targetAudioStates: getUserTargetAudioStates(peer.userId),
+    }, {
+      reason: "bridge-user-online",
+      fallbackName: peer.name,
+    });
+    syncPeerCompanionState(peer, { reason: "bridge-user-online" });
+  }
+  emitUserListToOperators();
+  broadcastRuntimeUserStates(isFeedPort ? "bridge-feed-online" : "bridge-user-online");
+  return session;
+}
+
+function requireBridgeControlSession(req, res, next) {
+  const session = bridgeControlSessions.get(String(req.params.sessionId || ""));
+  if (!session || session.closed) {
+    return res.status(404).json({ error: "Bridge session not found" });
+  }
+  if (!canBridgeAuthAccessBridge(req.bridgeApiAuth, session.bridgeId)) {
+    return res.status(403).json({ error: "Bridge session requires global API key access or this bridge token" });
+  }
+  session.lastSeenAt = Date.now();
+  req.bridgeSession = session;
+  req.bridgePeer = peers.get(session.id) || null;
+  if (!req.bridgePeer) {
+    closeBridgeControlSession(session.id, "bridge-peer-missing");
+    return res.status(410).json({ error: "Bridge peer is no longer available" });
+  }
+  next();
+}
+
+function resolveBridgeRequestIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  let address = forwarded || req.socket?.remoteAddress || "";
+  if (address.startsWith("::ffff:")) address = address.slice(7);
+  if (address === "::1") address = "127.0.0.1";
+  return address;
+}
+
+function buildBridgeProducerPayload(peerId, producerId, appData) {
+  const speakerPeer = peers.get(peerId);
+  return {
+    peerId,
+    producerId,
+    appData,
+    speakerUserId: speakerPeer?.userId ?? speakerPeer?.guestProfileUserId ?? null,
+    speakerName: speakerPeer?.name || null,
+    speakerKind: speakerPeer?.kind || null,
+  };
+}
+
+function listActiveProducersForPeer(peer, peerId) {
+  if (!peer || peer.kind === "feed") return [];
+  const response = [];
+  let conferenceIds = null;
+  let feedIds = null;
+  const loadConferenceIds = () => {
+    if (conferenceIds !== null) return conferenceIds;
+    conferenceIds = new Set(
+      (getConferencesForUser(peer.userId) || []).map((conference) => String(conference.id))
+    );
+    return conferenceIds;
+  };
+  const loadFeedIds = () => {
+    if (feedIds !== null) return feedIds;
+    feedIds = new Set((getFeedIdsForUser(peer.userId) || []).map((id) => String(id)));
+    return feedIds;
+  };
+
+  for (const [otherPeerId, otherPeer] of peers) {
+    if (otherPeerId === peerId) continue;
+    for (const [producerId, producer] of otherPeer.producers) {
+      if (!producer || producer.paused) continue;
+      const appData = producer.appData;
+      const type = String(appData?.type || "").trim().toLowerCase();
+      if (type === "feed" && loadFeedIds().has(String(appData.id))) {
+        response.push(buildBridgeProducerPayload(otherPeerId, producerId, appData));
+      } else if (type === "conference" && loadConferenceIds().has(String(appData.id))) {
+        response.push(buildBridgeProducerPayload(otherPeerId, producerId, appData));
+      } else if (["user", "talk", "guest"].includes(type)) {
+        const delivery = resolveProducerRecipientDeliveries({
+          appData,
+          speakerSocketId: otherPeerId,
+        }).find((candidate) => candidate.recipientSocketId === peerId);
+        if (delivery?.appData) {
+          response.push(buildBridgeProducerPayload(otherPeerId, producerId, delivery.appData));
+        }
+      }
+    }
+  }
+  return response;
+}
+
+const bridgeControlSessionCleanupTimer = setInterval(() => {
+  const cutoff = Date.now() - BRIDGE_CONTROL_SESSION_STALE_MS;
+  for (const session of bridgeControlSessions.values()) {
+    if (session.lastSeenAt < cutoff) {
+      closeBridgeControlSession(session.id, "bridge-session-timeout");
+    }
+  }
+}, 5_000);
+bridgeControlSessionCleanupTimer.unref?.();
 
 function warnIfDockerAnnouncedIpLooksInternal(announcedIp) {
   if (process.env.PUBLIC_IP) return;
@@ -3991,6 +5596,7 @@ function emitUserListToOperators() {
       console.warn("[SIGNAL] Failed to emit user-list to operator:", err?.message || err);
     }
   }
+  scheduleAdminStatusBroadcast("peer-list-changed");
 }
 
 io.on("connection", (socket) => {
@@ -4008,6 +5614,7 @@ io.on("connection", (socket) => {
     activeTalkTargets: [],
     pttTalking: false,
     pttStartedAt: 0,
+    connectedAt: null,
   });
 
   // Emit lists
@@ -4115,9 +5722,11 @@ io.on("connection", (socket) => {
       console.log(`[USER] Registered guest ${peer.name} (${guestId}) on socket ${socket.id}`);
     }
 
+    peer.connectedAt = Date.now();
     emitUserListToOperators();
 
     if (normalizedKind === "user" && peer.userId !== null && peer.userId !== undefined) {
+      updateUserLastOnline(peer.userId);
       const persistedTargetAudioStates = getUserTargetAudioStates(peer.userId);
       updateCompanionUserState(peer.userId, {
         userName: peer.name || null,
@@ -4292,18 +5901,23 @@ io.on("connection", (socket) => {
       });
     }
 
-    const activeTalkProducers = getPeerActiveTalkProducers(peer).filter((producer) => (
+    const talkProducers = getPeerTalkProducers(peer, { includePaused: true }).filter((producer) => (
       String(producer?.appData?.type || "").trim().toLowerCase() === "talk"
     ));
-    if (activeTalkProducers.length === 0) {
+    if (talkProducers.length === 0) {
       return;
     }
 
-    activeTalkProducers.forEach((producer) => {
-      syncProducerRecipients({ producer, speakerSocketId: socket.id });
-    });
+    if (normalizedTargets.length > 0) {
+      talkProducers.forEach((producer) => {
+        syncProducerRecipients({ producer, speakerSocketId: socket.id });
+      });
+    }
 
-    if (isPersistentUserPeer(peer)) {
+    const activeTalkProducers = getPeerActiveTalkProducers(peer)
+      .filter((producer) => String(producer?.appData?.type || "").trim().toLowerCase() === "talk");
+
+    if (isPersistentUserPeer(peer) && activeTalkProducers.length > 0 && normalizedTargets.length > 0) {
       try {
         const recipientUserIds = await sendApplePttSpeakerStarted({
           type: "talk",
@@ -5245,6 +6859,7 @@ io.on("connection", (socket) => {
     if (disconnectedUserId !== null) {
       const replacementPeer = findUserPeerByUserId(disconnectedUserId);
       if (!replacementPeer) {
+        updateUserLastOnline(disconnectedUserId);
         updateCompanionUserState(disconnectedUserId, {
           userName: disconnectedUserName,
           online: false,

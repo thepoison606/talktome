@@ -53,6 +53,13 @@ const adminApp = document.getElementById('admin-app');
 const adminBar = document.getElementById('admin-bar');
 const adminNameLabel = document.getElementById('admin-name-label');
 const adminLogoutBtn = document.getElementById('admin-logout');
+const adminNavLinks = [...document.querySelectorAll('[data-admin-nav]')];
+const statusUsersBody = document.getElementById('status-users-body');
+const statusFeedsBody = document.getElementById('status-feeds-body');
+const statusBridgesBody = document.getElementById('status-bridges-body');
+const statusCompanionsBody = document.getElementById('status-companions-body');
+const targetMatrixContainer = document.getElementById('target-matrix-container');
+const conferenceMembershipMatrixContainer = document.getElementById('conference-membership-matrix-container');
 const configExportBtn = document.getElementById('config-export-btn');
 const configImportBtn = document.getElementById('config-import-btn');
 const configImportFile = document.getElementById('config-import-file');
@@ -71,6 +78,13 @@ const adminImageLightboxImage = document.getElementById('admin-image-lightbox-im
 const adminImageLightboxDownloadButton = document.getElementById('admin-image-lightbox-download');
 
 const collapsibleAdminSections = {
+  status: {
+    label: 'Status',
+    bodyEl: document.getElementById('status-section-body'),
+    buttonEl: document.getElementById('status-section-toggle'),
+    cardEl: document.getElementById('status-section-toggle')?.closest('.card'),
+    headerEl: document.getElementById('status-section-toggle')?.closest('.card-header'),
+  },
   users: {
     label: 'Users',
     bodyEl: document.getElementById('users-section-body'),
@@ -84,6 +98,13 @@ const collapsibleAdminSections = {
     buttonEl: document.getElementById('feeds-section-toggle'),
     cardEl: document.getElementById('feeds-section-toggle')?.closest('.card'),
     headerEl: document.getElementById('feeds-section-toggle')?.closest('.card-header'),
+  },
+  matrix: {
+    label: 'Matrix',
+    bodyEl: document.getElementById('matrix-section-body'),
+    buttonEl: document.getElementById('matrix-section-toggle'),
+    cardEl: document.getElementById('matrix-section-toggle')?.closest('.card'),
+    headerEl: document.getElementById('matrix-section-toggle')?.closest('.card-header'),
   },
   conferences: {
     label: 'Conferences',
@@ -104,6 +125,19 @@ const collapsibleAdminSections = {
 const ADMIN_SECTION_COLLAPSED_STORAGE_PREFIX = 'talktome:admin-section-collapsed:';
 
 let currentMediaNetworkQrState = null;
+let currentBridgeRegistry = [];
+let currentAdminCatalog = { users: [], conferences: [], feeds: [] };
+const targetAssignmentsByUser = new Map();
+const targetEditorRefreshTimers = new Map();
+const conferenceMembershipsByConference = new Map();
+const conferenceMembershipEditorRefreshes = new Map();
+let statusLoadPromise = null;
+let statusEventSource = null;
+let statusClockTimer = null;
+let statusFallbackTimer = null;
+let statusHealthTimer = null;
+let latestAdminStatus = null;
+let activeAdminView = null;
 
 function focusAdminLoginNameField() {
   if (!adminNameInput) return;
@@ -116,6 +150,7 @@ function focusAdminLoginNameField() {
 }
 
 function showLogin(message) {
+  stopStatusStream();
   closeAdminImageLightbox();
   if (adminLogin) adminLogin.classList.remove('is-hidden');
   if (adminApp) adminApp.classList.add('is-hidden');
@@ -133,6 +168,9 @@ function showAdminApp() {
   if (adminLogin) adminLogin.classList.add('is-hidden');
   if (adminApp) adminApp.classList.remove('is-hidden');
   if (adminBar) adminBar.classList.remove('is-hidden');
+  activateAdminView(getAdminViewFromHash() || activeAdminView || adminNavLinks[0]?.dataset.adminNav || 'status', {
+    updateHash: false,
+  });
 }
 
 function showLoginMessage(message, tone = 'error') {
@@ -155,9 +193,13 @@ function showMessage(text, tone = 'error', scope = 'global') {
       ? 'conf-message'
       : scope === 'feed'
         ? 'feed-message'
+        : scope === 'matrix'
+          ? 'matrix-message'
+        : scope === 'status'
+          ? 'status-message'
         : scope === 'config'
           ? 'config-message'
-      : 'message';
+          : 'message';
 
   const el = document.getElementById(targetId);
   if (!el) return;
@@ -183,7 +225,7 @@ function showMessage(text, tone = 'error', scope = 'global') {
 function getStoredAdminSectionCollapsed(sectionKey) {
   try {
     const storedValue = localStorage.getItem(`${ADMIN_SECTION_COLLAPSED_STORAGE_PREFIX}${sectionKey}`);
-    if (storedValue === null) return true;
+    if (storedValue === null) return sectionKey !== 'status';
     return storedValue === '1';
   } catch {
     return true;
@@ -226,6 +268,127 @@ for (const sectionKey of Object.keys(collapsibleAdminSections)) {
   setAdminSectionCollapsed(sectionKey, getStoredAdminSectionCollapsed(sectionKey), { persist: false });
 }
 
+function setActiveAdminNav(sectionKey) {
+  adminNavLinks.forEach((link) => {
+    if (link.dataset.adminNav === sectionKey) {
+      link.setAttribute('aria-current', 'location');
+    } else {
+      link.removeAttribute('aria-current');
+    }
+  });
+}
+
+function getKnownAdminViews() {
+  return adminNavLinks
+    .map((link) => link.dataset.adminNav)
+    .filter(Boolean);
+}
+
+function getAdminViewFromHash() {
+  const hash = window.location.hash.replace(/^#/, '');
+  if (!hash) return null;
+  const normalized = hash.endsWith('-section') ? hash.slice(0, -8) : hash;
+  return getKnownAdminViews().includes(normalized) ? normalized : null;
+}
+
+function activateAdminView(sectionKey, { updateHash = true, replaceHash = false } = {}) {
+  const knownViews = getKnownAdminViews();
+  const nextSectionKey = knownViews.includes(sectionKey) ? sectionKey : knownViews[0];
+  if (!nextSectionKey) return;
+
+  activeAdminView = nextSectionKey;
+  setActiveAdminNav(nextSectionKey);
+
+  knownViews.forEach((viewKey) => {
+    const section = document.getElementById(`${viewKey}-section`);
+    if (!section) return;
+    const isActive = viewKey === nextSectionKey;
+    section.classList.toggle('admin-view-active', isActive);
+    section.hidden = !isActive;
+  });
+
+  setAdminSectionCollapsed(nextSectionKey, false, { persist: false });
+
+  if (updateHash) {
+    const nextHash = `#${nextSectionKey}`;
+    if (window.location.hash !== nextHash) {
+      if (replaceHash) {
+        history.replaceState(null, '', nextHash);
+      } else {
+        history.pushState(null, '', nextHash);
+      }
+    }
+  }
+
+  window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+}
+
+window.openUserFromStatus = async function (userId) {
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId)) return;
+
+  activateAdminView('users');
+
+  let targetDiv = document.getElementById(`user-nested-${numericUserId}`);
+  if (!targetDiv) {
+    await refreshAdminLists({ users: true });
+    targetDiv = document.getElementById(`user-nested-${numericUserId}`);
+  }
+  if (!targetDiv) return;
+
+  const button = document.getElementById(`user-toggle-${numericUserId}`);
+  if (!targetDiv.classList.contains('is-open')) {
+    try {
+      await renderUserConferenceList(numericUserId);
+      targetDiv.classList.add('is-open');
+      button?.setAttribute('aria-expanded', 'true');
+    } catch (err) {
+      showMessage('❌ Failed to load user details', 'error', 'user');
+      console.error(err);
+      return;
+    }
+  }
+
+  const listItem = targetDiv.closest('.list-item');
+  window.requestAnimationFrame(() => {
+    const bridgeConfig = document.getElementById(`bridge-config-${numericUserId}`);
+    const scrollTarget = bridgeConfig || targetDiv;
+    scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    listItem?.classList.add('list-item--jump-highlight');
+    window.setTimeout(() => {
+      listItem?.classList.remove('list-item--jump-highlight');
+    }, 1400);
+  });
+};
+
+function setupAdminNavigation() {
+  activateAdminView(getAdminViewFromHash() || adminNavLinks[0]?.dataset.adminNav || 'status', {
+    updateHash: Boolean(getAdminViewFromHash()),
+    replaceHash: true,
+  });
+
+  adminNavLinks.forEach((link) => {
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      const sectionKey = link.dataset.adminNav;
+      activateAdminView(sectionKey);
+    });
+  });
+
+  window.addEventListener('hashchange', () => {
+    activateAdminView(getAdminViewFromHash() || adminNavLinks[0]?.dataset.adminNav || 'status', {
+      updateHash: false,
+    });
+  });
+  window.addEventListener('popstate', () => {
+    activateAdminView(getAdminViewFromHash() || adminNavLinks[0]?.dataset.adminNav || 'status', {
+      updateHash: false,
+    });
+  });
+}
+
+setupAdminNavigation();
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -233,6 +396,257 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function valueOrEmpty(value) {
+  return value === null || value === undefined ? '' : String(value);
+}
+
+function readBridgePairSelect(inputId, label) {
+  const value = document.getElementById(inputId)?.value || '';
+  if (!value) return { left: null, right: null };
+  const [left, right] = value.split(':').map((part) => Number(part));
+  if (!Number.isInteger(left) || !Number.isInteger(right) || left < 1 || right < 1) {
+    throw new Error(`${label} channel selection is invalid`);
+  }
+  return { left, right };
+}
+
+function validateBridgeChannelPair(left, right, label) {
+  if ((left === null) !== (right === null)) {
+    throw new Error(`${label} channel selection must include left and right channels`);
+  }
+  if (left !== null && right !== left && right !== left + 1) {
+    throw new Error(`${label} channel selection must use one mono channel or an adjacent stereo pair`);
+  }
+}
+
+function getBridgeById(bridgeId) {
+  return currentBridgeRegistry.find((bridge) => bridge.id === bridgeId) || null;
+}
+
+function getBridgeDeviceById(bridge, deviceId, direction) {
+  return (bridge?.inventory?.devices || [])
+    .find((device) => device.id === deviceId && device.direction === direction) || null;
+}
+
+function buildBridgeChannelOptions(device) {
+  const maxChannels = Number(device?.max_channels ?? device?.maxChannels ?? 0);
+  const options = [];
+  const seen = new Set();
+  const addOption = (left, right, label = null) => {
+    const normalizedLeft = Number(left);
+    const normalizedRight = Number(right);
+    if (!Number.isInteger(normalizedLeft) || !Number.isInteger(normalizedRight)) return;
+    if (normalizedLeft < 1 || normalizedRight < 1) return;
+    const key = `${normalizedLeft}:${normalizedRight}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    options.push({
+      value: key,
+      label: label || (normalizedLeft === normalizedRight ? `${normalizedLeft}` : `${normalizedLeft}/${normalizedRight}`),
+    });
+  };
+
+  (device?.channel_pairs || []).forEach((pair) => {
+    addOption(pair.left_channel ?? pair.leftChannel, pair.right_channel ?? pair.rightChannel, pair.label);
+  });
+
+  if (Number.isInteger(maxChannels) && maxChannels > 0) {
+    for (let channel = 1; channel <= maxChannels; channel += 1) {
+      addOption(channel, channel);
+    }
+    for (let left = 1; left < maxChannels; left += 2) {
+      addOption(left, left + 1);
+    }
+  }
+
+  return options;
+}
+
+function renderBridgeInstanceOptions(selectedBridgeId) {
+  const options = ['<option value="">Select bridge</option>'];
+  const knownSelected = currentBridgeRegistry.some((bridge) => bridge.id === selectedBridgeId);
+  if (selectedBridgeId && !knownSelected) {
+    options.push(`<option value="${escapeHtml(selectedBridgeId)}" selected>${escapeHtml(selectedBridgeId)} (saved, offline)</option>`);
+  }
+  currentBridgeRegistry.forEach((bridge) => {
+    const staleSuffix = bridge.stale ? ' (stale)' : '';
+    const selected = bridge.id === selectedBridgeId ? ' selected' : '';
+    options.push(`<option value="${escapeHtml(bridge.id)}"${selected}>${escapeHtml(bridge.name || bridge.id)}${staleSuffix}</option>`);
+  });
+  return options.join('');
+}
+
+function setBridgeSelectOptions(select, options, selectedValue, fallbackLabel) {
+  select.innerHTML = '';
+  const emptyOption = document.createElement('option');
+  emptyOption.value = '';
+  emptyOption.textContent = fallbackLabel;
+  select.appendChild(emptyOption);
+
+  options.forEach((entry) => {
+    const option = document.createElement('option');
+    option.value = entry.value;
+    option.textContent = entry.label;
+    select.appendChild(option);
+  });
+
+  if (selectedValue && !options.some((entry) => entry.value === selectedValue)) {
+    const option = document.createElement('option');
+    option.value = selectedValue;
+    option.textContent = `${selectedValue} (saved, unavailable)`;
+    select.appendChild(option);
+  }
+
+  select.value = selectedValue || '';
+}
+
+function updateBridgeEndpointDeviceOptions(formKey) {
+  const bridgeSelect = document.getElementById(`bridge-device-${formKey}`);
+  const inputDeviceSelect = document.getElementById(`bridge-input-device-${formKey}`);
+  const outputDeviceSelect = document.getElementById(`bridge-output-device-${formKey}`);
+  if (!bridgeSelect || !inputDeviceSelect) return;
+
+  const bridge = getBridgeById(bridgeSelect.value);
+  const inputSavedValue = inputDeviceSelect.dataset.savedValue || '';
+  const outputSavedValue = outputDeviceSelect?.dataset.savedValue || '';
+  const inputDevices = (bridge?.inventory?.devices || [])
+    .filter((device) => device.direction === 'input')
+    .map((device) => ({
+      value: device.id,
+      label: `${device.name}${device.is_default ? ' (default)' : ''}`,
+    }));
+
+  setBridgeSelectOptions(
+    inputDeviceSelect,
+    inputDevices,
+    inputSavedValue && (!inputDeviceSelect.value || inputDeviceSelect.value === inputSavedValue) ? inputSavedValue : inputDeviceSelect.value,
+    bridge ? 'Select input device' : 'Select bridge first'
+  );
+  inputDeviceSelect.disabled = !bridge;
+  updateBridgeEndpointPairOptions(formKey, 'input');
+
+  if (outputDeviceSelect) {
+    const outputDevices = (bridge?.inventory?.devices || [])
+      .filter((device) => device.direction === 'output')
+      .map((device) => ({
+        value: device.id,
+        label: `${device.name}${device.is_default ? ' (default)' : ''}`,
+      }));
+    setBridgeSelectOptions(
+      outputDeviceSelect,
+      outputDevices,
+      outputSavedValue && (!outputDeviceSelect.value || outputDeviceSelect.value === outputSavedValue) ? outputSavedValue : outputDeviceSelect.value,
+      bridge ? 'Select output device' : 'Select bridge first'
+    );
+    outputDeviceSelect.disabled = !bridge;
+    updateBridgeEndpointPairOptions(formKey, 'output');
+  }
+}
+
+function updateBridgeEndpointPairOptions(formKey, direction) {
+  const bridgeSelect = document.getElementById(`bridge-device-${formKey}`);
+  const deviceSelect = document.getElementById(`bridge-${direction}-device-${formKey}`);
+  const pairSelect = document.getElementById(`bridge-${direction}-pair-${formKey}`);
+  if (!bridgeSelect || !deviceSelect || !pairSelect) return;
+
+  const bridge = getBridgeById(bridgeSelect.value);
+  const device = getBridgeDeviceById(bridge, deviceSelect.value, direction);
+  const savedLeft = pairSelect.dataset.savedLeft || '';
+  const savedRight = pairSelect.dataset.savedRight || '';
+  const savedPair = savedLeft && savedRight ? `${savedLeft}:${savedRight}` : '';
+  const pairs = buildBridgeChannelOptions(device);
+  const preferredValue = pairSelect.value || savedPair;
+  setBridgeSelectOptions(
+    pairSelect,
+    pairs,
+    preferredValue,
+    device ? 'Select channel' : 'Select device first'
+  );
+  pairSelect.disabled = !device;
+}
+
+function syncBridgeEndpointFormsWithRegistry() {
+  document.querySelectorAll('[data-bridge-config-user-id], [data-bridge-config-key]').forEach((form) => {
+    const formKey = form.dataset.bridgeConfigKey || form.dataset.bridgeConfigUserId;
+    const bridgeSelect = document.getElementById(`bridge-device-${formKey}`);
+    if (!formKey || !bridgeSelect) return;
+
+    const selectedBridgeId = bridgeSelect.value || '';
+    bridgeSelect.innerHTML = renderBridgeInstanceOptions(selectedBridgeId);
+    bridgeSelect.value = selectedBridgeId;
+    updateBridgeEndpointDeviceOptions(formKey);
+  });
+}
+
+function updateBridgeRegistryFromStatus(snapshot = {}) {
+  if (!Array.isArray(snapshot.bridges)) return;
+  const hasInventory = snapshot.bridges.some((bridge) => Array.isArray(bridge?.inventory?.devices));
+  if (!hasInventory && snapshot.bridges.length > 0) return;
+
+  currentBridgeRegistry = snapshot.bridges;
+  syncBridgeEndpointFormsWithRegistry();
+}
+
+function initializeBridgeEndpointForms() {
+  document.querySelectorAll('[data-bridge-config-user-id], [data-bridge-config-key]').forEach((form) => {
+    const formKey = form.dataset.bridgeConfigKey || form.dataset.bridgeConfigUserId;
+    const enabledToggle = document.getElementById(`bridge-enabled-${formKey}`);
+    const options = document.getElementById(`bridge-options-${formKey}`);
+    const bridgeSelect = document.getElementById(`bridge-device-${formKey}`);
+    const inputDeviceSelect = document.getElementById(`bridge-input-device-${formKey}`);
+    const outputDeviceSelect = document.getElementById(`bridge-output-device-${formKey}`);
+    if (!bridgeSelect || bridgeSelect.dataset.bridgeReady === 'true') return;
+
+    enabledToggle?.addEventListener('change', () => {
+      if (options) options.hidden = !enabledToggle.checked;
+    });
+
+    bridgeSelect.addEventListener('change', () => {
+      if (inputDeviceSelect) {
+        inputDeviceSelect.dataset.savedValue = '';
+        inputDeviceSelect.value = '';
+      }
+      if (outputDeviceSelect) {
+        outputDeviceSelect.dataset.savedValue = '';
+        outputDeviceSelect.value = '';
+      }
+      const inputPairSelect = document.getElementById(`bridge-input-pair-${formKey}`);
+      const outputPairSelect = document.getElementById(`bridge-output-pair-${formKey}`);
+      if (inputPairSelect) {
+        inputPairSelect.dataset.savedLeft = '';
+        inputPairSelect.dataset.savedRight = '';
+        inputPairSelect.value = '';
+      }
+      if (outputPairSelect) {
+        outputPairSelect.dataset.savedLeft = '';
+        outputPairSelect.dataset.savedRight = '';
+        outputPairSelect.value = '';
+      }
+      updateBridgeEndpointDeviceOptions(formKey);
+    });
+    inputDeviceSelect?.addEventListener('change', () => {
+      const pairSelect = document.getElementById(`bridge-input-pair-${formKey}`);
+      if (pairSelect) {
+        pairSelect.dataset.savedLeft = '';
+        pairSelect.dataset.savedRight = '';
+        pairSelect.value = '';
+      }
+      updateBridgeEndpointPairOptions(formKey, 'input');
+    });
+    outputDeviceSelect?.addEventListener('change', () => {
+      const pairSelect = document.getElementById(`bridge-output-pair-${formKey}`);
+      if (pairSelect) {
+        pairSelect.dataset.savedLeft = '';
+        pairSelect.dataset.savedRight = '';
+        pairSelect.value = '';
+      }
+      updateBridgeEndpointPairOptions(formKey, 'output');
+    });
+    bridgeSelect.dataset.bridgeReady = 'true';
+    updateBridgeEndpointDeviceOptions(formKey);
+  });
 }
 
 function triggerDownload(blob, filename) {
@@ -516,25 +930,687 @@ async function ensureAdminSession() {
   }
 }
 
+function statusDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatStatusExact(value) {
+  const date = statusDate(value);
+  return date ? date.toLocaleString() : '';
+}
+
+function formatStatusElapsed(value, { suffix = true } = {}) {
+  const date = statusDate(value);
+  if (!date) return 'Never';
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+  let text;
+  if (seconds < 10) text = 'just now';
+  else if (seconds < 60) text = `${seconds}s`;
+  else if (seconds < 3600) text = `${Math.floor(seconds / 60)}m`;
+  else if (seconds < 86400) text = `${Math.floor(seconds / 3600)}h`;
+  else if (seconds < 604800) text = `${Math.floor(seconds / 86400)}d`;
+  else text = date.toLocaleDateString();
+  return suffix && text !== 'just now' && seconds < 604800 ? `${text} ago` : text;
+}
+
+function formatStatusUptime(value) {
+  const date = statusDate(value);
+  if (!date) return '-';
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function statusTimeHtml(value, { suffix = true, empty = 'Never' } = {}) {
+  const exact = formatStatusExact(value);
+  if (!exact) return escapeHtml(empty);
+  return `<span title="${escapeHtml(exact)}">${escapeHtml(formatStatusElapsed(value, { suffix }))}</span>`;
+}
+
+function statusIndicatorHtml({ online, talking = false, warning = false, onlineLabel = 'Online', offlineLabel = 'Offline', warningLabel = 'Warning' }) {
+  const label = talking ? 'Talking' : warning ? warningLabel : online ? onlineLabel : offlineLabel;
+  const stateClass = talking ? 'is-talking' : warning ? 'is-warning' : online ? 'is-online' : '';
+  return `
+    <span class="status-indicator">
+      <span class="status-indicator__dot ${stateClass}" aria-hidden="true"></span>
+      <span>${escapeHtml(label)}</span>
+    </span>
+  `;
+}
+
+function setServerReachability(online) {
+  const dot = document.getElementById('status-server-dot');
+  if (!dot) return;
+  dot.classList.toggle('is-online', online === true);
+  dot.classList.toggle('is-offline', online === false);
+  const label = online === true ? 'Server online' : online === false ? 'Server offline' : 'Server status unknown';
+  dot.setAttribute('aria-label', label);
+  dot.title = label;
+  if (online === false) {
+    setStatusText('status-summary-uptime', 'Offline');
+  }
+}
+
+async function probeServerHealth() {
+  try {
+    const response = await fetch('/api/v1/health', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Health check failed: ${response.status}`);
+    const payload = await response.json();
+    if (!payload?.ok) throw new Error('Health check failed');
+    setServerReachability(true);
+    if (payload.serverStartedAt) {
+      setStatusText('status-summary-uptime', formatStatusUptime(payload.serverStartedAt));
+    }
+    return true;
+  } catch {
+    setServerReachability(false);
+    return false;
+  }
+}
+
+function startServerHealthProbe() {
+  if (statusHealthTimer !== null) return;
+  probeServerHealth();
+  statusHealthTimer = window.setInterval(probeServerHealth, 3000);
+}
+
+function stopServerHealthProbe() {
+  if (statusHealthTimer !== null) window.clearInterval(statusHealthTimer);
+  statusHealthTimer = null;
+}
+
+function setStatusText(id, value) {
+  const element = document.getElementById(id);
+  if (element) element.textContent = value;
+}
+
+function renderAdminStatus(payload = {}) {
+  latestAdminStatus = payload;
+  const users = Array.isArray(payload.users) ? [...payload.users] : [];
+  const feeds = Array.isArray(payload.feeds) ? [...payload.feeds] : [];
+  const bridges = Array.isArray(payload.bridges) ? [...payload.bridges] : [];
+  const companions = Array.isArray(payload.companions) ? [...payload.companions] : [];
+  const summary = payload.summary || {};
+  const sortByOnlineAndName = (a, b) => (
+    Number(Boolean(b.online)) - Number(Boolean(a.online))
+    || String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' })
+  );
+
+  users.sort(sortByOnlineAndName);
+  feeds.sort(sortByOnlineAndName);
+  bridges.sort(sortByOnlineAndName);
+  companions.sort(sortByOnlineAndName);
+
+  setStatusText('status-summary-users', `${summary.usersOnline || 0} / ${summary.usersTotal || 0}`);
+  setStatusText('status-summary-bridges', `${summary.bridgesOnline || 0} / ${summary.bridgesTotal || 0}`);
+  setStatusText('status-summary-companions', String(summary.companionsOnline || 0));
+  setStatusText('status-summary-feeds', String(summary.feedsOnline || 0));
+  setStatusText('status-summary-guests', String(summary.guestsOnline || 0));
+  setStatusText('status-summary-uptime', formatStatusUptime(payload.serverStartedAt));
+  setStatusText('status-users-count', `${summary.usersOnline || 0} online of ${summary.usersTotal || 0}`);
+  setStatusText('status-feeds-count', `${summary.feedsOnline || 0} online of ${summary.feedsTotal || 0}`);
+  setStatusText('status-bridges-count', `${summary.bridgesOnline || 0} online of ${summary.bridgesTotal || 0}`);
+  setStatusText('status-companions-count', `${summary.companionsOnline || 0} online of ${companions.length}`);
+
+  if (statusUsersBody) {
+    statusUsersBody.innerHTML = users.length
+      ? users.map((user) => {
+          const userId = Number(user.id);
+          const userNameHtml = Number.isFinite(userId)
+            ? `<button type="button" class="status-primary status-user-link" onclick="openUserFromStatus(${userId})" title="Open settings for ${escapeHtml(user.name)}">${escapeHtml(user.name)}</button>`
+            : `<span class="status-primary">${escapeHtml(user.name)}</span>`;
+          const clientLabel = user.online
+            ? user.client || '-'
+            : user.configuredAsBridge
+              ? 'Bridge configured'
+              : '-';
+          return `
+            <tr>
+              <td>${statusIndicatorHtml(user)}</td>
+              <td>${userNameHtml}</td>
+              <td>${escapeHtml(clientLabel)}</td>
+              <td>${escapeHtml(user.remoteAddress || '-')}</td>
+              <td>${user.online ? statusTimeHtml(user.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
+              <td>${user.online ? 'Now' : statusTimeHtml(user.lastOnlineAt)}</td>
+            </tr>
+          `;
+        }).join('')
+      : '<tr><td colspan="6" class="status-empty">No users configured.</td></tr>';
+  }
+
+  if (statusFeedsBody) {
+    statusFeedsBody.innerHTML = feeds.length
+      ? feeds.map((feed) => {
+          const clientLabel = feed.online
+            ? feed.client || '-'
+            : feed.configuredAsBridge
+              ? 'Bridge configured'
+              : '-';
+          return `
+            <tr>
+              <td>${statusIndicatorHtml(feed)}</td>
+              <td><span class="status-primary">${escapeHtml(feed.name)}</span></td>
+              <td>${escapeHtml(clientLabel)}</td>
+              <td>${escapeHtml(feed.remoteAddress || '-')}</td>
+              <td>${feed.online ? statusTimeHtml(feed.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
+              <td>${feed.online ? 'Now' : statusTimeHtml(feed.lastSeenAt, { empty: 'Never' })}</td>
+            </tr>
+          `;
+        }).join('')
+      : '<tr><td colspan="6" class="status-empty">No feeds configured.</td></tr>';
+  }
+
+  if (statusBridgesBody) {
+    statusBridgesBody.innerHTML = bridges.length
+      ? bridges.map((bridge) => `
+            <tr>
+              <td>${statusIndicatorHtml({
+                online: bridge.online,
+                warning: bridge.online && bridge.deviceMissing,
+                onlineLabel: 'Online',
+                offlineLabel: 'Stale',
+                warningLabel: 'Device missing',
+              })}</td>
+              <td><span class="status-primary">${escapeHtml(bridge.name)}</span></td>
+              <td>${escapeHtml(bridge.client || 'Bridge')}</td>
+              <td>${escapeHtml(bridge.remoteAddress || '-')}</td>
+              <td>${bridge.online ? statusTimeHtml(bridge.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
+              <td>${bridge.online ? 'Now' : statusTimeHtml(bridge.lastSeenAt)}</td>
+            </tr>
+          `).join('')
+      : '<tr><td colspan="6" class="status-empty">No bridge announced.</td></tr>';
+  }
+
+  if (statusCompanionsBody) {
+    statusCompanionsBody.innerHTML = companions.length
+      ? companions.map((companion) => {
+          const connectedSince = companion.online
+            ? statusTimeHtml(companion.connectedAt, { suffix: false, empty: '-' })
+            : '-';
+          const lastSeen = companion.online
+            ? 'Now'
+            : statusTimeHtml(companion.lastSeenAt, { empty: '-' });
+          return `
+            <tr>
+              <td>${statusIndicatorHtml({ online: companion.online, onlineLabel: 'Online', offlineLabel: 'Stale' })}</td>
+              <td><span class="status-primary">${escapeHtml(companion.name)}</span></td>
+              <td>${escapeHtml(companion.client || '-')}</td>
+              <td>${escapeHtml(companion.remoteAddress || '-')}</td>
+              <td>${connectedSince}</td>
+              <td>${lastSeen}</td>
+            </tr>
+          `;
+        }).join('')
+      : '<tr><td colspan="6" class="status-empty">No Companion instance connected.</td></tr>';
+  }
+
+  setStatusText('status-version', `Server version ${payload.appVersion || 'unknown'}`);
+}
+
+async function loadAdminStatus({ silent = false } = {}) {
+  if (statusLoadPromise) return statusLoadPromise;
+  statusLoadPromise = (async () => {
+    try {
+      const payload = await fetchJSON('/admin/status');
+      updateBridgeRegistryFromStatus(payload);
+      renderAdminStatus(payload);
+      setServerReachability(true);
+      stopServerHealthProbe();
+    } catch (error) {
+      startServerHealthProbe();
+      if (!silent) {
+        showMessage('Failed to load status', 'error', 'status');
+      }
+      if (!adminState.isAuthenticated) {
+        showLogin('Session expired.');
+      }
+      console.error('Failed to load admin status:', error);
+    } finally {
+      statusLoadPromise = null;
+    }
+  })();
+  return statusLoadPromise;
+}
+
+function startStatusStream() {
+  stopStatusStream();
+
+  statusClockTimer = window.setInterval(() => {
+    if (latestAdminStatus && !document.hidden) {
+      renderAdminStatus(latestAdminStatus);
+    }
+  }, 30_000);
+
+  if (!window.EventSource) {
+    loadAdminStatus();
+    statusFallbackTimer = window.setInterval(() => {
+      if (adminState.isAuthenticated && !document.hidden) {
+        loadAdminStatus({ silent: true });
+      }
+    }, 30_000);
+    return;
+  }
+
+  statusEventSource = new EventSource('/admin/status/events');
+  statusEventSource.addEventListener('status', (event) => {
+    try {
+      const payload = JSON.parse(event.data || '{}');
+      const snapshot = payload.snapshot || {};
+      updateBridgeRegistryFromStatus(snapshot);
+      renderAdminStatus(snapshot);
+      setServerReachability(true);
+      stopServerHealthProbe();
+    } catch (error) {
+      console.error('Failed to parse status event:', error);
+    }
+  });
+  const handleExpiredSession = () => {
+    adminState.isAuthenticated = false;
+    stopStatusStream();
+    showLogin('Session expired.');
+  };
+  statusEventSource.addEventListener('auth-expired', handleExpiredSession);
+  statusEventSource.addEventListener('logged-out', handleExpiredSession);
+  statusEventSource.addEventListener('error', () => {
+    startServerHealthProbe();
+  });
+}
+
+function stopStatusStream() {
+  statusEventSource?.close();
+  statusEventSource = null;
+  if (statusClockTimer !== null) window.clearInterval(statusClockTimer);
+  if (statusFallbackTimer !== null) window.clearInterval(statusFallbackTimer);
+  stopServerHealthProbe();
+  statusClockTimer = null;
+  statusFallbackTimer = null;
+  setServerReachability(null);
+}
+
 async function loadData() {
   await loadGuestLoginSettings();
-  const { users, conferences, feeds } = await fetchAdminCollections();
+  const { users, conferences, feeds, bridges } = await fetchAdminCollections();
   await loadMdnsSettings();
   await loadMediaNetworkSettings();
   await loadRtcPortSettings();
-  await renderUserList(users, conferences, feeds);
+  await renderUserList(users, conferences, feeds, bridges);
   renderFeedList(feeds);
   await renderConferenceList(conferences, users);
+  renderTargetMatrix(users, conferences, feeds);
+  renderConferenceMembershipMatrix(users, conferences);
+  startStatusStream();
+  activateAdminView(getAdminViewFromHash() || activeAdminView || 'status', { updateHash: false });
 }
 
 async function fetchAdminCollections() {
-  const [users, conferences, feeds] = await Promise.all([
+  const [users, conferences, feeds, bridgePayload] = await Promise.all([
     fetchJSON('/users'),
     fetchJSON('/conferences'),
     fetchJSON('/feeds'),
+    fetchJSON('/admin/bridges'),
   ]);
+  const bridges = Array.isArray(bridgePayload?.bridges) ? bridgePayload.bridges : [];
+  currentBridgeRegistry = bridges;
 
-  return { users, conferences, feeds };
+  return { users, conferences, feeds, bridges };
+}
+
+function targetAssignmentKey(targetType, targetId) {
+  return `${String(targetType)}:${String(targetId)}`;
+}
+
+function cacheUserTargetAssignments(userId, targets) {
+  const key = String(userId);
+  const assignments = new Set(
+    (Array.isArray(targets) ? targets : []).map((target) => (
+      targetAssignmentKey(target.targetType, target.targetId)
+    ))
+  );
+  targetAssignmentsByUser.set(key, assignments);
+
+  if (!targetMatrixContainer) return;
+  targetMatrixContainer
+    .querySelectorAll(`.target-matrix-toggle[data-user-id="${key}"]`)
+    .forEach((toggle) => {
+      if (toggle.disabled) return;
+      toggle.setAttribute('aria-pressed', String(assignments.has(
+        targetAssignmentKey(toggle.dataset.targetType, toggle.dataset.targetId)
+      )));
+    });
+}
+
+function setCachedTargetAssignment(userId, targetType, targetId, enabled) {
+  const userKey = String(userId);
+  const assignmentKey = targetAssignmentKey(targetType, targetId);
+  const assignments = targetAssignmentsByUser.get(userKey) || new Set();
+  if (enabled) {
+    assignments.add(assignmentKey);
+  } else {
+    assignments.delete(assignmentKey);
+  }
+  targetAssignmentsByUser.set(userKey, assignments);
+}
+
+function scheduleUserTargetEditorRefresh(userId) {
+  const key = String(userId);
+  clearTimeout(targetEditorRefreshTimers.get(key));
+  targetEditorRefreshTimers.set(key, setTimeout(() => {
+    targetEditorRefreshTimers.delete(key);
+    loadUserTargets(
+      userId,
+      currentAdminCatalog.users,
+      currentAdminCatalog.conferences,
+      currentAdminCatalog.feeds
+    ).catch((error) => {
+      console.error('Failed to refresh user targets after matrix update:', error);
+    });
+  }, 200));
+}
+
+function cacheConferenceMemberships(conferenceId, users) {
+  const key = String(conferenceId);
+  const memberships = new Set(
+    (Array.isArray(users) ? users : []).map((user) => String(user.id))
+  );
+  conferenceMembershipsByConference.set(key, memberships);
+
+  if (!conferenceMembershipMatrixContainer) return;
+  conferenceMembershipMatrixContainer
+    .querySelectorAll(`.conference-membership-toggle[data-conference-id="${key}"]`)
+    .forEach((toggle) => {
+      if (toggle.disabled) return;
+      toggle.setAttribute('aria-pressed', String(memberships.has(String(toggle.dataset.userId))));
+    });
+}
+
+function setCachedConferenceMembership(conferenceId, userId, enabled) {
+  const conferenceKey = String(conferenceId);
+  const userKey = String(userId);
+  const memberships = conferenceMembershipsByConference.get(conferenceKey) || new Set();
+  if (enabled) {
+    memberships.add(userKey);
+  } else {
+    memberships.delete(userKey);
+  }
+  conferenceMembershipsByConference.set(conferenceKey, memberships);
+}
+
+function scheduleConferenceMembershipEditorRefresh(conferenceId, userId) {
+  const key = String(conferenceId);
+  const pending = conferenceMembershipEditorRefreshes.get(key) || {
+    userIds: new Set(),
+    timer: null,
+  };
+  pending.userIds.add(String(userId));
+  clearTimeout(pending.timer);
+  pending.timer = setTimeout(async () => {
+    conferenceMembershipEditorRefreshes.delete(key);
+    try {
+      await updateConferenceParticipantOptions(conferenceId, currentAdminCatalog.users);
+      await Promise.all([...pending.userIds].map((pendingUserId) => (
+        updateUserConferenceOptions(pendingUserId, currentAdminCatalog.conferences)
+      )));
+      if (document.getElementById(`conf-controls-${conferenceId}`)?.classList.contains('is-open')) {
+        await renderConferenceParticipantList(conferenceId);
+      }
+      await Promise.all([...pending.userIds].map((pendingUserId) => (
+        document.getElementById(`user-nested-${pendingUserId}`)?.classList.contains('is-open')
+          ? renderUserConferenceList(pendingUserId)
+          : Promise.resolve()
+      )));
+    } catch (error) {
+      console.error('Failed to refresh conference membership editors:', error);
+    }
+  }, 200);
+  conferenceMembershipEditorRefreshes.set(key, pending);
+}
+
+function renderTargetMatrix(users, conferences, feeds) {
+  if (!targetMatrixContainer) return;
+
+  currentAdminCatalog = {
+    users: Array.isArray(users) ? users : [],
+    conferences: Array.isArray(conferences) ? conferences : [],
+    feeds: Array.isArray(feeds) ? feeds : [],
+  };
+
+  const rowUsers = currentAdminCatalog.users.filter((user) => !user.is_superadmin);
+  const targetUsers = currentAdminCatalog.users.filter((user) => (
+    !user.is_superadmin && !user.is_guest_profile
+  ));
+  const groups = [
+    { type: 'user', label: 'Users', className: 'users', items: targetUsers },
+    { type: 'conference', label: 'Conferences', className: 'conferences', items: currentAdminCatalog.conferences },
+    { type: 'feed', label: 'Feeds', className: 'feeds', items: currentAdminCatalog.feeds },
+  ].filter((group) => group.items.length > 0);
+  const columns = groups.flatMap((group) => (
+    group.items.map((item) => ({ ...item, targetType: group.type }))
+  ));
+
+  if (rowUsers.length === 0 || columns.length === 0) {
+    targetMatrixContainer.innerHTML = '<p class="target-matrix-empty">Add users and targets to configure the matrix.</p>';
+    return;
+  }
+
+  const groupHeaders = groups.map((group) => `
+    <th class="target-matrix__group target-matrix__group--${group.className}" colspan="${group.items.length}" scope="colgroup">${escapeHtml(group.label)}</th>
+  `).join('');
+  const columnHeaders = columns.map((column, columnIndex) => `
+    <th class="target-matrix__target-column target-matrix__column--${escapeHtml(column.targetType)}" data-matrix-column="${columnIndex}" scope="col" title="${escapeHtml(column.name)}">
+      <span class="target-matrix__column-label">${escapeHtml(column.name)}</span>
+    </th>
+  `).join('');
+  const bodyRows = rowUsers.map((user) => {
+    const assignments = targetAssignmentsByUser.get(String(user.id)) || new Set();
+    const cells = columns.map((column, columnIndex) => {
+      const isSelfTarget = column.targetType === 'user' && Number(column.id) === Number(user.id);
+      if (isSelfTarget) {
+        return `<td class="target-matrix__unavailable target-matrix__target-column target-matrix__column--user" data-matrix-column="${columnIndex}" aria-label="A user cannot target itself">&mdash;</td>`;
+      }
+      const checked = assignments.has(targetAssignmentKey(column.targetType, column.id));
+      const label = `${column.name} as target for ${user.name}`;
+      return `
+        <td class="target-matrix__coupling target-matrix__target-column target-matrix__column--${escapeHtml(column.targetType)}" data-matrix-column="${columnIndex}">
+          <button
+            type="button"
+            class="target-matrix-toggle"
+            data-user-id="${user.id}"
+            data-target-type="${escapeHtml(column.targetType)}"
+            data-target-id="${column.id}"
+            aria-label="${escapeHtml(label)}"
+            aria-pressed="${checked ? 'true' : 'false'}"
+            title="${escapeHtml(label)}"
+          ></button>
+        </td>
+      `;
+    }).join('');
+    return `
+      <tr>
+        <th class="target-matrix__user-name" scope="row">${escapeHtml(user.name)}</th>
+        ${cells}
+      </tr>
+    `;
+  }).join('');
+  const matrixTableWidth = 7.5 + (columns.length * 1.9);
+  const targetColumnDefinitions = columns.map(() => (
+    '<col class="target-matrix__target-col" />'
+  )).join('');
+
+  targetMatrixContainer.innerHTML = `
+    <table class="target-matrix" style="--matrix-table-width: ${matrixTableWidth}rem">
+      <colgroup>
+        <col class="target-matrix__profile-column" />
+        ${targetColumnDefinitions}
+      </colgroup>
+      <thead>
+        <tr>
+          <th class="target-matrix__corner" rowspan="2" scope="col" aria-label="Users by targets">
+            <span class="target-matrix__corner-label target-matrix__corner-label--users">Users</span>
+            <span class="target-matrix__corner-label target-matrix__corner-label--targets">Targets</span>
+          </th>
+          ${groupHeaders}
+        </tr>
+        <tr>${columnHeaders}</tr>
+      </thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+  `;
+}
+
+function renderConferenceMembershipMatrix(users, conferences) {
+  if (!conferenceMembershipMatrixContainer) return;
+  const columnUsers = (Array.isArray(users) ? users : []).filter((user) => (
+    !user.is_superadmin && !user.is_guest_profile
+  ));
+  const rows = Array.isArray(conferences) ? conferences : [];
+
+  if (columnUsers.length === 0 || rows.length === 0) {
+    conferenceMembershipMatrixContainer.innerHTML = '<p class="target-matrix-empty">Add users and conferences to configure memberships.</p>';
+    return;
+  }
+
+  const columnHeaders = columnUsers.map((user, columnIndex) => `
+    <th class="target-matrix__target-column target-matrix__column--user" data-matrix-column="${columnIndex}" scope="col" title="${escapeHtml(user.name)}">
+      <span class="target-matrix__column-label">${escapeHtml(user.name)}</span>
+    </th>
+  `).join('');
+  const bodyRows = rows.map((conference) => {
+    const memberships = conferenceMembershipsByConference.get(String(conference.id)) || new Set();
+    const cells = columnUsers.map((user, columnIndex) => {
+      const enabled = memberships.has(String(user.id));
+      const label = `${user.name} in conference ${conference.name}`;
+      return `
+        <td class="target-matrix__coupling target-matrix__target-column target-matrix__column--user" data-matrix-column="${columnIndex}">
+          <button
+            type="button"
+            class="target-matrix-toggle conference-membership-toggle"
+            data-conference-id="${conference.id}"
+            data-user-id="${user.id}"
+            aria-label="${escapeHtml(label)}"
+            aria-pressed="${enabled ? 'true' : 'false'}"
+            title="${escapeHtml(label)}"
+          ></button>
+        </td>
+      `;
+    }).join('');
+    return `
+      <tr>
+        <th class="target-matrix__user-name" scope="row" title="${escapeHtml(conference.name)}">${escapeHtml(conference.name)}</th>
+        ${cells}
+      </tr>
+    `;
+  }).join('');
+  const matrixTableWidth = 7.5 + (columnUsers.length * 1.9);
+  const targetColumnDefinitions = columnUsers.map(() => (
+    '<col class="target-matrix__target-col" />'
+  )).join('');
+
+  conferenceMembershipMatrixContainer.innerHTML = `
+    <table class="target-matrix" style="--matrix-table-width: ${matrixTableWidth}rem">
+      <colgroup>
+        <col class="target-matrix__profile-column" />
+        ${targetColumnDefinitions}
+      </colgroup>
+      <thead>
+        <tr>
+          <th class="target-matrix__corner" rowspan="2" scope="col" aria-label="Conferences by users">
+            <span class="target-matrix__corner-label target-matrix__corner-label--users">Conferences</span>
+            <span class="target-matrix__corner-label target-matrix__corner-label--targets">Users</span>
+          </th>
+          <th class="target-matrix__group target-matrix__group--users" colspan="${columnUsers.length}" scope="colgroup">Users</th>
+        </tr>
+        <tr>${columnHeaders}</tr>
+      </thead>
+      <tbody>${bodyRows}</tbody>
+    </table>
+  `;
+}
+
+function highlightMatrixColumn(container, columnIndex = null) {
+  if (!container) return;
+  container.querySelectorAll('.is-column-highlighted').forEach((cell) => {
+    cell.classList.remove('is-column-highlighted');
+  });
+
+  if (columnIndex === null || columnIndex === undefined || columnIndex === '') return;
+  const numericIndex = Number(columnIndex);
+  if (!Number.isInteger(numericIndex) || numericIndex < 0) return;
+  container
+    .querySelectorAll(`[data-matrix-column="${numericIndex}"]`)
+    .forEach((cell) => cell.classList.add('is-column-highlighted'));
+}
+
+async function handleTargetMatrixToggle(toggle, forcedEnabled = null) {
+  const userId = Number(toggle.dataset.userId);
+  const targetType = toggle.dataset.targetType;
+  const targetId = Number(toggle.dataset.targetId);
+  const wasEnabled = toggle.getAttribute('aria-pressed') === 'true';
+  const enabled = typeof forcedEnabled === 'boolean' ? forcedEnabled : !wasEnabled;
+  if (!Number.isFinite(userId) || !Number.isFinite(targetId) || !targetType) return;
+  if (enabled === wasEnabled || toggle.disabled) return;
+
+  toggle.setAttribute('aria-pressed', String(enabled));
+  toggle.disabled = true;
+  try {
+    const url = enabled
+      ? `/users/${userId}/targets`
+      : `/users/${userId}/targets/${encodeURIComponent(targetType)}/${targetId}`;
+    const response = await authedFetch(url, enabled
+      ? {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetType, targetId }),
+        }
+      : { method: 'DELETE' });
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || 'Target update failed');
+    }
+
+    setCachedTargetAssignment(userId, targetType, targetId, enabled);
+    scheduleUserTargetEditorRefresh(userId);
+  } catch (error) {
+    toggle.setAttribute('aria-pressed', String(wasEnabled));
+    showMessage(error.message || 'Target update failed', 'error', 'matrix');
+  } finally {
+    toggle.disabled = false;
+  }
+}
+
+async function handleConferenceMembershipToggle(toggle, forcedEnabled = null) {
+  const conferenceId = Number(toggle.dataset.conferenceId);
+  const userId = Number(toggle.dataset.userId);
+  const wasEnabled = toggle.getAttribute('aria-pressed') === 'true';
+  const enabled = typeof forcedEnabled === 'boolean' ? forcedEnabled : !wasEnabled;
+  if (!Number.isFinite(conferenceId) || !Number.isFinite(userId)) return;
+  if (enabled === wasEnabled || toggle.disabled) return;
+
+  toggle.setAttribute('aria-pressed', String(enabled));
+  toggle.disabled = true;
+  try {
+    const response = await authedFetch(`/conferences/${conferenceId}/users/${userId}`, {
+      method: enabled ? 'POST' : 'DELETE',
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || 'Conference membership update failed');
+    }
+
+    setCachedConferenceMembership(conferenceId, userId, enabled);
+    scheduleConferenceMembershipEditorRefresh(conferenceId, userId);
+  } catch (error) {
+    toggle.setAttribute('aria-pressed', String(wasEnabled));
+    showMessage(error.message || 'Conference membership update failed', 'error', 'matrix');
+  } finally {
+    toggle.disabled = false;
+  }
 }
 
 function getOpenListState() {
@@ -543,6 +1619,8 @@ function getOpenListState() {
       .map(el => el.id.replace('user-nested-', '')),
     conferences: [...document.querySelectorAll('[id^="conf-controls-"].is-open')]
       .map(el => el.id.replace('conf-controls-', '')),
+    feeds: [...document.querySelectorAll('[id^="feed-nested-"].is-open')]
+      .map(el => el.id.replace('feed-nested-', '')),
   };
 }
 
@@ -564,14 +1642,22 @@ async function restoreOpenListState(state = {}) {
     container.classList.add('is-open');
     if (button) button.setAttribute('aria-expanded', 'true');
   }
+
+  for (const feedId of state.feeds || []) {
+    const container = document.getElementById(`feed-nested-${feedId}`);
+    const button = document.getElementById(`feed-toggle-${feedId}`);
+    if (!container) continue;
+    container.classList.add('is-open');
+    if (button) button.setAttribute('aria-expanded', 'true');
+  }
 }
 
 async function refreshAdminLists({ users: refreshUsers = false, conferences: refreshConferences = false, feeds: refreshFeeds = false } = {}) {
   const openState = getOpenListState();
-  const { users, conferences, feeds } = await fetchAdminCollections();
+  const { users, conferences, feeds, bridges } = await fetchAdminCollections();
 
   if (refreshUsers) {
-    await renderUserList(users, conferences, feeds);
+    await renderUserList(users, conferences, feeds, bridges);
   }
   if (refreshFeeds) {
     renderFeedList(feeds);
@@ -580,10 +1666,17 @@ async function refreshAdminLists({ users: refreshUsers = false, conferences: ref
     await renderConferenceList(conferences, users);
   }
 
+  if (refreshUsers || refreshConferences || refreshFeeds) {
+    renderTargetMatrix(users, conferences, feeds);
+    renderConferenceMembershipMatrix(users, conferences);
+  }
+
   await restoreOpenListState(openState);
 }
 
-async function renderUserList(users, conferences, feeds) {
+async function renderUserList(users, conferences, feeds, bridges = currentBridgeRegistry) {
+  currentBridgeRegistry = Array.isArray(bridges) ? bridges : [];
+  targetAssignmentsByUser.clear();
   const userList = document.getElementById('user-list');
   userList.innerHTML = '';
 
@@ -592,6 +1685,7 @@ async function renderUserList(users, conferences, feeds) {
     const isAdmin = Boolean(user.is_admin);
     const isSuperadmin = Boolean(user.is_superadmin);
     const isGuestProfile = Boolean(user.is_guest_profile);
+    const isBridgeEndpoint = Boolean(user.bridge_enabled);
     const adminBadge = isSuperadmin
       ? '<span class="badge superadmin">Superadmin</span>'
       : isAdmin
@@ -600,9 +1694,12 @@ async function renderUserList(users, conferences, feeds) {
     const guestBadge = isGuestProfile
       ? '<span class="badge guest-profile">Guest profile</span>'
       : '';
+    const bridgeBadge = isBridgeEndpoint
+      ? '<span class="badge bridge">Bridge</span>'
+      : '';
     const adminToggle = adminState.isAuthenticated
       ? isSuperadmin || isGuestProfile
-        ? ''
+        ? `<button type="button" class="small" disabled title="${isSuperadmin ? 'Superadmin role cannot be changed' : 'Guest profile cannot be made admin'}">Make admin</button>`
         : `<button type="button" class="small ${isAdmin ? 'warning' : ''}" onclick="toggleAdminRole(${user.id}, ${isAdmin ? 'false' : 'true'})">${isAdmin ? 'Remove admin' : 'Make admin'}</button>`
       : '';
     const passwordAttrs = isGuestProfile ? 'disabled title="Guest profile does not use a password"' : '';
@@ -616,6 +1713,47 @@ async function renderUserList(users, conferences, feeds) {
     const optionsHtml = conferences.length
       ? conferences.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('')
       : '<option value="" disabled selected>No conferences</option>';
+    const bridgeControls = !isSuperadmin && !isGuestProfile
+      ? `
+        <div class="nested-block">
+          <form class="bridge-config-form" id="bridge-config-${user.id}" data-bridge-config-user-id="${user.id}" onsubmit="saveBridgeEndpoint(event, ${user.id})">
+            <label class="toggle-row" for="bridge-enabled-${user.id}">
+              <input type="checkbox" id="bridge-enabled-${user.id}" ${isBridgeEndpoint ? 'checked' : ''}>
+              <span>Use this user as bridge endpoint</span>
+            </label>
+            <div class="bridge-config-options" id="bridge-options-${user.id}" ${isBridgeEndpoint ? '' : 'hidden'}>
+              <div class="field-group bridge-instance-field">
+                <label for="bridge-device-${user.id}">Bridge device</label>
+                <select id="bridge-device-${user.id}">
+                  ${renderBridgeInstanceOptions(user.bridge_device || '')}
+                </select>
+              </div>
+              <div class="bridge-channel-row">
+                <div class="field-group">
+                  <label for="bridge-input-device-${user.id}">Input device</label>
+                  <select id="bridge-input-device-${user.id}" data-saved-value="${escapeHtml(user.bridge_input_device)}"></select>
+                </div>
+                <div class="field-group">
+                  <label for="bridge-input-pair-${user.id}">Input channel</label>
+                  <select id="bridge-input-pair-${user.id}" data-saved-left="${escapeHtml(valueOrEmpty(user.bridge_input_left_channel))}" data-saved-right="${escapeHtml(valueOrEmpty(user.bridge_input_right_channel))}"></select>
+                </div>
+              </div>
+              <div class="bridge-channel-row">
+                <div class="field-group">
+                  <label for="bridge-output-device-${user.id}">Output device</label>
+                  <select id="bridge-output-device-${user.id}" data-saved-value="${escapeHtml(user.bridge_output_device)}"></select>
+                </div>
+                <div class="field-group">
+                  <label for="bridge-output-pair-${user.id}">Output channel</label>
+                  <select id="bridge-output-pair-${user.id}" data-saved-left="${escapeHtml(valueOrEmpty(user.bridge_output_left_channel))}" data-saved-right="${escapeHtml(valueOrEmpty(user.bridge_output_right_channel))}"></select>
+                </div>
+              </div>
+            </div>
+            <button type="submit" class="small">Save bridge</button>
+          </form>
+        </div>
+      `
+      : '';
 
     li.innerHTML = `
       <div class="list-item-header list-item-header--toggleable">
@@ -632,7 +1770,7 @@ async function renderUserList(users, conferences, feeds) {
           <span>${safeName}</span>
           ${adminBadge}
           ${guestBadge}
-          <span class="badge">ID ${user.id}</span>
+          ${bridgeBadge}
         </button>
         <div class="inline-controls" onclick="event.stopPropagation()">
           <button type="button" class="small warning" onclick='editUser(${user.id}, ${JSON.stringify(user.name)})'>Rename</button>
@@ -663,6 +1801,7 @@ async function renderUserList(users, conferences, feeds) {
           </div>
           <ul id="user-targets-${user.id}"></ul>
         </div>
+        ${bridgeControls}
       </div>
     `;
 
@@ -673,6 +1812,7 @@ async function renderUserList(users, conferences, feeds) {
     await updateUserConferenceOptions(user.id, conferences);
     await loadUserTargets(user.id, users, conferences, feeds);
   }));
+  initializeBridgeEndpointForms();
 }
 
 function renderFeedList(feeds) {
@@ -681,36 +1821,80 @@ function renderFeedList(feeds) {
 
   for (const feed of feeds) {
     const safeName = escapeHtml(feed.name);
+    const formKey = `feed-${feed.id}`;
+    const isBridgeEndpoint = Boolean(feed.bridge_enabled);
+    const bridgeBadge = isBridgeEndpoint
+      ? '<span class="badge bridge">Bridge</span>'
+      : '';
     const li = document.createElement('li');
-    li.className = 'list-item';
+    li.className = 'list-item list-item--toggleable';
+    li.setAttribute('onclick', `toggleFeedBridge(${feed.id})`);
     li.innerHTML = `
-      <div class="list-item-header">
-        <div class="list-item-title">
+      <div class="list-item-header list-item-header--toggleable">
+        <button
+          type="button"
+          class="list-item-title list-item-title--toggle"
+          id="feed-toggle-${feed.id}"
+          onclick="event.stopPropagation(); toggleFeedBridge(${feed.id}, this)"
+          aria-expanded="false"
+          aria-controls="feed-nested-${feed.id}"
+          aria-label="Toggle details for ${safeName}"
+        >
+          <span class="list-item-disclosure" aria-hidden="true"></span>
           <span>${safeName}</span>
-          <span class="badge">ID ${feed.id}</span>
-        </div>
-        <div class="inline-controls">
+          ${bridgeBadge}
+        </button>
+        <div class="inline-controls" onclick="event.stopPropagation()">
           <button type="button" class="small warning" onclick='editFeed(${feed.id}, ${JSON.stringify(feed.name)})'>Rename</button>
           <button type="button" class="small warning" onclick='resetFeedPassword(${feed.id}, ${JSON.stringify(feed.name)})'>Reset Password</button>
           <button type="button" class="small danger" onclick="deleteFeed(${feed.id})">Delete</button>
         </div>
       </div>
+      <div class="nested" id="feed-nested-${feed.id}" onclick="event.stopPropagation()">
+        <div class="nested-block">
+          <form class="bridge-config-form" id="bridge-config-${formKey}" data-bridge-config-key="${formKey}" onsubmit="saveFeedBridgeEndpoint(event, ${feed.id})">
+            <label class="toggle-row" for="bridge-enabled-${formKey}">
+              <input type="checkbox" id="bridge-enabled-${formKey}" ${isBridgeEndpoint ? 'checked' : ''}>
+              <span>Use this feed as bridge input</span>
+            </label>
+            <div class="bridge-config-options" id="bridge-options-${formKey}" ${isBridgeEndpoint ? '' : 'hidden'}>
+              <div class="field-group bridge-instance-field">
+                <label for="bridge-device-${formKey}">Bridge device</label>
+                <select id="bridge-device-${formKey}">
+                  ${renderBridgeInstanceOptions(feed.bridge_device || '')}
+                </select>
+              </div>
+              <div class="bridge-channel-row">
+                <div class="field-group">
+                  <label for="bridge-input-device-${formKey}">Input device</label>
+                  <select id="bridge-input-device-${formKey}" data-saved-value="${escapeHtml(feed.bridge_input_device)}"></select>
+                </div>
+                <div class="field-group">
+                  <label for="bridge-input-pair-${formKey}">Input channel</label>
+                  <select id="bridge-input-pair-${formKey}" data-saved-left="${escapeHtml(valueOrEmpty(feed.bridge_input_left_channel))}" data-saved-right="${escapeHtml(valueOrEmpty(feed.bridge_input_right_channel))}"></select>
+                </div>
+              </div>
+            </div>
+            <button type="submit" class="small">Save bridge</button>
+          </form>
+        </div>
+      </div>
     `;
     feedList.appendChild(li);
   }
+  initializeBridgeEndpointForms();
 }
 
 async function renderConferenceList(conferences, users) {
+  conferenceMembershipsByConference.clear();
   const confList = document.getElementById('conf-list');
   confList.innerHTML = '';
 
   for (const conf of conferences) {
     const safeName = escapeHtml(conf.name);
-    const isAllConference = safeName.toLowerCase() === 'all';
     const li = document.createElement('li');
     li.className = 'list-item list-item--toggleable';
     li.dataset.confId = String(conf.id);
-    li.dataset.isAll = String(isAllConference);
     li.setAttribute('onclick', `toggleConfUsers(${conf.id})`);
     li.innerHTML = `
       <div class="list-item-header list-item-header--toggleable">
@@ -725,13 +1909,11 @@ async function renderConferenceList(conferences, users) {
         >
           <span class="list-item-disclosure" aria-hidden="true"></span>
           <span>${safeName}</span>
-          <span class="badge">ID ${conf.id}</span>
         </button>
-        ${isAllConference ? '' : `
         <div class="inline-controls" onclick="event.stopPropagation()">
           <button type="button" class="small warning" onclick='editConference(${conf.id}, ${JSON.stringify(conf.name)})'>Rename</button>
           <button type="button" class="small danger" onclick="deleteConference(${conf.id})">Delete</button>
-        </div>`}
+        </div>
       </div>
       <div class="nested" id="conf-controls-${conf.id}" onclick="event.stopPropagation()">
         <strong>Participants</strong>
@@ -964,13 +2146,18 @@ async function updateConferenceParticipantOptions(confId, allUsers, previousInde
   let assignedUsers = [];
   try {
     assignedUsers = await fetchJSON(`/conferences/${confId}/users`);
+    cacheConferenceMemberships(confId, assignedUsers);
   } catch (err) {
     console.error('Failed to load conference participants for select', err);
   }
 
   const assignedIds = new Set(assignedUsers.map(u => String(u.id)));
   const users = Array.isArray(allUsers) ? allUsers : [];
-  const available = users.filter(u => !u.is_guest_profile && !assignedIds.has(String(u.id)));
+  const available = users.filter(u => (
+    !u.is_superadmin
+    && !u.is_guest_profile
+    && !assignedIds.has(String(u.id))
+  ));
 
   if (!available.length) {
     select.disabled = true;
@@ -1007,6 +2194,7 @@ async function renderConferenceParticipantList(confId) {
   if (!usersUl) return;
 
   const users = await fetchJSON(`/conferences/${confId}/users`);
+  cacheConferenceMemberships(confId, users);
   usersUl.innerHTML = users.length
     ? users.map(u => `
         <li class="list-chip">
@@ -1020,6 +2208,7 @@ async function renderConferenceParticipantList(confId) {
 // Fetch and render targets + rebuild the “type → id” dropdown
 async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
   const targets = await fetchJSON(`/users/${userId}/targets`);
+  cacheUserTargetAssignments(userId, targets);
   const usedByType = targets.reduce((acc, target) => {
     const type = String(target.targetType || '');
     const id = String(target.targetId || '');
@@ -1432,6 +2621,18 @@ window.deleteUser = async function (userId) {
   }
 };
 
+window.toggleFeedBridge = function(feedId, toggleBtn) {
+  const nested = document.getElementById(`feed-nested-${feedId}`);
+  const button = toggleBtn || document.getElementById(`feed-toggle-${feedId}`);
+  if (!nested) return;
+
+  const willOpen = !nested.classList.contains('is-open');
+  nested.classList.toggle('is-open', willOpen);
+  if (button) {
+    button.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+  }
+};
+
 window.toggleAdminRole = async function (userId, shouldMakeAdmin) {
   const label = shouldMakeAdmin ? 'grant admin rights' : 'remove admin rights';
   if (!confirm(`Are you sure you want to ${label} for this user?`)) return;
@@ -1454,6 +2655,118 @@ window.toggleAdminRole = async function (userId, shouldMakeAdmin) {
   }
 };
 
+window.saveBridgeEndpoint = async function(event, userId) {
+  event.preventDefault();
+
+  const submitButton = event.submitter;
+  if (submitButton) submitButton.disabled = true;
+
+  try {
+    const inputPair = readBridgePairSelect(`bridge-input-pair-${userId}`, 'Input');
+    const outputPair = readBridgePairSelect(`bridge-output-pair-${userId}`, 'Output');
+    validateBridgeChannelPair(inputPair.left, inputPair.right, 'Input');
+    validateBridgeChannelPair(outputPair.left, outputPair.right, 'Output');
+
+    const payload = {
+      enabled: Boolean(document.getElementById(`bridge-enabled-${userId}`)?.checked),
+      bridgeDevice: document.getElementById(`bridge-device-${userId}`)?.value || '',
+      inputDevice: document.getElementById(`bridge-input-device-${userId}`)?.value || '',
+      inputLeftChannel: inputPair.left,
+      inputRightChannel: inputPair.right,
+      outputDevice: document.getElementById(`bridge-output-device-${userId}`)?.value || '',
+      outputLeftChannel: outputPair.left,
+      outputRightChannel: outputPair.right,
+    };
+    if (payload.enabled) {
+      if (!payload.bridgeDevice) {
+        throw new Error('Bridge device is required when bridge endpoint is enabled');
+      }
+      if (!payload.inputDevice) {
+        throw new Error('Input device is required when bridge endpoint is enabled');
+      }
+      if (payload.inputLeftChannel === null) {
+        throw new Error('Input channel is required when bridge endpoint is enabled');
+      }
+      if (!payload.outputDevice) {
+        throw new Error('Output device is required when bridge endpoint is enabled');
+      }
+      if (payload.outputLeftChannel === null) {
+        throw new Error('Output channel is required when bridge endpoint is enabled');
+      }
+    }
+
+    const res = await authedFetch(`/users/${userId}/bridge-endpoint`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (res.ok) {
+      showMessage('Bridge endpoint saved', 'success', 'user');
+      await refreshAdminLists({ users: true });
+    } else {
+      const response = await res.json().catch(() => ({}));
+      showMessage(response.error || 'Failed to save bridge endpoint', 'error', 'user');
+    }
+  } catch (err) {
+    showMessage(err.message || 'Failed to save bridge endpoint', 'error', 'user');
+    console.error(err);
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+  }
+};
+
+window.saveFeedBridgeEndpoint = async function(event, feedId) {
+  event.preventDefault();
+  const formKey = `feed-${feedId}`;
+
+  const submitButton = event.submitter;
+  if (submitButton) submitButton.disabled = true;
+
+  try {
+    const inputPair = readBridgePairSelect(`bridge-input-pair-${formKey}`, 'Input');
+    validateBridgeChannelPair(inputPair.left, inputPair.right, 'Input');
+
+    const payload = {
+      enabled: Boolean(document.getElementById(`bridge-enabled-${formKey}`)?.checked),
+      bridgeDevice: document.getElementById(`bridge-device-${formKey}`)?.value || '',
+      inputDevice: document.getElementById(`bridge-input-device-${formKey}`)?.value || '',
+      inputLeftChannel: inputPair.left,
+      inputRightChannel: inputPair.right,
+    };
+    if (payload.enabled) {
+      if (!payload.bridgeDevice) {
+        throw new Error('Bridge device is required when bridge endpoint is enabled');
+      }
+      if (!payload.inputDevice) {
+        throw new Error('Input device is required when bridge endpoint is enabled');
+      }
+      if (payload.inputLeftChannel === null) {
+        throw new Error('Input channel is required when bridge endpoint is enabled');
+      }
+    }
+
+    const res = await authedFetch(`/feeds/${feedId}/bridge-endpoint`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (res.ok) {
+      showMessage('Bridge feed endpoint saved', 'success', 'feed');
+      await refreshAdminLists({ feeds: true });
+    } else {
+      const response = await res.json().catch(() => ({}));
+      showMessage(response.error || 'Failed to save bridge feed endpoint', 'error', 'feed');
+    }
+  } catch (err) {
+    showMessage(err.message || 'Failed to save bridge feed endpoint', 'error', 'feed');
+    console.error(err);
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+  }
+};
+
 window.deleteConference = async function (confId) {
   if (!confirm('Are you sure you want to delete this conference?')) return;
   try {
@@ -1464,7 +2777,12 @@ window.deleteConference = async function (confId) {
       showMessage('✅ Conference deleted', 'success', 'conf');
       await refreshAdminLists({ users: true, conferences: true });
     } else {
-      showMessage('❌ Failed to delete conference', 'error', 'conf');
+      let message = `Failed to delete conference (${res.status})`;
+      try {
+        const payload = await res.json();
+        if (payload?.error) message = payload.error;
+      } catch {}
+      showMessage(`❌ ${message}`, 'error', 'conf');
     }
   } catch (err) {
     showMessage('❌ Error deleting conference: ' + err.message, 'error', 'conf');
@@ -1906,14 +3224,107 @@ if (adminLogoutBtn) {
   adminLogoutBtn.addEventListener('click', () => logoutAdmin());
 }
 
-for (const [sectionKey, section] of Object.entries(collapsibleAdminSections)) {
-  if (!section.cardEl || !section.bodyEl) continue;
-  section.cardEl.addEventListener('click', (event) => {
-    if (event.target.closest('.card-header__actions')) return;
-    if (event.target.closest('.card-section-body')) return;
-    setAdminSectionCollapsed(sectionKey, !section.bodyEl.hidden);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && adminState.isAuthenticated && latestAdminStatus) {
+    renderAdminStatus(latestAdminStatus);
+  }
+});
+
+function setupMatrixInteractions(container, toggleSelector, toggleHandler) {
+  if (!container) return;
+  let paintSession = null;
+  let suppressPointerClick = false;
+
+  const findToggleAtPoint = (event) => {
+    const element = document.elementFromPoint(event.clientX, event.clientY);
+    const toggle = element?.closest(toggleSelector);
+    return toggle && container.contains(toggle) ? toggle : null;
+  };
+
+  const paintToggle = (toggle) => {
+    if (!paintSession || !toggle || paintSession.visited.has(toggle)) return;
+    paintSession.visited.add(toggle);
+    toggleHandler(toggle, paintSession.enabled);
+  };
+
+  container.addEventListener('click', (event) => {
+    const toggle = event.target.closest(toggleSelector);
+    if (!toggle) return;
+    if (suppressPointerClick) {
+      event.preventDefault();
+      return;
+    }
+    toggleHandler(toggle);
+  });
+  container.addEventListener('pointerdown', (event) => {
+    if (event.pointerType === 'touch' || event.button !== 0) return;
+    const toggle = event.target.closest(toggleSelector);
+    if (!toggle || toggle.disabled) return;
+
+    event.preventDefault();
+    suppressPointerClick = true;
+    paintSession = {
+      pointerId: event.pointerId,
+      enabled: toggle.getAttribute('aria-pressed') !== 'true',
+      visited: new Set(),
+    };
+    container.classList.add('is-painting');
+    try {
+      container.setPointerCapture(event.pointerId);
+    } catch {}
+    paintToggle(toggle);
+  });
+  container.addEventListener('pointermove', (event) => {
+    if (!paintSession || event.pointerId !== paintSession.pointerId) return;
+    if ((event.buttons & 1) === 0) {
+      finishPainting(event);
+      return;
+    }
+
+    event.preventDefault();
+    const toggle = findToggleAtPoint(event);
+    paintToggle(toggle);
+    const cell = toggle?.closest('[data-matrix-column]');
+    highlightMatrixColumn(container, cell?.dataset.matrixColumn ?? null);
+  });
+
+  const finishPainting = (event) => {
+    if (!paintSession || event.pointerId !== paintSession.pointerId) return;
+    paintSession = null;
+    container.classList.remove('is-painting');
+    try {
+      container.releasePointerCapture(event.pointerId);
+    } catch {}
+    setTimeout(() => {
+      suppressPointerClick = false;
+    }, 0);
+  };
+  container.addEventListener('pointerup', finishPainting);
+  container.addEventListener('pointercancel', finishPainting);
+  container.addEventListener('pointerover', (event) => {
+    const cell = event.target.closest('[data-matrix-column]');
+    highlightMatrixColumn(container, cell?.dataset.matrixColumn ?? null);
+  });
+  container.addEventListener('pointerleave', () => {
+    highlightMatrixColumn(container);
+  });
+  container.addEventListener('focusin', (event) => {
+    const cell = event.target.closest('[data-matrix-column]');
+    highlightMatrixColumn(container, cell?.dataset.matrixColumn ?? null);
+  });
+  container.addEventListener('focusout', (event) => {
+    if (!container.contains(event.relatedTarget)) {
+      highlightMatrixColumn(container);
+    }
   });
 }
+
+setupMatrixInteractions(targetMatrixContainer, '.target-matrix-toggle', handleTargetMatrixToggle);
+setupMatrixInteractions(
+  conferenceMembershipMatrixContainer,
+  '.conference-membership-toggle',
+  handleConferenceMembershipToggle
+);
 
 if (mediaNetworkQrButton) {
   mediaNetworkQrButton.addEventListener('click', () => openAdminImageLightbox());
