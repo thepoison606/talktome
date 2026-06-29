@@ -6,6 +6,8 @@ env:
 on:
   workflow_dispatch:
   push:
+    branches:
+      - "feature/native-bridge-client-spike"
     tags:
       - "v*"
 
