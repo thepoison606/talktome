@@ -164,6 +164,17 @@ h3 {
   font-size: 0.78rem;
 }
 
+.startup-row {
+  margin-top: 0.8rem;
+}
+
+.autostart-status {
+  color: #9fb0c0;
+  font-size: 0.78rem;
+  min-height: 1.1rem;
+  margin-top: 0.3rem;
+}
+
 .summary-grid,
 .ports-grid {
   display: grid;

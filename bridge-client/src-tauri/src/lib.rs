@@ -23,6 +23,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, PhysicalPosition,
 };
+use tauri_plugin_autostart::{AutoLaunchManager, MacosLauncher};
 
 const TRAY_QUIT_ID: &str = "quit";
 
@@ -191,6 +192,32 @@ fn suppress_window_focus_hide(
 ) -> Result<(), String> {
     let milliseconds = milliseconds.unwrap_or(500).clamp(100, 2_000);
     guard.suppress_for(Duration::from_millis(milliseconds))
+}
+
+#[tauri::command]
+fn get_autostart_enabled(manager: tauri::State<'_, AutoLaunchManager>) -> Result<bool, String> {
+    manager
+        .is_enabled()
+        .map_err(|err| format!("failed to read autostart setting: {err}"))
+}
+
+#[tauri::command]
+fn set_autostart_enabled(
+    enabled: bool,
+    manager: tauri::State<'_, AutoLaunchManager>,
+) -> Result<bool, String> {
+    if enabled {
+        manager
+            .enable()
+            .map_err(|err| format!("failed to enable autostart: {err}"))?;
+    } else {
+        manager
+            .disable()
+            .map_err(|err| format!("failed to disable autostart: {err}"))?;
+    }
+    manager
+        .is_enabled()
+        .map_err(|err| format!("failed to read autostart setting: {err}"))
 }
 
 #[tauri::command]
@@ -547,6 +574,10 @@ fn get_audio_probe_ports_status(
 pub fn run() {
     let http = BridgeHttpClient::new().expect("failed to initialize bridge HTTP client");
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(ProbeManager::default())
         .manage(BridgeMediaManager::default())
         .manage(BridgeEventStreamManager::default())
@@ -614,11 +645,13 @@ pub fn run() {
             announce_bridge,
             bridge_api_request,
             get_audio_probe_ports_status,
+            get_autostart_enabled,
             get_bridge_media_status,
             get_bridge_status,
             list_audio_devices,
             reserve_bridge_output,
             set_bridge_output_level,
+            set_autostart_enabled,
             start_audio_probe,
             start_bridge_input,
             start_bridge_event_stream,

@@ -11,6 +11,8 @@ const apiKeyInput = document.getElementById("api-key");
 const bridgeNameInput = document.getElementById("bridge-name");
 const announceBridgeButton = document.getElementById("announce-bridge");
 const announceStatus = document.getElementById("announce-status");
+const autostartInput = document.getElementById("autostart-enabled");
+const autostartStatus = document.getElementById("autostart-status");
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
@@ -65,6 +67,44 @@ function saveBridgeSettings() {
   localStorage.setItem(STORAGE_KEYS.serverUrl, serverUrlInput.value.trim());
   localStorage.setItem(STORAGE_KEYS.apiKey, apiKeyInput.value.trim());
   localStorage.setItem(STORAGE_KEYS.bridgeName, bridgeNameInput.value.trim());
+}
+
+async function loadAutostartState() {
+  if (!invoke) {
+    autostartInput.disabled = true;
+    autostartStatus.textContent = "Autostart is only available in the native app.";
+    return;
+  }
+
+  autostartInput.disabled = true;
+  autostartStatus.textContent = "Reading startup setting...";
+  try {
+    autostartInput.checked = Boolean(await invoke("get_autostart_enabled"));
+    autostartStatus.textContent = "";
+  } catch (error) {
+    autostartStatus.textContent = `Startup setting unavailable: ${String(error)}`;
+  } finally {
+    autostartInput.disabled = false;
+  }
+}
+
+async function setAutostartState() {
+  if (!invoke) return;
+
+  const requestedState = autostartInput.checked;
+  autostartInput.disabled = true;
+  autostartStatus.textContent = requestedState ? "Enabling startup..." : "Disabling startup...";
+  try {
+    autostartInput.checked = Boolean(await invoke("set_autostart_enabled", { enabled: requestedState }));
+    autostartStatus.textContent = autostartInput.checked
+      ? "Bridge will start when you sign in."
+      : "Bridge will not start automatically.";
+  } catch (error) {
+    autostartInput.checked = !requestedState;
+    autostartStatus.textContent = `Failed to update startup setting: ${String(error)}`;
+  } finally {
+    autostartInput.disabled = false;
+  }
 }
 
 function inventorySignature(inventory) {
@@ -1901,6 +1941,7 @@ addPortButton.addEventListener("click", addPort);
 stopAllPortsButton.addEventListener("click", stopAllPorts);
 refreshButton.addEventListener("click", refreshDevices);
 announceBridgeButton.addEventListener("click", announceBridgeFromButton);
+autostartInput.addEventListener("change", setAutostartState);
 [serverUrlInput, apiKeyInput, bridgeNameInput].forEach((input) => {
   input.addEventListener("change", saveBridgeSettings);
 });
@@ -1916,4 +1957,5 @@ window.addEventListener("beforeunload", () => {
 });
 
 loadBridgeSettings();
+loadAutostartState();
 refreshDevices();
