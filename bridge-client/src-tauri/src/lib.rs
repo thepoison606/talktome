@@ -676,7 +676,12 @@ pub fn run() {
                     .icon_as_template(true);
             }
 
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
+            {
+                tray = tray.icon(tauri::include_image!("./icons/tray-windows.png"));
+            }
+
+            #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
             if let Some(icon) = app.default_window_icon().cloned() {
                 tray = tray.icon(icon);
             }
