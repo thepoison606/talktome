@@ -107,6 +107,16 @@ async function setAutostartState() {
   }
 }
 
+async function listenForAutostartChanges() {
+  if (!listen) return;
+  await listen("autostart-changed", (event) => {
+    autostartInput.checked = Boolean(event.payload);
+    autostartStatus.textContent = autostartInput.checked
+      ? "Bridge will start when you sign in."
+      : "Bridge will not start automatically.";
+  });
+}
+
 function inventorySignature(inventory) {
   if (!inventory) return "";
   const devices = (inventory.devices || []).map((device) => ({
@@ -1958,4 +1968,5 @@ window.addEventListener("beforeunload", () => {
 
 loadBridgeSettings();
 loadAutostartState();
+listenForAutostartChanges();
 refreshDevices();

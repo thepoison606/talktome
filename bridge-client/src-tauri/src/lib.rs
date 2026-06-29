@@ -19,12 +19,13 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, PhysicalPosition,
+    AppHandle, Emitter, Manager, PhysicalPosition, Wry,
 };
 use tauri_plugin_autostart::{AutoLaunchManager, MacosLauncher};
 
+const TRAY_AUTOSTART_ID: &str = "autostart";
 const TRAY_QUIT_ID: &str = "quit";
 
 fn toggle_main_window_from_tray(app: &tauri::AppHandle, rect: tauri::Rect) {
@@ -86,6 +87,11 @@ struct WindowFocusGuard {
     suppress_hide_until: Mutex<Option<Instant>>,
 }
 
+#[derive(Default)]
+struct TrayAutostartMenuItem {
+    item: Mutex<Option<CheckMenuItem<Wry>>>,
+}
+
 impl WindowFocusGuard {
     fn suppress_for(&self, duration: Duration) -> Result<(), String> {
         let mut suppress_hide_until = self
@@ -102,6 +108,33 @@ impl WindowFocusGuard {
             .ok()
             .and_then(|value| *value)
             .is_some_and(|until| Instant::now() < until)
+    }
+}
+
+fn set_tray_autostart_checked(app: &AppHandle, enabled: bool) {
+    if let Some(state) = app.try_state::<TrayAutostartMenuItem>() {
+        if let Ok(item) = state.item.lock() {
+            if let Some(item) = item.as_ref() {
+                let _ = item.set_checked(enabled);
+            }
+        }
+    }
+}
+
+fn toggle_autostart_from_tray(app: &AppHandle) {
+    if let Some(manager) = app.try_state::<AutoLaunchManager>() {
+        let next_enabled = !manager.is_enabled().unwrap_or(false);
+        let result = if next_enabled {
+            manager.enable()
+        } else {
+            manager.disable()
+        };
+
+        if result.is_ok() {
+            let enabled = manager.is_enabled().unwrap_or(next_enabled);
+            set_tray_autostart_checked(app, enabled);
+            let _ = app.emit("autostart-changed", enabled);
+        }
     }
 }
 
@@ -204,6 +237,7 @@ fn get_autostart_enabled(manager: tauri::State<'_, AutoLaunchManager>) -> Result
 #[tauri::command]
 fn set_autostart_enabled(
     enabled: bool,
+    app: AppHandle,
     manager: tauri::State<'_, AutoLaunchManager>,
 ) -> Result<bool, String> {
     if enabled {
@@ -215,9 +249,12 @@ fn set_autostart_enabled(
             .disable()
             .map_err(|err| format!("failed to disable autostart: {err}"))?;
     }
-    manager
+    let enabled = manager
         .is_enabled()
-        .map_err(|err| format!("failed to read autostart setting: {err}"))
+        .map_err(|err| format!("failed to read autostart setting: {err}"))?;
+    set_tray_autostart_checked(&app, enabled);
+    let _ = app.emit("autostart-changed", enabled);
+    Ok(enabled)
 }
 
 #[tauri::command]
@@ -582,6 +619,7 @@ pub fn run() {
         .manage(BridgeMediaManager::default())
         .manage(BridgeEventStreamManager::default())
         .manage(WindowFocusGuard::default())
+        .manage(TrayAutostartMenuItem::default())
         .manage(http)
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -592,14 +630,32 @@ pub fn run() {
                     .set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
 
+            let autostart_enabled = app
+                .try_state::<AutoLaunchManager>()
+                .and_then(|manager| manager.is_enabled().ok())
+                .unwrap_or(false);
+            let autostart = CheckMenuItem::with_id(
+                app,
+                TRAY_AUTOSTART_ID,
+                "Start at login",
+                true,
+                autostart_enabled,
+                None::<&str>,
+            )?;
+            if let Some(state) = app.try_state::<TrayAutostartMenuItem>() {
+                if let Ok(mut item) = state.item.lock() {
+                    *item = Some(autostart.clone());
+                }
+            }
             let quit = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&quit])?;
+            let menu = Menu::with_items(app, &[&autostart, &quit])?;
 
             let mut tray = TrayIconBuilder::with_id("talk-to-me-bridge")
                 .tooltip("Talk To Me Bridge")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
+                    TRAY_AUTOSTART_ID => toggle_autostart_from_tray(app),
                     TRAY_QUIT_ID => app.exit(0),
                     _ => {}
                 })
