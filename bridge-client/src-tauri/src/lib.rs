@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, PhysicalPosition, Wry,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, Size, Wry,
 };
 use tauri_plugin_autostart::{AutoLaunchManager, MacosLauncher};
 
@@ -255,6 +255,24 @@ fn set_autostart_enabled(
     set_tray_autostart_checked(&app, enabled);
     let _ = app.emit("autostart-changed", enabled);
     Ok(enabled)
+}
+
+#[tauri::command]
+fn resize_main_window_to_content(app: AppHandle, height: f64) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    let scale_factor = window
+        .scale_factor()
+        .map_err(|err| format!("failed to read window scale factor: {err}"))?;
+    let inner_size = window
+        .inner_size()
+        .map_err(|err| format!("failed to read window size: {err}"))?;
+    let logical_size = inner_size.to_logical::<f64>(scale_factor);
+    let height = height.clamp(260.0, 820.0);
+    window
+        .set_size(Size::Logical(LogicalSize::new(logical_size.width, height)))
+        .map_err(|err| format!("failed to resize window: {err}"))
 }
 
 #[tauri::command]
@@ -637,7 +655,7 @@ pub fn run() {
             let autostart = CheckMenuItem::with_id(
                 app,
                 TRAY_AUTOSTART_ID,
-                "Start at login",
+                "Run at login",
                 true,
                 autostart_enabled,
                 None::<&str>,
@@ -719,6 +737,7 @@ pub fn run() {
             get_bridge_status,
             list_audio_devices,
             reserve_bridge_output,
+            resize_main_window_to_content,
             set_bridge_output_level,
             set_autostart_enabled,
             start_audio_probe,

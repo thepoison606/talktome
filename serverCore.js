@@ -1163,7 +1163,7 @@ function buildBridgeRuntimeConfig(bridgeId) {
 
 function allowBridgeCors(req, res, next) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "authorization,x-api-key,content-type");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
@@ -3601,6 +3601,65 @@ app.get("/api/v1/bridge/:bridgeId/config", requireBridgeApiAuth, (req, res) => {
   res.json(buildBridgeRuntimeConfig(req.params.bridgeId));
 });
 
+app.put("/api/v1/bridge/:bridgeId/ports/:kind/:id", requireBridgeApiAuth, (req, res) => {
+  const bridgeId = normalizeBridgeId(req.params.bridgeId);
+  if (!canBridgeAuthAccessBridge(req.bridgeApiAuth, bridgeId)) {
+    return res.status(403).json({ error: "Bridge port updates require access to this bridge" });
+  }
+
+  const kind = String(req.params.kind || "").trim().toLowerCase();
+  const targetId = Number(req.params.id);
+  if (!Number.isInteger(targetId) || targetId < 1) {
+    return res.status(400).json({ error: "Invalid bridge port id" });
+  }
+
+  const config = {
+    ...(req.body || {}),
+    enabled: true,
+    bridgeDevice: bridgeId,
+  };
+
+  try {
+    if (kind === "user") {
+      const user = getUserById(targetId);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      if (user.is_guest_profile) {
+        return res.status(403).json({ error: "Guest profile cannot be a bridge endpoint" });
+      }
+      if (user.is_superadmin) {
+        return res.status(403).json({ error: "Superadmin cannot be a bridge endpoint" });
+      }
+      const updated = updateUserBridgeEndpoint(targetId, config);
+      if (!updated) return res.status(404).json({ error: "User not found" });
+      scheduleAdminStatusBroadcast("bridge-endpoint-updated");
+      return res.json(buildBridgeRuntimeConfig(bridgeId));
+    }
+
+    if (kind === "feed") {
+      const feed = getAllFeeds().find((entry) => Number(entry.id) === targetId);
+      if (!feed) return res.status(404).json({ error: "Feed not found" });
+      const updated = updateFeedBridgeEndpoint(targetId, config);
+      if (!updated) return res.status(404).json({ error: "Feed not found" });
+      scheduleAdminStatusBroadcast("bridge-feed-endpoint-updated");
+      return res.json(buildBridgeRuntimeConfig(bridgeId));
+    }
+
+    return res.status(400).json({ error: "Bridge port kind must be user or feed" });
+  } catch (err) {
+    const message = String(err?.message || "Invalid bridge endpoint config");
+    if (
+      message.includes("channel") ||
+      message.includes("required") ||
+      message.includes("Invalid user id") ||
+      message.includes("Invalid feed id")
+    ) {
+      return res.status(400).json({ error: message });
+    }
+    console.error("Error updating bridge port endpoint:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 app.post("/api/v1/bridge/sessions", requireBridgeApiAuth, (req, res) => {
   if (!canBridgeAuthAccessBridge(req.bridgeApiAuth, req.body?.bridgeId)) {
     return res.status(403).json({ error: "Bridge sessions require global API key access or this bridge token" });
@@ -3628,6 +3687,15 @@ app.delete(
   requireBridgeControlSession,
   (req, res) => {
     closeBridgeControlSession(req.bridgeSession.id);
+    res.json({ ok: true });
+  }
+);
+
+app.post(
+  "/api/v1/bridge/sessions/:sessionId/heartbeat",
+  requireBridgeApiAuth,
+  requireBridgeControlSession,
+  (req, res) => {
     res.json({ ok: true });
   }
 );

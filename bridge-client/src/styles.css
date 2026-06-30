@@ -1,13 +1,13 @@
 :root {
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: transparent;
+  background: #2b2b2f;
   color: #edf2f7;
 }
 
 html {
   height: 100%;
-  background: transparent;
+  background: #2b2b2f;
 }
 
 * {
@@ -16,16 +16,17 @@ html {
 
 body {
   margin: 0;
-  min-width: 680px;
+  min-width: 560px;
   height: 100vh;
   overflow: hidden;
-  background: transparent;
+  padding: 0;
+  background: #2b2b2f;
 }
 
 button {
-  border: 1px solid #44515e;
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 6px;
-  background: #26313b;
+  background: #3a3a40;
   color: #f7fafc;
   cursor: pointer;
   font: inherit;
@@ -40,9 +41,9 @@ input[type="range"] {
 
 select,
 input:not([type="range"]) {
-  border: 1px solid #44515e;
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 6px;
-  background: #11171d;
+  background: #242428;
   color: #f7fafc;
   font: inherit;
   min-height: 2.25rem;
@@ -55,24 +56,25 @@ button:disabled {
 }
 
 .shell {
+  align-content: start;
   display: grid;
-  gap: 0.75rem;
+  grid-auto-rows: max-content;
   min-height: 100vh;
   max-height: 100vh;
   width: 100vw;
   overflow-y: auto;
-  padding: 0.9rem;
-  border: 1px solid #2a3642;
-  border-radius: 16px;
-  background: #101317;
-  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.44);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #2b2b2f;
+  box-shadow: none;
 }
 
 .status-panel,
 .panel {
-  border: 1px solid #27323d;
+  border: 1px solid rgba(255, 255, 255, 0.11);
   border-radius: 8px;
-  background: #171d23;
+  background: #303034;
 }
 
 .status-panel {
@@ -124,7 +126,15 @@ h3 {
 }
 
 .panel {
-  padding: 0.85rem;
+  padding: 0.75rem;
+}
+
+.tray-section {
+  padding: 1rem 1.25rem;
+}
+
+.tray-section + .tray-section {
+  border-top: 1px solid rgba(255, 255, 255, 0.13);
 }
 
 .panel-header {
@@ -132,13 +142,20 @@ h3 {
   display: flex;
   gap: 1rem;
   justify-content: space-between;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.65rem;
 }
 
 .panel-header p {
-  color: #9fb0c0;
-  font-size: 0.9rem;
+  color: #b6bec8;
+  font-size: 0.82rem;
   margin-top: 0.25rem;
+}
+
+.registration-title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
 }
 
 .button-row {
@@ -148,7 +165,7 @@ h3 {
 
 .server-grid {
   display: grid;
-  gap: 0.8rem;
+  gap: 0.65rem;
   grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.2fr) minmax(0, 1fr);
 }
 
@@ -169,8 +186,11 @@ h3 {
 .autostart-status {
   color: #9fb0c0;
   font-size: 0.78rem;
-  min-height: 1.1rem;
-  margin-top: 0.3rem;
+  margin-top: 0;
+}
+
+.autostart-status:empty {
+  display: none;
 }
 
 .summary-grid,
@@ -187,11 +207,11 @@ h3 {
 }
 
 .managed-port-card {
-  border: 1px solid #2d3945;
+  border: 1px solid rgba(255, 255, 255, 0.11);
   border-radius: 7px;
-  background: #11171d;
+  background: #252529;
   display: grid;
-  gap: 0.25rem;
+  gap: 0.45rem;
   padding: 0.7rem;
 }
 
@@ -204,6 +224,17 @@ h3 {
   display: flex;
   gap: 0.75rem;
   justify-content: space-between;
+}
+
+.managed-port-title > div:first-child {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.managed-port-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
 }
 
 .managed-port-state {
@@ -222,6 +253,33 @@ h3 {
 .managed-port-state.warning {
   background: #3f3212;
   color: #fde68a;
+}
+
+.managed-port-save {
+  min-height: 1.8rem;
+  padding: 0.25rem 0.55rem;
+}
+
+.managed-port-routing-grid {
+  display: grid;
+  gap: 0.45rem 0.55rem;
+  grid-template-columns: minmax(0, 1fr) 8rem;
+}
+
+.managed-port-control {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.managed-port-control span {
+  color: #9fb0c0;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.managed-port-control select {
+  min-height: 2rem;
+  padding: 0.3rem 0.45rem;
 }
 
 .managed-port-error {
@@ -376,6 +434,34 @@ h3 {
   margin-top: 1rem;
   padding: 0.75rem;
   white-space: pre-line;
+}
+
+.connection-line {
+  align-items: center;
+  color: #b7c3ce;
+  display: flex;
+  font-size: 0.82rem;
+  gap: 0.45rem;
+}
+
+.connection-line span {
+  background: #718096;
+  border-radius: 999px;
+  display: inline-block;
+  height: 0.52rem;
+  width: 0.52rem;
+}
+
+.connection-line[data-state="connected"] span {
+  background: #22c55e;
+}
+
+.connection-line[data-state="connecting"] span {
+  background: #3b82f6;
+}
+
+.connection-line[data-state="disconnected"] span {
+  background: #718096;
 }
 
 .summary-card,

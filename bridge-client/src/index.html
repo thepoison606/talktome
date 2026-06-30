@@ -8,25 +8,20 @@
   </head>
   <body>
     <main class="shell">
-      <section class="status-panel">
-        <div>
-          <p class="eyebrow">Bridge client spike</p>
-          <h1>Talk To Me Bridge</h1>
-        </div>
-        <div class="status-pill" id="connection-status">Local probe</div>
-      </section>
-
-      <section class="panel">
+      <section class="tray-section">
         <div class="panel-header">
-          <div>
+          <div class="registration-title">
             <h2>Server registration</h2>
-            <p>Announce this machine's local audio inventory to the Talk To Me server.</p>
+            <div class="connection-line" id="announce-status" data-state="disconnected">
+              <span></span>
+              <strong>Disconnected</strong>
+            </div>
           </div>
-          <button id="announce-bridge" type="button">Announce</button>
+          <button id="announce-bridge" type="button">Save</button>
         </div>
         <div class="server-grid">
           <label>
-            <span>Server URL</span>
+            <span>Server IP/URL</span>
             <input id="server-url" type="url" autocomplete="url" />
           </label>
           <label>
@@ -40,13 +35,12 @@
         </div>
         <label class="checkbox-row startup-row">
           <input id="autostart-enabled" type="checkbox" />
-          <span>Start bridge when signing in</span>
+          <span>Run at login</span>
         </label>
         <div class="autostart-status" id="autostart-status"></div>
-        <div class="probe-status" id="announce-status">Not announced.</div>
       </section>
 
-      <section class="panel">
+      <section class="tray-section">
         <div class="panel-header">
           <div>
             <h2>Managed bridge ports</h2>
@@ -54,35 +48,6 @@
           </div>
         </div>
         <div class="managed-port-list" id="bridge-ports"></div>
-      </section>
-
-      <section class="panel diagnostic-panel">
-        <details>
-          <summary>Local audio probe</summary>
-          <div class="diagnostic-content">
-            <div class="panel-header">
-              <div>
-                <h2>Manual loopback ports</h2>
-              </div>
-              <div class="button-row">
-                <button id="add-port" type="button">Add port</button>
-                <button id="stop-all-ports" type="button" disabled>Stop all</button>
-              </div>
-            </div>
-            <div class="local-port-list" id="local-port-list"></div>
-          </div>
-        </details>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <div>
-            <h2>Audio devices</h2>
-          </div>
-          <button id="refresh-devices" type="button">Refresh</button>
-        </div>
-        <div class="summary-grid" id="device-summary"></div>
-        <div class="device-list" id="device-list"></div>
       </section>
 
     </main>

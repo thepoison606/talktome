@@ -28,6 +28,8 @@ const MANAGED_EVENT_FALLBACK_POLL_MS = 250;
 const MANAGED_INVENTORY_WATCH_MS = 2_000;
 const MANAGED_RETRY_MS = 2_000;
 const MANAGED_DEFAULT_TARGET_VOLUME = 0.9;
+const MIN_WINDOW_HEIGHT = 260;
+const MAX_WINDOW_HEIGHT = 820;
 
 let currentInventory = null;
 let portRows = [];
@@ -45,8 +47,66 @@ let managedInventoryWatchRunning = false;
 let lastAnnouncedInventorySignature = "";
 let lastManagedBridgePortsHtml = "";
 let bridgeEventStreamListenerPromise = null;
+let resizeWindowFrame = null;
+let lastRequestedWindowHeight = 0;
 const managedSessions = new Map();
 const nativeEventStreamSessions = new Map();
+const managedPortDrafts = new Map();
+const managedPortEditStates = new Map();
+
+function measureBridgeWindowContentHeight() {
+  const shell = document.querySelector(".shell");
+  if (!shell) return 0;
+
+  const styles = window.getComputedStyle(shell);
+  const paddingTop = Number.parseFloat(styles.paddingTop) || 0;
+  const paddingBottom = Number.parseFloat(styles.paddingBottom) || 0;
+  const gap = Number.parseFloat(styles.rowGap || styles.gap) || 0;
+  const visibleChildren = Array.from(shell.children).filter((child) => {
+    if (!(child instanceof HTMLElement)) return false;
+    return window.getComputedStyle(child).display !== "none";
+  });
+  const childrenHeight = visibleChildren.reduce((total, child, index) => {
+    return total + child.getBoundingClientRect().height + (index > 0 ? gap : 0);
+  }, 0);
+
+  return Math.ceil(paddingTop + childrenHeight + paddingBottom);
+}
+
+function requestBridgeWindowResize() {
+  if (!invoke || resizeWindowFrame) return;
+
+  resizeWindowFrame = window.requestAnimationFrame(async () => {
+    resizeWindowFrame = null;
+    const measuredHeight = measureBridgeWindowContentHeight();
+    if (!measuredHeight) return;
+    const height = Math.min(MAX_WINDOW_HEIGHT, Math.max(MIN_WINDOW_HEIGHT, measuredHeight));
+    if (Math.abs(height - lastRequestedWindowHeight) < 2) return;
+    lastRequestedWindowHeight = height;
+
+    try {
+      await invoke("resize_main_window_to_content", { height });
+    } catch (error) {
+      console.warn("failed to resize bridge window", error);
+    }
+  });
+}
+
+function installBridgeWindowAutoResize() {
+  requestBridgeWindowResize();
+
+  if (!("ResizeObserver" in window)) {
+    window.setInterval(requestBridgeWindowResize, 1_000);
+    return;
+  }
+
+  const shell = document.querySelector(".shell");
+  if (!shell) return;
+
+  const observer = new ResizeObserver(requestBridgeWindowResize);
+  Array.from(shell.children).forEach((child) => observer.observe(child));
+  observer.observe(shell);
+}
 
 function escapeHtml(value) {
   return String(value)
@@ -69,6 +129,25 @@ function saveBridgeSettings() {
   localStorage.setItem(STORAGE_KEYS.bridgeName, bridgeNameInput.value.trim());
 }
 
+function setServerConnectionState(state) {
+  if (!announceStatus) return;
+  const normalizedState = ["connected", "connecting", "disconnected"].includes(state)
+    ? state
+    : "disconnected";
+  announceStatus.dataset.state = normalizedState;
+  const label = announceStatus.querySelector("strong");
+  const text = normalizedState === "connected"
+    ? "Connected"
+    : normalizedState === "connecting"
+      ? "Connecting"
+      : "Disconnected";
+  if (label) {
+    label.textContent = text;
+  } else {
+    announceStatus.textContent = text;
+  }
+}
+
 async function loadAutostartState() {
   if (!invoke) {
     autostartInput.disabled = true;
@@ -77,7 +156,7 @@ async function loadAutostartState() {
   }
 
   autostartInput.disabled = true;
-  autostartStatus.textContent = "Reading startup setting...";
+  autostartStatus.textContent = "";
   try {
     autostartInput.checked = Boolean(await invoke("get_autostart_enabled"));
     autostartStatus.textContent = "";
@@ -93,12 +172,10 @@ async function setAutostartState() {
 
   const requestedState = autostartInput.checked;
   autostartInput.disabled = true;
-  autostartStatus.textContent = requestedState ? "Enabling startup..." : "Disabling startup...";
+  autostartStatus.textContent = "";
   try {
     autostartInput.checked = Boolean(await invoke("set_autostart_enabled", { enabled: requestedState }));
-    autostartStatus.textContent = autostartInput.checked
-      ? "Bridge will start when you sign in."
-      : "Bridge will not start automatically.";
+    autostartStatus.textContent = "";
   } catch (error) {
     autostartInput.checked = !requestedState;
     autostartStatus.textContent = `Failed to update startup setting: ${String(error)}`;
@@ -111,9 +188,7 @@ async function listenForAutostartChanges() {
   if (!listen) return;
   await listen("autostart-changed", (event) => {
     autostartInput.checked = Boolean(event.payload);
-    autostartStatus.textContent = autostartInput.checked
-      ? "Bridge will start when you sign in."
-      : "Bridge will not start automatically.";
+    autostartStatus.textContent = "";
   });
 }
 
@@ -206,6 +281,10 @@ function bridgePortKey(port) {
 
 function bridgePortHasOutput(port) {
   return Boolean(port?.output?.deviceId);
+}
+
+function bridgePortTargetId(port) {
+  return port?.kind === "feed" ? Number(port.feedId) : Number(port?.userId);
 }
 
 function buildManagedTargetAudioKey(targetType, targetId) {
@@ -431,6 +510,238 @@ function bridgePortSignature(port) {
   });
 }
 
+function getDeviceLabel(device) {
+  return device?.name || device?.id || "Unknown device";
+}
+
+function findDeviceByDirectionAndId(direction, deviceId) {
+  if (!deviceId) return null;
+  return devicesByDirection(direction).find((device) => device.id === deviceId) || null;
+}
+
+function getManagedPortDraft(port) {
+  const key = bridgePortKey(port);
+  const draft = managedPortDrafts.get(key) || {};
+  return {
+    input: {
+      deviceId: draft.input?.deviceId ?? port.input?.deviceId ?? "",
+      leftChannel: draft.input?.leftChannel ?? port.input?.leftChannel ?? null,
+      rightChannel: draft.input?.rightChannel ?? port.input?.rightChannel ?? null,
+    },
+    output: bridgePortHasOutput(port) ? {
+      deviceId: draft.output?.deviceId ?? port.output?.deviceId ?? "",
+      leftChannel: draft.output?.leftChannel ?? port.output?.leftChannel ?? null,
+      rightChannel: draft.output?.rightChannel ?? port.output?.rightChannel ?? null,
+    } : null,
+  };
+}
+
+function buildManagedDeviceOptions(direction, selectedDeviceId) {
+  const devices = devicesByDirection(direction);
+  const selected = String(selectedDeviceId || "");
+  const hasSelected = devices.some((device) => device.id === selected);
+  const options = [];
+  if (!selected) {
+    options.push('<option value="">Select device</option>');
+  } else if (!hasSelected) {
+    options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(`${selected} (saved, unavailable)`)}</option>`);
+  }
+
+  devices.forEach((device) => {
+    const selectedAttr = device.id === selected ? " selected" : "";
+    const suffix = device.is_default ? " (default)" : "";
+    options.push(`<option value="${escapeHtml(device.id)}"${selectedAttr}>${escapeHtml(`${getDeviceLabel(device)}${suffix}`)}</option>`);
+  });
+
+  return options.join("");
+}
+
+function buildManagedChannelOptions(device, selectedLeft, selectedRight) {
+  const normalizedLeft = Number(selectedLeft);
+  const normalizedRight = Number(selectedRight);
+  const selectedPair = (
+    Number.isInteger(normalizedLeft) &&
+    Number.isInteger(normalizedRight) &&
+    normalizedLeft >= 1 &&
+    normalizedRight >= 1
+  )
+    ? `${Number(selectedLeft)}:${Number(selectedRight)}`
+    : "";
+  const options = buildChannelOptions(device);
+  const hasSelected = options.some((option) => option.value === selectedPair);
+  const html = [];
+
+  if (!selectedPair) {
+    html.push('<option value="">Select channel</option>');
+  } else if (!hasSelected) {
+    html.push(`<option value="${escapeHtml(selectedPair)}" selected>${escapeHtml(`${formatChannelSelection(selectedLeft, selectedRight)} (saved, unavailable)`)}</option>`);
+  }
+
+  options.forEach((option) => {
+    const selectedAttr = option.value === selectedPair ? " selected" : "";
+    html.push(`<option value="${escapeHtml(option.value)}"${selectedAttr}>${escapeHtml(option.label)}</option>`);
+  });
+
+  return html.join("");
+}
+
+function formatActiveReturnPaths(count) {
+  const activeCount = Number(count) || 0;
+  if (activeCount <= 0) return "No active incoming talk";
+  if (activeCount === 1) return "1 active incoming talk";
+  return `${activeCount} active incoming talks`;
+}
+
+function renderManagedAssignmentControls(port, direction, assignment) {
+  const device = findDeviceByDirectionAndId(direction, assignment.deviceId);
+  const labelPrefix = direction === "output" ? "Output" : "Input";
+  return `
+    <label class="managed-port-control managed-port-control--device">
+      <span>${labelPrefix} device</span>
+      <select data-managed-port-control data-field="${direction}Device">
+        ${buildManagedDeviceOptions(direction, assignment.deviceId)}
+      </select>
+    </label>
+    <label class="managed-port-control managed-port-control--channel">
+      <span>${labelPrefix} channel</span>
+      <select data-managed-port-control data-field="${direction}Channel">
+        ${buildManagedChannelOptions(device, assignment.leftChannel, assignment.rightChannel)}
+      </select>
+    </label>
+  `;
+}
+
+function getManagedPortElement(key) {
+  return Array.from(bridgePorts.querySelectorAll("[data-managed-port-key]"))
+    .find((element) => element.dataset.managedPortKey === key) || null;
+}
+
+function readManagedPortAssignmentFromElement(card, direction) {
+  const deviceId = card.querySelector(`[data-field="${direction}Device"]`)?.value || "";
+  const channelValue = card.querySelector(`[data-field="${direction}Channel"]`)?.value || "";
+  const pair = parsePair(channelValue);
+  return {
+    deviceId,
+    leftChannel: pair.left,
+    rightChannel: pair.right,
+  };
+}
+
+function updateManagedPortDraftFromElement(card) {
+  const key = card?.dataset?.managedPortKey;
+  if (!key) return;
+  const port = (managedBridgeConfig?.ports || []).find((entry) => bridgePortKey(entry) === key);
+  if (!port) return;
+  const draft = {
+    input: readManagedPortAssignmentFromElement(card, "input"),
+    output: bridgePortHasOutput(port)
+      ? readManagedPortAssignmentFromElement(card, "output")
+      : null,
+  };
+  managedPortDrafts.set(key, draft);
+  managedPortEditStates.set(key, { dirty: true });
+}
+
+function validateManagedPortAssignment(assignment, label) {
+  if (!assignment.deviceId) {
+    throw new Error(`${label} device is required`);
+  }
+  if (
+    !Number.isInteger(assignment.leftChannel) ||
+    !Number.isInteger(assignment.rightChannel) ||
+    assignment.leftChannel < 1 ||
+    assignment.rightChannel < 1
+  ) {
+    throw new Error(`${label} channel is required`);
+  }
+}
+
+async function saveManagedBridgePort(key) {
+  const port = (managedBridgeConfig?.ports || []).find((entry) => bridgePortKey(entry) === key);
+  const bridgeId = managedBridgeConfig?.bridgeId || localStorage.getItem(STORAGE_KEYS.bridgeId) || "";
+  const targetId = bridgePortTargetId(port);
+  if (!port || !bridgeId || !Number.isFinite(targetId)) return;
+
+  const card = getManagedPortElement(key);
+  if (!card) return;
+  updateManagedPortDraftFromElement(card);
+  const draft = managedPortDrafts.get(key) || getManagedPortDraft(port);
+
+  validateManagedPortAssignment(draft.input, "Input");
+  if (bridgePortHasOutput(port)) {
+    validateManagedPortAssignment(draft.output, "Output");
+  }
+
+  const payload = {
+    enabled: true,
+    inputDevice: draft.input.deviceId,
+    inputLeftChannel: draft.input.leftChannel,
+    inputRightChannel: draft.input.rightChannel,
+  };
+  if (bridgePortHasOutput(port)) {
+    payload.outputDevice = draft.output.deviceId;
+    payload.outputLeftChannel = draft.output.leftChannel;
+    payload.outputRightChannel = draft.output.rightChannel;
+  }
+
+  managedPortEditStates.set(key, { saving: true });
+  renderManagedBridgePorts();
+  try {
+    await suppressWindowFocusHide(500);
+    const config = await bridgeApi(
+      "PUT",
+      `/api/v1/bridge/${encodeURIComponent(bridgeId)}/ports/${encodeURIComponent(port.kind)}/${encodeURIComponent(targetId)}`,
+      payload
+    );
+    managedPortDrafts.delete(key);
+    managedPortEditStates.delete(key);
+    await reconcileManagedBridgeConfig(config);
+  } catch (error) {
+    managedPortEditStates.set(key, { error: String(error?.message || error) });
+    renderManagedBridgePorts();
+    throw error;
+  }
+}
+
+function handleManagedPortControlChange(event) {
+  const control = event.target;
+  if (!(control instanceof HTMLSelectElement) || !control.matches("[data-managed-port-control]")) {
+    return;
+  }
+  const card = control.closest("[data-managed-port-key]");
+  if (!(card instanceof HTMLElement)) return;
+
+  const field = control.dataset.field || "";
+  if (field === "inputDevice" || field === "outputDevice") {
+    const direction = field.startsWith("output") ? "output" : "input";
+    const channelSelect = card.querySelector(`[data-field="${direction}Channel"]`);
+    if (channelSelect instanceof HTMLSelectElement) {
+      const device = findDeviceByDirectionAndId(direction, control.value);
+      channelSelect.innerHTML = buildManagedChannelOptions(device, null, null);
+      const firstRealOptionIndex = Array.from(channelSelect.options).findIndex((option) => option.value);
+      if (firstRealOptionIndex >= 0) {
+        channelSelect.selectedIndex = firstRealOptionIndex;
+      }
+    }
+  }
+
+  updateManagedPortDraftFromElement(card);
+}
+
+async function handleManagedPortSaveClick(event) {
+  const button = event.target instanceof Element
+    ? event.target.closest("[data-save-managed-port]")
+    : null;
+  if (!(button instanceof HTMLButtonElement)) return;
+  const key = button.dataset.saveManagedPort || "";
+  if (!key) return;
+  try {
+    await saveManagedBridgePort(key);
+  } catch (error) {
+    console.error("Failed to save managed bridge port", error);
+  }
+}
+
 function renderManagedBridgePorts() {
   const configuredPorts = managedBridgeConfig?.ports ?? [];
   if (!configuredPorts.length) {
@@ -439,29 +750,42 @@ function renderManagedBridgePorts() {
       bridgePorts.innerHTML = html;
       lastManagedBridgePortsHtml = html;
     }
+    requestBridgeWindowResize();
     return;
   }
 
   const html = configuredPorts.map((port) => {
-    const session = managedSessions.get(bridgePortKey(port));
+    const key = bridgePortKey(port);
+    const session = managedSessions.get(key);
     const addressedNow = Array.isArray(session?.addressedNow) ? session.addressedNow : [];
     const speakerNames = addressedNow
       .map((entry) => entry?.speakerName || entry?.name || null)
       .filter(Boolean);
     const hasOutput = bridgePortHasOutput(port);
     const state = getManagedSessionState(session, port);
+    const draft = getManagedPortDraft(port);
+    const editState = managedPortEditStates.get(key) || {};
+    const saveLabel = editState.saving ? "Saving" : "Save";
     return `
-      <article class="managed-port-card">
+      <article class="managed-port-card" data-managed-port-key="${escapeHtml(key)}">
       <div class="managed-port-title">
-        <strong>${escapeHtml(port.label)}</strong>
-        <span class="managed-port-state ${escapeHtml(state.className)}">${escapeHtml(state.label)}</span>
+        <div>
+          <strong>${escapeHtml(port.label)}</strong>
+          <small>${escapeHtml(port.kind === "feed" ? "Feed" : "User")}</small>
+        </div>
+        <div class="managed-port-actions">
+          <span class="managed-port-state ${escapeHtml(state.className)}">${escapeHtml(state.label)}</span>
+          <button type="button" class="managed-port-save" data-save-managed-port="${escapeHtml(key)}"${editState.saving ? " disabled" : ""}>${escapeHtml(saveLabel)}</button>
+        </div>
       </div>
-      <small>Type: ${escapeHtml(port.kind === "feed" ? "Feed" : "User")}</small>
-      <small>Input: ${escapeHtml(port.input.deviceId)} ${escapeHtml(formatChannelSelection(port.input.leftChannel, port.input.rightChannel))}</small>
-      ${hasOutput ? `<small>Output: ${escapeHtml(port.output.deviceId)} ${escapeHtml(formatChannelSelection(port.output.leftChannel, port.output.rightChannel))}</small>` : ""}
-      ${hasOutput ? `<small>${session?.outputs?.size ?? 0} active return path(s)</small>` : ""}
+      <div class="managed-port-routing-grid">
+        ${renderManagedAssignmentControls(port, "input", draft.input)}
+        ${hasOutput ? renderManagedAssignmentControls(port, "output", draft.output) : ""}
+      </div>
+      ${hasOutput ? `<small>${escapeHtml(formatActiveReturnPaths(session?.outputs?.size))}</small>` : ""}
       ${speakerNames.length ? `<small>From: ${escapeHtml(speakerNames.join(", "))}</small>` : ""}
       ${session?.error ? `<div class="managed-port-error">${escapeHtml(session.error)}</div>` : ""}
+      ${editState.error ? `<div class="managed-port-error">${escapeHtml(editState.error)}</div>` : ""}
       </article>
     `;
   }).join("");
@@ -470,6 +794,7 @@ function renderManagedBridgePorts() {
     bridgePorts.innerHTML = html;
     lastManagedBridgePortsHtml = html;
   }
+  requestBridgeWindowResize();
 }
 
 function buildProducerRtpParameters(transport) {
@@ -1001,6 +1326,29 @@ async function pollManagedEvents() {
   }
 }
 
+async function heartbeatManagedSessions() {
+  const sessions = [...managedSessions.values()].filter((session) => (
+    session.sessionId
+    && !session.starting
+    && (session.ready || session.eventStreamActive)
+  ));
+  if (!sessions.length) return;
+
+  for (const session of sessions) {
+    try {
+      await bridgeApi("POST", managedSessionPath(session, "/heartbeat"), {});
+      if (session.error && session.statusLabel === "Server offline") {
+        session.error = null;
+        session.statusLabel = null;
+      }
+    } catch (error) {
+      if (!session.sessionId) continue;
+      session.ready = false;
+      setManagedSessionError(session, error);
+    }
+  }
+}
+
 function createManagedSession(port) {
   const key = bridgePortKey(port);
   return {
@@ -1209,10 +1557,15 @@ async function syncManagedBridge() {
       `/api/v1/bridge/${encodeURIComponent(bridgeId)}/config`
     );
     await reconcileManagedBridgeConfig(config);
-    connectionStatus.textContent = managedSessions.size ? "Connected" : "Announced";
+    await heartbeatManagedSessions();
+    if (connectionStatus) {
+      connectionStatus.textContent = managedSessions.size ? "Connected" : "Announced";
+    }
   } catch (error) {
-    connectionStatus.textContent = "Disconnected";
-    announceStatus.textContent = `Bridge sync failed: ${String(error.message || error)}`;
+    if (connectionStatus) {
+      connectionStatus.textContent = "Disconnected";
+    }
+    setServerConnectionState("disconnected");
     for (const session of managedSessions.values()) {
       if (session.retryable === false) continue;
       setManagedSessionError(session, error);
@@ -1304,6 +1657,8 @@ function buildChannelOptions(device) {
 }
 
 function renderSummary(inventory) {
+  if (!deviceSummary) return;
+
   const inputCount = inventory.devices.filter((device) => device.direction === "input").length;
   const outputCount = inventory.devices.filter((device) => device.direction === "output").length;
   const maxInputChannels = Math.max(0, ...inventory.devices
@@ -1389,7 +1744,9 @@ function renderChannelAssignment(assignment) {
 
 function renderBridgeStatus(status) {
   if (!managedBridgeConfig) {
-    connectionStatus.textContent = status.connected ? "Connected" : "Local probe";
+    if (connectionStatus) {
+      connectionStatus.textContent = status.connected ? "Connected" : "Local probe";
+    }
   }
   renderManagedBridgePorts();
 }
@@ -1397,6 +1754,10 @@ function renderBridgeStatus(status) {
 function renderInventory(inventory) {
   currentInventory = inventory;
   renderSummary(inventory);
+  if (!deviceList) {
+    renderAllPortControls();
+    return;
+  }
   deviceList.innerHTML = "";
 
   if (!inventory.devices.length) {
@@ -1423,7 +1784,7 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
 
   saveBridgeSettings();
   announceBridgeButton.disabled = true;
-  if (!quiet) announceStatus.textContent = "Announcing bridge inventory...";
+  if (!quiet) setServerConnectionState("connecting");
 
   try {
     const bridgeId = localStorage.getItem(STORAGE_KEYS.bridgeId) || "";
@@ -1439,7 +1800,7 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
       }
 
       if (!currentInventory) {
-        throw new Error("Refresh audio devices before announcing.");
+        throw new Error("Refresh audio devices before saving.");
       }
 
       const response = await fetch(`${serverUrl}/api/v1/bridge/announce`, {
@@ -1458,7 +1819,7 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
 
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload.error || `Announce failed (${response.status})`);
+        throw new Error(payload.error || `Save failed (${response.status})`);
       }
       return payload;
     };
@@ -1481,8 +1842,10 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
       localStorage.setItem(STORAGE_KEYS.bridgeId, announcedBridge.id);
     }
     lastAnnouncedInventorySignature = inventorySignature(currentInventory);
-    connectionStatus.textContent = "Announced";
-    announceStatus.textContent = `Announced as ${announcedBridge.name || bridgeName} at ${announcedBridge.lastSeenAt || "now"}.`;
+    if (connectionStatus) {
+      connectionStatus.textContent = "Announced";
+    }
+    setServerConnectionState("connected");
     if (syncConfig && announcedBridge.id) {
       const config = await bridgeApi(
         "GET",
@@ -1490,7 +1853,9 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
       );
       await reconcileManagedBridgeConfig(config);
       startManagedTimers();
-      connectionStatus.textContent = managedSessions.size ? "Connected" : "Announced";
+      if (connectionStatus) {
+        connectionStatus.textContent = managedSessions.size ? "Connected" : "Announced";
+      }
     }
   } finally {
     announceBridgeButton.disabled = false;
@@ -1502,8 +1867,10 @@ async function announceBridgeFromButton() {
     await announceBridge();
   } catch (error) {
     console.error(error);
-    connectionStatus.textContent = "Announce failed";
-    announceStatus.textContent = String(error.message || error);
+    if (connectionStatus) {
+      connectionStatus.textContent = "Save failed";
+    }
+    setServerConnectionState("disconnected");
   }
 }
 
@@ -1589,6 +1956,7 @@ function createPortRow() {
 }
 
 function addPort() {
+  if (!localPortList) return;
   const row = createPortRow();
   portRows.push(row);
   renderPortRow(row);
@@ -1740,6 +2108,8 @@ function populatePortControls(row) {
 }
 
 function renderAllPortControls() {
+  if (!localPortList) return;
+
   if (!portRows.length) {
     addPort();
     return;
@@ -1799,6 +2169,8 @@ function renderRunningPort(row, status) {
 }
 
 function renderPortStatuses(statuses) {
+  if (!localPortList) return;
+
   const statusById = new Map(statuses.map((status) => [status.port_id, status]));
   portRows.forEach((row) => {
     const status = statusById.get(row.id);
@@ -1810,7 +2182,9 @@ function renderPortStatuses(statuses) {
   });
 
   const anyRunning = statuses.some((status) => status.running);
-  stopAllPortsButton.disabled = !anyRunning;
+  if (stopAllPortsButton) {
+    stopAllPortsButton.disabled = !anyRunning;
+  }
   if (anyRunning) {
     startStatusPolling();
   } else {
@@ -1910,21 +2284,29 @@ async function stopAllPorts() {
 
 async function refreshDevices() {
   if (!invoke) {
-    deviceList.innerHTML = '<div class="empty-state">Tauri API is not available. Start this UI through the bridge client.</div>';
-    connectionStatus.textContent = "Not in Tauri";
+    if (deviceList) {
+      deviceList.innerHTML = '<div class="empty-state">Tauri API is not available. Start this UI through the bridge client.</div>';
+    }
+    if (connectionStatus) {
+      connectionStatus.textContent = "Not in Tauri";
+    }
     bridgePorts.innerHTML = '<div class="empty-state">No native bridge status available.</div>';
-    localPortList.innerHTML = '<div class="empty-state">No native port runtime available.</div>';
+    if (localPortList) {
+      localPortList.innerHTML = '<div class="empty-state">No native port runtime available.</div>';
+    }
     return;
   }
 
-  refreshButton.disabled = true;
-  refreshButton.textContent = "Refreshing";
+  if (refreshButton) {
+    refreshButton.disabled = true;
+    refreshButton.textContent = "Refreshing";
+  }
   try {
     await suppressWindowFocusHide(250);
     const [inventory, bridgeStatus, portStatuses] = await Promise.all([
       invoke("list_audio_devices"),
       invoke("get_bridge_status"),
-      invoke("get_audio_probe_ports_status")
+      localPortList ? invoke("get_audio_probe_ports_status") : Promise.resolve([])
     ]);
     renderBridgeStatus(bridgeStatus);
     renderInventory(inventory);
@@ -1934,24 +2316,32 @@ async function refreshDevices() {
         await announceBridge({ quiet: true });
       } catch (announceError) {
         console.warn("auto announce failed", announceError);
-        announceStatus.textContent = `Auto announce failed: ${String(announceError.message || announceError)}`;
+        setServerConnectionState("disconnected");
       }
     }
   } catch (error) {
     console.error(error);
-    connectionStatus.textContent = "Probe failed";
-    deviceList.innerHTML = `<div class="empty-state">Audio probe failed: ${String(error)}</div>`;
+    if (connectionStatus) {
+      connectionStatus.textContent = "Probe failed";
+    }
+    if (deviceList) {
+      deviceList.innerHTML = `<div class="empty-state">Audio probe failed: ${String(error)}</div>`;
+    }
   } finally {
-    refreshButton.disabled = false;
-    refreshButton.textContent = "Refresh";
+    if (refreshButton) {
+      refreshButton.disabled = false;
+      refreshButton.textContent = "Refresh";
+    }
   }
 }
 
-addPortButton.addEventListener("click", addPort);
-stopAllPortsButton.addEventListener("click", stopAllPorts);
-refreshButton.addEventListener("click", refreshDevices);
+addPortButton?.addEventListener("click", addPort);
+stopAllPortsButton?.addEventListener("click", stopAllPorts);
+refreshButton?.addEventListener("click", refreshDevices);
 announceBridgeButton.addEventListener("click", announceBridgeFromButton);
 autostartInput.addEventListener("change", setAutostartState);
+bridgePorts?.addEventListener("change", handleManagedPortControlChange);
+bridgePorts?.addEventListener("click", handleManagedPortSaveClick);
 [serverUrlInput, apiKeyInput, bridgeNameInput].forEach((input) => {
   input.addEventListener("change", saveBridgeSettings);
 });
@@ -1967,6 +2357,7 @@ window.addEventListener("beforeunload", () => {
 });
 
 loadBridgeSettings();
+installBridgeWindowAutoResize();
 loadAutostartState();
 listenForAutostartChanges();
 refreshDevices();
