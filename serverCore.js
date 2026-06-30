@@ -2616,8 +2616,7 @@ function bridgeInventoryHasAssignment(bridge, direction, assignment) {
   if (!Number.isInteger(leftChannel) || !Number.isInteger(rightChannel)) return false;
   if (leftChannel < 1 || rightChannel < 1) return false;
   const maxChannels = Number(device.max_channels ?? device.maxChannels ?? 0);
-  if (maxChannels < requiredChannel) return false;
-  return Boolean(device.supports_48k ?? device.supports48k);
+  return maxChannels >= requiredChannel;
 }
 
 function buildBridgeDeviceIssues(bridge, users = [], feeds = []) {

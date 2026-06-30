@@ -381,9 +381,6 @@ function getManagedAssignmentUnavailableReason(direction, assignment) {
   if (maxChannels < requiredChannel) {
     return `${label} device ${deviceName} has ${maxChannels} channel(s), ${requiredChannel} required`;
   }
-  if (!Boolean(device.supports_48k ?? device.supports48k)) {
-    return `${label} device ${deviceName} no longer reports 48 kHz support`;
-  }
   return "";
 }
 
@@ -1716,7 +1713,7 @@ function renderDevice(device) {
     </div>
     <div class="device-meta">
       <span>${device.max_channels} max channels</span>
-      <span>${device.supports_48k ? "48 kHz available" : "48 kHz not reported"}</span>
+      <span>${device.supports_48k ? "48 kHz available" : "Resampling required"}</span>
     </div>
     <div class="channel-pairs">${pairs}</div>
     <details>

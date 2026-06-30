@@ -9,7 +9,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
-use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfigRange, SAMPLE_RATE_48K};
+use cpal::{
+    SampleFormat, SampleRate, Stream, StreamConfig, SupportedStreamConfigRange, SAMPLE_RATE_48K,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::audio;
@@ -217,6 +219,7 @@ struct OutputMixerKey {
 
 struct BridgeOutputMixerRuntime {
     _stream: Stream,
+    sample_rate: SampleRate,
     sources: Arc<Mutex<HashMap<String, BridgeOutputMixerSource>>>,
     last_error: Arc<Mutex<Option<String>>>,
 }
@@ -313,19 +316,25 @@ impl BridgeMediaManager {
             let mixer = BridgeOutputMixerRuntime::start(&pending.request.assignment)?;
             state.mixers.insert(mixer_key.clone(), mixer);
         }
-        let source_queue = state
+        let mixer = state
             .mixers
             .get(&mixer_key)
-            .ok_or_else(|| "bridge output mixer was not created".to_string())?
-            .add_source(stream_id.clone())?;
-        let runtime =
-            match BridgeOutputRuntime::start(&pending, &request, mixer_key.clone(), source_queue) {
-                Ok(runtime) => runtime,
-                Err(err) => {
-                    Self::remove_mixer_source_locked(&mut state, &mixer_key, &stream_id);
-                    return Err(err);
-                }
-            };
+            .ok_or_else(|| "bridge output mixer was not created".to_string())?;
+        let output_sample_rate = mixer.sample_rate;
+        let source_queue = mixer.add_source(stream_id.clone())?;
+        let runtime = match BridgeOutputRuntime::start(
+            &pending,
+            &request,
+            mixer_key.clone(),
+            source_queue,
+            output_sample_rate,
+        ) {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                Self::remove_mixer_source_locked(&mut state, &mixer_key, &stream_id);
+                return Err(err);
+            }
+        };
         state.outputs.insert(stream_id, runtime);
         Ok(status_from(&state))
     }
@@ -417,7 +426,7 @@ impl BridgeMediaManager {
 impl BridgeInputRuntime {
     fn start(request: &StartBridgeInputRequest) -> Result<Self, String> {
         let device = audio::find_audio_device("input", &request.assignment.device_id)?;
-        let config = choose_f32_48k_config(
+        let config = choose_f32_config(
             &device,
             "input",
             request
@@ -425,6 +434,7 @@ impl BridgeInputRuntime {
                 .left_channel
                 .max(request.assignment.right_channel),
         )?;
+        let input_sample_rate = config.sample_rate.to_string();
         let channels = usize::from(config.channels);
         let left_index = usize::from(request.assignment.left_channel - 1);
         let right_index = usize::from(request.assignment.right_channel - 1);
@@ -474,11 +484,13 @@ impl BridgeInputRuntime {
                 "-f",
                 "f32le",
                 "-ar",
-                "48000",
+                &input_sample_rate,
                 "-ac",
                 "2",
                 "-i",
                 "pipe:0",
+                "-ar",
+                "48000",
                 "-c:a",
                 "libopus",
                 "-application",
@@ -552,11 +564,12 @@ impl OutputMixerKey {
 impl BridgeOutputMixerRuntime {
     fn start(assignment: &BridgeChannelAssignment) -> Result<Self, String> {
         let device = audio::find_audio_device("output", &assignment.device_id)?;
-        let config = choose_f32_48k_config(
+        let config = choose_f32_config(
             &device,
             "output",
             assignment.left_channel.max(assignment.right_channel),
         )?;
+        let sample_rate = config.sample_rate;
         let channels = usize::from(config.channels);
         let left_index = usize::from(assignment.left_channel - 1);
         let right_index = usize::from(assignment.right_channel - 1);
@@ -622,6 +635,7 @@ impl BridgeOutputMixerRuntime {
             .map_err(|err| format!("failed to start bridge output stream: {err}"))?;
         Ok(Self {
             _stream: stream,
+            sample_rate,
             sources,
             last_error,
         })
@@ -690,7 +704,9 @@ impl BridgeOutputRuntime {
         request: &ActivateBridgeOutputRequest,
         mixer_key: OutputMixerKey,
         queue: Arc<Mutex<VecDeque<StereoFrame>>>,
+        output_sample_rate: SampleRate,
     ) -> Result<Self, String> {
+        let output_sample_rate = output_sample_rate.to_string();
         let fmtp_line = request
             .fmtp
             .as_deref()
@@ -737,7 +753,7 @@ impl BridgeOutputRuntime {
                 "-ac",
                 "2",
                 "-ar",
-                "48000",
+                &output_sample_rate,
                 "-c:a",
                 "pcm_f32le",
                 "-f",
@@ -836,7 +852,7 @@ impl BridgeOutputRuntime {
     }
 }
 
-fn choose_f32_48k_config(
+fn choose_f32_config(
     device: &cpal::Device,
     direction: &str,
     min_channels: u16,
@@ -856,12 +872,37 @@ fn choose_f32_48k_config(
         .into_iter()
         .filter(|range| range.sample_format() == SampleFormat::F32)
         .filter(|range| range.channels() >= min_channels)
-        .filter(|range| range.contains_rate(SAMPLE_RATE_48K))
-        .min_by_key(|range| range.channels())
+        .min_by_key(|range| {
+            (
+                sample_rate_distance_from_48k(select_sample_rate(range)),
+                range.channels(),
+            )
+        })
         .ok_or_else(|| {
-            format!("no F32/48 kHz {direction} config with at least {min_channels} channels")
+            format!("no F32 {direction} config with at least {min_channels} channels")
         })?;
-    Ok(selected.with_sample_rate(SAMPLE_RATE_48K).config())
+    Ok(selected
+        .with_sample_rate(select_sample_rate(&selected))
+        .config())
+}
+
+fn select_sample_rate(range: &SupportedStreamConfigRange) -> SampleRate {
+    if range.contains_rate(SAMPLE_RATE_48K) {
+        return SAMPLE_RATE_48K;
+    }
+
+    let min = range.min_sample_rate();
+    let max = range.max_sample_rate();
+
+    if max < SAMPLE_RATE_48K {
+        max
+    } else {
+        min
+    }
+}
+
+fn sample_rate_distance_from_48k(sample_rate: SampleRate) -> u32 {
+    sample_rate.abs_diff(SAMPLE_RATE_48K)
 }
 
 fn validate_stream_id(stream_id: &str) -> Result<(), String> {

@@ -413,7 +413,8 @@ fn handle_output(
     data.fill(0.0);
 
     if channels == 0 || left_index >= channels || right_index >= channels {
-        shared.set_error("output channel selection is outside the active stream config".to_string());
+        shared
+            .set_error("output channel selection is outside the active stream config".to_string());
         return;
     }
 
