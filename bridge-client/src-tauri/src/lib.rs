@@ -39,8 +39,52 @@ fn toggle_main_window_from_tray(app: &tauri::AppHandle, rect: tauri::Rect) {
             let tray_position = rect.position.to_physical::<i32>(scale_factor);
             let tray_size = rect.size.to_physical::<u32>(scale_factor);
             let tray_center_x = tray_position.x + (tray_size.width as i32 / 2);
-            let x = tray_center_x - (size.width as i32 / 2);
-            let y = tray_position.y + tray_size.height as i32 + 8;
+            let tray_center_y = tray_position.y + (tray_size.height as i32 / 2);
+            let window_width = size.width as i32;
+            let window_height = size.height as i32;
+            let gap = 8;
+
+            let monitor = app
+                .available_monitors()
+                .ok()
+                .and_then(|monitors| {
+                    monitors.into_iter().find(|monitor| {
+                        let position = monitor.position();
+                        let size = monitor.size();
+                        let right = position.x + size.width as i32;
+                        let bottom = position.y + size.height as i32;
+                        tray_center_x >= position.x
+                            && tray_center_x <= right
+                            && tray_center_y >= position.y
+                            && tray_center_y <= bottom
+                    })
+                })
+                .or_else(|| window.current_monitor().ok().flatten());
+
+            let mut x = tray_center_x - (window_width / 2);
+            let mut y = tray_position.y + tray_size.height as i32 + gap;
+
+            if let Some(monitor) = monitor {
+                let work_area = monitor.work_area();
+                let work_left = work_area.position.x;
+                let work_top = work_area.position.y;
+                let work_right = work_left + work_area.size.width as i32;
+                let work_bottom = work_top + work_area.size.height as i32;
+                let tray_bottom = tray_position.y + tray_size.height as i32;
+                let space_above = tray_position.y - work_top;
+                let space_below = work_bottom - tray_bottom;
+                let work_mid_y = work_top + ((work_bottom - work_top) / 2);
+                let place_above = space_below < window_height + gap
+                    && (space_above >= window_height + gap || tray_center_y > work_mid_y);
+
+                if place_above {
+                    y = tray_position.y - window_height - gap;
+                }
+
+                x = x.clamp(work_left, work_right.saturating_sub(window_width));
+                y = y.clamp(work_top, work_bottom.saturating_sub(window_height));
+            }
+
             let _ = window.set_position(PhysicalPosition::new(x, y));
         }
 
