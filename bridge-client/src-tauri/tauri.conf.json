@@ -23,7 +23,7 @@
         "decorations": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "closable": false,
+        "closable": true,
         "minimizable": false,
         "maximizable": false,
         "transparent": false,
