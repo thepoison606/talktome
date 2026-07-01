@@ -8,6 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{
     SampleFormat, SampleRate, Stream, StreamConfig, SupportedStreamConfigRange, SAMPLE_RATE_48K,
@@ -19,10 +22,23 @@ use crate::audio;
 const OUTPUT_QUEUE_LIMIT_FRAMES: usize = 9_600;
 const DECODER_STARTUP_GRACE_MS: u64 = 10;
 const FFMPEG_ENV_VAR: &str = "TALKTOME_FFMPEG";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 fn ffmpeg_command() -> Command {
-    Command::new(resolve_ffmpeg_path().unwrap_or_else(|| PathBuf::from("ffmpeg")))
+    let mut command =
+        Command::new(resolve_ffmpeg_path().unwrap_or_else(|| PathBuf::from("ffmpeg")));
+    configure_ffmpeg_command(&mut command);
+    command
 }
+
+#[cfg(windows)]
+fn configure_ffmpeg_command(command: &mut Command) {
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn configure_ffmpeg_command(_command: &mut Command) {}
 
 fn resolve_ffmpeg_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var(FFMPEG_ENV_VAR) {
