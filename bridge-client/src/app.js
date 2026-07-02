@@ -451,6 +451,17 @@ function classifyManagedPortError(error) {
     return { label: "Codec error", detail: message, retryable: false };
   }
   if (
+    lower.includes("bridge session not found")
+    || lower.includes("bridge-session-timeout")
+    || lower.includes("bridge-session-closed")
+  ) {
+    return {
+      label: "Reconnecting",
+      detail: "Bridge port session expired; reconnecting.",
+      retryable: true
+    };
+  }
+  if (
     lower.includes("failed to fetch")
     || lower.includes("load failed")
     || lower.includes("network")
@@ -1155,12 +1166,12 @@ function handleNativeBridgeEventStreamMessage(message) {
     session.eventStreamId = null;
     session.eventStreamActive = false;
     if (session.ready) {
+      let reason = "Bridge session closed";
       try {
         const data = JSON.parse(payload.data || "{}");
-        session.error = data.reason || "Bridge session closed";
-      } catch {
-        session.error = "Bridge session closed";
-      }
+        reason = data.reason || reason;
+      } catch {}
+      setManagedSessionError(session, new Error(reason));
       session.ready = false;
       renderManagedBridgePorts();
     }
@@ -1313,8 +1324,8 @@ async function pollManagedEvents() {
           session.error = null;
         }
       } catch (error) {
-        session.error = String(error.message || error);
         session.ready = false;
+        setManagedSessionError(session, error);
       }
     }
   } finally {
@@ -1340,7 +1351,11 @@ async function heartbeatManagedSessions() {
       }
     } catch (error) {
       if (!session.sessionId) continue;
-      session.ready = false;
+      if (String(error?.message || error || "").toLowerCase().includes("bridge session not found")) {
+        await stopManagedSession(session, { remove: false });
+      } else {
+        session.ready = false;
+      }
       setManagedSessionError(session, error);
     }
   }

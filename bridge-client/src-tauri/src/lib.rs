@@ -673,6 +673,12 @@ fn get_audio_probe_ports_status(
 pub fn run() {
     let http = BridgeHttpClient::new().expect("failed to initialize bridge HTTP client");
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
