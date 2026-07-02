@@ -351,13 +351,14 @@ window.openUserFromStatus = async function (userId) {
 
   const listItem = targetDiv.closest('.list-item');
   window.requestAnimationFrame(() => {
-    const bridgeConfig = document.getElementById(`bridge-config-${numericUserId}`);
-    const scrollTarget = bridgeConfig || targetDiv;
-    scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    listItem?.classList.add('list-item--jump-highlight');
-    window.setTimeout(() => {
-      listItem?.classList.remove('list-item--jump-highlight');
-    }, 1400);
+    window.requestAnimationFrame(() => {
+      const scrollTarget = listItem || targetDiv;
+      scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      listItem?.classList.add('list-item--jump-highlight');
+      window.setTimeout(() => {
+        listItem?.classList.remove('list-item--jump-highlight');
+      }, 1400);
+    });
   });
 };
 
