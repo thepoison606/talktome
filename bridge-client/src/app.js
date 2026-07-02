@@ -411,12 +411,24 @@ async function auditManagedNativeMediaStatus() {
     String(entry.streamId || ""),
     String(entry.message || "Bridge output stream failed")
   ]));
+  const outputStats = new Map((status?.outputStreamStats || []).map((entry) => [
+    String(entry.streamId || ""),
+    {
+      decodedFrames: Number(entry.decodedFrames || 0),
+      decodedBytes: Number(entry.decodedBytes || 0)
+    }
+  ]));
 
   for (const session of managedSessions.values()) {
     if (!session.ready || session.starting) continue;
     const inputError = inputErrors.get(session.inputStreamId);
     let outputError = null;
     for (const output of session.outputs.values()) {
+      const stats = outputStats.get(output.streamId);
+      if (stats) {
+        output.decodedFrames = stats.decodedFrames;
+        output.decodedBytes = stats.decodedBytes;
+      }
       outputError = outputErrors.get(output.streamId);
       if (outputError) break;
     }
@@ -598,6 +610,24 @@ function formatActiveReturnPaths(count) {
   if (activeCount <= 0) return "No active incoming talk";
   if (activeCount === 1) return "1 active incoming talk";
   return `${activeCount} active incoming talks`;
+}
+
+function formatManagedReturnPathStatus(session) {
+  const outputs = [...(session?.outputs?.values?.() || [])];
+  const base = formatActiveReturnPaths(outputs.length);
+  if (!outputs.length) return base;
+
+  const decodedFrames = outputs.reduce((sum, output) => sum + (Number(output.decodedFrames) || 0), 0);
+  if (decodedFrames > 0) return `${base}, receiving audio`;
+
+  const oldestOutputAge = outputs.reduce((age, output) => {
+    const startedAt = Number(output.startedAt) || Date.now();
+    return Math.max(age, Date.now() - startedAt);
+  }, 0);
+  if (oldestOutputAge >= 1_000) {
+    return `${base}, waiting for RTP audio`;
+  }
+  return base;
 }
 
 function renderManagedAssignmentControls(port, direction, assignment) {
@@ -790,7 +820,7 @@ function renderManagedBridgePorts() {
         ${renderManagedAssignmentControls(port, "input", draft.input)}
         ${hasOutput ? renderManagedAssignmentControls(port, "output", draft.output) : ""}
       </div>
-      ${hasOutput ? `<small>${escapeHtml(formatActiveReturnPaths(session?.outputs?.size))}</small>` : ""}
+      ${hasOutput ? `<small>${escapeHtml(formatManagedReturnPathStatus(session))}</small>` : ""}
       ${speakerNames.length ? `<small>From: ${escapeHtml(speakerNames.join(", "))}</small>` : ""}
       ${session?.error ? `<div class="managed-port-error">${escapeHtml(session.error)}</div>` : ""}
       ${editState.error ? `<div class="managed-port-error">${escapeHtml(editState.error)}</div>` : ""}
@@ -832,7 +862,10 @@ async function startManagedConsumer(session, producerPayload) {
     peerId: producerPayload.peerId || null,
     appData: producerPayload.appData || {},
     speakerUserId: producerPayload.speakerUserId ?? null,
-    speakerName: producerPayload.speakerName || null
+    speakerName: producerPayload.speakerName || null,
+    startedAt: Date.now(),
+    decodedFrames: 0,
+    decodedBytes: 0
   };
   session.outputs.set(producerId, output);
   renderManagedBridgePorts();

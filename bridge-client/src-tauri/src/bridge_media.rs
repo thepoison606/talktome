@@ -4,7 +4,10 @@ use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{sync_channel, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -167,6 +170,7 @@ pub struct BridgeMediaStatus {
     pub pending_output_stream_ids: Vec<String>,
     pub input_stream_errors: Vec<BridgeMediaStreamError>,
     pub output_stream_errors: Vec<BridgeMediaStreamError>,
+    pub output_stream_stats: Vec<BridgeMediaOutputStats>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,6 +178,14 @@ pub struct BridgeMediaStatus {
 pub struct BridgeMediaStreamError {
     pub stream_id: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeMediaOutputStats {
+    pub stream_id: String,
+    pub decoded_frames: u64,
+    pub decoded_bytes: u64,
 }
 
 #[derive(Default)]
@@ -223,6 +235,8 @@ struct BridgeOutputRuntime {
     mixer_key: OutputMixerKey,
     child: Arc<Mutex<Child>>,
     last_error: Arc<Mutex<Option<String>>>,
+    decoded_frames: Arc<AtomicU64>,
+    decoded_bytes: Arc<AtomicU64>,
     reader: Option<JoinHandle<()>>,
 }
 
@@ -816,6 +830,10 @@ impl BridgeOutputRuntime {
         let reader_queue = Arc::clone(&queue);
         let last_error = Arc::new(Mutex::new(None));
         let reader_error = Arc::clone(&last_error);
+        let decoded_frames = Arc::new(AtomicU64::new(0));
+        let decoded_bytes = Arc::new(AtomicU64::new(0));
+        let reader_decoded_frames = Arc::clone(&decoded_frames);
+        let reader_decoded_bytes = Arc::clone(&decoded_bytes);
         let reader = thread::spawn(move || {
             let mut read_buffer = [0_u8; 8192];
             let mut pending_bytes = Vec::<u8>::new();
@@ -835,6 +853,8 @@ impl BridgeOutputRuntime {
                 if complete_bytes == 0 {
                     continue;
                 }
+                reader_decoded_frames.fetch_add((complete_bytes / 8) as u64, Ordering::Relaxed);
+                reader_decoded_bytes.fetch_add(complete_bytes as u64, Ordering::Relaxed);
                 if let Ok(mut queue) = reader_queue.lock() {
                     for frame in pending_bytes[..complete_bytes].chunks_exact(8) {
                         queue.push_back(StereoFrame {
@@ -853,6 +873,8 @@ impl BridgeOutputRuntime {
             mixer_key,
             child,
             last_error,
+            decoded_frames,
+            decoded_bytes,
             reader: Some(reader),
         })
     }
@@ -974,17 +996,28 @@ fn status_from(state: &BridgeMediaState) -> BridgeMediaStatus {
                 })
         })
         .collect::<Vec<_>>();
+    let mut output_stream_stats = state
+        .outputs
+        .iter()
+        .map(|(stream_id, runtime)| BridgeMediaOutputStats {
+            stream_id: stream_id.clone(),
+            decoded_frames: runtime.decoded_frames.load(Ordering::Relaxed),
+            decoded_bytes: runtime.decoded_bytes.load(Ordering::Relaxed),
+        })
+        .collect::<Vec<_>>();
     input_stream_ids.sort();
     output_stream_ids.sort();
     pending_output_stream_ids.sort();
     input_stream_errors.sort_by(|a, b| a.stream_id.cmp(&b.stream_id));
     output_stream_errors.sort_by(|a, b| a.stream_id.cmp(&b.stream_id));
+    output_stream_stats.sort_by(|a, b| a.stream_id.cmp(&b.stream_id));
     BridgeMediaStatus {
         input_stream_ids,
         output_stream_ids,
         pending_output_stream_ids,
         input_stream_errors,
         output_stream_errors,
+        output_stream_stats,
     }
 }
 
