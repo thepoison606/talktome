@@ -422,6 +422,44 @@ function validateBridgeChannelPair(left, right, label) {
   }
 }
 
+function readBridgeTriggerConfig(userId, validate = true) {
+  const mode = document.getElementById(`bridge-trigger-mode-${userId}`)?.value === 'audio-level'
+    ? 'audio-level'
+    : 'external';
+  const targetValue = document.getElementById(`bridge-trigger-target-${userId}`)?.value || '';
+  const thresholdValue = document.getElementById(`bridge-trigger-threshold-${userId}`)?.value;
+  const payload = {
+    triggerMode: mode,
+    triggerTargetType: '',
+    triggerTargetId: null,
+    triggerThresholdDb: Number(thresholdValue || -45),
+  };
+
+  if (targetValue) {
+    const [targetType, rawTargetId] = targetValue.split(':');
+    payload.triggerTargetType = targetType === 'user' || targetType === 'conference' ? targetType : '';
+    payload.triggerTargetId = Number(rawTargetId);
+  }
+
+  if (validate && mode === 'audio-level') {
+    if (!payload.triggerTargetType || !Number.isInteger(payload.triggerTargetId) || payload.triggerTargetId < 1) {
+      throw new Error('Audio level trigger requires a selected user or conference target');
+    }
+    if (!Number.isFinite(payload.triggerThresholdDb)) {
+      throw new Error('Audio level trigger threshold is invalid');
+    }
+  }
+
+  return payload;
+}
+
+function syncBridgeTriggerControls(userId) {
+  const modeSelect = document.getElementById(`bridge-trigger-mode-${userId}`);
+  const details = document.getElementById(`bridge-trigger-details-${userId}`);
+  const isLevelTrigger = modeSelect?.value === 'audio-level';
+  if (details) details.hidden = !isLevelTrigger;
+}
+
 function getBridgeById(bridgeId) {
   return currentBridgeRegistry.find((bridge) => bridge.id === bridgeId) || null;
 }
@@ -581,6 +619,36 @@ function syncBridgeEndpointFormsWithRegistry() {
   });
 }
 
+function updateBridgeTriggerTargetOptions(userId, targets = []) {
+  const select = document.getElementById(`bridge-trigger-target-${userId}`);
+  if (!select) return;
+
+  const savedValue = select.dataset.savedValue || '';
+  const preferredValue = select.value || savedValue;
+  const triggerTargets = targets
+    .filter((target) => target.targetType === 'user' || target.targetType === 'conference')
+    .map((target) => ({
+      value: `${target.targetType}:${target.targetId}`,
+      label: `${target.name} (${target.targetType})`,
+    }));
+
+  select.innerHTML = '<option value="">Select target</option>';
+  for (const target of triggerTargets) {
+    const option = document.createElement('option');
+    option.value = target.value;
+    option.textContent = target.label;
+    select.appendChild(option);
+  }
+
+  if (preferredValue && !triggerTargets.some((target) => target.value === preferredValue)) {
+    const option = document.createElement('option');
+    option.value = preferredValue;
+    option.textContent = `${preferredValue} (saved, unavailable)`;
+    select.appendChild(option);
+  }
+  select.value = [...select.options].some((option) => option.value === preferredValue) ? preferredValue : '';
+}
+
 function updateBridgeRegistryFromStatus(snapshot = {}) {
   if (!Array.isArray(snapshot.bridges)) return;
   const hasInventory = snapshot.bridges.some((bridge) => Array.isArray(bridge?.inventory?.devices));
@@ -645,6 +713,9 @@ function initializeBridgeEndpointForms() {
       }
       updateBridgeEndpointPairOptions(formKey, 'output');
     });
+    const triggerModeSelect = document.getElementById(`bridge-trigger-mode-${formKey}`);
+    triggerModeSelect?.addEventListener('change', () => syncBridgeTriggerControls(formKey));
+    syncBridgeTriggerControls(formKey);
     bridgeSelect.dataset.bridgeReady = 'true';
     updateBridgeEndpointDeviceOptions(formKey);
   });
@@ -1749,6 +1820,25 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
                   <select id="bridge-output-pair-${user.id}" data-saved-left="${escapeHtml(valueOrEmpty(user.bridge_output_left_channel))}" data-saved-right="${escapeHtml(valueOrEmpty(user.bridge_output_right_channel))}"></select>
                 </div>
               </div>
+              <div class="bridge-trigger-row">
+                <div class="field-group">
+                  <label for="bridge-trigger-mode-${user.id}">Talk trigger</label>
+                  <select id="bridge-trigger-mode-${user.id}">
+                    <option value="external" ${user.bridge_trigger_mode === 'audio-level' ? '' : 'selected'}>External trigger</option>
+                    <option value="audio-level" ${user.bridge_trigger_mode === 'audio-level' ? 'selected' : ''}>Audio level</option>
+                  </select>
+                </div>
+                <div class="bridge-trigger-details" id="bridge-trigger-details-${user.id}">
+                  <div class="field-group">
+                    <label for="bridge-trigger-target-${user.id}">Trigger target</label>
+                    <select id="bridge-trigger-target-${user.id}" data-saved-value="${escapeHtml(user.bridge_trigger_target_type && user.bridge_trigger_target_id ? `${user.bridge_trigger_target_type}:${user.bridge_trigger_target_id}` : '')}"></select>
+                  </div>
+                  <div class="field-group">
+                    <label for="bridge-trigger-threshold-${user.id}">Threshold dBFS</label>
+                    <input id="bridge-trigger-threshold-${user.id}" type="number" min="-80" max="-10" step="1" value="${escapeHtml(valueOrEmpty(user.bridge_trigger_threshold_db ?? -45))}">
+                  </div>
+                </div>
+              </div>
             </div>
             <button type="submit" class="small">Save bridge</button>
           </form>
@@ -2230,6 +2320,7 @@ async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
       </li>
     `;
   }).join('');
+  updateBridgeTriggerTargetOptions(userId, targets);
 
   initTargetOrdering(userId, ul);
 
@@ -2668,8 +2759,9 @@ window.saveBridgeEndpoint = async function(event, userId) {
     validateBridgeChannelPair(inputPair.left, inputPair.right, 'Input');
     validateBridgeChannelPair(outputPair.left, outputPair.right, 'Output');
 
+    const enabled = Boolean(document.getElementById(`bridge-enabled-${userId}`)?.checked);
     const payload = {
-      enabled: Boolean(document.getElementById(`bridge-enabled-${userId}`)?.checked),
+      enabled,
       bridgeDevice: document.getElementById(`bridge-device-${userId}`)?.value || '',
       inputDevice: document.getElementById(`bridge-input-device-${userId}`)?.value || '',
       inputLeftChannel: inputPair.left,
@@ -2677,6 +2769,7 @@ window.saveBridgeEndpoint = async function(event, userId) {
       outputDevice: document.getElementById(`bridge-output-device-${userId}`)?.value || '',
       outputLeftChannel: outputPair.left,
       outputRightChannel: outputPair.right,
+      ...readBridgeTriggerConfig(userId, enabled),
     };
     if (payload.enabled) {
       if (!payload.bridgeDevice) {

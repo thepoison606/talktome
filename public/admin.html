@@ -650,6 +650,25 @@
         min-width: 0;
       }
 
+      .bridge-trigger-row {
+        display: grid;
+        grid-column: 1 / -1;
+        grid-template-columns: minmax(10rem, 16rem) minmax(0, 1fr);
+        gap: 0.5rem;
+        align-items: end;
+      }
+
+      .bridge-trigger-details {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(8rem, 11rem);
+        gap: 0.5rem;
+        align-items: end;
+      }
+
+      .bridge-trigger-details[hidden] {
+        display: none;
+      }
+
       .bridge-config-form select {
         min-width: 0;
         width: 100%;
@@ -1736,6 +1755,15 @@
 
         .bridge-channel-row .field-group:first-child {
           grid-column: 1 / -1;
+        }
+
+        .bridge-trigger-row {
+          grid-column: 1;
+          grid-template-columns: 1fr;
+        }
+
+        .bridge-trigger-details {
+          grid-template-columns: 1fr;
         }
 
         .bridge-config-form button {

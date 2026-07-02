@@ -27,6 +27,10 @@ const STORAGE_KEYS = {
 const MANAGED_EVENT_FALLBACK_POLL_MS = 250;
 const MANAGED_INVENTORY_WATCH_MS = 2_000;
 const MANAGED_RETRY_MS = 2_000;
+const MANAGED_LEVEL_TRIGGER_POLL_MS = 50;
+const MANAGED_LEVEL_TRIGGER_ATTACK_MS = 45;
+const MANAGED_LEVEL_TRIGGER_RELEASE_MS = 450;
+const MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB = -45;
 const MANAGED_DEFAULT_TARGET_VOLUME = 0.9;
 const MIN_WINDOW_HEIGHT = 260;
 const MAX_WINDOW_HEIGHT = 820;
@@ -42,7 +46,9 @@ let managedHeartbeatTimer = null;
 let managedEventTimer = null;
 let managedInventoryTimer = null;
 let managedRetryTimer = null;
+let managedLevelTriggerTimer = null;
 let managedRetryRunning = false;
+let managedLevelTriggerRunning = false;
 let managedInventoryWatchRunning = false;
 let lastAnnouncedInventorySignature = "";
 let lastManagedBridgePortsHtml = "";
@@ -400,18 +406,18 @@ async function auditManagedSessionDevices() {
   }
 }
 
-async function auditManagedNativeMediaStatus() {
+async function auditManagedNativeMediaStatus(status = null) {
   if (!invoke) return;
-  const status = await invoke("get_bridge_media_status");
-  const inputErrors = new Map((status?.inputStreamErrors || []).map((entry) => [
+  const nativeStatus = status || await invoke("get_bridge_media_status");
+  const inputErrors = new Map((nativeStatus?.inputStreamErrors || []).map((entry) => [
     String(entry.streamId || ""),
     String(entry.message || "Bridge input stream failed")
   ]));
-  const outputErrors = new Map((status?.outputStreamErrors || []).map((entry) => [
+  const outputErrors = new Map((nativeStatus?.outputStreamErrors || []).map((entry) => [
     String(entry.streamId || ""),
     String(entry.message || "Bridge output stream failed")
   ]));
-  const outputStats = new Map((status?.outputStreamStats || []).map((entry) => [
+  const outputStats = new Map((nativeStatus?.outputStreamStats || []).map((entry) => [
     String(entry.streamId || ""),
     {
       decodedFrames: Number(entry.decodedFrames || 0),
@@ -526,7 +532,8 @@ function bridgePortSignature(port) {
     feedId: port.feedId,
     input: port.input,
     output: port.output,
-    updatedAt: port.updatedAt
+    updatedAt: port.updatedAt,
+    trigger: port.trigger || null,
   });
 }
 
@@ -720,6 +727,12 @@ async function saveManagedBridgePort(key) {
     payload.outputDevice = draft.output.deviceId;
     payload.outputLeftChannel = draft.output.leftChannel;
     payload.outputRightChannel = draft.output.rightChannel;
+  }
+  if (port.trigger?.mode) {
+    payload.triggerMode = port.trigger.mode;
+    payload.triggerThresholdDb = port.trigger.thresholdDb ?? MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB;
+    payload.triggerTargetType = port.trigger.target?.type || "";
+    payload.triggerTargetId = port.trigger.target?.id ?? null;
   }
 
   managedPortEditStates.set(key, { saving: true });
@@ -997,6 +1010,30 @@ function resolveBridgeCommandTargets(session, payload) {
   return Number.isFinite(id) ? [{ type, id }] : [];
 }
 
+function getManagedTriggerTarget(port) {
+  const trigger = port?.trigger || {};
+  const target = trigger.target || {};
+  const type = String(target.type || "").toLowerCase();
+  const id = Number(target.id);
+  if ((type === "user" || type === "conference") && Number.isFinite(id) && id > 0) {
+    return { type, id };
+  }
+  return null;
+}
+
+function getManagedLevelTriggerThreshold(port) {
+  const threshold = Number(port?.trigger?.thresholdDb);
+  if (!Number.isFinite(threshold)) return MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB;
+  return Math.max(-80, Math.min(-10, threshold));
+}
+
+function getManagedInputLevelMap(status) {
+  return new Map((status?.inputStreamStats || []).map((entry) => [
+    String(entry.streamId || ""),
+    Number(entry.rmsDb ?? entry.rms_db ?? -120)
+  ]));
+}
+
 async function sendManagedCommandResult(session, payload, result) {
   await bridgeApi("POST", managedSessionPath(session, "/command-result"), {
     commandId: payload.commandId || null,
@@ -1007,7 +1044,7 @@ async function sendManagedCommandResult(session, payload, result) {
   });
 }
 
-async function applyManagedTalkState(session, { talking, targets, lockActive = false }) {
+async function applyManagedTalkState(session, { talking, targets, lockActive = false, source = "external" }) {
   if (session.port.kind === "feed") {
     throw new Error("Feed bridge ports do not support talk state");
   }
@@ -1035,6 +1072,13 @@ async function applyManagedTalkState(session, { talking, targets, lockActive = f
     });
   }
   session.talking = Boolean(talking);
+  session.talkSource = talking ? source : null;
+  if (source !== "level" && session.levelTriggerState) {
+    session.levelTriggerState.active = false;
+    session.levelTriggerState.aboveSince = 0;
+    session.levelTriggerState.belowSince = 0;
+    session.levelTriggerState.pending = false;
+  }
   session.lockActive = Boolean(lockActive && talking);
   session.targets = talking ? targets : [];
   renderManagedBridgePorts();
@@ -1394,6 +1438,112 @@ async function heartbeatManagedSessions() {
   }
 }
 
+async function processManagedLevelTriggers() {
+  if (managedLevelTriggerRunning || !invoke || !managedSessions.size) return;
+  const sessions = [...managedSessions.values()].filter((session) => (
+    session.ready
+    && !session.starting
+    && session.port.kind === "user"
+    && session.port?.trigger?.mode === "audio-level"
+  ));
+  if (!sessions.length) return;
+
+  managedLevelTriggerRunning = true;
+  try {
+    const status = await invoke("get_bridge_media_status");
+    await auditManagedNativeMediaStatus(status);
+
+    const levels = getManagedInputLevelMap(status);
+    const now = Date.now();
+
+    for (const session of sessions) {
+      if (!session.ready || session.starting) continue;
+      const triggerTarget = getManagedTriggerTarget(session.port);
+      const state = session.levelTriggerState || {
+        active: false,
+        aboveSince: 0,
+        belowSince: 0,
+        pending: false
+      };
+      session.levelTriggerState = state;
+      if (state.pending) continue;
+
+      if (!triggerTarget) {
+        if (state.active && session.talking && session.talkSource === "level") {
+          state.pending = true;
+          try {
+            await applyManagedTalkState(session, { talking: false, targets: [], source: "level" });
+          } catch (error) {
+            setManagedSessionError(session, error);
+          } finally {
+            state.active = false;
+            state.aboveSince = 0;
+            state.belowSince = 0;
+            state.pending = false;
+          }
+        }
+        continue;
+      }
+
+      const levelDb = levels.get(session.inputStreamId);
+      if (!Number.isFinite(levelDb)) continue;
+      const thresholdDb = getManagedLevelTriggerThreshold(session.port);
+
+      if (levelDb >= thresholdDb) {
+        state.belowSince = 0;
+        if (!state.aboveSince) state.aboveSince = now;
+        if (
+          !state.active
+          && !session.talking
+          && now - state.aboveSince >= MANAGED_LEVEL_TRIGGER_ATTACK_MS
+        ) {
+          state.pending = true;
+          try {
+            await applyManagedTalkState(session, {
+              talking: true,
+              targets: [triggerTarget],
+              source: "level"
+            });
+            state.active = true;
+            state.belowSince = 0;
+          } catch (error) {
+            setManagedSessionError(session, error);
+          } finally {
+            state.pending = false;
+          }
+        }
+        continue;
+      }
+
+      state.aboveSince = 0;
+      if (!state.active) continue;
+      if (!state.belowSince) state.belowSince = now;
+      if (now - state.belowSince < MANAGED_LEVEL_TRIGGER_RELEASE_MS) continue;
+
+      state.pending = true;
+      try {
+        if (session.talking && session.talkSource === "level") {
+          await applyManagedTalkState(session, {
+            talking: false,
+            targets: [],
+            source: "level"
+          });
+        }
+        state.active = false;
+        state.aboveSince = 0;
+      } catch (error) {
+        setManagedSessionError(session, error);
+      } finally {
+        state.pending = false;
+      }
+    }
+  } catch (error) {
+    // Status polling errors are handled by the regular managed sync loop.
+  } finally {
+    managedLevelTriggerRunning = false;
+  }
+}
+
 function createManagedSession(port) {
   const key = bridgePortKey(port);
   return {
@@ -1405,11 +1555,18 @@ function createManagedSession(port) {
     outputs: new Map(),
     ready: false,
     talking: false,
+    talkSource: null,
     lockActive: false,
     targets: [],
     replyTarget: null,
     addressedNow: [],
     targetAudioStates: new Map(),
+    levelTriggerState: {
+      active: false,
+      aboveSince: 0,
+      belowSince: 0,
+      pending: false
+    },
     eventStreamId: null,
     eventSource: null,
     eventStreamActive: false,
@@ -1438,6 +1595,12 @@ async function startManagedSession(port, { reuse = false, silentRetry = false } 
   session.signature = bridgePortSignature(port);
   session.inputStreamId = `${port.id}:input`;
   session.outputs = session.outputs instanceof Map ? session.outputs : new Map();
+  session.levelTriggerState = session.levelTriggerState || {
+    active: false,
+    aboveSince: 0,
+    belowSince: 0,
+    pending: false
+  };
   session.ready = false;
   session.starting = true;
   session.backgroundRetry = backgroundRetry;
@@ -1514,10 +1677,17 @@ async function stopManagedSession(session, { remove = true } = {}) {
   session.producerId = null;
   session.outputs.clear();
   session.talking = false;
+  session.talkSource = null;
   session.lockActive = false;
   session.targets = [];
   session.replyTarget = null;
   session.addressedNow = [];
+  if (session.levelTriggerState) {
+    session.levelTriggerState.active = false;
+    session.levelTriggerState.aboveSince = 0;
+    session.levelTriggerState.belowSince = 0;
+    session.levelTriggerState.pending = false;
+  }
   session.ready = false;
   session.starting = false;
   session.backgroundRetry = false;
@@ -1656,6 +1826,9 @@ function startManagedTimers() {
   }
   if (!managedRetryTimer) {
     managedRetryTimer = window.setInterval(retryDueManagedSessions, 1_000);
+  }
+  if (!managedLevelTriggerTimer) {
+    managedLevelTriggerTimer = window.setInterval(processManagedLevelTriggers, MANAGED_LEVEL_TRIGGER_POLL_MS);
   }
 }
 
@@ -2395,6 +2568,7 @@ window.addEventListener("beforeunload", () => {
   if (managedEventTimer) window.clearInterval(managedEventTimer);
   if (managedInventoryTimer) window.clearInterval(managedInventoryTimer);
   if (managedRetryTimer) window.clearInterval(managedRetryTimer);
+  if (managedLevelTriggerTimer) window.clearInterval(managedLevelTriggerTimer);
   for (const session of managedSessions.values()) {
     stopManagedEventStream(session);
   }

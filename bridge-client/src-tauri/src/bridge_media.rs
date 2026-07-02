@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicI32, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use std::thread::{self, JoinHandle};
@@ -170,6 +170,7 @@ pub struct BridgeMediaStatus {
     pub pending_output_stream_ids: Vec<String>,
     pub input_stream_errors: Vec<BridgeMediaStreamError>,
     pub output_stream_errors: Vec<BridgeMediaStreamError>,
+    pub input_stream_stats: Vec<BridgeMediaInputStats>,
     pub output_stream_stats: Vec<BridgeMediaOutputStats>,
 }
 
@@ -178,6 +179,13 @@ pub struct BridgeMediaStatus {
 pub struct BridgeMediaStreamError {
     pub stream_id: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeMediaInputStats {
+    pub stream_id: String,
+    pub rms_db: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -227,6 +235,7 @@ struct BridgeInputRuntime {
     _stream: Stream,
     child: Arc<Mutex<Child>>,
     last_error: Arc<Mutex<Option<String>>>,
+    level_milli_db: Arc<AtomicI32>,
     sender: Option<SyncSender<Vec<u8>>>,
     writer: Option<JoinHandle<()>>,
 }
@@ -477,6 +486,8 @@ impl BridgeInputRuntime {
         let callback_sender = sender.clone();
         let last_error = Arc::new(Mutex::new(None));
         let stream_error = Arc::clone(&last_error);
+        let level_milli_db = Arc::new(AtomicI32::new(-120_000));
+        let callback_level = Arc::clone(&level_milli_db);
         let stream = device
             .build_input_stream::<f32, _, _>(
                 config,
@@ -486,10 +497,18 @@ impl BridgeInputRuntime {
                     }
                     let frames = data.len() / channels;
                     let mut bytes = Vec::with_capacity(frames * 2 * std::mem::size_of::<f32>());
+                    let mut sum_squares = 0.0_f64;
+                    let mut sample_count = 0_usize;
                     for frame in data.chunks_exact(channels) {
-                        bytes.extend_from_slice(&frame[left_index].to_le_bytes());
-                        bytes.extend_from_slice(&frame[right_index].to_le_bytes());
+                        let left = frame[left_index];
+                        let right = frame[right_index];
+                        sum_squares += f64::from(left * left);
+                        sum_squares += f64::from(right * right);
+                        sample_count += 2;
+                        bytes.extend_from_slice(&left.to_le_bytes());
+                        bytes.extend_from_slice(&right.to_le_bytes());
                     }
+                    callback_level.store(rms_milli_db(sum_squares, sample_count), Ordering::Relaxed);
                     let _ = callback_sender.try_send(bytes);
                 },
                 move |err| {
@@ -563,6 +582,7 @@ impl BridgeInputRuntime {
             _stream: stream,
             child,
             last_error,
+            level_milli_db,
             sender: Some(sender),
             writer: Some(writer),
         })
@@ -996,6 +1016,14 @@ fn status_from(state: &BridgeMediaState) -> BridgeMediaStatus {
                 })
         })
         .collect::<Vec<_>>();
+    let mut input_stream_stats = state
+        .inputs
+        .iter()
+        .map(|(stream_id, runtime)| BridgeMediaInputStats {
+            stream_id: stream_id.clone(),
+            rms_db: runtime.level_milli_db.load(Ordering::Relaxed) as f32 / 1000.0,
+        })
+        .collect::<Vec<_>>();
     let mut output_stream_stats = state
         .outputs
         .iter()
@@ -1010,6 +1038,7 @@ fn status_from(state: &BridgeMediaState) -> BridgeMediaStatus {
     pending_output_stream_ids.sort();
     input_stream_errors.sort_by(|a, b| a.stream_id.cmp(&b.stream_id));
     output_stream_errors.sort_by(|a, b| a.stream_id.cmp(&b.stream_id));
+    input_stream_stats.sort_by(|a, b| a.stream_id.cmp(&b.stream_id));
     output_stream_stats.sort_by(|a, b| a.stream_id.cmp(&b.stream_id));
     BridgeMediaStatus {
         input_stream_ids,
@@ -1017,8 +1046,21 @@ fn status_from(state: &BridgeMediaState) -> BridgeMediaStatus {
         pending_output_stream_ids,
         input_stream_errors,
         output_stream_errors,
+        input_stream_stats,
         output_stream_stats,
     }
+}
+
+fn rms_milli_db(sum_squares: f64, sample_count: usize) -> i32 {
+    if sample_count == 0 || sum_squares <= 0.0 {
+        return -120_000;
+    }
+    let rms = (sum_squares / sample_count as f64).sqrt();
+    if rms <= 0.0 {
+        return -120_000;
+    }
+    let db = (20.0 * rms.log10()).clamp(-120.0, 0.0);
+    (db * 1000.0).round() as i32
 }
 
 fn read_last_error(last_error: &Arc<Mutex<Option<String>>>) -> Option<String> {

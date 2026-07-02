@@ -3,6 +3,9 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 
 const BRIDGE_ENDPOINT_TEXT_LIMIT = 200;
+const BRIDGE_TRIGGER_DEFAULT_THRESHOLD_DB = -45;
+const BRIDGE_TRIGGER_MIN_THRESHOLD_DB = -80;
+const BRIDGE_TRIGGER_MAX_THRESHOLD_DB = -10;
 
 function normalizeBridgeText(value) {
   if (value === null || value === undefined) return '';
@@ -27,6 +30,34 @@ function validateBridgePair(left, right, label) {
   }
 }
 
+function normalizeBridgeTriggerMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return mode === 'audio-level' ? 'audio-level' : 'external';
+}
+
+function normalizeBridgeTriggerTargetType(value) {
+  const type = String(value || '').trim().toLowerCase();
+  return type === 'user' || type === 'conference' ? type : '';
+}
+
+function normalizeBridgeTriggerTargetId(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 1) {
+    throw new Error('Bridge level trigger target id must be a positive integer');
+  }
+  return number;
+}
+
+function normalizeBridgeTriggerThresholdDb(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return BRIDGE_TRIGGER_DEFAULT_THRESHOLD_DB;
+  return Math.min(
+    BRIDGE_TRIGGER_MAX_THRESHOLD_DB,
+    Math.max(BRIDGE_TRIGGER_MIN_THRESHOLD_DB, number)
+  );
+}
+
 function normalizeBridgeEndpointConfig(config = {}) {
   const enabled = Boolean(config.enabled);
   const bridgeDevice = normalizeBridgeText(config.bridgeDevice);
@@ -36,6 +67,10 @@ function normalizeBridgeEndpointConfig(config = {}) {
   const outputDevice = normalizeBridgeText(config.outputDevice);
   const outputLeftChannel = normalizeBridgeChannel(config.outputLeftChannel, 'Output left channel');
   const outputRightChannel = normalizeBridgeChannel(config.outputRightChannel, 'Output right channel');
+  const triggerMode = normalizeBridgeTriggerMode(config.triggerMode);
+  const triggerTargetType = normalizeBridgeTriggerTargetType(config.triggerTargetType);
+  const triggerTargetId = normalizeBridgeTriggerTargetId(config.triggerTargetId);
+  const triggerThresholdDb = normalizeBridgeTriggerThresholdDb(config.triggerThresholdDb);
   validateBridgePair(inputLeftChannel, inputRightChannel, 'Input');
   validateBridgePair(outputLeftChannel, outputRightChannel, 'Output');
 
@@ -55,6 +90,9 @@ function normalizeBridgeEndpointConfig(config = {}) {
     if (outputLeftChannel === null) {
       throw new Error('Output channel is required when bridge endpoint is enabled');
     }
+    if (triggerMode === 'audio-level' && (!triggerTargetType || triggerTargetId === null)) {
+      throw new Error('Audio level trigger requires a user or conference target');
+    }
   }
 
   return {
@@ -66,6 +104,10 @@ function normalizeBridgeEndpointConfig(config = {}) {
     outputDevice,
     outputLeftChannel,
     outputRightChannel,
+    triggerMode,
+    triggerTargetType,
+    triggerTargetId,
+    triggerThresholdDb,
   };
 }
 
@@ -115,6 +157,10 @@ function getAllUsers() {
       COALESCE(user_bridge_endpoints.output_device, '') AS bridge_output_device,
       user_bridge_endpoints.output_left_channel AS bridge_output_left_channel,
       user_bridge_endpoints.output_right_channel AS bridge_output_right_channel,
+      COALESCE(user_bridge_endpoints.trigger_mode, 'external') AS bridge_trigger_mode,
+      COALESCE(user_bridge_endpoints.trigger_target_type, '') AS bridge_trigger_target_type,
+      user_bridge_endpoints.trigger_target_id AS bridge_trigger_target_id,
+      COALESCE(user_bridge_endpoints.trigger_threshold_db, -45) AS bridge_trigger_threshold_db,
       user_bridge_endpoints.updated_at AS bridge_updated_at
     FROM users
     LEFT JOIN user_bridge_endpoints ON user_bridge_endpoints.user_id = users.id
@@ -140,6 +186,10 @@ function getUserById(id) {
       COALESCE(user_bridge_endpoints.output_device, '') AS bridge_output_device,
       user_bridge_endpoints.output_left_channel AS bridge_output_left_channel,
       user_bridge_endpoints.output_right_channel AS bridge_output_right_channel,
+      COALESCE(user_bridge_endpoints.trigger_mode, 'external') AS bridge_trigger_mode,
+      COALESCE(user_bridge_endpoints.trigger_target_type, '') AS bridge_trigger_target_type,
+      user_bridge_endpoints.trigger_target_id AS bridge_trigger_target_id,
+      COALESCE(user_bridge_endpoints.trigger_threshold_db, -45) AS bridge_trigger_threshold_db,
       user_bridge_endpoints.updated_at AS bridge_updated_at
     FROM users
     LEFT JOIN user_bridge_endpoints ON user_bridge_endpoints.user_id = users.id
@@ -162,6 +212,10 @@ function getBridgeEndpointsForDevice(bridgeDevice) {
       user_bridge_endpoints.output_device,
       user_bridge_endpoints.output_left_channel,
       user_bridge_endpoints.output_right_channel,
+      COALESCE(user_bridge_endpoints.trigger_mode, 'external') AS trigger_mode,
+      COALESCE(user_bridge_endpoints.trigger_target_type, '') AS trigger_target_type,
+      user_bridge_endpoints.trigger_target_id,
+      COALESCE(user_bridge_endpoints.trigger_threshold_db, -45) AS trigger_threshold_db,
       user_bridge_endpoints.updated_at
     FROM user_bridge_endpoints
     JOIN users ON users.id = user_bridge_endpoints.user_id
@@ -273,6 +327,10 @@ function exportDatabaseSnapshot() {
         output_device,
         output_left_channel,
         output_right_channel,
+        trigger_mode,
+        trigger_target_type,
+        trigger_target_id,
+        trigger_threshold_db,
         updated_at
       FROM user_bridge_endpoints
       ORDER BY user_id
@@ -393,9 +451,13 @@ function importDatabaseSnapshot(snapshot) {
         output_device,
         output_left_channel,
         output_right_channel,
+        trigger_mode,
+        trigger_target_type,
+        trigger_target_id,
+        trigger_threshold_db,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertFeedBridgeEndpoint = db.prepare(`
       INSERT INTO feed_bridge_endpoints (
@@ -485,6 +547,10 @@ function importDatabaseSnapshot(snapshot) {
         outputDevice: row.output_device,
         outputLeftChannel: row.output_left_channel,
         outputRightChannel: row.output_right_channel,
+        triggerMode: row.trigger_mode,
+        triggerTargetType: row.trigger_target_type,
+        triggerTargetId: row.trigger_target_id,
+        triggerThresholdDb: row.trigger_threshold_db,
       });
       insertBridgeEndpoint.run(
         Number(row.user_id),
@@ -496,6 +562,10 @@ function importDatabaseSnapshot(snapshot) {
         normalized.outputDevice,
         normalized.outputLeftChannel,
         normalized.outputRightChannel,
+        normalized.triggerMode,
+        normalized.triggerTargetType,
+        normalized.triggerTargetId,
+        normalized.triggerThresholdDb,
         String(row.updated_at || new Date().toISOString())
       );
     });
@@ -744,9 +814,13 @@ function updateUserBridgeEndpoint(userId, config = {}) {
       output_device,
       output_left_channel,
       output_right_channel,
+      trigger_mode,
+      trigger_target_type,
+      trigger_target_id,
+      trigger_threshold_db,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
       enabled = excluded.enabled,
       bridge_device = excluded.bridge_device,
@@ -756,6 +830,10 @@ function updateUserBridgeEndpoint(userId, config = {}) {
       output_device = excluded.output_device,
       output_left_channel = excluded.output_left_channel,
       output_right_channel = excluded.output_right_channel,
+      trigger_mode = excluded.trigger_mode,
+      trigger_target_type = excluded.trigger_target_type,
+      trigger_target_id = excluded.trigger_target_id,
+      trigger_threshold_db = excluded.trigger_threshold_db,
       updated_at = excluded.updated_at
   `);
 
@@ -769,6 +847,10 @@ function updateUserBridgeEndpoint(userId, config = {}) {
     normalized.outputDevice,
     normalized.outputLeftChannel,
     normalized.outputRightChannel,
+    normalized.triggerMode,
+    normalized.triggerTargetType,
+    normalized.triggerTargetId,
+    normalized.triggerThresholdDb,
     now
   );
   return result.changes > 0;

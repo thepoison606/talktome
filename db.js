@@ -110,6 +110,10 @@ db.exec(`
                                                           output_device        TEXT    NOT NULL DEFAULT '',
                                                           output_left_channel  INTEGER,
                                                           output_right_channel INTEGER,
+                                                          trigger_mode         TEXT    NOT NULL DEFAULT 'external',
+                                                          trigger_target_type  TEXT    NOT NULL DEFAULT '',
+                                                          trigger_target_id    INTEGER,
+                                                          trigger_threshold_db REAL    NOT NULL DEFAULT -45,
                                                           updated_at           TEXT    NOT NULL
     );
 
@@ -155,5 +159,9 @@ ensureColumn("users", "is_superadmin", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("users", "admin_must_change", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("users", "is_guest_profile", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("users", "last_online_at", "TEXT");
+ensureColumn("user_bridge_endpoints", "trigger_mode", "TEXT NOT NULL DEFAULT 'external'");
+ensureColumn("user_bridge_endpoints", "trigger_target_type", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("user_bridge_endpoints", "trigger_target_id", "INTEGER");
+ensureColumn("user_bridge_endpoints", "trigger_threshold_db", "REAL NOT NULL DEFAULT -45");
 
 module.exports = db;

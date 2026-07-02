@@ -1135,6 +1135,18 @@ function buildBridgeRuntimeConfig(bridgeId) {
       leftChannel: Number(row.output_left_channel),
       rightChannel: Number(row.output_right_channel),
     },
+    trigger: {
+      mode: row.trigger_mode === "audio-level" ? "audio-level" : "external",
+      target: row.trigger_target_type && row.trigger_target_id
+        ? {
+            type: row.trigger_target_type,
+            id: Number(row.trigger_target_id),
+          }
+        : null,
+      thresholdDb: Number.isFinite(Number(row.trigger_threshold_db))
+        ? Number(row.trigger_threshold_db)
+        : -45,
+    },
     updatedAt: row.updated_at || null,
   }));
   const feedPorts = getFeedBridgeEndpointsForDevice(normalizedBridgeId).map((row) => ({
@@ -3649,6 +3661,7 @@ app.put("/api/v1/bridge/:bridgeId/ports/:kind/:id", requireBridgeApiAuth, (req, 
     if (
       message.includes("channel") ||
       message.includes("required") ||
+      message.toLowerCase().includes("trigger") ||
       message.includes("Invalid user id") ||
       message.includes("Invalid feed id")
     ) {
