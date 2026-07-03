@@ -266,9 +266,19 @@ h3 {
   grid-template-columns: minmax(0, 1fr) 8rem;
 }
 
+.managed-port-trigger-grid {
+  display: grid;
+  gap: 0.45rem 0.55rem;
+  grid-template-columns: minmax(10rem, 0.8fr) minmax(0, 1fr) 8rem;
+}
+
 .managed-port-control {
   display: grid;
   gap: 0.25rem;
+}
+
+.managed-port-control[hidden] {
+  display: none;
 }
 
 .managed-port-control span {
@@ -277,9 +287,14 @@ h3 {
   font-weight: 700;
 }
 
-.managed-port-control select {
+.managed-port-control select,
+.managed-port-control input {
   min-height: 2rem;
   padding: 0.3rem 0.45rem;
+}
+
+.managed-port-control--threshold input {
+  text-align: right;
 }
 
 .managed-port-error {

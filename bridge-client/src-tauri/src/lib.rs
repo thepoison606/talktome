@@ -25,8 +25,29 @@ use tauri::{
 };
 use tauri_plugin_autostart::{AutoLaunchManager, MacosLauncher};
 
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSWindow, NSWindowButton};
+
 const TRAY_AUTOSTART_ID: &str = "autostart";
 const TRAY_QUIT_ID: &str = "quit";
+
+#[cfg(target_os = "macos")]
+fn hide_macos_window_controls(window: &tauri::WebviewWindow<Wry>) {
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+
+    let ns_window = unsafe { &*ns_window.cast::<NSWindow>() };
+    for button in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        if let Some(button) = ns_window.standardWindowButton(button) {
+            button.setHidden(true);
+        }
+    }
+}
 
 fn toggle_main_window_from_tray(app: &tauri::AppHandle, rect: tauri::Rect) {
     if let Some(window) = app.get_webview_window("main") {
@@ -696,6 +717,10 @@ pub fn run() {
                 let _ = app
                     .handle()
                     .set_activation_policy(tauri::ActivationPolicy::Accessory);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_closable(false);
+                    hide_macos_window_controls(&window);
+                }
             }
 
             let autostart_enabled = app

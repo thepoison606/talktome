@@ -605,6 +605,7 @@ const adminSessions = new Map();
 const adminStatusStreams = new Set();
 let adminStatusBroadcastTimer = null;
 let pendingAdminStatusReason = "status-changed";
+let pendingAdminStatusRefresh = { users: false, conferences: false, feeds: false };
 
 function parseCookieHeader(header) {
   const cookies = {};
@@ -677,11 +678,19 @@ function writeAdminStatusEvent(stream, event, payload) {
 function scheduleAdminStatusBroadcast(reason = "status-changed") {
   if (adminStatusStreams.size === 0) return;
   pendingAdminStatusReason = reason;
+  if (reason === "bridge-endpoint-updated") {
+    pendingAdminStatusRefresh.users = true;
+  } else if (reason === "bridge-feed-endpoint-updated") {
+    pendingAdminStatusRefresh.feeds = true;
+  }
   if (adminStatusBroadcastTimer !== null) return;
   adminStatusBroadcastTimer = setTimeout(() => {
     adminStatusBroadcastTimer = null;
+    const refresh = pendingAdminStatusRefresh;
+    pendingAdminStatusRefresh = { users: false, conferences: false, feeds: false };
     const payload = {
       reason: pendingAdminStatusReason,
+      refresh,
       snapshot: buildAdminStatusSnapshot(),
     };
     for (const stream of [...adminStatusStreams]) {
@@ -1147,6 +1156,13 @@ function buildBridgeRuntimeConfig(bridgeId) {
         ? Number(row.trigger_threshold_db)
         : -45,
     },
+    triggerTargets: getUserTargets(row.user_id)
+      .filter((target) => target.targetType === "user" || target.targetType === "conference")
+      .map((target) => ({
+        type: target.targetType,
+        id: Number(target.targetId),
+        name: target.name || `${target.targetType} ${target.targetId}`,
+      })),
     updatedAt: row.updated_at || null,
   }));
   const feedPorts = getFeedBridgeEndpointsForDevice(normalizedBridgeId).map((row) => ({

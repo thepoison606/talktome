@@ -137,6 +137,7 @@ let statusClockTimer = null;
 let statusFallbackTimer = null;
 let statusHealthTimer = null;
 let latestAdminStatus = null;
+let serverReachable = null;
 let activeAdminView = null;
 
 function focusAdminLoginNameField() {
@@ -422,11 +423,22 @@ function validateBridgeChannelPair(left, right, label) {
   }
 }
 
+function validateOptionalBridgeDeviceChannel(device, leftChannel, label) {
+  if (device && leftChannel === null) {
+    throw new Error(`${label} channel is required when ${label.toLowerCase()} device is set`);
+  }
+  if (!device && leftChannel !== null) {
+    throw new Error(`${label} device is required when ${label.toLowerCase()} channel is set`);
+  }
+}
+
 function readBridgeTriggerConfig(userId, validate = true) {
   const mode = document.getElementById(`bridge-trigger-mode-${userId}`)?.value === 'audio-level'
     ? 'audio-level'
     : 'external';
-  const targetValue = document.getElementById(`bridge-trigger-target-${userId}`)?.value || '';
+  const targetValue = mode === 'audio-level'
+    ? document.getElementById(`bridge-trigger-target-${userId}`)?.value || ''
+    : '';
   const thresholdValue = document.getElementById(`bridge-trigger-threshold-${userId}`)?.value;
   const payload = {
     triggerMode: mode,
@@ -457,7 +469,12 @@ function syncBridgeTriggerControls(userId) {
   const modeSelect = document.getElementById(`bridge-trigger-mode-${userId}`);
   const details = document.getElementById(`bridge-trigger-details-${userId}`);
   const isLevelTrigger = modeSelect?.value === 'audio-level';
-  if (details) details.hidden = !isLevelTrigger;
+  if (details) {
+    details.hidden = !isLevelTrigger;
+    details.querySelectorAll('select, input').forEach((field) => {
+      field.disabled = !isLevelTrigger;
+    });
+  }
 }
 
 function getBridgeById(bridgeId) {
@@ -1057,6 +1074,7 @@ function statusIndicatorHtml({ online, talking = false, warning = false, onlineL
 }
 
 function setServerReachability(online) {
+  serverReachable = online === true ? true : online === false ? false : null;
   const dot = document.getElementById('status-server-dot');
   if (!dot) return;
   dot.classList.toggle('is-online', online === true);
@@ -1230,9 +1248,9 @@ async function loadAdminStatus({ silent = false } = {}) {
   statusLoadPromise = (async () => {
     try {
       const payload = await fetchJSON('/admin/status');
+      setServerReachability(true);
       updateBridgeRegistryFromStatus(payload);
       renderAdminStatus(payload);
-      setServerReachability(true);
       stopServerHealthProbe();
     } catch (error) {
       startServerHealthProbe();
@@ -1254,7 +1272,7 @@ function startStatusStream() {
   stopStatusStream();
 
   statusClockTimer = window.setInterval(() => {
-    if (latestAdminStatus && !document.hidden) {
+    if (latestAdminStatus && serverReachable !== false && !document.hidden) {
       renderAdminStatus(latestAdminStatus);
     }
   }, 30_000);
@@ -1274,9 +1292,18 @@ function startStatusStream() {
     try {
       const payload = JSON.parse(event.data || '{}');
       const snapshot = payload.snapshot || {};
+      const reason = String(payload.reason || '');
+      const refresh = payload.refresh || {};
+      setServerReachability(true);
       updateBridgeRegistryFromStatus(snapshot);
       renderAdminStatus(snapshot);
-      setServerReachability(true);
+      const refreshUsers = Boolean(refresh.users || reason === 'bridge-endpoint-updated');
+      const refreshFeeds = Boolean(refresh.feeds || reason === 'bridge-feed-endpoint-updated');
+      if (refreshUsers || refreshFeeds) {
+        refreshAdminLists({ users: refreshUsers, feeds: refreshFeeds }).catch((error) => {
+          console.error('Failed to refresh bridge endpoint config:', error);
+        });
+      }
       stopServerHealthProbe();
     } catch (error) {
       console.error('Failed to parse status event:', error);
@@ -1828,7 +1855,7 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
                     <option value="audio-level" ${user.bridge_trigger_mode === 'audio-level' ? 'selected' : ''}>Audio level</option>
                   </select>
                 </div>
-                <div class="bridge-trigger-details" id="bridge-trigger-details-${user.id}">
+                <div class="bridge-trigger-details" id="bridge-trigger-details-${user.id}" ${user.bridge_trigger_mode === 'audio-level' ? '' : 'hidden'}>
                   <div class="field-group">
                     <label for="bridge-trigger-target-${user.id}">Trigger target</label>
                     <select id="bridge-trigger-target-${user.id}" data-saved-value="${escapeHtml(user.bridge_trigger_target_type && user.bridge_trigger_target_id ? `${user.bridge_trigger_target_type}:${user.bridge_trigger_target_id}` : '')}"></select>
@@ -2775,18 +2802,8 @@ window.saveBridgeEndpoint = async function(event, userId) {
       if (!payload.bridgeDevice) {
         throw new Error('Bridge device is required when bridge endpoint is enabled');
       }
-      if (!payload.inputDevice) {
-        throw new Error('Input device is required when bridge endpoint is enabled');
-      }
-      if (payload.inputLeftChannel === null) {
-        throw new Error('Input channel is required when bridge endpoint is enabled');
-      }
-      if (!payload.outputDevice) {
-        throw new Error('Output device is required when bridge endpoint is enabled');
-      }
-      if (payload.outputLeftChannel === null) {
-        throw new Error('Output channel is required when bridge endpoint is enabled');
-      }
+      validateOptionalBridgeDeviceChannel(payload.inputDevice, payload.inputLeftChannel, 'Input');
+      validateOptionalBridgeDeviceChannel(payload.outputDevice, payload.outputLeftChannel, 'Output');
     }
 
     const res = await authedFetch(`/users/${userId}/bridge-endpoint`, {
@@ -2832,12 +2849,7 @@ window.saveFeedBridgeEndpoint = async function(event, feedId) {
       if (!payload.bridgeDevice) {
         throw new Error('Bridge device is required when bridge endpoint is enabled');
       }
-      if (!payload.inputDevice) {
-        throw new Error('Input device is required when bridge endpoint is enabled');
-      }
-      if (payload.inputLeftChannel === null) {
-        throw new Error('Input channel is required when bridge endpoint is enabled');
-      }
+      validateOptionalBridgeDeviceChannel(payload.inputDevice, payload.inputLeftChannel, 'Input');
     }
 
     const res = await authedFetch(`/feeds/${feedId}/bridge-endpoint`, {
@@ -3319,7 +3331,7 @@ if (adminLogoutBtn) {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && adminState.isAuthenticated && latestAdminStatus) {
+  if (!document.hidden && adminState.isAuthenticated && latestAdminStatus && serverReachable !== false) {
     renderAdminStatus(latestAdminStatus);
   }
 });

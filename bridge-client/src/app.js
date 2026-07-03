@@ -549,6 +549,8 @@ function findDeviceByDirectionAndId(direction, deviceId) {
 function getManagedPortDraft(port) {
   const key = bridgePortKey(port);
   const draft = managedPortDrafts.get(key) || {};
+  const trigger = port.trigger || {};
+  const triggerTarget = trigger.target || {};
   return {
     input: {
       deviceId: draft.input?.deviceId ?? port.input?.deviceId ?? "",
@@ -559,6 +561,12 @@ function getManagedPortDraft(port) {
       deviceId: draft.output?.deviceId ?? port.output?.deviceId ?? "",
       leftChannel: draft.output?.leftChannel ?? port.output?.leftChannel ?? null,
       rightChannel: draft.output?.rightChannel ?? port.output?.rightChannel ?? null,
+    } : null,
+    trigger: port.kind === "user" ? {
+      mode: draft.trigger?.mode ?? (trigger.mode === "audio-level" ? "audio-level" : "external"),
+      targetType: draft.trigger?.targetType ?? (triggerTarget.type || ""),
+      targetId: draft.trigger?.targetId ?? (triggerTarget.id ?? null),
+      thresholdDb: draft.trigger?.thresholdDb ?? (trigger.thresholdDb ?? MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB),
     } : null,
   };
 }
@@ -656,6 +664,65 @@ function renderManagedAssignmentControls(port, direction, assignment) {
   `;
 }
 
+function buildManagedTriggerTargetOptions(port, triggerDraft) {
+  const selectedType = String(triggerDraft?.targetType || "").trim().toLowerCase();
+  const selectedId = Number(triggerDraft?.targetId);
+  const selected = selectedType && Number.isFinite(selectedId) ? `${selectedType}:${selectedId}` : "";
+  const targets = Array.isArray(port.triggerTargets) ? port.triggerTargets : [];
+  const options = ['<option value="">Select target</option>'];
+  let hasSelected = false;
+
+  targets.forEach((target) => {
+    const type = String(target.type || "").trim().toLowerCase();
+    const id = Number(target.id);
+    if (!["user", "conference"].includes(type) || !Number.isFinite(id)) return;
+    const value = `${type}:${id}`;
+    const selectedAttr = value === selected ? " selected" : "";
+    if (selectedAttr) hasSelected = true;
+    const typeLabel = type === "conference" ? "conference" : "user";
+    options.push(`<option value="${escapeHtml(value)}"${selectedAttr}>${escapeHtml(`${target.name || value} (${typeLabel})`)}</option>`);
+  });
+
+  if (selected && !hasSelected) {
+    options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(`${selected} (saved, unavailable)`)}</option>`);
+  }
+
+  return options.join("");
+}
+
+function renderManagedTriggerControls(port, draft) {
+  if (port.kind !== "user") return "";
+  const triggerDraft = draft.trigger || {};
+  const mode = triggerDraft.mode === "audio-level" ? "audio-level" : "external";
+  const threshold = Number(triggerDraft.thresholdDb);
+  const thresholdValue = Number.isFinite(threshold)
+    ? Math.max(-80, Math.min(-10, Math.round(threshold)))
+    : MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB;
+  const showDetails = mode === "audio-level";
+
+  return `
+    <div class="managed-port-trigger-grid">
+      <label class="managed-port-control">
+        <span>Talk trigger</span>
+        <select data-managed-port-control data-field="triggerMode">
+          <option value="external"${mode === "audio-level" ? "" : " selected"}>External trigger</option>
+          <option value="audio-level"${mode === "audio-level" ? " selected" : ""}>Audio level</option>
+        </select>
+      </label>
+      <label class="managed-port-control"${showDetails ? "" : " hidden"}>
+        <span>Trigger target</span>
+        <select data-managed-port-control data-field="triggerTarget">
+          ${buildManagedTriggerTargetOptions(port, triggerDraft)}
+        </select>
+      </label>
+      <label class="managed-port-control managed-port-control--threshold"${showDetails ? "" : " hidden"}>
+        <span>Threshold dBFS</span>
+        <input data-managed-port-control data-field="triggerThreshold" type="number" min="-80" max="-10" step="1" value="${escapeHtml(thresholdValue)}">
+      </label>
+    </div>
+  `;
+}
+
 function getManagedPortElement(key) {
   return Array.from(bridgePorts.querySelectorAll("[data-managed-port-key]"))
     .find((element) => element.dataset.managedPortKey === key) || null;
@@ -672,6 +739,24 @@ function readManagedPortAssignmentFromElement(card, direction) {
   };
 }
 
+function readManagedTriggerFromElement(card) {
+  const mode = card.querySelector('[data-field="triggerMode"]')?.value === "audio-level"
+    ? "audio-level"
+    : "external";
+  const targetValue = card.querySelector('[data-field="triggerTarget"]')?.value || "";
+  const thresholdValue = Number(card.querySelector('[data-field="triggerThreshold"]')?.value);
+  const [targetType, rawTargetId] = targetValue.split(":");
+  const targetId = Number(rawTargetId);
+  return {
+    mode,
+    targetType: targetType === "user" || targetType === "conference" ? targetType : "",
+    targetId: Number.isFinite(targetId) ? targetId : null,
+    thresholdDb: Number.isFinite(thresholdValue)
+      ? Math.max(-80, Math.min(-10, thresholdValue))
+      : MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB,
+  };
+}
+
 function updateManagedPortDraftFromElement(card) {
   const key = card?.dataset?.managedPortKey;
   if (!key) return;
@@ -682,6 +767,7 @@ function updateManagedPortDraftFromElement(card) {
     output: bridgePortHasOutput(port)
       ? readManagedPortAssignmentFromElement(card, "output")
       : null,
+    trigger: port.kind === "user" ? readManagedTriggerFromElement(card) : null,
   };
   managedPortDrafts.set(key, draft);
   managedPortEditStates.set(key, { dirty: true });
@@ -701,6 +787,20 @@ function validateManagedPortAssignment(assignment, label) {
   }
 }
 
+function validateManagedTrigger(trigger) {
+  if (!trigger || trigger.mode !== "audio-level") return;
+  if (
+    !["user", "conference"].includes(trigger.targetType) ||
+    !Number.isInteger(Number(trigger.targetId)) ||
+    Number(trigger.targetId) < 1
+  ) {
+    throw new Error("Audio level trigger requires a selected user or conference target");
+  }
+  if (!Number.isFinite(Number(trigger.thresholdDb))) {
+    throw new Error("Audio level trigger threshold is invalid");
+  }
+}
+
 async function saveManagedBridgePort(key) {
   const port = (managedBridgeConfig?.ports || []).find((entry) => bridgePortKey(entry) === key);
   const bridgeId = managedBridgeConfig?.bridgeId || localStorage.getItem(STORAGE_KEYS.bridgeId) || "";
@@ -716,6 +816,7 @@ async function saveManagedBridgePort(key) {
   if (bridgePortHasOutput(port)) {
     validateManagedPortAssignment(draft.output, "Output");
   }
+  validateManagedTrigger(draft.trigger);
 
   const payload = {
     enabled: true,
@@ -728,11 +829,11 @@ async function saveManagedBridgePort(key) {
     payload.outputLeftChannel = draft.output.leftChannel;
     payload.outputRightChannel = draft.output.rightChannel;
   }
-  if (port.trigger?.mode) {
-    payload.triggerMode = port.trigger.mode;
-    payload.triggerThresholdDb = port.trigger.thresholdDb ?? MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB;
-    payload.triggerTargetType = port.trigger.target?.type || "";
-    payload.triggerTargetId = port.trigger.target?.id ?? null;
+  if (port.kind === "user") {
+    payload.triggerMode = draft.trigger?.mode === "audio-level" ? "audio-level" : "external";
+    payload.triggerThresholdDb = draft.trigger?.thresholdDb ?? MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB;
+    payload.triggerTargetType = draft.trigger?.mode === "audio-level" ? (draft.trigger?.targetType || "") : "";
+    payload.triggerTargetId = draft.trigger?.mode === "audio-level" ? (draft.trigger?.targetId ?? null) : null;
   }
 
   managedPortEditStates.set(key, { saving: true });
@@ -756,7 +857,10 @@ async function saveManagedBridgePort(key) {
 
 function handleManagedPortControlChange(event) {
   const control = event.target;
-  if (!(control instanceof HTMLSelectElement) || !control.matches("[data-managed-port-control]")) {
+  if (
+    !(control instanceof HTMLSelectElement || control instanceof HTMLInputElement) ||
+    !control.matches("[data-managed-port-control]")
+  ) {
     return;
   }
   const card = control.closest("[data-managed-port-key]");
@@ -777,6 +881,9 @@ function handleManagedPortControlChange(event) {
   }
 
   updateManagedPortDraftFromElement(card);
+  if (field === "triggerMode") {
+    renderManagedBridgePorts();
+  }
 }
 
 async function handleManagedPortSaveClick(event) {
@@ -833,6 +940,7 @@ function renderManagedBridgePorts() {
         ${renderManagedAssignmentControls(port, "input", draft.input)}
         ${hasOutput ? renderManagedAssignmentControls(port, "output", draft.output) : ""}
       </div>
+      ${renderManagedTriggerControls(port, draft)}
       ${hasOutput ? `<small>${escapeHtml(formatManagedReturnPathStatus(session))}</small>` : ""}
       ${speakerNames.length ? `<small>From: ${escapeHtml(speakerNames.join(", "))}</small>` : ""}
       ${session?.error ? `<div class="managed-port-error">${escapeHtml(session.error)}</div>` : ""}
@@ -2559,6 +2667,7 @@ refreshButton?.addEventListener("click", refreshDevices);
 announceBridgeButton.addEventListener("click", announceBridgeFromButton);
 autostartInput.addEventListener("change", setAutostartState);
 bridgePorts?.addEventListener("change", handleManagedPortControlChange);
+bridgePorts?.addEventListener("input", handleManagedPortControlChange);
 bridgePorts?.addEventListener("click", handleManagedPortSaveClick);
 [serverUrlInput, apiKeyInput, bridgeNameInput].forEach((input) => {
   input.addEventListener("change", saveBridgeSettings);

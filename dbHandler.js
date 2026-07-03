@@ -30,6 +30,15 @@ function validateBridgePair(left, right, label) {
   }
 }
 
+function validateOptionalBridgeDeviceChannel(device, leftChannel, label) {
+  if (device && leftChannel === null) {
+    throw new Error(`${label} channel is required when ${label.toLowerCase()} device is set`);
+  }
+  if (!device && leftChannel !== null) {
+    throw new Error(`${label} device is required when ${label.toLowerCase()} channel is set`);
+  }
+}
+
 function normalizeBridgeTriggerMode(value) {
   const mode = String(value || '').trim().toLowerCase();
   return mode === 'audio-level' ? 'audio-level' : 'external';
@@ -78,18 +87,8 @@ function normalizeBridgeEndpointConfig(config = {}) {
     if (!bridgeDevice) {
       throw new Error('Bridge device is required when bridge endpoint is enabled');
     }
-    if (!inputDevice) {
-      throw new Error('Input device is required when bridge endpoint is enabled');
-    }
-    if (inputLeftChannel === null) {
-      throw new Error('Input channel is required when bridge endpoint is enabled');
-    }
-    if (!outputDevice) {
-      throw new Error('Output device is required when bridge endpoint is enabled');
-    }
-    if (outputLeftChannel === null) {
-      throw new Error('Output channel is required when bridge endpoint is enabled');
-    }
+    validateOptionalBridgeDeviceChannel(inputDevice, inputLeftChannel, 'Input');
+    validateOptionalBridgeDeviceChannel(outputDevice, outputLeftChannel, 'Output');
     if (triggerMode === 'audio-level' && (!triggerTargetType || triggerTargetId === null)) {
       throw new Error('Audio level trigger requires a user or conference target');
     }
@@ -123,12 +122,7 @@ function normalizeFeedBridgeEndpointConfig(config = {}) {
     if (!bridgeDevice) {
       throw new Error('Bridge device is required when bridge endpoint is enabled');
     }
-    if (!inputDevice) {
-      throw new Error('Input device is required when bridge endpoint is enabled');
-    }
-    if (inputLeftChannel === null) {
-      throw new Error('Input channel is required when bridge endpoint is enabled');
-    }
+    validateOptionalBridgeDeviceChannel(inputDevice, inputLeftChannel, 'Input');
   }
 
   return {
