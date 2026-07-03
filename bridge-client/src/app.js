@@ -31,6 +31,8 @@ const MANAGED_LEVEL_TRIGGER_POLL_MS = 50;
 const MANAGED_LEVEL_TRIGGER_ATTACK_MS = 45;
 const MANAGED_LEVEL_TRIGGER_RELEASE_MS = 450;
 const MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB = -45;
+const MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB = -120;
+const MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB = -10;
 const MANAGED_DEFAULT_TARGET_VOLUME = 0.9;
 const MIN_WINDOW_HEIGHT = 260;
 const MAX_WINDOW_HEIGHT = 820;
@@ -286,7 +288,7 @@ function bridgePortKey(port) {
 }
 
 function bridgePortHasOutput(port) {
-  return Boolean(port?.output?.deviceId);
+  return port?.kind === "user";
 }
 
 function bridgePortTargetId(port) {
@@ -696,7 +698,7 @@ function renderManagedTriggerControls(port, draft) {
   const mode = triggerDraft.mode === "audio-level" ? "audio-level" : "external";
   const threshold = Number(triggerDraft.thresholdDb);
   const thresholdValue = Number.isFinite(threshold)
-    ? Math.max(-80, Math.min(-10, Math.round(threshold)))
+    ? Math.max(MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB, Math.min(MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB, Math.round(threshold)))
     : MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB;
   const showDetails = mode === "audio-level";
 
@@ -717,7 +719,7 @@ function renderManagedTriggerControls(port, draft) {
       </label>
       <label class="managed-port-control managed-port-control--threshold"${showDetails ? "" : " hidden"}>
         <span>Threshold dBFS</span>
-        <input data-managed-port-control data-field="triggerThreshold" type="number" min="-80" max="-10" step="1" value="${escapeHtml(thresholdValue)}">
+        <input data-managed-port-control data-field="triggerThreshold" type="number" min="${MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB}" max="${MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB}" step="1" value="${escapeHtml(thresholdValue)}">
       </label>
     </div>
   `;
@@ -752,7 +754,7 @@ function readManagedTriggerFromElement(card) {
     targetType: targetType === "user" || targetType === "conference" ? targetType : "",
     targetId: Number.isFinite(targetId) ? targetId : null,
     thresholdDb: Number.isFinite(thresholdValue)
-      ? Math.max(-80, Math.min(-10, thresholdValue))
+      ? Math.max(MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB, Math.min(MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB, thresholdValue))
       : MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB,
   };
 }
@@ -1132,7 +1134,7 @@ function getManagedTriggerTarget(port) {
 function getManagedLevelTriggerThreshold(port) {
   const threshold = Number(port?.trigger?.thresholdDb);
   if (!Number.isFinite(threshold)) return MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB;
-  return Math.max(-80, Math.min(-10, threshold));
+  return Math.max(MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB, Math.min(MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB, threshold));
 }
 
 function getManagedInputLevelMap(status) {

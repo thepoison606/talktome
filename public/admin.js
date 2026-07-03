@@ -1862,7 +1862,7 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
                   </div>
                   <div class="field-group">
                     <label for="bridge-trigger-threshold-${user.id}">Threshold dBFS</label>
-                    <input id="bridge-trigger-threshold-${user.id}" type="number" min="-80" max="-10" step="1" value="${escapeHtml(valueOrEmpty(user.bridge_trigger_threshold_db ?? -45))}">
+                    <input id="bridge-trigger-threshold-${user.id}" type="number" min="-120" max="-10" step="1" value="${escapeHtml(valueOrEmpty(user.bridge_trigger_threshold_db ?? -45))}">
                   </div>
                 </div>
               </div>

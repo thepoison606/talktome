@@ -4,7 +4,7 @@ const crypto = require('crypto');
 
 const BRIDGE_ENDPOINT_TEXT_LIMIT = 200;
 const BRIDGE_TRIGGER_DEFAULT_THRESHOLD_DB = -45;
-const BRIDGE_TRIGGER_MIN_THRESHOLD_DB = -80;
+const BRIDGE_TRIGGER_MIN_THRESHOLD_DB = -120;
 const BRIDGE_TRIGGER_MAX_THRESHOLD_DB = -10;
 
 function normalizeBridgeText(value) {

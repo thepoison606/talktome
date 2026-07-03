@@ -51,9 +51,19 @@ fn hide_macos_window_controls(window: &tauri::WebviewWindow<Wry>) {
 
 fn toggle_main_window_from_tray(app: &tauri::AppHandle, rect: tauri::Rect) {
     if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or(false) {
+        let visible_on_left_down = app
+            .try_state::<TrayClickState>()
+            .and_then(|state| state.take_visible_on_left_down());
+        let should_hide =
+            visible_on_left_down.unwrap_or_else(|| window.is_visible().unwrap_or(false));
+
+        if should_hide {
             let _ = window.hide();
             return;
+        }
+
+        if let Some(guard) = app.try_state::<WindowFocusGuard>() {
+            let _ = guard.suppress_for(Duration::from_millis(300));
         }
 
         if let (Ok(size), Ok(scale_factor)) = (window.outer_size(), window.scale_factor()) {
@@ -114,6 +124,18 @@ fn toggle_main_window_from_tray(app: &tauri::AppHandle, rect: tauri::Rect) {
     }
 }
 
+fn record_main_window_visibility_for_tray(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Some(guard) = app.try_state::<WindowFocusGuard>() {
+            let _ = guard.suppress_for(Duration::from_millis(300));
+        }
+
+        if let Some(state) = app.try_state::<TrayClickState>() {
+            state.set_visible_on_left_down(window.is_visible().unwrap_or(false));
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BridgeAnnouncePayload<'a> {
@@ -153,6 +175,11 @@ struct WindowFocusGuard {
 }
 
 #[derive(Default)]
+struct TrayClickState {
+    visible_on_left_down: Mutex<Option<bool>>,
+}
+
+#[derive(Default)]
 struct TrayAutostartMenuItem {
     item: Mutex<Option<CheckMenuItem<Wry>>>,
 }
@@ -173,6 +200,21 @@ impl WindowFocusGuard {
             .ok()
             .and_then(|value| *value)
             .is_some_and(|until| Instant::now() < until)
+    }
+}
+
+impl TrayClickState {
+    fn set_visible_on_left_down(&self, visible: bool) {
+        if let Ok(mut value) = self.visible_on_left_down.lock() {
+            *value = Some(visible);
+        }
+    }
+
+    fn take_visible_on_left_down(&self) -> Option<bool> {
+        self.visible_on_left_down
+            .lock()
+            .ok()
+            .and_then(|mut value| value.take())
     }
 }
 
@@ -708,6 +750,7 @@ pub fn run() {
         .manage(BridgeMediaManager::default())
         .manage(BridgeEventStreamManager::default())
         .manage(WindowFocusGuard::default())
+        .manage(TrayClickState::default())
         .manage(TrayAutostartMenuItem::default())
         .manage(http)
         .setup(|app| {
@@ -753,6 +796,11 @@ pub fn run() {
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| match event {
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Down,
+                        ..
+                    } => record_main_window_visibility_for_tray(tray.app_handle()),
                     TrayIconEvent::Click {
                         rect,
                         button: MouseButton::Left,
