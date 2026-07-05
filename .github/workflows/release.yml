@@ -95,6 +95,10 @@ jobs:
         shell: pwsh
         run: |
           $installer = "${{ matrix.artifact_prefix }}_${env:SAFE_VERSION}_setup.exe"
+          Copy-Item `
+            "${env:GITHUB_WORKSPACE}\bridge-client\src-tauri\icons\icon.ico" `
+            "${env:GITHUB_WORKSPACE}\${env:RELEASE_DIR}\Talktome Server.ico" `
+            -Force
           makensis `
             "/DAPP_VERSION=${env:VERSION}" `
             "/DSOURCE_DIR=${env:GITHUB_WORKSPACE}\${env:RELEASE_DIR}" `

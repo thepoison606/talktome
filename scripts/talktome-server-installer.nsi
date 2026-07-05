@@ -53,10 +53,6 @@ Section "Install"
   SetOutPath "$INSTDIR"
   File /r "${SOURCE_DIR}\*"
 
-  !ifdef ICON_FILE
-    File /oname="${APP_ICON}" "${ICON_FILE}"
-  !endif
-
   CreateDirectory "$SMPROGRAMS\Talktome"
   CreateShortcut "$SMPROGRAMS\Talktome\Talktome Server.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_ICON}" 0
   WriteUninstaller "$INSTDIR\Uninstall.exe"
