@@ -8,27 +8,27 @@ Local WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
 
 - Browser-based intercom with direct targets, conferences, reply and talk lock.
 - Admin UI for users, feeds, conferences, target order, network config, RTC port range, backups and Guest login.
-- Optional program-audio feeds with volume and mute controls.
+- Program-audio feeds with volume and mute controls.
 - Camera tally and remote control through HTTP API.
 - Remote control via Bitfocus Companion module and keyboard shortcuts.
+- Bridge Desktop Application to integrate hardware intercom systems, audio interfaces or mixing consoles.
 
 ## Quick Start
 
 Choose one way to run the application:
 
-- **[macOS / Windows release:](https://github.com/thepoison606/talktome/releases)** easiest local install
-- **[Docker:](https://hub.docker.com/r/thepoison606/talktome)**
+- **[macOS / Windows release](https://github.com/thepoison606/talktome/releases)** easiest local install
+- **[Docker](https://hub.docker.com/r/thepoison606/talktome)**
 - **Source:** for development
 
 The macOS and Windows releases contain the Talktome server installer and the
-optional Talktome Bridge app for the integration of hardware intercom systems,
-audio interfaces or mixing consoles.
+optional Talktome Bridge app.
 
 ### First Start
 
-1. Start Talktome and open the shown HTTPS URL, usually `https://<HOST-IP>:8443/`.
+1. Start Talktome and open the shown HTTPS URL, for example `https://<HOST-IP>/` or `https://<HOST-IP>:8443/` depending on your selected HTTPS port.
 2. Accept the browser warning for the self-signed local certificate.
-3. Open `https://<HOST-IP>:8443/admin`.
+3. Open `/admin` on the same HTTPS URL.
 4. Log in with the initial admin account:
    - Username: `admin`
    - Password: `admin`
@@ -66,24 +66,10 @@ docker run -d --restart unless-stopped --name talktome \
 
 Open `https://<HOST-IP>:8443/`. Allow the HTTPS port and the configured RTC port range in your firewall.
 
-### Source
-
-Requirements: Node.js 18+ and a build toolchain for mediasoup.
-
-```bash
-git clone https://github.com/thepoison606/talktome.git
-cd talktome
-npm install
-node server.js
-```
-
-Open `https://localhost/` or `https://<IP>:<PORT>/` and accept the self-signed certificate warning.
-
 ### macOS Test Builds
 
-Unsigned macOS test builds downloaded from GitHub may be blocked by Gatekeeper
-until the apps are Developer ID signed and notarized. For internal testing,
-remove the quarantine flag once after installing or extracting:
+Unsigned macOS test builds downloaded from GitHub may be blocked by Gatekeeper.
+To remove the quarantine flag once after installing or extracting:
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Talktome Server.app"
@@ -173,12 +159,13 @@ curl -X POST https://<IP>:<PORT>/cut-camera \
   -d '{"user":"<USERNAME>"}'
 ```
 
-The matching user UI turns red while on-air.
+The matching user UI turns red while on-air. Also intergrated as action in companion plugin.
 
 ## Shortcuts
 
 - `Space`: Reply
 - Number keys: talk to targets in list order
+- Set your own hotkeys in the menu
 
 ## Native Bridge App
 
