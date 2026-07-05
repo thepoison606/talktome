@@ -56,7 +56,7 @@ jobs:
             VERSION="${GITHUB_REF_NAME}"
           else
             PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-            VERSION="v${PACKAGE_VERSION}-${GITHUB_SHA::7}"
+            VERSION="v${PACKAGE_VERSION}"
           fi
 
           SAFE_VERSION="${VERSION//\//-}"
