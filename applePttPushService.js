@@ -25,7 +25,7 @@ class ApplePttPushService {
       payload: {
         ttm: {
           type: "active-remote-participant",
-          participant: { name: participantName || "TalkToMe" },
+          participant: { name: participantName || "Talktome" },
           reason: reason || "incoming-audio",
         },
       },

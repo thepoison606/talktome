@@ -27,17 +27,13 @@ jobs:
             ffmpeg_source: macos-lgpl
             artifact_name: talktome_bridge_macos_arm64
             artifact_path: |
-              bridge-client/src-tauri/target/release/talktome-bridge-client
-              bridge-client/src-tauri/target/release/ffmpeg-aarch64-apple-darwin
-              bridge-client/src-tauri/target/release/bundle/**/*
+              bridge-client/src-tauri/target/release/bundle/dmg/*.dmg
           - name: Windows x64
             os: windows-latest
             ffmpeg_source: windows-lgpl
             artifact_name: talktome_bridge_windows_x64
             artifact_path: |
-              bridge-client/src-tauri/target/release/talktome-bridge-client.exe
-              bridge-client/src-tauri/target/release/ffmpeg-x86_64-pc-windows-msvc.exe
-              bridge-client/src-tauri/target/release/bundle/**/*
+              bridge-client/src-tauri/target/release/bundle/nsis/*.exe
 
     steps:
       - name: Checkout
@@ -85,12 +81,7 @@ jobs:
         working-directory: bridge-client
         env:
           FFMPEG_SIDECAR_SOURCE: ${{ github.workspace }}/bridge-client/.ffmpeg-sidecars/ffmpeg-aarch64-apple-darwin
-        run: npm run build:release
-
-      - name: Copy FFmpeg sidecar next to raw executable
-        if: matrix.ffmpeg_source == 'macos-lgpl'
-        working-directory: bridge-client
-        run: cp src-tauri/binaries/ffmpeg-aarch64-apple-darwin src-tauri/target/release/ffmpeg-aarch64-apple-darwin
+        run: npm run build:release:macos
 
       - name: Build LGPL FFmpeg sidecar from source
         if: matrix.ffmpeg_source == 'windows-lgpl'
@@ -103,13 +94,7 @@ jobs:
         working-directory: bridge-client
         env:
           FFMPEG_SIDECAR_SOURCE: ${{ github.workspace }}/bridge-client/.ffmpeg-sidecars/ffmpeg-x86_64-pc-windows-msvc.exe
-        run: npm run build:release
-
-      - name: Copy FFmpeg sidecar next to raw executable
-        if: matrix.ffmpeg_source == 'windows-lgpl'
-        working-directory: bridge-client
-        shell: pwsh
-        run: Copy-Item src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe src-tauri/target/release/ffmpeg-x86_64-pc-windows-msvc.exe
+        run: npm run build:release:windows
 
       - name: Upload Bridge artifact
         uses: actions/upload-artifact@v6

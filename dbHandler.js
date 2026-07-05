@@ -1123,14 +1123,14 @@ function getUsersForFeed(feedId) {
   return db.prepare('SELECT user_id FROM user_feed_targets WHERE feed_id = ?').all(feedId);
 }
 
-function getOrCreateApplePttChannelForUser(userId, channelName = 'TalkToMe') {
+function getOrCreateApplePttChannelForUser(userId, channelName = 'Talktome') {
   const existing = db.prepare(`
     SELECT user_id, channel_uuid, channel_name
     FROM apple_ptt_channels
     WHERE user_id = ?
   `).get(userId);
 
-  const normalizedName = String(channelName || 'TalkToMe').trim() || 'TalkToMe';
+  const normalizedName = String(channelName || 'Talktome').trim() || 'Talktome';
   const now = new Date().toISOString();
 
   if (existing) {

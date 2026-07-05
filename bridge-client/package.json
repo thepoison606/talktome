@@ -7,6 +7,8 @@
     "dev": "npm run prepare:ffmpeg -- --optional && tauri dev",
     "build": "npm run prepare:ffmpeg && tauri build",
     "build:release": "npm run prepare:ffmpeg -- --release --force && tauri build",
+    "build:release:macos": "npm run prepare:ffmpeg -- --release --force && tauri build --bundles dmg && scripts/hide-macos-dmg-app-extension.sh",
+    "build:release:windows": "npm run prepare:ffmpeg -- --release --force && tauri build --bundles nsis",
     "build:ffmpeg:macos": "scripts/build-ffmpeg-lgpl-macos.sh",
     "build:ffmpeg:windows": "scripts/build-ffmpeg-lgpl-mingw.sh",
     "dev:ui": "vite --host 127.0.0.1 --port 1420 --strictPort",

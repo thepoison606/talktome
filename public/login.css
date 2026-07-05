@@ -31,6 +31,25 @@
   line-height: 1.2;
 }
 
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin: 0 0 1rem;
+}
+
+.login-brand .login-title {
+  margin: 0;
+}
+
+.login-brand__icon {
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 10px;
+  flex: 0 0 auto;
+  display: block;
+}
+
 .login-form {
   display: grid;
   gap: 1rem;

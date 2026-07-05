@@ -5508,7 +5508,7 @@ function resolveApplePttRecipientUserIds({ type, targetId, targets = null, speak
 function resolveApplePttSpeakerName(socketId) {
   const peer = peers.get(socketId);
   const trimmed = typeof peer?.name === "string" ? peer.name.trim() : "";
-  return trimmed || "TalkToMe";
+  return trimmed || "Talktome";
 }
 
 function buildProducerDeliverySignature(appData = {}) {
@@ -5865,7 +5865,7 @@ io.on("connection", (socket) => {
       return callback({ ok: true, enabled: false });
     }
 
-    const channel = getOrCreateApplePttChannelForUser(peer.userId, "TalkToMe");
+    const channel = getOrCreateApplePttChannelForUser(peer.userId, "Talktome");
     callback({
       ok: true,
       enabled: true,

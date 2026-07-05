@@ -6,7 +6,8 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
-    <title>Talk to me - intercom</title>
+    <title>Talktome</title>
+    <link rel="icon" type="image/png" href="/images/talktome-icon.png" />
     <link rel="stylesheet" href="/login.css" />
     <style>
       /* Prevent double-tap zoom on iOS */
@@ -65,15 +66,26 @@
       }
 
       .session-info {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
         flex: 1;
         min-width: 0;
-        color: #cbd5f5;
-        font-size: 1rem;
+        color: #94a3b8;
+        font-size: 0.9rem;
         user-select: none;
         -webkit-user-select: none;
       }
 
+      .session-brand-icon {
+        width: 1.35rem;
+        height: 1.35rem;
+        border-radius: 6px;
+        flex: 0 0 auto;
+      }
+
       .session-info #my-id {
+        color: #e2e8f0;
         font-weight: 600;
         word-break: break-word;
       }
@@ -190,6 +202,14 @@
       .reply-bar button {
         min-width: 10rem;
         width: min(60vw, 240px);
+      }
+
+      .reply-bar,
+      .reply-bar button {
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
       }
 
       .settings-panel {
@@ -1149,6 +1169,23 @@
         transition: none;
       }
 
+      #targets-list .target-actions.ptt-actions,
+      #targets-list .target-actions.ptt-actions button,
+      #targets-list .target-actions.ptt-actions img,
+      .talk-btn,
+      .talk-btn img {
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      #targets-list .target-actions.ptt-actions button,
+      .talk-btn,
+      .reply-bar button {
+        touch-action: none;
+      }
+
       #targets-list .btn-icon {
         width: 22px;
         height: 22px;
@@ -1720,7 +1757,10 @@
     <!-- Login Section -->
     <div id="login-container" class="login-overlay" role="dialog" aria-modal="true" aria-labelledby="login-title">
       <div class="login-card">
-        <h2 id="login-title" class="login-title">Intercom Login</h2>
+        <div class="login-brand">
+          <img class="login-brand__icon" src="/images/talktome-mark.png" alt="" aria-hidden="true" />
+          <h2 id="login-title" class="login-title">Talktome Login</h2>
+        </div>
         <form id="login-form" class="login-form">
           <div class="login-field">
             <label for="login-username">Username / Feed</label>
@@ -1772,7 +1812,10 @@
     <!-- Intercom App (initially hidden until login) -->
       <div id="intercom-app" style="display: none;">
         <div class="session-bar">
-          <div class="session-info" aria-live="polite"><span id="session-info-prefix">Logged in as </span><span id="my-id">Connecting...</span></div>
+          <div class="session-info" aria-live="polite">
+            <img class="session-brand-icon" src="/images/talktome-mark.png" alt="" aria-hidden="true" />
+            <span id="session-info-prefix">Logged in as</span><span id="my-id">Connecting...</span>
+          </div>
           <div id="session-slide-hint" class="session-slide-hint" aria-hidden="true">← Slide to lock</div>
           <div id="target-layer-switcher" class="target-layer-switcher" hidden>
             <button id="target-layer-button" type="button" aria-label="Switch target layer">Layer 1/1</button>
@@ -2029,9 +2072,28 @@
   <script src="/socket.io.js"></script>
   <script>
     document.addEventListener("DOMContentLoaded", () => {
-      document.querySelectorAll(".mute-btn, .lock-btn, .talk-btn").forEach((btn) => {
-        btn.addEventListener("pointerdown", (e) => e.stopPropagation());
-      });
+      const isPressControl = (target) => {
+        if (!(target instanceof Element)) return false;
+        return Boolean(target.closest(".talk-btn, .reply-bar button, #targets-list .target-actions.ptt-actions"));
+      };
+
+      document.addEventListener("contextmenu", (event) => {
+        if (!isPressControl(event.target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+      }, true);
+
+      document.addEventListener("dragstart", (event) => {
+        if (!isPressControl(event.target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+      }, true);
+
+      document.addEventListener("selectstart", (event) => {
+        if (!isPressControl(event.target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+      }, true);
 
       const settingsPanel = document.querySelector(".settings-panel");
       const settingsTrigger = settingsPanel?.querySelector(".settings-trigger");

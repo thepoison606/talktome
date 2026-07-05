@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Talk To Me Bridge",
+  "productName": "Talktome Bridge",
   "version": "0.1.0",
   "identifier": "com.talktome.bridge",
   "build": {
@@ -11,10 +11,11 @@
   },
   "app": {
     "withGlobalTauri": true,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
-        "title": "Talk To Me Bridge",
+        "title": "Talktome Bridge",
         "width": 720,
         "height": 520,
         "minWidth": 560,
@@ -26,7 +27,7 @@
         "closable": true,
         "minimizable": false,
         "maximizable": false,
-        "transparent": false,
+        "transparent": true,
         "resizable": false,
         "alwaysOnTop": true,
         "skipTaskbar": true
@@ -37,8 +38,12 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
     "targets": "all",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
     "externalBin": [
       "binaries/ffmpeg"
     ]

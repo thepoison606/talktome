@@ -3,19 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Talk To Me Bridge</title>
+    <title>Talktome Bridge</title>
+    <script>
+      document.documentElement.dataset.platform = navigator.platform.toLowerCase().includes("mac")
+        ? "macos"
+        : navigator.platform.toLowerCase().includes("win")
+          ? "windows"
+          : "unknown";
+    </script>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main class="shell">
       <section class="tray-section">
         <div class="panel-header">
-          <div class="registration-title">
-            <h2>Server registration</h2>
+          <div class="registration-controls">
             <div class="connection-line" id="announce-status" data-state="disconnected">
               <span></span>
               <strong>Disconnected</strong>
             </div>
+            <label class="checkbox-row startup-row">
+              <input id="autostart-enabled" type="checkbox" />
+              <span>Run at login</span>
+            </label>
           </div>
           <button id="announce-bridge" type="button">Save</button>
         </div>
@@ -33,10 +43,6 @@
             <input id="bridge-name" type="text" autocomplete="off" />
           </label>
         </div>
-        <label class="checkbox-row startup-row">
-          <input id="autostart-enabled" type="checkbox" />
-          <span>Run at login</span>
-        </label>
         <div class="autostart-status" id="autostart-status"></div>
       </section>
 

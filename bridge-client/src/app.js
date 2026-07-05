@@ -486,14 +486,25 @@ function classifyManagedPortError(error) {
     || lower.includes("load failed")
     || lower.includes("network")
     || lower.includes("bridge api request failed")
+    || lower.includes("bridge announce request failed")
+    || lower.includes("error sending request")
+    || lower.includes("connection refused")
+    || lower.includes("connection reset")
+    || lower.includes("connection closed")
+    || lower.includes("dns")
+    || lower.includes("timed out")
     || lower.includes("server")
   ) {
-    return { label: "Server offline", detail: message, retryable: true };
+    return { label: "Server offline", detail: "Server offline", retryable: true };
   }
   if (lower.includes("session was replaced") || lower.includes("session-kicked")) {
     return { label: "Session replaced", detail: message, retryable: true };
   }
   return { label: "Error", detail: message, retryable: true };
+}
+
+function isServerOfflineError(error) {
+  return classifyManagedPortError(error).label === "Server offline";
 }
 
 function setManagedSessionError(session, error) {
@@ -923,6 +934,7 @@ function renderManagedBridgePorts() {
       .filter(Boolean);
     const hasOutput = bridgePortHasOutput(port);
     const state = getManagedSessionState(session, port);
+    const sessionError = session?.error && session.error !== state.label ? session.error : "";
     const draft = getManagedPortDraft(port);
     const editState = managedPortEditStates.get(key) || {};
     const saveLabel = editState.saving ? "Saving" : "Save";
@@ -945,7 +957,7 @@ function renderManagedBridgePorts() {
       ${renderManagedTriggerControls(port, draft)}
       ${hasOutput ? `<small>${escapeHtml(formatManagedReturnPathStatus(session))}</small>` : ""}
       ${speakerNames.length ? `<small>From: ${escapeHtml(speakerNames.join(", "))}</small>` : ""}
-      ${session?.error ? `<div class="managed-port-error">${escapeHtml(session.error)}</div>` : ""}
+      ${sessionError ? `<div class="managed-port-error">${escapeHtml(sessionError)}</div>` : ""}
       ${editState.error ? `<div class="managed-port-error">${escapeHtml(editState.error)}</div>` : ""}
       </article>
     `;
@@ -1875,6 +1887,7 @@ async function syncManagedBridge() {
   try {
     await refreshManagedInventoryOnly().catch(() => {});
     await announceBridge({ quiet: true, syncConfig: false });
+    setServerConnectionState("connected");
     await auditManagedSessionDevices();
     await auditManagedNativeMediaStatus();
     const config = await bridgeApi(
@@ -1887,10 +1900,12 @@ async function syncManagedBridge() {
       connectionStatus.textContent = managedSessions.size ? "Connected" : "Announced";
     }
   } catch (error) {
-    if (connectionStatus) {
-      connectionStatus.textContent = "Disconnected";
+    if (isServerOfflineError(error)) {
+      if (connectionStatus) {
+        connectionStatus.textContent = "Disconnected";
+      }
+      setServerConnectionState("disconnected");
     }
-    setServerConnectionState("disconnected");
     for (const session of managedSessions.values()) {
       if (session.retryable === false) continue;
       setManagedSessionError(session, error);
@@ -2175,14 +2190,21 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
     }
     setServerConnectionState("connected");
     if (syncConfig && announcedBridge.id) {
-      const config = await bridgeApi(
-        "GET",
-        `/api/v1/bridge/${encodeURIComponent(announcedBridge.id)}/config`
-      );
-      await reconcileManagedBridgeConfig(config);
-      startManagedTimers();
-      if (connectionStatus) {
-        connectionStatus.textContent = managedSessions.size ? "Connected" : "Announced";
+      try {
+        const config = await bridgeApi(
+          "GET",
+          `/api/v1/bridge/${encodeURIComponent(announcedBridge.id)}/config`
+        );
+        await reconcileManagedBridgeConfig(config);
+        startManagedTimers();
+        if (connectionStatus) {
+          connectionStatus.textContent = managedSessions.size ? "Connected" : "Announced";
+        }
+      } catch (error) {
+        if (isServerOfflineError(error)) {
+          setServerConnectionState("disconnected");
+        }
+        throw error;
       }
     }
   } finally {
@@ -2644,7 +2666,9 @@ async function refreshDevices() {
         await announceBridge({ quiet: true });
       } catch (announceError) {
         console.warn("auto announce failed", announceError);
-        setServerConnectionState("disconnected");
+        if (isServerOfflineError(announceError)) {
+          setServerConnectionState("disconnected");
+        }
       }
     }
   } catch (error) {

@@ -5,6 +5,10 @@
   color: #edf2f7;
 }
 
+:root[data-platform="macos"] {
+  background: transparent;
+}
+
 html {
   height: 100%;
   background: #2b2b2f;
@@ -23,6 +27,10 @@ body {
   background: #2b2b2f;
 }
 
+:root[data-platform="macos"] body {
+  background: transparent;
+}
+
 button {
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 6px;
@@ -31,6 +39,10 @@ button {
   cursor: pointer;
   font: inherit;
   padding: 0.55rem 0.8rem;
+}
+
+:root[data-platform="macos"] button {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 select,
@@ -48,6 +60,11 @@ input:not([type="range"]) {
   font: inherit;
   min-height: 2.25rem;
   padding: 0.45rem 0.55rem;
+}
+
+:root[data-platform="macos"] select,
+:root[data-platform="macos"] input:not([type="range"]) {
+  background: rgba(255, 255, 255, 0.07);
 }
 
 button:disabled {
@@ -68,6 +85,10 @@ button:disabled {
   border-radius: 0;
   background: #2b2b2f;
   box-shadow: none;
+}
+
+:root[data-platform="macos"] .shell {
+  background: transparent;
 }
 
 .status-panel,
@@ -151,11 +172,11 @@ h3 {
   margin-top: 0.25rem;
 }
 
-.registration-title {
+.registration-controls {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.65rem;
+  gap: 1.1rem;
 }
 
 .button-row {
@@ -180,7 +201,7 @@ h3 {
 }
 
 .startup-row {
-  margin-top: 0.8rem;
+  margin-top: 0;
 }
 
 .autostart-status {
@@ -213,6 +234,10 @@ h3 {
   display: grid;
   gap: 0.45rem;
   padding: 0.7rem;
+}
+
+:root[data-platform="macos"] .managed-port-card {
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .managed-port-card small {
@@ -455,7 +480,7 @@ h3 {
   align-items: center;
   color: #b7c3ce;
   display: flex;
-  font-size: 0.82rem;
+  font-size: 0.95rem;
   gap: 0.45rem;
 }
 

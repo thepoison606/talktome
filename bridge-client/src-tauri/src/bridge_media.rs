@@ -766,7 +766,7 @@ impl BridgeOutputRuntime {
         let sdp = format!(
             "v=0\n\
              o=- 0 0 IN IP4 127.0.0.1\n\
-             s=TalkToMe Bridge\n\
+             s=Talktome Bridge\n\
              c=IN IP4 0.0.0.0\n\
              t=0 0\n\
              m=audio {} RTP/AVP {}\n\

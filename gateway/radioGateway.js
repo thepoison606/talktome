@@ -320,7 +320,7 @@ function buildReceiveSdp({ port, rtpParameters }) {
   return [
     "v=0",
     "o=- 0 0 IN IP4 127.0.0.1",
-    "s=TalkToMe Radio Gateway TX",
+    "s=Talktome Radio Gateway TX",
     "c=IN IP4 0.0.0.0",
     "t=0 0",
     `m=audio ${port} RTP/AVP ${payloadType}`,
@@ -574,7 +574,7 @@ function startTalkToRadioTx(socket, options = {}) {
     }
     await emitWithAck(socket, "resume-consumer", { consumerId: consumer.id });
     session.starting = false;
-    console.log(`[radio-gateway] transmitting TalkToMe producer ${producerId} to radio`);
+    console.log(`[radio-gateway] transmitting Talktome producer ${producerId} to radio`);
   }
 
   socket.on("new-producer", (payload) => {
@@ -653,17 +653,17 @@ function startTalkToRadioTx(socket, options = {}) {
 async function runRxStreamSession() {
   const userId = Number(config.gatewayUserId);
   if (!Number.isFinite(userId) || userId <= 0) {
-    throw new Error("Set TALKTOME_GATEWAY_USER_ID to the TalkToMe user id for this radio gateway.");
+    throw new Error("Set TALKTOME_GATEWAY_USER_ID to the Talktome user id for this radio gateway.");
   }
 
   const conferenceId = Number(config.gatewayConferenceId);
   if (!Number.isFinite(conferenceId) || conferenceId <= 0) {
-    throw new Error("Set TALKTOME_GATEWAY_CONFERENCE_ID to the TalkToMe conference id this radio should talk into.");
+    throw new Error("Set TALKTOME_GATEWAY_CONFERENCE_ID to the Talktome conference id this radio should talk into.");
   }
 
   const socket = createSocket();
   socket.on("disconnect", (reason) => {
-    console.warn(`[radio-gateway] TalkToMe socket disconnected: ${reason}`);
+    console.warn(`[radio-gateway] Talktome socket disconnected: ${reason}`);
   });
 
   await waitForSocketConnect(socket);
@@ -1214,7 +1214,7 @@ function writeRadioConfig(settings, measurements) {
 }
 
 async function calibrateRx() {
-  console.log("TalkToMe Radio RX Kalibrierung");
+  console.log("Talktome Radio RX Kalibrierung");
   console.log(`Audio device: ${config.audioDevice}`);
   console.log(`Config file: ${radioConfigPath}`);
 

@@ -1,6 +1,6 @@
-# Talk To Me Bridge Client
+# Talktome Bridge Client
 
-This is the first native bridge-client spike for routing Talk To Me audio to
+This is the first native bridge-client spike for routing Talktome audio to
 local multichannel audio interfaces such as Dante Virtual Soundcard.
 
 The current bridge path includes:

@@ -27,12 +27,14 @@ use tauri_plugin_autostart::{AutoLaunchManager, MacosLauncher};
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSWindow, NSWindowButton};
+#[cfg(target_os = "macos")]
+use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
 
 const TRAY_AUTOSTART_ID: &str = "autostart";
 const TRAY_QUIT_ID: &str = "quit";
 
 #[cfg(target_os = "macos")]
-fn hide_macos_window_controls(window: &tauri::WebviewWindow<Wry>) {
+fn prepare_macos_panel_window(window: &tauri::WebviewWindow<Wry>) {
     let Ok(ns_window) = window.ns_window() else {
         return;
     };
@@ -47,6 +49,13 @@ fn hide_macos_window_controls(window: &tauri::WebviewWindow<Wry>) {
             button.setHidden(true);
         }
     }
+
+    let _ = apply_vibrancy(
+        window,
+        NSVisualEffectMaterial::Popover,
+        Some(NSVisualEffectState::Active),
+        Some(14.0),
+    );
 }
 
 fn toggle_main_window_from_tray(app: &tauri::AppHandle, rect: tauri::Rect) {
@@ -762,7 +771,7 @@ pub fn run() {
                     .set_activation_policy(tauri::ActivationPolicy::Accessory);
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_closable(false);
-                    hide_macos_window_controls(&window);
+                    prepare_macos_panel_window(&window);
                 }
             }
 
@@ -786,8 +795,8 @@ pub fn run() {
             let quit = MenuItem::with_id(app, TRAY_QUIT_ID, "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&autostart, &quit])?;
 
-            let mut tray = TrayIconBuilder::with_id("talk-to-me-bridge")
-                .tooltip("Talk To Me Bridge")
+            let mut tray = TrayIconBuilder::with_id("talktome-bridge")
+                .tooltip("Talktome Bridge")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
@@ -875,5 +884,5 @@ pub fn run() {
             stop_audio_probe_port
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Talk To Me Bridge");
+        .expect("error while running Talktome Bridge");
 }

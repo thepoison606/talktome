@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default permissions for the Talk To Me Bridge main window.",
+  "description": "Default permissions for the Talktome Bridge main window.",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

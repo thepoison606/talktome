@@ -6,7 +6,8 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
-    <title>Admin Panel</title>
+    <title>Talktome Admin</title>
+    <link rel="icon" type="image/png" href="/images/talktome-icon.png" />
     <link rel="stylesheet" href="/login.css" />
     <style>
       :root {
@@ -74,8 +75,19 @@
       }
 
       .admin-bar__meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        min-width: 0;
         color: var(--muted);
         font-size: 0.9rem;
+      }
+
+      .admin-brand-icon {
+        width: 1.35rem;
+        height: 1.35rem;
+        border-radius: 6px;
+        flex: 0 0 auto;
       }
 
       .admin-bar__meta strong {
@@ -1828,7 +1840,10 @@
   <body>
     <div id="admin-login" class="login-overlay is-hidden" role="dialog" aria-modal="true" aria-labelledby="admin-login-title">
       <div class="login-card">
-        <h2 id="admin-login-title" class="login-title">Admin Login</h2>
+        <div class="login-brand">
+          <img class="login-brand__icon" src="/images/talktome-mark.png" alt="" aria-hidden="true" />
+          <h2 id="admin-login-title" class="login-title">Admin Login</h2>
+        </div>
         <form id="admin-login-form" class="login-form" autocomplete="off">
           <div class="login-field">
             <label for="admin-name">Username</label>
@@ -1855,7 +1870,10 @@
     </div>
 
     <div id="admin-bar" class="admin-bar is-hidden">
-      <div class="admin-bar__meta">Logged in as <strong id="admin-name-label"></strong></div>
+      <div class="admin-bar__meta">
+        <img class="admin-brand-icon" src="/images/talktome-mark.png" alt="" aria-hidden="true" />
+        <span>Logged in as <strong id="admin-name-label"></strong></span>
+      </div>
       <nav class="admin-bar__nav" aria-label="Admin sections">
         <a href="#status" data-admin-nav="status">Status</a>
         <a href="#users" data-admin-nav="users">Users</a>

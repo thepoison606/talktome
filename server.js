@@ -371,7 +371,7 @@ async function promptForMediaNetwork(rl, existingConfig = null) {
 }
 
 async function runWizard(existingConfig = null) {
-  console.log("\nTalk To Me - first-time setup\n");
+  console.log("\nTalktome - first-time setup\n");
   console.log(`Hint: delete ${configPath} to run this setup again.\n`);
   const rl = readline.createInterface({
     input: process.stdin,

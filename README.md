@@ -1,8 +1,8 @@
-# Talk To Me
+# Talktome
 
 Local WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
 
-<img src="public/images/iphone_ipad.png" alt="Talk To Me mobile UI" width="800">
+<img src="public/images/iphone_ipad.png" alt="Talktome mobile UI" width="800">
 
 ## Features
 
@@ -22,7 +22,7 @@ Choose one way to run the application:
 
 ### First Start
 
-1. Start Talk To Me and open the shown HTTPS URL, usually `https://<HOST-IP>:8443/`.
+1. Start Talktome and open the shown HTTPS URL, usually `https://<HOST-IP>:8443/`.
 2. Accept the browser warning for the self-signed local certificate.
 3. Open `https://<HOST-IP>:8443/admin`.
 4. Log in with the initial admin account:
@@ -77,7 +77,7 @@ Open `https://localhost/` or `https://<IP>:<PORT>/` and accept the self-signed c
 
 ## Configuration
 
-On first interactive start, Talk To Me creates `config.json` and asks for:
+On first interactive start, Talktome creates `config.json` and asks for:
 
 - HTTPS port
 - mDNS hostname, or `off`
@@ -174,13 +174,13 @@ Current scope:
 - multiple local bridge-port rows with loopback from selected input pairs to selected output pairs
 - a bridge-port status/model shape for future Admin-provided routing
 
-It does not yet connect to the Talk To Me server, WebRTC/mediasoup, or admin-provided routing. See `bridge-client/README.md` for local development commands and next milestones.
+It does not yet connect to the Talktome server, WebRTC/mediasoup, or admin-provided routing. See `bridge-client/README.md` for local development commands and next milestones.
 
 ## Radio Gateway Prototype
 
-The repository includes a generic hardware gateway helper for bridging Talk To Me to an external radio or intercom device. It expects a Linux gateway host with ALSA audio I/O, an audio interface connected to the external device, and an optional GPIO-controlled PTT circuit.
+The repository includes a generic hardware gateway helper for bridging Talktome to an external radio or intercom device. It expects a Linux gateway host with ALSA audio I/O, an audio interface connected to the external device, and an optional GPIO-controlled PTT circuit.
 
-The helper can control PTT through `pinctrl`, monitor receive audio level, and stream bidirectional audio between the external device and a Talk To Me conference.
+The helper can control PTT through `pinctrl`, monitor receive audio level, and stream bidirectional audio between the external device and a Talktome conference.
 
 Commands:
 
