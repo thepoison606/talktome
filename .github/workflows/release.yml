@@ -167,19 +167,7 @@ jobs:
           docker buildx build \
             --platform "${{ matrix.platform }}" \
             --tag "talktome:${IMAGE_TAG}-${{ matrix.arch }}" \
-            --output "type=docker,dest=talktome_docker_${IMAGE_TAG}_${{ matrix.arch }}.tar" \
             .
-
-      - name: Export Docker image artifact
-        shell: bash
-        run: |
-          gzip -f "talktome_docker_${IMAGE_TAG}_${{ matrix.arch }}.tar"
-
-      - name: Upload Docker image artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: talktome_docker_${{ env.IMAGE_TAG }}_${{ matrix.arch }}
-          path: talktome_docker_${{ env.IMAGE_TAG }}_${{ matrix.arch }}.tar.gz
 
   docker-publish:
     name: Publish Docker image
