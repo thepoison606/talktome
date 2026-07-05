@@ -49,8 +49,11 @@ fs.writeFileSync(
   launcherPath,
   `#!/bin/sh
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+LOG_DIR="$HOME/Library/Logs/Talktome Server"
+mkdir -p "$LOG_DIR"
+export TALKTOME_NO_WIZARD="\${TALKTOME_NO_WIZARD:-1}"
 cd "$APP_DIR/Resources/server" || exit 1
-exec "$APP_DIR/Resources/server/${executableName}" "$@"
+exec "$APP_DIR/Resources/server/${executableName}" "$@" >> "$LOG_DIR/server.log" 2>&1
 `,
   { mode: 0o755 }
 );
@@ -89,6 +92,8 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   <string>${appVersion}</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
+  <key>LSBackgroundOnly</key>
+  <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
 </dict>
