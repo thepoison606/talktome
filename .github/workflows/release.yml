@@ -28,13 +28,13 @@ jobs:
             build_script: build:win64
             executable_name: talktome_win64.exe
             worker_name: mediasoup-worker.exe
-            artifact_prefix: talktome_windows_x64
+            artifact_prefix: talktome_server_windows_x64
           - name: macOS arm64
             os: macos-14
             build_script: build:mac_arm64
             executable_name: talktome_arm64
             worker_name: mediasoup-worker
-            artifact_prefix: talktome_macos_arm64
+            artifact_prefix: talktome_server_macos_arm64
 
     steps:
       - name: Checkout
@@ -49,14 +49,27 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Determine release version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+            VERSION="v${PACKAGE_VERSION}-${GITHUB_SHA::7}"
+          fi
+
+          SAFE_VERSION="${VERSION//\//-}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "SAFE_VERSION=$SAFE_VERSION" >> "$GITHUB_ENV"
+
       - name: Build package
         run: npm run ${{ matrix.build_script }}
 
       - name: Prepare release directory
         shell: bash
         run: |
-          TS="$(date +%Y%m%d-%H%M%S)"
-          RELEASE_DIR="${{ matrix.artifact_prefix }}_release_${TS}"
+          RELEASE_DIR="${{ matrix.artifact_prefix }}_${SAFE_VERSION}"
           echo "RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
           echo "ZIP_NAME=${RELEASE_DIR}.zip" >> "$GITHUB_ENV"
           node scripts/create-release-dir.js "$RELEASE_DIR" "${{ matrix.executable_name }}" "${{ matrix.worker_name }}"
@@ -77,12 +90,44 @@ jobs:
                   zf.write(path, path.relative_to(release_dir))
           PY
 
+      - name: Create macOS app DMG
+        if: matrix.os == 'macos-14'
+        shell: bash
+        run: |
+          APP_NAME="Talktome Server"
+          DMG_NAME="${{ matrix.artifact_prefix }}_${SAFE_VERSION}.dmg"
+          node scripts/create-macos-app-bundle.js "$RELEASE_DIR" "$APP_NAME" "${{ matrix.executable_name }}" "$VERSION"
+          bash scripts/create-macos-dmg.sh "$RELEASE_DIR" "$APP_NAME" "$DMG_NAME"
+          echo "INSTALLER_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+
+      - name: Install NSIS
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          "${env:ProgramFiles(x86)}\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Create Windows installer
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $installer = "${{ matrix.artifact_prefix }}_${env:SAFE_VERSION}_setup.exe"
+          makensis `
+            "/DAPP_VERSION=${env:VERSION}" `
+            "/DSOURCE_DIR=${env:GITHUB_WORKSPACE}\${env:RELEASE_DIR}" `
+            "/DOUT_FILE=${env:GITHUB_WORKSPACE}\$installer" `
+            "/DICON_FILE=${env:GITHUB_WORKSPACE}\bridge-client\src-tauri\icons\icon.ico" `
+            "scripts\talktome-server-installer.nsi"
+          "INSTALLER_NAME=$installer" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v6
         with:
           name: ${{ env.RELEASE_DIR }}_contents
           path: |
             ${{ env.RELEASE_DIR }}/
+            ${{ env.ZIP_NAME }}
+            ${{ env.INSTALLER_NAME }}
 
       - name: Upload release payload artifact
         if: startsWith(github.ref, 'refs/tags/')
@@ -91,6 +136,7 @@ jobs:
           name: ${{ env.RELEASE_DIR }}_release_payload
           path: |
             ${{ env.ZIP_NAME }}
+            ${{ env.INSTALLER_NAME }}
 
   docker:
     name: Build Docker image (${{ matrix.arch }})

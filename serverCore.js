@@ -80,7 +80,9 @@ if (process.pkg) {
     );
   }
 
-  const dest = path.join(process.cwd(), workerName);
+  const runtimeDir = path.join(getDataDir(), "runtime");
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  const dest = path.join(runtimeDir, workerName);
   if (!fs.existsSync(dest)) {
     fs.copyFileSync(sourceBin, dest);
     fs.chmodSync(dest, 0o755);

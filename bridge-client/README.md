@@ -50,6 +50,19 @@ cd src-tauri
 cargo check
 ```
 
+## macOS Test Builds
+
+Unsigned macOS builds downloaded from GitHub are blocked by Gatekeeper because
+they are not Developer ID signed and notarized yet. For internal testing, copy
+the app to Applications and remove the quarantine flag once:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Talktome Bridge.app"
+```
+
+This is only a test-build workaround. User-facing macOS releases need Apple
+Developer ID signing and notarization.
+
 ## FFmpeg Sidecar
 
 The Tauri bundle expects the FFmpeg binary under `src-tauri/binaries` using the

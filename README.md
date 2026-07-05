@@ -20,6 +20,10 @@ Choose one way to run the application:
 - **[Docker:](https://hub.docker.com/r/thepoison606/talktome)**
 - **Source:** for development
 
+The macOS and Windows releases contain the Talktome server installer and the
+optional Talktome Bridge app for the integration of hardware intercom systems,
+audio interfaces or mixing consoles.
+
 ### First Start
 
 1. Start Talktome and open the shown HTTPS URL, usually `https://<HOST-IP>:8443/`.
@@ -75,6 +79,20 @@ node server.js
 
 Open `https://localhost/` or `https://<IP>:<PORT>/` and accept the self-signed certificate warning.
 
+### macOS Test Builds
+
+Unsigned macOS test builds downloaded from GitHub may be blocked by Gatekeeper
+until the apps are Developer ID signed and notarized. For internal testing,
+remove the quarantine flag once after installing or extracting:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Talktome Server.app"
+xattr -dr com.apple.quarantine "/Applications/Talktome Bridge.app"
+```
+
+Use the first command for the Talktome server app and the second command for the
+native Bridge app.
+
 ## Configuration
 
 On first interactive start, Talktome creates `config.json` and asks for:
@@ -121,7 +139,7 @@ Back up this directory before upgrades if you need to preserve accounts and rout
 - Online Guests can still be answered through `Reply`.
 - Guest login is passwordless and stored only in browser `sessionStorage`, so page refresh keeps it, but closing the browser session clears it.
 
-## Companion And HTTP API
+## Companion and HTTP API
 
 Companion module source is maintained separately:
 `https://github.com/bitfocus/companion-module-talktome-intercom.git`
@@ -162,19 +180,13 @@ The matching user UI turns red while on-air.
 - `Space`: Reply
 - Number keys: talk to targets in list order
 
-## Native Bridge Client Prototype
+## Native Bridge App
 
-`bridge-client/` contains an experimental Tauri/Rust desktop spike for Dante and other multichannel audio interfaces on macOS and Windows.
-
-Current scope:
-
-- native input/output device enumeration through CPAL
-- supported stream configs, max channel counts, 48 kHz availability and stereo channel-pair detection
-- F32/48 kHz input stream probe with live RMS levels
-- multiple local bridge-port rows with loopback from selected input pairs to selected output pairs
-- a bridge-port status/model shape for future Admin-provided routing
-
-It does not yet connect to the Talktome server, WebRTC/mediasoup, or admin-provided routing. See `bridge-client/README.md` for local development commands and next milestones.
+Talktome Bridge is the optional macOS/Windows tray app for connecting local
+audio interfaces such as Dante Virtual Soundcard, RME devices and other
+CoreAudio/WASAPI devices. It is configured from the Admin UI and can be assigned
+to users or feeds. Developer and packaging notes live in
+`bridge-client/README.md`.
 
 ## Radio Gateway Prototype
 
