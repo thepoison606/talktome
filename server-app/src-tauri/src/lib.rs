@@ -377,11 +377,7 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
-fn find_named_binary(base: &Path, names: &[String], depth: usize) -> Option<PathBuf> {
-    if depth == 0 || !base.is_dir() {
-        return None;
-    }
-
+fn find_named_binary_direct(base: &Path, names: &[String]) -> Option<PathBuf> {
     for name in names {
         let candidate = base.join(name);
         if is_executable_file(&candidate) {
@@ -389,17 +385,26 @@ fn find_named_binary(base: &Path, names: &[String], depth: usize) -> Option<Path
         }
     }
 
-    let entries = fs::read_dir(base).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(found) = find_named_binary(&path, names, depth - 1) {
-                return Some(found);
-            }
+    None
+}
+
+fn bundled_server_binary_candidates(current_exe_dir: &Path, names: &[String]) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    let resource_dirs = [
+        current_exe_dir.join("../Resources"),
+        current_exe_dir.join("../Resources/server"),
+        current_exe_dir.join("../Resources/binaries"),
+        current_exe_dir.join("../../.."),
+    ];
+
+    for dir in resource_dirs {
+        for name in names {
+            candidates.push(dir.join(name));
         }
     }
 
-    None
+    candidates
 }
 
 fn resolve_server_binary(_app: &AppHandle) -> Option<PathBuf> {
@@ -411,26 +416,31 @@ fn resolve_server_binary(_app: &AppHandle) -> Option<PathBuf> {
     }
 
     let names = server_binary_names();
-    let mut bases = Vec::new();
 
     if let Ok(current_exe) = env::current_exe() {
         if let Some(dir) = current_exe.parent() {
-            bases.push(dir.to_path_buf());
-            bases.push(dir.join("../Resources"));
-            bases.push(dir.join("../Resources/server"));
-            bases.push(dir.join("../../.."));
+            if let Some(path) = find_named_binary_direct(dir, &names) {
+                return Some(path);
+            }
+
+            for candidate in bundled_server_binary_candidates(dir, &names) {
+                if is_executable_file(&candidate) {
+                    return Some(candidate);
+                }
+            }
         }
     }
 
     if let Ok(current_dir) = env::current_dir() {
-        bases.push(current_dir.clone());
-        bases.push(current_dir.join(".."));
-        bases.push(current_dir.join("../.."));
-    }
-
-    for base in bases {
-        if let Some(path) = find_named_binary(&base, &names, 5) {
+        if let Some(path) = find_named_binary_direct(&current_dir, &names) {
             return Some(path);
+        }
+
+        for relative_dir in ["..", "../.."] {
+            let dir = current_dir.join(relative_dir);
+            if let Some(path) = find_named_binary_direct(&dir, &names) {
+                return Some(path);
+            }
         }
     }
 
