@@ -361,11 +361,13 @@ fn server_binary_names() -> Vec<String> {
     let triple = target_triple();
     if cfg!(target_os = "windows") {
         vec![
+            "talktome-server.exe".to_string(),
             format!("talktome-server-{triple}.exe"),
             "talktome_win64.exe".to_string(),
         ]
     } else {
         vec![
+            "talktome-server".to_string(),
             format!("talktome-server-{triple}"),
             "talktome_arm64".to_string(),
             "talktome".to_string(),
