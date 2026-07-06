@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Talktome Server</title>
+    <script>
+      const platform = navigator.platform.toLowerCase();
+      document.documentElement.dataset.platform = platform.includes("mac")
+        ? "macos"
+        : platform.includes("win")
+          ? "windows"
+          : "other";
+    </script>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="tray-section">
+        <div class="panel-header server-header">
+          <div class="registration-controls">
+            <div id="server-status-line" class="connection-line" data-state="stopped">
+              <span id="status-dot" class="status-dot offline"></span>
+              <strong id="status-label">Stopped</strong>
+            </div>
+            <label class="checkbox-row startup-row">
+              <input id="run-at-login" type="checkbox" />
+              <span>Run at login</span>
+            </label>
+          </div>
+          <div class="button-row">
+            <button id="save-config" type="button">Save</button>
+            <button id="open-admin" type="button">Open Admin</button>
+            <button id="restart-server" type="button">Restart</button>
+            <button id="toggle-server" type="button">Start</button>
+          </div>
+        </div>
+
+        <div class="server-grid setup-grid">
+          <label>
+            <span>HTTPS port</span>
+            <input id="https-port" type="number" min="1" max="65535" value="8443" />
+          </label>
+          <label>
+            <span>mDNS name</span>
+            <input id="mdns-host" value="intercom.local" spellcheck="false" />
+          </label>
+          <label>
+            <span>RTC start port</span>
+            <input id="rtc-port-start" type="number" min="1" max="65535" value="40000" />
+          </label>
+          <label>
+            <span>RTC port count</span>
+            <input id="rtc-port-count" type="number" min="1" max="65535" value="10000" />
+          </label>
+          <label>
+            <span>Media network</span>
+            <select id="media-network-mode">
+              <option value="auto">Automatic</option>
+              <option value="manual">Manual address</option>
+            </select>
+          </label>
+          <label id="manual-address-row" class="manual-address-row" hidden>
+            <span>Announced address</span>
+            <input id="media-announced-address" spellcheck="false" />
+          </label>
+        </div>
+        <div id="server-path" hidden>Server binary not resolved yet.</div>
+      </section>
+
+      <section class="tray-section log-section">
+        <div class="panel-header">
+          <div>
+            <h2>Server log</h2>
+            <p>Recent output from the bundled Talktome server.</p>
+          </div>
+          <button id="open-logs" type="button">Open Logs</button>
+        </div>
+        <pre id="log-output"></pre>
+      </section>
+    </main>
+  </body>
+</html>

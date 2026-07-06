@@ -1,0 +1,270 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #2b2b2f;
+  color: #edf2f7;
+}
+
+:root[data-platform="macos"] {
+  background: transparent;
+}
+
+html {
+  height: 100%;
+  background: #2b2b2f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  min-width: 560px;
+  height: 100vh;
+  overflow: hidden;
+  padding: 0;
+  background: #2b2b2f;
+}
+
+:root[data-platform="macos"] body {
+  background: transparent;
+}
+
+h2,
+p {
+  margin: 0;
+}
+
+h2 {
+  font-size: 1rem;
+}
+
+button {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: #3a3a40;
+  color: #f7fafc;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 0.55rem 0.8rem;
+}
+
+:root[data-platform="macos"] button {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+input:not([type="checkbox"]),
+select {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: #242428;
+  color: #f7fafc;
+  font: inherit;
+  min-height: 2.25rem;
+  padding: 0.45rem 0.55rem;
+}
+
+:root[data-platform="macos"] input:not([type="checkbox"]),
+:root[data-platform="macos"] select {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.shell {
+  align-content: start;
+  display: grid;
+  grid-auto-rows: max-content;
+  min-height: 100vh;
+  max-height: 100vh;
+  width: 100vw;
+  overflow-y: auto;
+  padding: 0;
+  background: #2b2b2f;
+}
+
+:root[data-platform="macos"] .shell {
+  background: transparent;
+}
+
+.tray-section {
+  padding: 1rem 1.25rem;
+}
+
+.tray-section + .tray-section {
+  border-top: 1px solid rgba(255, 255, 255, 0.13);
+}
+
+.panel-header {
+  align-items: start;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.panel-header p {
+  color: #b6bec8;
+  font-size: 0.82rem;
+  margin-top: 0.25rem;
+}
+
+.server-header {
+  align-items: center;
+}
+
+.registration-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.15rem;
+}
+
+.connection-line {
+  align-items: center;
+  display: flex;
+  gap: 0.55rem;
+  min-width: 7rem;
+}
+
+.connection-line strong {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.status-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: #738196;
+}
+
+.connection-line[data-state="running"] .status-dot,
+.status-dot.online {
+  background: #2bd17e;
+  box-shadow: 0 0 12px rgba(43, 209, 126, 0.45);
+}
+
+.connection-line[data-state="error"] .status-dot,
+.status-dot.error {
+  background: #f0b429;
+  box-shadow: 0 0 12px rgba(240, 180, 41, 0.35);
+}
+
+.button-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.button-row button {
+  min-width: 4.8rem;
+}
+
+.server-grid {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.setup-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 0.65rem;
+}
+
+.manual-address-row {
+  grid-column: span 2;
+}
+
+.server-grid label {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.server-grid span,
+.checkbox-row span {
+  color: #9fb0c0;
+  font-size: 0.78rem;
+}
+
+.checkbox-row {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+
+.checkbox-row input {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
+
+.readonly-value {
+  align-items: center;
+  display: flex;
+  min-height: 2.25rem;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #b6bec8;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  padding: 0.45rem 0.55rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-section {
+  min-height: 0;
+}
+
+pre {
+  width: 100%;
+  height: 16.25rem;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 7px;
+  background: #252529;
+  color: #c9d2df;
+  font: 0.74rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 0.7rem;
+  white-space: pre-wrap;
+}
+
+:root[data-platform="macos"] pre {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+@media (max-width: 680px) {
+  .server-header,
+  .panel-header,
+  .registration-controls,
+  .button-row {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .button-row,
+  .setup-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .manual-address-row {
+    grid-column: auto;
+  }
+}

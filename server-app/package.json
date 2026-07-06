@@ -1,0 +1,19 @@
+{
+  "name": "talktome-server-app",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "npm run prepare:server -- --optional && tauri dev",
+    "build": "npm run prepare:server && tauri build",
+    "build:release:macos": "npm run prepare:server -- --force && tauri build --bundles app && mkdir -p src-tauri/target/release/bundle/dmg && ../scripts/create-macos-dmg.sh src-tauri/target/release/bundle/macos \"Talktome Server\" \"src-tauri/target/release/bundle/dmg/Talktome Server_${npm_package_version}_aarch64.dmg\"",
+    "build:release:windows": "npm run prepare:server -- --force && tauri build --bundles nsis",
+    "dev:ui": "vite --host 127.0.0.1 --port 1430 --strictPort",
+    "build:ui": "vite build",
+    "prepare:server": "node scripts/prepare-server-sidecar.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.4",
+    "vite": "^7.0.0"
+  }
+}

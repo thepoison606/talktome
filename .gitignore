@@ -46,6 +46,7 @@ yarn.lock
 pnpm-lock.yaml
 package-lock.json
 !bridge-client/package-lock.json
+!server-app/package-lock.json
 
 # IDE / editor metadata
 .idea/

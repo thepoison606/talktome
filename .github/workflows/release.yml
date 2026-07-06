@@ -26,15 +26,17 @@ jobs:
           - name: Windows x64
             os: windows-latest
             build_script: build:win64
+            server_build_script: build:release:windows
             executable_name: talktome_win64.exe
-            worker_name: mediasoup-worker.exe
             artifact_prefix: talktome_server_windows_x64
+            artifact_glob: server-app/src-tauri/target/release/bundle/nsis/*.exe
           - name: macOS arm64
             os: macos-14
             build_script: build:mac_arm64
+            server_build_script: build:release:macos
             executable_name: talktome_arm64
-            worker_name: mediasoup-worker
             artifact_prefix: talktome_server_macos_arm64
+            artifact_glob: server-app/src-tauri/target/release/bundle/dmg/*.dmg
 
     steps:
       - name: Checkout
@@ -45,6 +47,7 @@ jobs:
         with:
           node-version: 18.20.4
           cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -66,52 +69,54 @@ jobs:
       - name: Build package
         run: npm run ${{ matrix.build_script }}
 
-      - name: Prepare release directory
+      - name: Setup Node for server app
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server-app/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install server app dependencies
+        working-directory: server-app
+        run: npm ci
+
+      - name: Build server tray app
+        working-directory: server-app
+        env:
+          TALKTOME_SERVER_SIDECAR_SOURCE: ${{ github.workspace }}/${{ matrix.executable_name }}
+        run: npm run ${{ matrix.server_build_script }}
+
+      - name: Prepare server app artifact
         shell: bash
         run: |
-          RELEASE_DIR="${{ matrix.artifact_prefix }}_${SAFE_VERSION}"
-          echo "RELEASE_DIR=$RELEASE_DIR" >> "$GITHUB_ENV"
-          node scripts/create-release-dir.js "$RELEASE_DIR" "${{ matrix.executable_name }}" "${{ matrix.worker_name }}"
+          mkdir -p release-artifacts
+          shopt -s nullglob
+          matches=( ${{ matrix.artifact_glob }} )
+          if [[ ${#matches[@]} -ne 1 ]]; then
+            printf 'Expected exactly one artifact for %s, found %s\n' "${{ matrix.artifact_glob }}" "${#matches[@]}" >&2
+            exit 1
+          fi
 
-      - name: Create macOS app DMG
-        if: matrix.os == 'macos-14'
-        shell: bash
-        run: |
-          APP_NAME="Talktome Server"
-          DMG_NAME="${{ matrix.artifact_prefix }}_${SAFE_VERSION}.dmg"
-          node scripts/create-macos-app-bundle.js "$RELEASE_DIR" "$APP_NAME" "${{ matrix.executable_name }}" "$VERSION"
-          bash scripts/create-macos-dmg.sh "$RELEASE_DIR" "$APP_NAME" "$DMG_NAME"
-          echo "INSTALLER_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+          source_file="${matches[0]}"
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            target_name="${{ matrix.artifact_prefix }}_${SAFE_VERSION}_setup.exe"
+          else
+            target_name="${{ matrix.artifact_prefix }}_${SAFE_VERSION}.dmg"
+          fi
 
-      - name: Install NSIS
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          choco install nsis -y --no-progress
-          "${env:ProgramFiles(x86)}\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Create Windows installer
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          $installer = "${{ matrix.artifact_prefix }}_${env:SAFE_VERSION}_setup.exe"
-          Copy-Item `
-            "${env:GITHUB_WORKSPACE}\bridge-client\src-tauri\icons\icon.ico" `
-            "${env:GITHUB_WORKSPACE}\${env:RELEASE_DIR}\Talktome Server.ico" `
-            -Force
-          makensis `
-            "/DAPP_VERSION=${env:VERSION}" `
-            "/DSOURCE_DIR=${env:GITHUB_WORKSPACE}\${env:RELEASE_DIR}" `
-            "/DOUT_FILE=${env:GITHUB_WORKSPACE}\$installer" `
-            "/DICON_FILE=${env:GITHUB_WORKSPACE}\bridge-client\src-tauri\icons\icon.ico" `
-            "scripts\talktome-server-installer.nsi"
-          "INSTALLER_NAME=$installer" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          target_path="release-artifacts/$target_name"
+          cp "$source_file" "$target_path"
+          echo "INSTALLER_NAME=$target_name" >> "$GITHUB_ENV"
+          echo "INSTALLER_PATH=$target_path" >> "$GITHUB_ENV"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v6
         with:
           name: ${{ env.INSTALLER_NAME }}
-          path: ${{ env.INSTALLER_NAME }}
+          path: ${{ env.INSTALLER_PATH }}
 
       - name: Upload installer to draft release
         if: startsWith(github.ref, 'refs/tags/')
@@ -128,7 +133,7 @@ jobs:
           fi
 
           gh release edit "$TAG" --draft=true --title "$TITLE"
-          gh release upload "$TAG" "$INSTALLER_NAME" --clobber
+          gh release upload "$TAG" "$INSTALLER_PATH" --clobber
 
   docker:
     name: Build Docker image (${{ matrix.arch }})
