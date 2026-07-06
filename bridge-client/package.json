@@ -1,7 +1,7 @@
 {
   "name": "talktome-bridge-client",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "npm run prepare:ffmpeg -- --optional && tauri dev",
