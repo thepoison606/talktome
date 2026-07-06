@@ -50,6 +50,11 @@ struct WindowFocusGuard {
     suppress_hide_until: Mutex<Option<Instant>>,
 }
 
+#[derive(Default)]
+struct TrayToggleGuard {
+    suppress_toggle_until: Mutex<Option<Instant>>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ServerStatus {
@@ -102,6 +107,32 @@ impl WindowFocusGuard {
             .and_then(|value| *value)
             .is_some_and(|until| Instant::now() < until)
     }
+}
+
+impl TrayToggleGuard {
+    fn accept(&self) -> bool {
+        let now = Instant::now();
+        let Ok(mut suppress_toggle_until) = self.suppress_toggle_until.lock() else {
+            return false;
+        };
+
+        if suppress_toggle_until.is_some_and(|until| now < until) {
+            return false;
+        }
+
+        *suppress_toggle_until = Some(now + Duration::from_millis(250));
+        true
+    }
+}
+
+fn handle_tray_left_click(app: &AppHandle, rect: tauri::Rect) {
+    if let Some(guard) = app.try_state::<TrayToggleGuard>() {
+        if !guard.accept() {
+            return;
+        }
+    }
+
+    toggle_main_window_from_tray(app, rect);
 }
 
 impl ServerManager {
@@ -865,6 +896,7 @@ pub fn run() {
         ))
         .manage(Mutex::new(ServerManager::default()))
         .manage(WindowFocusGuard::default())
+        .manage(TrayToggleGuard::default())
         .manage(TrayAutostartMenuItem::default())
         .invoke_handler(tauri::generate_handler![
             get_server_status,
@@ -922,16 +954,22 @@ pub fn run() {
                     }
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
+                .on_tray_icon_event(|tray, event| match event {
+                    #[cfg(target_os = "windows")]
+                    TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Down | MouseButtonState::Up,
+                        rect,
+                        ..
+                    } => handle_tray_left_click(&tray.app_handle(), rect),
+                    #[cfg(not(target_os = "windows"))]
+                    TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         rect,
                         ..
-                    } = event
-                    {
-                        toggle_main_window_from_tray(&tray.app_handle(), rect);
-                    }
+                    } => handle_tray_left_click(&tray.app_handle(), rect),
+                    _ => {}
                 });
 
             #[cfg(target_os = "macos")]
