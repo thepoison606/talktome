@@ -63,6 +63,7 @@ const conferenceMembershipMatrixContainer = document.getElementById('conference-
 const configExportBtn = document.getElementById('config-export-btn');
 const configImportBtn = document.getElementById('config-import-btn');
 const configImportFile = document.getElementById('config-import-file');
+const apiKeyCopyBtn = document.getElementById('api-key-copy-btn');
 const mediaNetworkMeta = document.getElementById('media-network-meta');
 const mediaNetworkQrContainer = document.getElementById('media-network-qr');
 const mediaNetworkQrButton = document.getElementById('media-network-qr-button');
@@ -747,6 +748,25 @@ function triggerDownload(blob, filename) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) throw new Error('Clipboard unavailable');
 }
 
 function selectNextByIndex(selectEl, previousIndex) {
@@ -3136,6 +3156,36 @@ if (configExportBtn) {
     } catch (err) {
       console.error('Failed to export configuration:', err);
       showMessage('❌ Failed to export configuration', 'error', 'config');
+    }
+  });
+}
+
+if (apiKeyCopyBtn) {
+  apiKeyCopyBtn.addEventListener('click', async () => {
+    const originalLabel = apiKeyCopyBtn.textContent;
+    apiKeyCopyBtn.disabled = true;
+
+    try {
+      const res = await authedFetch('/admin/api-key');
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || !payload.apiKey) {
+        showMessage(payload.error || 'Failed to load API key', 'error', 'config');
+        return;
+      }
+
+      await copyTextToClipboard(payload.apiKey);
+      apiKeyCopyBtn.textContent = 'Copied';
+      showMessage('✅ API key copied', 'success', 'config');
+      window.setTimeout(() => {
+        apiKeyCopyBtn.textContent = originalLabel;
+      }, 1200);
+    } catch (err) {
+      console.error('Failed to copy API key:', err);
+      showMessage('❌ Failed to copy API key', 'error', 'config');
+    } finally {
+      window.setTimeout(() => {
+        apiKeyCopyBtn.disabled = false;
+      }, 250);
     }
   });
 }

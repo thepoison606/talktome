@@ -31,6 +31,7 @@
           </div>
           <div class="button-row">
             <button id="save-config" type="button">Save</button>
+            <button id="copy-api-key" type="button">Copy API key</button>
             <button id="open-admin" type="button">Open Admin</button>
             <button id="restart-server" type="button">Restart</button>
             <button id="toggle-server" type="button">Start</button>
@@ -58,7 +59,14 @@
             <span>Media network</span>
             <select id="media-network-mode">
               <option value="auto">Automatic</option>
+              <option value="interface">Preferred adapter</option>
               <option value="manual">Manual address</option>
+            </select>
+          </label>
+          <label id="interface-row" class="manual-address-row" hidden>
+            <span>Network adapter</span>
+            <select id="media-interface-name">
+              <option value="">Select adapter</option>
             </select>
           </label>
           <label id="manual-address-row" class="manual-address-row" hidden>

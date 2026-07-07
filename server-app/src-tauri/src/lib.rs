@@ -1,3 +1,4 @@
+use if_addrs::{get_if_addrs, IfAddr};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::env;
@@ -67,6 +68,15 @@ struct ServerStatus {
     server_path: Option<String>,
     error: Option<String>,
     logs: Vec<String>,
+    available_media_interfaces: Vec<MediaNetworkInterface>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaNetworkInterface {
+    name: String,
+    address: String,
+    label: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -246,6 +256,10 @@ fn runtime_config_path() -> PathBuf {
     talktome_data_dir().join("config.json")
 }
 
+fn companion_api_key_path() -> PathBuf {
+    talktome_data_dir().join("companion_api_key")
+}
+
 fn load_runtime_config() -> Option<ServerRuntimeConfig> {
     let path = runtime_config_path();
     let contents = fs::read_to_string(path).ok()?;
@@ -319,8 +333,44 @@ fn normalized_runtime_config(
     if config.media_network_mode == "manual" && config.media_announced_address.is_none() {
         return Err("Manual media network mode requires an announced address.".to_string());
     }
+    if config.media_network_mode == "interface" && config.media_interface_name.is_none() {
+        return Err("Preferred media network adapter is required.".to_string());
+    }
+    if config.media_network_mode != "manual" {
+        config.media_announced_address = None;
+    }
+    if config.media_network_mode != "interface" {
+        config.media_interface_name = None;
+    }
 
     Ok(config)
+}
+
+fn get_available_media_network_interfaces() -> Vec<MediaNetworkInterface> {
+    let Ok(interfaces) = get_if_addrs() else {
+        return Vec::new();
+    };
+
+    interfaces
+        .into_iter()
+        .filter_map(|interface| {
+            if interface.is_loopback() {
+                return None;
+            }
+            let IfAddr::V4(addr) = interface.addr else {
+                return None;
+            };
+            let address = addr.ip.to_string();
+            if address == "0.0.0.0" {
+                return None;
+            }
+            Some(MediaNetworkInterface {
+                label: format!("{} - {}", interface.name, address),
+                name: interface.name,
+                address,
+            })
+        })
+        .collect()
 }
 
 fn write_runtime_config(config: &ServerRuntimeConfig) -> Result<PathBuf, String> {
@@ -770,7 +820,19 @@ fn get_server_status(app: AppHandle) -> Result<ServerStatus, String> {
         server_path,
         error: state.last_error.clone(),
         logs: state.logs.iter().cloned().collect(),
+        available_media_interfaces: get_available_media_network_interfaces(),
     })
+}
+
+#[tauri::command]
+fn get_companion_api_key() -> Result<String, String> {
+    let path = companion_api_key_path();
+    let value = match fs::read_to_string(&path) {
+        Ok(value) => value,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(err) => return Err(format!("failed to read API key from {}: {err}", path.display())),
+    };
+    Ok(value.trim().to_string())
 }
 
 #[tauri::command]
@@ -900,6 +962,7 @@ pub fn run() {
         .manage(TrayAutostartMenuItem::default())
         .invoke_handler(tauri::generate_handler![
             get_server_status,
+            get_companion_api_key,
             save_server_config,
             start_server,
             stop_server,

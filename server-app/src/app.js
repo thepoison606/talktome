@@ -6,6 +6,7 @@ const statusLabel = document.getElementById("status-label");
 const serverStatusLine = document.getElementById("server-status-line");
 const serverPath = document.getElementById("server-path");
 const saveConfig = document.getElementById("save-config");
+const copyApiKey = document.getElementById("copy-api-key");
 const toggleServer = document.getElementById("toggle-server");
 const restartServer = document.getElementById("restart-server");
 const openAdmin = document.getElementById("open-admin");
@@ -17,6 +18,8 @@ const mdnsHost = document.getElementById("mdns-host");
 const rtcPortStart = document.getElementById("rtc-port-start");
 const rtcPortCount = document.getElementById("rtc-port-count");
 const mediaNetworkMode = document.getElementById("media-network-mode");
+const interfaceRow = document.getElementById("interface-row");
+const mediaInterfaceName = document.getElementById("media-interface-name");
 const manualAddressRow = document.getElementById("manual-address-row");
 const mediaAnnouncedAddress = document.getElementById("media-announced-address");
 const shell = document.querySelector(".shell");
@@ -32,6 +35,36 @@ const MIN_WINDOW_HEIGHT = 360;
 const MAX_WINDOW_HEIGHT = 820;
 const LOG_STICKY_BOTTOM_THRESHOLD = 16;
 
+function syncMediaNetworkRows() {
+  const mode = mediaNetworkMode.value || "auto";
+  interfaceRow.hidden = mode !== "interface";
+  manualAddressRow.hidden = mode !== "manual";
+}
+
+function renderMediaInterfaceOptions(interfaces, selectedName) {
+  const entries = Array.isArray(interfaces) ? interfaces : [];
+  const selected = selectedName || "";
+  const hasSelected = entries.some((entry) => entry?.name === selected);
+
+  mediaInterfaceName.innerHTML = '<option value="">Select adapter</option>';
+  entries.forEach((entry) => {
+    if (!entry?.name) return;
+    const option = document.createElement("option");
+    option.value = entry.name;
+    option.textContent = entry.label || `${entry.name} - ${entry.address || "unknown address"}`;
+    mediaInterfaceName.appendChild(option);
+  });
+
+  if (selected && !hasSelected) {
+    const option = document.createElement("option");
+    option.value = selected;
+    option.textContent = `${selected} (saved, unavailable)`;
+    mediaInterfaceName.appendChild(option);
+  }
+
+  mediaInterfaceName.value = selected;
+}
+
 function parsePortInput(input, fallback) {
   const parsed = Number.parseInt(input.value, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -44,8 +77,9 @@ function applyConfig(config, configured) {
   rtcPortStart.value = config.rtcPortStart ?? 40000;
   rtcPortCount.value = config.rtcPortCount ?? 10000;
   mediaNetworkMode.value = config.mediaNetworkMode || "auto";
+  renderMediaInterfaceOptions(config.availableMediaInterfaces, config.mediaInterfaceName || "");
   mediaAnnouncedAddress.value = config.mediaAnnouncedAddress || "";
-  manualAddressRow.hidden = mediaNetworkMode.value !== "manual";
+  syncMediaNetworkRows();
 }
 
 function readConfig() {
@@ -57,6 +91,8 @@ function readConfig() {
     rtcPortStart: parsePortInput(rtcPortStart, 40000),
     rtcPortCount: parsePortInput(rtcPortCount, 10000),
     mediaNetworkMode: mode,
+    mediaInterfaceName:
+      mode === "interface" ? mediaInterfaceName.value.trim() || null : null,
     mediaAnnouncedAddress:
       mode === "manual" ? mediaAnnouncedAddress.value.trim() || null : null,
   };
@@ -90,9 +126,53 @@ function appendLogLine(line) {
   }
 }
 
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("Clipboard unavailable");
+}
+
+async function copyCompanionApiKey() {
+  if (!copyApiKey) return;
+
+  const originalLabel = copyApiKey.textContent;
+  copyApiKey.disabled = true;
+  try {
+    const apiKey = await invoke("get_companion_api_key");
+    if (!apiKey) throw new Error("API key not available yet. Start the server once to create it.");
+    await copyTextToClipboard(apiKey);
+    copyApiKey.textContent = "Copied";
+    window.setTimeout(() => {
+      copyApiKey.textContent = originalLabel;
+    }, 1200);
+  } catch (error) {
+    appendLogLine(`Could not copy API key: ${error}`);
+  } finally {
+    window.setTimeout(() => {
+      copyApiKey.disabled = false;
+    }, 250);
+  }
+}
+
 function setStatus(status) {
   currentRunning = !!status.running;
   currentConfigured = !!status.configured;
+  if (status?.config) {
+    status.config.availableMediaInterfaces = status.availableMediaInterfaces || [];
+  }
   applyConfig(status.config, currentConfigured);
 
   const state = !currentConfigured
@@ -232,6 +312,8 @@ saveConfig.addEventListener("click", async () => {
   }
 });
 
+copyApiKey?.addEventListener("click", copyCompanionApiKey);
+
 restartServer.addEventListener("click", async () => {
   await invoke("restart_server");
   await refreshStatus();
@@ -256,16 +338,17 @@ runAtLogin.addEventListener("change", async () => {
   rtcPortStart,
   rtcPortCount,
   mediaNetworkMode,
+  mediaInterfaceName,
   mediaAnnouncedAddress,
 ].forEach((input) => {
   input.addEventListener("input", () => {
     configTouched = true;
-    manualAddressRow.hidden = mediaNetworkMode.value !== "manual";
+    syncMediaNetworkRows();
     requestWindowResize();
   });
   input.addEventListener("change", () => {
     configTouched = true;
-    manualAddressRow.hidden = mediaNetworkMode.value !== "manual";
+    syncMediaNetworkRows();
     requestWindowResize();
   });
 });

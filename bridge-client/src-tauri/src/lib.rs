@@ -757,12 +757,11 @@ pub fn run() {
         .manage(http)
         .setup(|app| {
             #[cfg(target_os = "macos")]
-            {
-                let _ = app.handle().set_dock_visibility(false);
-                let _ = app
-                    .handle()
-                    .set_activation_policy(tauri::ActivationPolicy::Accessory);
-                if let Some(window) = app.get_webview_window("main") {
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            if let Some(window) = app.get_webview_window("main") {
+                #[cfg(target_os = "macos")]
+                {
                     let _ = window.set_closable(false);
                     prepare_macos_panel_window(&window);
                 }

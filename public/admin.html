@@ -824,6 +824,7 @@
       }
 
       .config-panel form button,
+      .api-key-actions button,
       .config-export-group button,
       .config-import-actions button {
         width: var(--config-action-width);
@@ -915,6 +916,11 @@
 
         .config-layout > .config-panel:nth-of-type(5) {
           grid-column: 1;
+          grid-row: 4;
+        }
+
+        .config-layout > .config-panel:nth-of-type(6) {
+          grid-column: 2;
           grid-row: 4;
         }
       }
@@ -2328,6 +2334,18 @@
                 </div>
                 <button type="submit">Save mDNS name</button>
               </form>
+            </section>
+
+            <section class="config-panel" aria-labelledby="config-api-key-heading">
+              <h3 id="config-api-key-heading">API key</h3>
+
+              <div class="setting-meta">
+                <div>Copy the global API key for Companion, Bridge and automation clients.</div>
+              </div>
+
+              <div class="api-key-actions">
+                <button type="button" id="api-key-copy-btn">Copy API key</button>
+              </div>
             </section>
 
             <section class="config-panel" aria-labelledby="config-backup-heading">
