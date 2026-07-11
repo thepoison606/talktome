@@ -32,6 +32,7 @@ const TRAY_OPEN_ADMIN_ID: &str = "open-admin";
 const TRAY_QUIT_ID: &str = "quit";
 const MAX_LOG_LINES: usize = 200;
 const APP_DATA_DIR_NAME: &str = "talktome";
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Default)]
 struct ServerManager {
@@ -590,6 +591,7 @@ fn start_server_internal(app: &AppHandle) -> Result<(), String> {
     let mut command = Command::new(&binary);
     command
         .env("TALKTOME_NO_WIZARD", "1")
+        .env("TALKTOME_VERSION", APP_VERSION)
         .env("TALKTOME_DATA_DIR", talktome_data_dir())
         .current_dir(binary.parent().unwrap_or_else(|| Path::new(".")))
         .stdin(Stdio::null())

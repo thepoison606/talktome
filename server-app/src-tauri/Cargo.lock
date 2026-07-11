@@ -3224,7 +3224,7 @@ dependencies = [
 
 [[package]]
 name = "talktome-server-app"
-version = "1.0.0"
+version = "1.0.3"
 dependencies = [
  "if-addrs",
  "objc2-app-kit",
