@@ -854,11 +854,15 @@ fn save_server_config(
         state.child.is_some()
     };
 
-    let apply_result = if was_running {
-        restart_server_internal(&app)
-    } else if start {
+    let apply_result = if !was_running && start {
         start_server_internal(&app)
     } else {
+        if was_running {
+            append_log(
+                &app,
+                "Saved server config. Restart the server to apply runtime changes.".to_string(),
+            );
+        }
         Ok(())
     };
 
@@ -918,6 +922,15 @@ fn resize_main_window_to_content(app: AppHandle, height: f64) -> Result<(), Stri
 }
 
 #[tauri::command]
+fn suppress_window_focus_hide(
+    milliseconds: Option<u64>,
+    guard: tauri::State<'_, WindowFocusGuard>,
+) -> Result<(), String> {
+    let milliseconds = milliseconds.unwrap_or(500).clamp(100, 5_000);
+    guard.suppress_for(Duration::from_millis(milliseconds))
+}
+
+#[tauri::command]
 fn get_autostart_enabled(app: AppHandle) -> bool {
     app.try_state::<AutoLaunchManager>()
         .and_then(|manager| manager.is_enabled().ok())
@@ -970,6 +983,7 @@ pub fn run() {
             open_admin,
             open_logs,
             resize_main_window_to_content,
+            suppress_window_focus_hide,
             get_autostart_enabled,
             set_autostart_enabled,
         ])

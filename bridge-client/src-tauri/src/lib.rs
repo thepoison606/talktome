@@ -332,7 +332,7 @@ fn suppress_window_focus_hide(
     milliseconds: Option<u64>,
     guard: tauri::State<'_, WindowFocusGuard>,
 ) -> Result<(), String> {
-    let milliseconds = milliseconds.unwrap_or(500).clamp(100, 2_000);
+    let milliseconds = milliseconds.unwrap_or(500).clamp(100, 5_000);
     guard.suppress_for(Duration::from_millis(milliseconds))
 }
 

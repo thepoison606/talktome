@@ -35,6 +35,30 @@ const MIN_WINDOW_HEIGHT = 360;
 const MAX_WINDOW_HEIGHT = 820;
 const LOG_STICKY_BOTTOM_THRESHOLD = 16;
 
+async function suppressWindowFocusHide(milliseconds = 500) {
+  try {
+    await invoke("suppress_window_focus_hide", { milliseconds });
+  } catch (error) {
+    console.warn("failed to suppress window focus hide", error);
+  }
+}
+
+function installWindowFocusSuppressionForControls() {
+  const interactiveSelector = "button,input,select,textarea,label,[role='button']";
+  const suppressForEvent = (event) => {
+    if (!(event.target instanceof Element)) return;
+    const control = event.target.closest(interactiveSelector);
+    if (!control) return;
+    const milliseconds = control instanceof HTMLSelectElement ? 3000 : 1200;
+    suppressWindowFocusHide(milliseconds);
+  };
+
+  document.addEventListener("pointerdown", suppressForEvent, { capture: true });
+  document.addEventListener("touchstart", suppressForEvent, { capture: true, passive: true });
+  document.addEventListener("focusin", suppressForEvent, true);
+  document.addEventListener("change", suppressForEvent, true);
+}
+
 function syncMediaNetworkRows() {
   const mode = mediaNetworkMode.value || "auto";
   interfaceRow.hidden = mode !== "interface";
@@ -365,6 +389,7 @@ listen("autostart-changed", refreshAutostart);
 
 refreshStatus();
 refreshAutostart();
+installWindowFocusSuppressionForControls();
 installWindowAutoResize();
 refreshTimer = window.setInterval(refreshStatus, 1000);
 

@@ -267,6 +267,22 @@ async function suppressWindowFocusHide(milliseconds = 500) {
   } catch {}
 }
 
+function installWindowFocusSuppressionForControls() {
+  const interactiveSelector = "button,input,select,textarea,label,[role='button']";
+  const suppressForEvent = (event) => {
+    if (!(event.target instanceof Element)) return;
+    const control = event.target.closest(interactiveSelector);
+    if (!control) return;
+    const milliseconds = control instanceof HTMLSelectElement ? 3000 : 1200;
+    suppressWindowFocusHide(milliseconds);
+  };
+
+  document.addEventListener("pointerdown", suppressForEvent, { capture: true });
+  document.addEventListener("touchstart", suppressForEvent, { capture: true, passive: true });
+  document.addEventListener("focusin", suppressForEvent, true);
+  document.addEventListener("change", suppressForEvent, true);
+}
+
 function managedSessionPath(session, suffix = "") {
   return `/api/v1/bridge/sessions/${encodeURIComponent(session.sessionId)}${suffix}`;
 }
@@ -537,16 +553,22 @@ function getManagedSessionState(session, port) {
   return { label: "Ready", className: "" };
 }
 
+function bridgeAssignmentSignature(assignment) {
+  return {
+    deviceId: assignment?.deviceId || "",
+    leftChannel: assignment?.leftChannel ?? null,
+    rightChannel: assignment?.rightChannel ?? null,
+  };
+}
+
 function bridgePortSignature(port) {
   return JSON.stringify({
     id: port.id,
     kind: port.kind || "user",
-    userId: port.userId,
-    feedId: port.feedId,
-    input: port.input,
-    output: port.output,
-    updatedAt: port.updatedAt,
-    trigger: port.trigger || null,
+    userId: port.userId ?? null,
+    feedId: port.feedId ?? null,
+    input: bridgeAssignmentSignature(port.input),
+    output: bridgePortHasOutput(port) ? bridgeAssignmentSignature(port.output) : null,
   });
 }
 
@@ -1822,9 +1844,17 @@ async function reconcileManagedBridgeConfig(config) {
 
   for (const [key, session] of [...managedSessions.entries()]) {
     const nextPort = wanted.get(key);
-    if (!nextPort || bridgePortSignature(nextPort) !== session.signature) {
+    if (!nextPort) {
       await stopManagedSession(session);
+      continue;
     }
+    const nextSignature = bridgePortSignature(nextPort);
+    if (nextSignature !== session.signature) {
+      await stopManagedSession(session);
+      continue;
+    }
+    session.port = nextPort;
+    session.signature = nextSignature;
   }
   for (const [key, port] of wanted) {
     const session = managedSessions.get(key);
@@ -2711,6 +2741,7 @@ window.addEventListener("beforeunload", () => {
 });
 
 loadBridgeSettings();
+installWindowFocusSuppressionForControls();
 installBridgeWindowAutoResize();
 loadAutostartState();
 listenForAutostartChanges();
