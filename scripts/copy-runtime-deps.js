@@ -47,14 +47,20 @@ function copyWindowsCppRuntime() {
   }
 
   const systemDir = path.join(systemRoot, "System32");
-  // mediasoup-worker is built with MSVC.  These app-local redistributable
-  // DLLs prevent STATUS_DLL_NOT_FOUND (0xC0000135) on clean Windows installs.
+  // mediasoup-worker is built with MSVC.  Besides the C++ runtime it imports
+  // the Universal CRT API-set forwarders and ucrtbase.dll.  All three groups
+  // must be app-local; otherwise a clean Windows installation exits with
+  // STATUS_DLL_NOT_FOUND (0xC0000135).
   const runtimeFiles = fs.readdirSync(systemDir).filter((file) =>
-    /^(?:concrt140|msvcp140(?:_[a-z0-9_]+)?|vcruntime140(?:_[a-z0-9_]+)?)\.dll$/i.test(file)
+    /^(?:api-ms-win-crt-[a-z0-9-]+|concrt140|msvcp140(?:_[a-z0-9_]+)?|ucrtbase|vcruntime140(?:_[a-z0-9_]+)?)\.dll$/i.test(file)
   );
 
   const normalizedRuntimeFiles = new Set(runtimeFiles.map((file) => file.toLowerCase()));
-  if (!normalizedRuntimeFiles.has("vcruntime140.dll") || !normalizedRuntimeFiles.has("msvcp140.dll")) {
+  if (
+    !normalizedRuntimeFiles.has("vcruntime140.dll") ||
+    !normalizedRuntimeFiles.has("msvcp140.dll") ||
+    !normalizedRuntimeFiles.has("ucrtbase.dll")
+  ) {
     throw new Error(`Microsoft Visual C++ runtime DLLs not found in ${systemDir}`);
   }
 

@@ -81,7 +81,7 @@ for (const runtimeFile of runtimeFiles) {
 
 if (process.platform === "win32") {
   const windowsRuntimeFiles = fs.readdirSync(sourceDir).filter((file) =>
-    /^(?:concrt140|msvcp140(?:_[a-z0-9_]+)?|vcruntime140(?:_[a-z0-9_]+)?)\.dll$/i.test(file)
+    /^(?:api-ms-win-crt-[a-z0-9-]+|concrt140|msvcp140(?:_[a-z0-9_]+)?|ucrtbase|vcruntime140(?:_[a-z0-9_]+)?)\.dll$/i.test(file)
   );
   if (windowsRuntimeFiles.length === 0) {
     throw new Error(
