@@ -15,6 +15,7 @@ const runAtLogin = document.getElementById("run-at-login");
 const logOutput = document.getElementById("log-output");
 const httpsPort = document.getElementById("https-port");
 const mdnsHost = document.getElementById("mdns-host");
+const mdnsEnabled = document.getElementById("mdns-enabled");
 const rtcPortStart = document.getElementById("rtc-port-start");
 const rtcPortCount = document.getElementById("rtc-port-count");
 const mediaNetworkMode = document.getElementById("media-network-mode");
@@ -25,6 +26,7 @@ const mediaAnnouncedAddress = document.getElementById("media-announced-address")
 const shell = document.querySelector(".shell");
 
 let currentRunning = false;
+let currentStarting = false;
 let currentConfigured = false;
 let refreshTimer = null;
 let configTouched = false;
@@ -97,7 +99,9 @@ function parsePortInput(input, fallback) {
 function applyConfig(config, configured) {
   if (!config || configTouched) return;
   httpsPort.value = config.httpsPort ?? 8443;
-  mdnsHost.value = config.mdnsHost || "intercom.local";
+  mdnsEnabled.checked = !!config.mdnsHost && config.mdnsHost !== "off";
+  mdnsHost.value = mdnsEnabled.checked ? config.mdnsHost : "intercom.local";
+  mdnsHost.disabled = !mdnsEnabled.checked;
   rtcPortStart.value = config.rtcPortStart ?? 40000;
   rtcPortCount.value = config.rtcPortCount ?? 10000;
   mediaNetworkMode.value = config.mediaNetworkMode || "auto";
@@ -110,7 +114,7 @@ function readConfig() {
   const mode = mediaNetworkMode.value || "auto";
   return {
     httpsPort: parsePortInput(httpsPort, 8443),
-    mdnsHost: mdnsHost.value.trim() || "off",
+    mdnsHost: mdnsEnabled.checked ? mdnsHost.value.trim() || "intercom.local" : "off",
     httpPort: "off",
     rtcPortStart: parsePortInput(rtcPortStart, 40000),
     rtcPortCount: parsePortInput(rtcPortCount, 10000),
@@ -193,6 +197,7 @@ async function copyCompanionApiKey() {
 
 function setStatus(status) {
   currentRunning = !!status.running;
+  currentStarting = !!status.starting;
   currentConfigured = !!status.configured;
   if (status?.config) {
     status.config.availableMediaInterfaces = status.availableMediaInterfaces || [];
@@ -203,9 +208,11 @@ function setStatus(status) {
     ? "setup"
     : status.error
       ? "error"
-      : currentRunning
-        ? "running"
-        : "stopped";
+      : currentStarting
+        ? "starting"
+        : currentRunning
+          ? "running"
+          : "stopped";
   serverStatusLine.dataset.state = state;
   statusDot.className = "status-dot";
   statusDot.classList.add(
@@ -216,13 +223,15 @@ function setStatus(status) {
     statusLabel.textContent = "Setup required";
   } else if (status.error) {
     statusLabel.textContent = "Error";
+  } else if (currentStarting) {
+    statusLabel.textContent = "Starting…";
   } else {
     statusLabel.textContent = currentRunning ? "Running" : "Stopped";
   }
 
-  toggleServer.textContent = currentRunning ? "Stop" : "Start";
-  toggleServer.disabled = !currentConfigured && !currentRunning;
-  restartServer.disabled = !status.serverPath || !currentConfigured;
+  toggleServer.textContent = currentStarting ? "Starting…" : currentRunning ? "Stop" : "Start";
+  toggleServer.disabled = currentStarting || (!currentConfigured && !currentRunning);
+  restartServer.disabled = currentStarting || !status.serverPath || !currentConfigured;
   openAdmin.disabled = !currentRunning;
   serverPath.textContent = status.serverPath || "Server binary not found.";
 
@@ -359,6 +368,7 @@ runAtLogin.addEventListener("change", async () => {
 [
   httpsPort,
   mdnsHost,
+  mdnsEnabled,
   rtcPortStart,
   rtcPortCount,
   mediaNetworkMode,
@@ -367,11 +377,13 @@ runAtLogin.addEventListener("change", async () => {
 ].forEach((input) => {
   input.addEventListener("input", () => {
     configTouched = true;
+    if (input === mdnsEnabled) mdnsHost.disabled = !mdnsEnabled.checked;
     syncMediaNetworkRows();
     requestWindowResize();
   });
   input.addEventListener("change", () => {
     configTouched = true;
+    if (input === mdnsEnabled) mdnsHost.disabled = !mdnsEnabled.checked;
     syncMediaNetworkRows();
     requestWindowResize();
   });

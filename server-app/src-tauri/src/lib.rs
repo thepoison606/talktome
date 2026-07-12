@@ -37,6 +37,7 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Default)]
 struct ServerManager {
     child: Option<Child>,
+    starting: bool,
     logs: VecDeque<String>,
     started_at: Option<Instant>,
     last_error: Option<String>,
@@ -61,6 +62,7 @@ struct TrayToggleGuard {
 #[serde(rename_all = "camelCase")]
 struct ServerStatus {
     running: bool,
+    starting: bool,
     configured: bool,
     config_path: String,
     config: ServerRuntimeConfig,
@@ -160,12 +162,14 @@ impl ServerManager {
                 Ok(Some(status)) => {
                     self.push_log(format!("Server exited with status {status}."));
                     self.child = None;
+                    self.starting = false;
                     self.started_at = None;
                 }
                 Ok(None) => {}
                 Err(err) => {
                     self.last_error = Some(format!("failed to read server status: {err}"));
                     self.child = None;
+                    self.starting = false;
                     self.started_at = None;
                 }
             }
@@ -539,8 +543,12 @@ fn configure_server_command(_command: &mut Command) {
 }
 
 fn append_log(app: &AppHandle, line: String) {
+    let became_ready = line.contains("HTTPS Server running on port");
     if let Some(state) = app.try_state::<Mutex<ServerManager>>() {
         if let Ok(mut manager) = state.lock() {
+            if became_ready {
+                manager.starting = false;
+            }
             manager.push_log(line.clone());
         }
     }
@@ -552,6 +560,9 @@ fn append_log(app: &AppHandle, line: String) {
         let _ = writeln!(file, "{line}");
     }
     let _ = app.emit("server-log", line);
+    if became_ready {
+        let _ = app.emit("server-status-changed", ());
+    }
 }
 
 fn spawn_log_reader(app: AppHandle, stream: impl std::io::Read + Send + 'static) {
@@ -584,9 +595,14 @@ fn start_server_internal(app: &AppHandle) -> Result<(), String> {
         .map_err(|_| "server manager lock poisoned".to_string())?;
     state.refresh_child_state();
 
-    if state.child.is_some() {
+    if state.child.is_some() || state.starting {
         return Ok(());
     }
+
+    state.starting = true;
+    state.last_error = None;
+    state.push_log("Starting Talktome server…");
+    drop(state);
 
     let mut command = Command::new(&binary);
     command
@@ -599,13 +615,26 @@ fn start_server_internal(app: &AppHandle) -> Result<(), String> {
         .stderr(Stdio::piped());
     configure_server_command(&mut command);
 
-    let mut child = command
-        .spawn()
-        .map_err(|err| format!("failed to start Talktome server: {err}"))?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            let message = format!("failed to start Talktome server: {err}");
+            if let Ok(mut state) = manager.lock() {
+                state.starting = false;
+                state.last_error = Some(message.clone());
+                state.push_log(message.clone());
+            }
+            let _ = app.emit("server-status-changed", ());
+            return Err(message);
+        }
+    };
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let pid = child.id();
+    let mut state = manager
+        .lock()
+        .map_err(|_| "server manager lock poisoned".to_string())?;
     state.push_log(format!("Started Talktome server pid {pid}."));
     state.last_error = None;
     state.started_at = Some(Instant::now());
@@ -635,6 +664,7 @@ fn stop_server_internal(app: &AppHandle) -> Result<(), String> {
         let _ = child.wait();
         state.push_log(format!("Stopped Talktome server pid {pid}."));
     }
+    state.starting = false;
     state.started_at = None;
     drop(state);
 
@@ -808,9 +838,10 @@ fn get_server_status(app: AppHandle) -> Result<ServerStatus, String> {
         .map_err(|_| "server manager lock poisoned".to_string())?;
     state.refresh_child_state();
 
-    let running = state.child.is_some();
+    let running = state.child.is_some() && !state.starting;
     Ok(ServerStatus {
         running,
+        starting: state.starting,
         configured,
         config_path: config_path.display().to_string(),
         config,
@@ -1063,12 +1094,22 @@ pub fn run() {
             let _tray = tray_builder.build(app)?;
 
             if runtime_config_path().is_file() {
-                if let Err(err) = start_server_internal(app.handle()) {
-                    if let Ok(mut manager) = app.state::<Mutex<ServerManager>>().lock() {
-                        manager.last_error = Some(err.clone());
-                        manager.push_log(err);
+                // Creating the packaged server process can take several seconds on
+                // its first Windows launch while Defender verifies the executable.
+                // Do it after setup returns so the tray event loop stays responsive.
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    if let Err(err) = start_server_internal(&app_handle) {
+                        if let Ok(mut manager) =
+                            app_handle.state::<Mutex<ServerManager>>().lock()
+                        {
+                            manager.last_error = Some(err.clone());
+                            if !manager.logs.back().is_some_and(|line| line == &err) {
+                                manager.push_log(err);
+                            }
+                        }
                     }
-                }
+                });
             } else {
                 if let Ok(mut manager) = app.state::<Mutex<ServerManager>>().lock() {
                     manager.push_log(format!(

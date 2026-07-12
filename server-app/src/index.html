@@ -43,10 +43,16 @@
             <span>HTTPS port</span>
             <input id="https-port" type="number" min="1" max="65535" value="8443" />
           </label>
-          <label>
+          <div class="field">
             <span>mDNS name</span>
-            <input id="mdns-host" value="intercom.local" spellcheck="false" />
-          </label>
+            <div class="mdns-control">
+              <input id="mdns-host" value="intercom.local" spellcheck="false" />
+              <label class="checkbox-row mdns-toggle">
+                <input id="mdns-enabled" type="checkbox" checked />
+                <span>Enabled</span>
+              </label>
+            </div>
+          </div>
           <label>
             <span>RTC start port</span>
             <input id="rtc-port-start" type="number" min="1" max="65535" value="40000" />
@@ -79,10 +85,7 @@
 
       <section class="tray-section log-section">
         <div class="panel-header">
-          <div>
-            <h2>Server log</h2>
-            <p>Recent output from the bundled Talktome server.</p>
-          </div>
+          <h2>Server log</h2>
           <button id="open-logs" type="button">Open Logs</button>
         </div>
         <pre id="log-output"></pre>
