@@ -46,6 +46,8 @@ function resolveServerAppVersion() {
 const SERVER_APP_VERSION = resolveServerAppVersion();
 
 const workerName = process.platform === "win32" ? "mediasoup-worker.exe" : "mediasoup-worker";
+const windowsRuntimeDllPattern =
+  /^(?:api-ms-win-crt-[a-z0-9-]+|concrt140|msvcp140(?:_[a-z0-9_]+)?|ucrtbase|vcruntime140(?:_[a-z0-9_]+)?)\.dll$/i;
 
 // 1) Find the mediasoup entry file (instead of package.json)
 const mediasoupEntry = require.resolve("mediasoup");
@@ -86,6 +88,30 @@ if (process.pkg) {
   if (!fs.existsSync(dest)) {
     fs.copyFileSync(sourceBin, dest);
     fs.chmodSync(dest, 0o755);
+  }
+
+  // The packaged worker is copied out of pkg's virtual filesystem before it
+  // can be executed. On Windows the loader resolves app-local DLLs relative
+  // to that copied executable, not relative to the tray app or its resources
+  // directory. Keep the bundled MSVC/UCRT files beside the runtime worker.
+  if (process.platform === "win32") {
+    const runtimeSourceDirs = [
+      path.dirname(sourceBin),
+      execDir,
+      path.join(execDir, "binaries"),
+    ];
+    const copiedRuntimeDlls = new Set();
+
+    for (const sourceDir of runtimeSourceDirs) {
+      if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) continue;
+      for (const file of fs.readdirSync(sourceDir)) {
+        if (!windowsRuntimeDllPattern.test(file)) continue;
+        const normalizedFile = file.toLowerCase();
+        if (copiedRuntimeDlls.has(normalizedFile)) continue;
+        fs.copyFileSync(path.join(sourceDir, file), path.join(runtimeDir, file));
+        copiedRuntimeDlls.add(normalizedFile);
+      }
+    }
   }
   workerBin = dest;
 }
