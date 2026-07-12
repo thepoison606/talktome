@@ -10,6 +10,13 @@ on:
       - "main"
     tags:
       - "v*"
+    paths:
+      - ".github/workflows/bridge-client-release.yml"
+      - "bridge-client/**"
+
+concurrency:
+  group: bridge-builds-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -25,11 +32,13 @@ jobs:
           - name: macOS arm64
             os: macos-14
             ffmpeg_source: macos-lgpl
+            ffmpeg_sidecar: ffmpeg-aarch64-apple-darwin
             artifact_name: talktome_bridge_macos_arm64
             artifact_glob: bridge-client/src-tauri/target/release/bundle/dmg/*.dmg
           - name: Windows x64
             os: windows-latest
             ffmpeg_source: windows-lgpl
+            ffmpeg_sidecar: ffmpeg-x86_64-pc-windows-msvc.exe
             artifact_name: talktome_bridge_windows_x64
             artifact_glob: bridge-client/src-tauri/target/release/bundle/nsis/*.exe
 
@@ -46,6 +55,11 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bridge-client/src-tauri
 
       - name: Install dependencies
         working-directory: bridge-client
@@ -65,8 +79,15 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "SAFE_VERSION=$SAFE_VERSION" >> "$GITHUB_ENV"
 
+      - name: Restore LGPL FFmpeg sidecar
+        id: ffmpeg-sidecar
+        uses: actions/cache@v4
+        with:
+          path: bridge-client/.ffmpeg-sidecars/${{ matrix.ffmpeg_sidecar }}
+          key: ffmpeg-${{ runner.os }}-${{ hashFiles('bridge-client/scripts/build-ffmpeg-lgpl-*.sh') }}
+
       - name: Setup MSYS2
-        if: matrix.ffmpeg_source == 'windows-lgpl'
+        if: matrix.ffmpeg_source == 'windows-lgpl' && steps.ffmpeg-sidecar.outputs.cache-hit != 'true'
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -84,7 +105,7 @@ jobs:
             mingw-w64-x86_64-nasm
 
       - name: Build LGPL FFmpeg sidecar from source
-        if: matrix.ffmpeg_source == 'macos-lgpl'
+        if: matrix.ffmpeg_source == 'macos-lgpl' && steps.ffmpeg-sidecar.outputs.cache-hit != 'true'
         working-directory: bridge-client
         run: scripts/build-ffmpeg-lgpl-macos.sh --release
 
@@ -96,7 +117,7 @@ jobs:
         run: npm run build:release:macos
 
       - name: Build LGPL FFmpeg sidecar from source
-        if: matrix.ffmpeg_source == 'windows-lgpl'
+        if: matrix.ffmpeg_source == 'windows-lgpl' && steps.ffmpeg-sidecar.outputs.cache-hit != 'true'
         shell: msys2 {0}
         working-directory: bridge-client
         run: scripts/build-ffmpeg-lgpl-mingw.sh --release
