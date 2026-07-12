@@ -78,3 +78,19 @@ for (const runtimeFile of runtimeFiles) {
   }
   console.log(`Prepared server runtime file: ${runtimeTarget}`);
 }
+
+if (process.platform === "win32") {
+  const windowsRuntimeFiles = fs.readdirSync(sourceDir).filter((file) =>
+    /^(?:concrt140|msvcp140(?:_[a-z0-9_]+)?|vcruntime140(?:_[a-z0-9_]+)?)\.dll$/i.test(file)
+  );
+  if (windowsRuntimeFiles.length === 0) {
+    throw new Error(
+      `Windows C++ runtime DLLs are missing next to ${source}. ` +
+      "Build the server with npm run build:win64 before packaging the tray app."
+    );
+  }
+  for (const runtimeFile of windowsRuntimeFiles) {
+    fs.copyFileSync(path.join(sourceDir, runtimeFile), path.join(binariesDir, runtimeFile));
+    console.log(`Prepared Windows C++ runtime: ${runtimeFile}`);
+  }
+}
