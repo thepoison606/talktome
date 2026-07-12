@@ -4646,7 +4646,12 @@ function buildSelfSignedTlsCertificate() {
   return selfsigned.generate(
     [{ name: "commonName", value: preferredCommonName }],
     {
-      keySize: 4096,
+      // A 4096-bit key is needlessly expensive for the locally trusted,
+      // self-signed certificate.  On slower Windows machines node-forge
+      // creates it synchronously and the first launch looks like a hung app
+      // for tens of seconds.  2048-bit RSA remains broadly compatible with
+      // browsers while making first-run certificate creation near-instant.
+      keySize: 2048,
       days: 365,
       algorithm: "sha256",
       extensions: [
@@ -5437,12 +5442,26 @@ function warnIfDockerAnnouncedIpLooksInternal(announcedIp) {
 
 (async () => {
   console.log("[INIT] Starting mediasoup worker");
-  worker = await mediasoup.createWorker({
-    rtcMinPort: RTC_PORT_RANGE.start,
-    rtcMaxPort: RTC_PORT_RANGE.end,
-    logLevel: "warn",
-    logTags: ["info", "ice", "dtls", "rtp", "srtp", "rtcp"],
-  });
+  try {
+    worker = await mediasoup.createWorker({
+      rtcMinPort: RTC_PORT_RANGE.start,
+      rtcMaxPort: RTC_PORT_RANGE.end,
+      logLevel: "warn",
+      logTags: ["info", "ice", "dtls", "rtp", "srtp", "rtcp"],
+    });
+  } catch (err) {
+    const message = err && err.message ? err.message : String(err);
+    // 0xC0000135 is Windows' STATUS_DLL_NOT_FOUND.  Keep this diagnostic
+    // close to the actual cause; the mediasoup error otherwise only exposes
+    // the opaque decimal exit code from its child process.
+    if (process.platform === "win32" && /(?:3221225781|c0000135)/i.test(message)) {
+      console.error(
+        "[INIT] mediasoup worker could not load a required Windows runtime DLL " +
+        "(0xC0000135). Reinstall Talktome; the installer must include the Microsoft Visual C++ runtime."
+      );
+    }
+    throw err;
+  }
   console.log("[INIT] Worker created with PID:", worker.pid);
   console.log(`[INIT] RTC ports: ${RTC_PORT_RANGE.start}-${RTC_PORT_RANGE.end}`);
 
