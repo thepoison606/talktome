@@ -239,15 +239,14 @@ select {
 }
 
 .mdns-control {
-  align-items: center;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.55rem;
+  display: block;
 }
 
-.mdns-control .mdns-toggle {
+.server-grid .mdns-toggle {
+  align-items: center;
   display: inline-flex;
   gap: 0.35rem;
+  justify-self: start;
 }
 
 .server-grid span,

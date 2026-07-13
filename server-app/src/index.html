@@ -44,13 +44,12 @@
             <input id="https-port" type="number" min="1" max="65535" value="8443" />
           </label>
           <div class="field">
-            <span>mDNS name</span>
+            <label class="checkbox-row mdns-toggle" for="mdns-enabled">
+              <input id="mdns-enabled" type="checkbox" checked />
+              <span>mDNS</span>
+            </label>
             <div class="mdns-control">
               <input id="mdns-host" value="intercom.local" spellcheck="false" />
-              <label class="checkbox-row mdns-toggle">
-                <input id="mdns-enabled" type="checkbox" checked />
-                <span>Enabled</span>
-              </label>
             </div>
           </div>
           <label>

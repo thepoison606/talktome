@@ -841,7 +841,9 @@ fn get_server_status(app: AppHandle) -> Result<ServerStatus, String> {
     let running = state.child.is_some() && !state.starting;
     Ok(ServerStatus {
         running,
-        starting: state.starting,
+        // Before the first configuration is saved there is no valid server
+        // start to represent in the UI.
+        starting: configured && state.starting,
         configured,
         config_path: config_path.display().to_string(),
         config,

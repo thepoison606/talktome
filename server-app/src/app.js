@@ -197,8 +197,11 @@ async function copyCompanionApiKey() {
 
 function setStatus(status) {
   currentRunning = !!status.running;
-  currentStarting = !!status.starting;
   currentConfigured = !!status.configured;
+  // A setup screen is never a server start. Guard this in the renderer as
+  // well, so a stale status event cannot show "Starting…" before first-run
+  // settings have been saved.
+  currentStarting = currentConfigured && !!status.starting;
   if (status?.config) {
     status.config.availableMediaInterfaces = status.availableMediaInterfaces || [];
   }
