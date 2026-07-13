@@ -1818,8 +1818,8 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
       : '';
     const adminToggle = adminState.isAuthenticated
       ? isSuperadmin || isGuestProfile
-        ? `<button type="button" class="small" disabled title="${isSuperadmin ? 'Superadmin role cannot be changed' : 'Guest profile cannot be made admin'}">Make admin</button>`
-        : `<button type="button" class="small ${isAdmin ? 'warning' : ''}" onclick="toggleAdminRole(${user.id}, ${isAdmin ? 'false' : 'true'})">${isAdmin ? 'Remove admin' : 'Make admin'}</button>`
+        ? `<button type="button" class="small admin-role-toggle" disabled title="${isSuperadmin ? 'Superadmin role cannot be changed' : 'Guest profile cannot be made admin'}">Make admin</button>`
+        : `<button type="button" class="small admin-role-toggle ${isAdmin ? 'warning' : ''}" onclick="toggleAdminRole(${user.id}, ${isAdmin ? 'false' : 'true'})">${isAdmin ? 'Remove admin' : 'Make admin'}</button>`
       : '';
     const passwordAttrs = isGuestProfile ? 'disabled title="Guest profile does not use a password"' : '';
     const deleteAttrs = isGuestProfile
