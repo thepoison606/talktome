@@ -1822,6 +1822,11 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
         : `<button type="button" class="small admin-role-toggle ${isAdmin ? 'warning' : ''}" onclick="toggleAdminRole(${user.id}, ${isAdmin ? 'false' : 'true'})">${isAdmin ? 'Remove admin' : 'Make admin'}</button>`
       : '';
     const passwordAttrs = isGuestProfile ? 'disabled title="Guest profile does not use a password"' : '';
+    const loginLinkAttrs = isSuperadmin
+      ? 'disabled title="Superadmin does not use a login URL"'
+      : isGuestProfile
+        ? 'disabled title="Guest profile does not use a login URL"'
+        : '';
     const deleteAttrs = isGuestProfile
       ? 'disabled title="Guest profile cannot be deleted"'
       : isAdmin ? 'disabled title="Admin accounts cannot be deleted"' : '';
@@ -1911,6 +1916,7 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
           ${bridgeBadge}
         </button>
         <div class="inline-controls" onclick="event.stopPropagation()">
+          <button type="button" class="small" onclick='copyUserLoginUrl(${user.id}, ${JSON.stringify(user.name)}, this)' ${loginLinkAttrs}>Copy Login URL</button>
           <button type="button" class="small warning" onclick='editUser(${user.id}, ${JSON.stringify(user.name)})'>Rename</button>
           <button type="button" class="small warning" onclick='resetPassword(${user.id}, ${JSON.stringify(user.name)})' ${passwordAttrs}>Reset Password</button>
           ${adminToggle}
@@ -2791,6 +2797,35 @@ window.toggleAdminRole = async function (userId, shouldMakeAdmin) {
   } catch (err) {
     showMessage('❌ Error updating admin role: ' + err.message, 'error', 'user');
     console.error(err);
+  }
+};
+
+window.copyUserLoginUrl = async function (userId, userName, button) {
+  const originalLabel = button?.textContent || 'Copy Login URL';
+  if (button) button.disabled = true;
+  try {
+    const res = await authedFetch(`/admin/users/${userId}/login-link`, {
+      method: 'POST'
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok || !payload.token) {
+      throw new Error(payload.error || 'Failed to create login URL');
+    }
+
+    const loginUrl = `${window.location.origin}/#login=${encodeURIComponent(payload.token)}`;
+    await copyTextToClipboard(loginUrl);
+    if (button) button.textContent = 'Copied';
+    showMessage(`✅ Login URL copied for ${userName}`, 'success', 'user');
+    window.setTimeout(() => {
+      if (button) {
+        button.textContent = originalLabel;
+        button.disabled = false;
+      }
+    }, 1800);
+  } catch (err) {
+    if (button) button.disabled = false;
+    showMessage(`❌ ${err.message || 'Failed to copy login URL'}`, 'error', 'user');
+    console.error('Failed to copy login URL:', err);
   }
 };
 

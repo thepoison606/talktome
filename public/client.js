@@ -5543,6 +5543,66 @@ let cachedOperatorTargets = null;
     });
   }
 
+  async function completeCredentialLogin(user) {
+    const kind = user.kind === 'feed' ? 'feed' : 'user';
+    const nextSession = {
+      kind,
+      userId: kind === 'user' ? String(user.id) : null,
+      feedId: kind === 'feed' ? String(user.id) : null,
+      name: user.name,
+    };
+
+    const reg = await registerIdentity({
+      id: kind === 'feed' ? nextSession.feedId : nextSession.userId,
+      name: nextSession.name,
+      kind: nextSession.kind,
+      allowPrompt: true,
+    });
+    if (!reg?.ok) {
+      if (!reg?.cancelled) setLoginError("Unable to sign in");
+      return false;
+    }
+
+    session = nextSession;
+    feedManualStop = false;
+    shouldStartFeedWhenReady = kind === 'feed';
+
+    if (kind === 'user') {
+      applyPersistedTargetAudioStates(reg.targetAudioStates || []);
+    }
+
+    clearStoredGuestSession();
+    localStorage.setItem("userName", user.name);
+    localStorage.setItem(IDENTITY_KIND_KEY, kind);
+    if (kind === 'user') {
+      localStorage.setItem("userId", session.userId);
+      localStorage.removeItem(FEED_ID_STORAGE_KEY);
+    } else {
+      localStorage.setItem(FEED_ID_STORAGE_KEY, session.feedId);
+      localStorage.removeItem("userId");
+    }
+
+    loginContainer.style.display = "none";
+    intercomApp.style.display = "flex";
+    setSessionDisplay(user.name);
+    applySessionUI();
+    await syncOperatorTargetsFromLatestUserList(`login-${kind}`);
+    requestInitialMicrophoneAccess({ reason: `login-${kind}` });
+    initializeMediaIfPossible();
+    return true;
+  }
+
+  function consumeLoginTokenFromHash() {
+    const hash = window.location.hash;
+    if (!hash.startsWith('#login=')) return null;
+
+    const token = new URLSearchParams(hash.slice(1)).get('login')?.trim() || null;
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    return token;
+  }
+
+  const loginToken = consumeLoginTokenFromHash();
+
   // Check Auto-Login
   const storedName = localStorage.getItem("userName");
   const storedKindRaw = localStorage.getItem(IDENTITY_KIND_KEY);
@@ -5552,7 +5612,28 @@ let cachedOperatorTargets = null;
     ? loadStoredGuestSession()
     : null;
 
-  if (storedKind === "user") {
+  if (loginToken) {
+    clearStoredIdentity();
+    setLoginError("");
+    (async () => {
+      try {
+        const res = await fetch('/login/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: loginToken }),
+        });
+        const user = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setLoginError(user.error || 'This login link is invalid or expired');
+          return;
+        }
+        await completeCredentialLogin(user);
+      } catch (err) {
+        setLoginError('Unable to use this login link');
+        console.error('Login link failed:', err);
+      }
+    })();
+  } else if (storedKind === "user") {
     const storedId = localStorage.getItem("userId");
     if (storedId && storedName) {
       session = { kind: "user", userId: storedId, feedId: null, name: storedName };
@@ -5619,54 +5700,7 @@ let cachedOperatorTargets = null;
       const user = await res.json();
       console.log("Logged in as:", user);
 
-      const kind = user.kind === 'feed' ? 'feed' : 'user';
-      const nextSession = {
-        kind,
-        userId: kind === 'user' ? String(user.id) : null,
-        feedId: kind === 'feed' ? String(user.id) : null,
-        name: user.name,
-      };
-
-      const reg = await registerIdentity({
-        id: kind === 'feed' ? nextSession.feedId : nextSession.userId,
-        name: nextSession.name,
-        kind: nextSession.kind,
-        allowPrompt: true,
-      });
-      if (!reg?.ok) {
-        if (reg?.cancelled) {
-          return;
-        }
-        setLoginError("Unable to sign in");
-        return;
-      }
-
-      session = nextSession;
-      feedManualStop = false;
-      shouldStartFeedWhenReady = kind === 'feed';
-
-      if (kind === 'user') {
-        applyPersistedTargetAudioStates(reg.targetAudioStates || []);
-      }
-
-      clearStoredGuestSession();
-      localStorage.setItem("userName", user.name);
-      localStorage.setItem(IDENTITY_KIND_KEY, kind);
-      if (kind === 'user') {
-        localStorage.setItem("userId", session.userId);
-        localStorage.removeItem(FEED_ID_STORAGE_KEY);
-      } else {
-        localStorage.setItem(FEED_ID_STORAGE_KEY, session.feedId);
-        localStorage.removeItem("userId");
-      }
-
-      loginContainer.style.display = "none";
-      intercomApp.style.display = "flex";
-      setSessionDisplay(user.name);
-      applySessionUI();
-      await syncOperatorTargetsFromLatestUserList(`login-${kind}`);
-      requestInitialMicrophoneAccess({ reason: `login-${kind}` });
-      initializeMediaIfPossible();
+      await completeCredentialLogin(user);
     } catch (err) {
       setLoginError("Error logging in");
       console.error("Login failed:", err);

@@ -266,7 +266,7 @@ function getAllFeeds() {
 function exportDatabaseSnapshot() {
   return {
     users: db.prepare(`
-      SELECT id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, last_online_at
+      SELECT id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, login_token_hash, last_online_at
       FROM users
       ORDER BY id
     `).all(),
@@ -399,8 +399,8 @@ function importDatabaseSnapshot(snapshot) {
     }
 
     const insertUser = db.prepare(`
-      INSERT INTO users (id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, last_online_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, login_token_hash, last_online_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertConference = db.prepare(`
       INSERT INTO conferences (id, name)
@@ -483,6 +483,7 @@ function importDatabaseSnapshot(snapshot) {
         row.is_superadmin ? 1 : 0,
         row.admin_must_change ? 1 : 0,
         row.is_guest_profile ? 1 : 0,
+        row.login_token_hash ? String(row.login_token_hash) : null,
         row.last_online_at ? String(row.last_online_at) : null
       );
     });
@@ -759,9 +760,45 @@ function updateConferenceName(id, name) {
 
 function updateUserPassword(id, password) {
   const hash = bcrypt.hashSync(password, 10);
-  const stmt = db.prepare('UPDATE users SET password = ? WHERE id = ?');
+  const stmt = db.prepare('UPDATE users SET password = ?, login_token_hash = NULL WHERE id = ?');
   const result = stmt.run(hash, id);
   return result.changes > 0;
+}
+
+function createUserLoginToken(id) {
+  const userId = Number(id);
+  if (!Number.isInteger(userId) || userId < 1) {
+    throw new Error('Invalid user id');
+  }
+
+  const user = db.prepare(`
+    SELECT id, is_superadmin, is_guest_profile
+    FROM users
+    WHERE id = ?
+  `).get(userId);
+  if (!user) throw new Error('User not found');
+  if (user.is_superadmin) throw new Error('Superadmin does not use a login URL');
+  if (user.is_guest_profile) throw new Error('Guest profile does not use a login URL');
+
+  const token = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  db.prepare('UPDATE users SET login_token_hash = ? WHERE id = ?').run(tokenHash, userId);
+  return token;
+}
+
+function getUserByLoginToken(token) {
+  if (typeof token !== 'string') return null;
+  const normalizedToken = token.trim();
+  if (normalizedToken.length < 32 || normalizedToken.length > 256) return null;
+
+  const tokenHash = crypto.createHash('sha256').update(normalizedToken).digest('hex');
+  return db.prepare(`
+    SELECT id, name
+    FROM users
+    WHERE login_token_hash = ?
+      AND is_superadmin = 0
+      AND is_guest_profile = 0
+  `).get(tokenHash) || null;
 }
 
 function updateAdminPassword(id, password) {
@@ -1365,6 +1402,8 @@ module.exports = {
   updateUserName,
   updateConferenceName,
   updateUserPassword,
+  createUserLoginToken,
+  getUserByLoginToken,
   updateAdminPassword,
   updateFeedName,
   updateFeedPassword,

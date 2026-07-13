@@ -139,6 +139,8 @@ const {
   updateUserName,
   updateConferenceName,
   updateUserPassword,
+  createUserLoginToken,
+  getUserByLoginToken,
   updateAdminPassword,
   updateFeedName,
   updateFeedPassword,
@@ -2489,6 +2491,21 @@ app.post("/login", (req, res) => {
   }
 });
 
+app.post("/login/token", (req, res) => {
+  try {
+    const user = getUserByLoginToken(req.body?.token);
+    if (!user) {
+      return res.status(401).json({ error: "Invalid or expired login link" });
+    }
+    console.log("Login URL used for user:", user.name);
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ id: user.id, name: user.name, kind: "user" });
+  } catch (err) {
+    console.error("Login URL error:", err);
+    return res.status(500).json({ error: "Login link failed" });
+  }
+});
+
 app.post("/login/guest", (req, res) => {
   try {
     const settings = resolveGuestLoginSettings(loadRuntimeConfig() || {}, { createProfile: true, persist: true });
@@ -3418,6 +3435,17 @@ app.put("/admin/users/:id/admin", requireAdmin, (req, res) => {
   } catch (err) {
     console.error("Error updating admin role:", err);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.post("/admin/users/:id/login-link", requireAdmin, (req, res) => {
+  try {
+    const token = createUserLoginToken(req.params.id);
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ token });
+  } catch (err) {
+    const status = err.message === "User not found" ? 404 : 400;
+    return res.status(status).json({ error: err.message || "Failed to create login link" });
   }
 });
 

@@ -1844,6 +1844,21 @@
           flex-direction: column;
           align-items: stretch;
         }
+
+        /* Keep the user, conference and feed actions together on narrow screens. */
+        .list-item-header > .inline-controls {
+          flex-direction: row;
+          flex-wrap: nowrap;
+          align-items: center;
+          max-width: 100%;
+          overflow-x: auto;
+          padding-bottom: 0.2rem;
+          scrollbar-width: thin;
+        }
+
+        .list-item-header > .inline-controls > button {
+          flex: 0 0 auto;
+        }
       }
     </style>
   </head>
