@@ -1,6 +1,6 @@
 [package]
 name = "talktome-server-app"
-version = "1.0.8"
+version = "1.0.9"
 description = "Native Talktome server tray app"
 authors = ["Talktome"]
 edition = "2021"
