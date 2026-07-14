@@ -1,3 +1,4 @@
+use chrono::Local;
 use if_addrs::{get_if_addrs, IfAddr};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -150,7 +151,11 @@ fn handle_tray_left_click(app: &AppHandle, rect: tauri::Rect) {
 
 impl ServerManager {
     fn push_log(&mut self, line: impl Into<String>) {
-        self.logs.push_back(line.into());
+        self.push_log_entry(timestamp_log_line(line.into()));
+    }
+
+    fn push_log_entry(&mut self, line: String) {
+        self.logs.push_back(line);
         while self.logs.len() > MAX_LOG_LINES {
             self.logs.pop_front();
         }
@@ -175,6 +180,14 @@ impl ServerManager {
             }
         }
     }
+}
+
+fn timestamp_log_line(line: impl AsRef<str>) -> String {
+    format!(
+        "[{}] {}",
+        Local::now().format("%Y-%m-%d %H:%M:%S"),
+        line.as_ref()
+    )
 }
 
 fn default_https_port() -> u16 {
@@ -544,12 +557,13 @@ fn configure_server_command(_command: &mut Command) {
 
 fn append_log(app: &AppHandle, line: String) {
     let became_ready = line.contains("HTTPS Server running on port");
+    let timestamped_line = timestamp_log_line(&line);
     if let Some(state) = app.try_state::<Mutex<ServerManager>>() {
         if let Ok(mut manager) = state.lock() {
             if became_ready {
                 manager.starting = false;
             }
-            manager.push_log(line.clone());
+            manager.push_log_entry(timestamped_line.clone());
         }
     }
     let log_path = logs_dir().join("server.log");
@@ -557,9 +571,9 @@ fn append_log(app: &AppHandle, line: String) {
         let _ = fs::create_dir_all(parent);
     }
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
-        let _ = writeln!(file, "{line}");
+        let _ = writeln!(file, "{timestamped_line}");
     }
-    let _ = app.emit("server-log", line);
+    let _ = app.emit("server-log", timestamped_line);
     if became_ready {
         let _ = app.emit("server-status-changed", ());
     }
@@ -1070,7 +1084,7 @@ pub fn run() {
                     #[cfg(target_os = "windows")]
                     TrayIconEvent::Click {
                         button: MouseButton::Left,
-                        button_state: MouseButtonState::Down | MouseButtonState::Up,
+                        button_state: MouseButtonState::Up,
                         rect,
                         ..
                     } => handle_tray_left_click(&tray.app_handle(), rect),

@@ -146,6 +146,7 @@ const FEED_PTIME_OPTIONS = Object.freeze({
   20: { label: '20 ms (highest resilience, lowest load)' },
 });
 const USER_OFFLINE_GRACE_MS = 1500;
+const MEDIA_NETWORK_STATS_INTERVAL_MS = 5_000;
 const MOBILE_TARGET_LAYER_MAX_WIDTH = 699;
 const MOBILE_TARGET_LAYER_COMPACT_MAX_WIDTH = 414;
 const MOBILE_TARGET_LAYER_LANDSCAPE_SIZE = 4;
@@ -231,6 +232,8 @@ let feedDuckingFactor = dbToLinear(feedDuckingDb);
 let feedDimSelf = false;
 let feedDimIncoming = true;
 let audioProcessingEnabled = false;
+let audioProcessingReinitializePending = false;
+let refreshTalkProducerForAudioProcessingChange = null;
 let feedInputProcessingEnabled = false;
 let feedPtimeMs = DEFAULT_FEED_PTIME_MS;
 const audioProcessingOptions = {
@@ -609,6 +612,100 @@ let device = null;
 let sendTransport = null;
 let recvTransport = null;
 let producer = null;
+let mediaNetworkStatsTimer = null;
+let mediaNetworkStatsReportInFlight = false;
+
+function isAudioRtpStats(stats) {
+  return stats?.kind === 'audio' || stats?.mediaType === 'audio';
+}
+
+function collectMediaNetworkStatsFromReport(report, summary) {
+  if (!report || typeof report.forEach !== 'function') return;
+
+  const selectedCandidatePairIds = new Set();
+  report.forEach((stats) => {
+    if (stats?.type === 'transport' && stats.selectedCandidatePairId) {
+      selectedCandidatePairIds.add(stats.selectedCandidatePairId);
+    }
+  });
+
+  report.forEach((stats) => {
+    if (!stats || typeof stats !== 'object') return;
+
+    if (
+      stats.type === 'candidate-pair'
+      && (selectedCandidatePairIds.has(stats.id) || stats.selected === true || stats.nominated === true)
+    ) {
+      const roundTripTime = Number(stats.currentRoundTripTime);
+      if (Number.isFinite(roundTripTime) && roundTripTime >= 0) {
+        summary.roundTripTimes.push(roundTripTime * 1000);
+      }
+    }
+
+    if (
+      (stats.type !== 'inbound-rtp' && stats.type !== 'remote-inbound-rtp')
+      || !isAudioRtpStats(stats)
+    ) {
+      return;
+    }
+
+    const packetsLost = Number(stats.packetsLost);
+    const packetsReceived = Number(stats.packetsReceived);
+    if (!Number.isFinite(packetsLost) || !Number.isFinite(packetsReceived)) return;
+    summary.packetsLost += Math.max(0, packetsLost);
+    summary.packetsTotal += Math.max(0, packetsLost) + Math.max(0, packetsReceived);
+  });
+}
+
+async function reportMediaNetworkStats() {
+  if (mediaNetworkStatsReportInFlight) return;
+  if (!socket.connected || (session.kind !== 'user' && session.kind !== 'feed')) return;
+
+  const transports = [sendTransport, recvTransport]
+    .filter((transport) => transport && !transport.closed && typeof transport.getStats === 'function');
+  if (!transports.length) return;
+
+  mediaNetworkStatsReportInFlight = true;
+  try {
+    const reports = await Promise.allSettled(transports.map((transport) => transport.getStats()));
+    const summary = { roundTripTimes: [], packetsLost: 0, packetsTotal: 0 };
+    reports.forEach((result) => {
+      if (result.status === 'fulfilled') {
+        collectMediaNetworkStatsFromReport(result.value, summary);
+      }
+    });
+
+    const averageRoundTripMs = summary.roundTripTimes.length
+      ? summary.roundTripTimes.reduce((total, value) => total + value, 0) / summary.roundTripTimes.length
+      : null;
+    const packetLossPercent = summary.packetsTotal > 0
+      ? (summary.packetsLost / summary.packetsTotal) * 100
+      : null;
+
+    socket.emit('media-network-stats', {
+      roundTripMs: Number.isFinite(averageRoundTripMs) ? Math.round(averageRoundTripMs) : null,
+      packetLossPercent: Number.isFinite(packetLossPercent)
+        ? Math.round(packetLossPercent * 10) / 10
+        : null,
+    });
+  } catch (error) {
+    console.debug('Unable to collect WebRTC network stats:', error);
+  } finally {
+    mediaNetworkStatsReportInFlight = false;
+  }
+}
+
+function startMediaNetworkStatsReporting() {
+  if (mediaNetworkStatsTimer) return;
+  reportMediaNetworkStats();
+  mediaNetworkStatsTimer = window.setInterval(reportMediaNetworkStats, MEDIA_NETWORK_STATS_INTERVAL_MS);
+}
+
+function stopMediaNetworkStatsReporting() {
+  if (!mediaNetworkStatsTimer) return;
+  window.clearInterval(mediaNetworkStatsTimer);
+  mediaNetworkStatsTimer = null;
+}
 
 function isGuestSessionActive() {
   return Boolean(
@@ -1225,10 +1322,12 @@ function setAudioProcessingEnabled(enabled, { persist = true, updateUI = true, r
   }
 
   applyUserGainControlState();
-  if (applied) {
-    destroyUserProcessing();
-  } else if (micTrack && session.kind !== 'feed' && !reinitialize) {
-    ensureUserProcessingChain(micTrack);
+  if (!reinitialize) {
+    if (applied) {
+      destroyUserProcessing();
+    } else if (micTrack && session.kind !== 'feed') {
+      ensureUserProcessingChain(micTrack);
+    }
   }
 
   if (persist && typeof window !== 'undefined') {
@@ -1241,11 +1340,17 @@ function setAudioProcessingEnabled(enabled, { persist = true, updateUI = true, r
   }
 
   if (reinitialize) {
-    cleanupMicTrack();
-    if (settingsMenuOpen) {
-      startInputMonitor();
+    if (typeof refreshTalkProducerForAudioProcessingChange === 'function') {
+      refreshTalkProducerForAudioProcessingChange().catch((error) => {
+        console.warn('Failed to refresh microphone after audio processing change:', error);
+      });
+    } else {
+      cleanupMicTrack();
+      if (settingsMenuOpen) {
+        startInputMonitor();
+      }
+      restartVoiceTriggerMonitorHandler();
     }
-    restartVoiceTriggerMonitorHandler();
   } else if (settingsMenuOpen) {
     startInputMonitor();
   }
@@ -3473,6 +3578,7 @@ let cachedOperatorTargets = null;
             setFeedEntryLevel(entry, entry.volume ?? defaultVolume);
           }
         });
+        updateMuteUiForTarget(targetKey, shouldBeMuted);
         updateFeedReceptionUi(targetKey);
         return;
       }
@@ -3786,6 +3892,41 @@ let cachedOperatorTargets = null;
       warmTalkProducerPromise = null;
     }
   }
+
+  refreshTalkProducerForAudioProcessingChange = async function () {
+    if (session.kind !== 'user') {
+      cleanupMicTrack();
+      if (settingsMenuOpen) await startInputMonitor();
+      restartVoiceTriggerMonitorHandler();
+      return;
+    }
+
+    // Do not tear down the track currently carrying an active PTT transmission.
+    // The next idle transition below will recreate the paused warm producer.
+    if (isTalking || pendingTalkStart) {
+      audioProcessingReinitializePending = true;
+      return;
+    }
+
+    const staleProducer = producer && !producer.closed ? producer : null;
+    if (staleProducer) {
+      notifyServerProducerClosed(staleProducer.id, {
+        context: 'audio-processing-changed',
+      });
+      staleProducer.close();
+      if (producer === staleProducer) {
+        producer = null;
+      }
+    }
+
+    cleanupMicTrack();
+    if (settingsMenuOpen) await startInputMonitor();
+    restartVoiceTriggerMonitorHandler();
+
+    if (mediaInitialized && isOperatorSession() && session.kind === 'user') {
+      await ensureWarmTalkProducer('audio-processing-changed');
+    }
+  };
 
   function emitApiCommandResult(eventName, {
     commandId = null,
@@ -5156,6 +5297,7 @@ let cachedOperatorTargets = null;
 
   function closeMediaTransportState() {
     mediaStateGeneration += 1;
+    stopMediaNetworkStatsReporting();
     try {
       producer?.close();
     } catch {}
@@ -8754,6 +8896,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         streamPruneInterval = setInterval(pruneIncomingStreamBookkeeping, 2000);
       }
       startActiveProducerSync();
+      startMediaNetworkStatsReporting();
       if (session.kind === 'feed') {
         updateFeedControls();
         if (!feedManualStop && (feedStreaming || shouldStartFeedWhenReady)) {
@@ -9693,6 +9836,15 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         if (producer === staleProducer) {
           producer = null;
         }
+      });
+    }
+
+    if (audioProcessingReinitializePending) {
+      audioProcessingReinitializePending = false;
+      queueMicrotask(() => {
+        refreshTalkProducerForAudioProcessingChange?.().catch((error) => {
+          console.warn('Failed to apply deferred audio processing change:', error);
+        });
       });
     }
 

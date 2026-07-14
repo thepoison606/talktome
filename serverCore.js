@@ -2726,6 +2726,32 @@ function buildBridgeDeviceIssues(bridge, users = [], feeds = []) {
   return issues;
 }
 
+const BROWSER_MEDIA_STATS_STALE_MS = 15_000;
+
+function normalizeBrowserMediaStats(payload = {}) {
+  const roundTripMs = Number(payload?.roundTripMs);
+  const packetLossPercent = Number(payload?.packetLossPercent);
+  const normalized = {};
+
+  if (Number.isFinite(roundTripMs) && roundTripMs >= 0 && roundTripMs <= 60_000) {
+    normalized.roundTripMs = Math.round(roundTripMs);
+  }
+  if (Number.isFinite(packetLossPercent) && packetLossPercent >= 0 && packetLossPercent <= 100) {
+    normalized.packetLossPercent = Math.round(packetLossPercent * 10) / 10;
+  }
+
+  return Object.keys(normalized).length ? normalized : null;
+}
+
+function getFreshBrowserMediaStats(peer, now = Date.now()) {
+  const stats = peer?.browserMediaStats;
+  if (!stats || now - Number(stats.reportedAt || 0) > BROWSER_MEDIA_STATS_STALE_MS) return null;
+  return {
+    roundTripMs: Number.isFinite(stats.roundTripMs) ? stats.roundTripMs : null,
+    packetLossPercent: Number.isFinite(stats.packetLossPercent) ? stats.packetLossPercent : null,
+  };
+}
+
 function buildAdminStatusSnapshot() {
   const now = Date.now();
   const allUsers = getAllUsers();
@@ -2741,6 +2767,7 @@ function buildAdminStatusSnapshot() {
       const bridge = isBridge
         ? bridgeRegistry.get(String(peer.bridgeId)) || null
         : null;
+      const networkStats = online && !isBridge ? getFreshBrowserMediaStats(peer, now) : null;
 
       return {
         id: Number(user.id),
@@ -2758,6 +2785,7 @@ function buildAdminStatusSnapshot() {
               : describeStatusClient(peer.socket))
           : null,
         remoteAddress: online && !isBridge ? statusRemoteAddress(peer.socket) : null,
+        networkStats,
       };
     });
 
@@ -2769,6 +2797,7 @@ function buildAdminStatusSnapshot() {
     const bridge = isBridge
       ? bridgeRegistry.get(String(peer.bridgeId)) || null
       : null;
+    const networkStats = online && !isBridge ? getFreshBrowserMediaStats(peer, now) : null;
 
     return {
       id: Number(feed.id),
@@ -2785,6 +2814,7 @@ function buildAdminStatusSnapshot() {
             : describeStatusClient(peer.socket))
         : null,
       remoteAddress: online && !isBridge ? statusRemoteAddress(peer.socket) : null,
+      networkStats,
     };
   });
 
@@ -5790,6 +5820,19 @@ io.on("connection", (socket) => {
 
   // Emit lists
   socket.emit("conference-list", getAllConferences());
+
+  socket.on("media-network-stats", (payload = {}) => {
+    const peer = peers.get(socket.id);
+    if (!peer || peer.isBridgePeer || (peer.kind !== "user" && peer.kind !== "feed")) return;
+
+    const stats = normalizeBrowserMediaStats(payload);
+    if (!stats) return;
+    peer.browserMediaStats = {
+      ...stats,
+      reportedAt: Date.now(),
+    };
+    scheduleAdminStatusBroadcast("browser-media-stats-updated");
+  });
 
   socket.on("register-user", ({ id, name, kind = "user", force = false, guestProfileUserId = null } = {}, callback) => {
     const peer = peers.get(socket.id);

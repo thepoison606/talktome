@@ -1140,6 +1140,17 @@ function setStatusText(id, value) {
   if (element) element.textContent = value;
 }
 
+function formatStatusLatency(networkStats) {
+  const roundTripMs = Number(networkStats?.roundTripMs);
+  return Number.isFinite(roundTripMs) ? `${Math.round(roundTripMs)} ms` : '-';
+}
+
+function formatStatusPacketLoss(networkStats) {
+  const packetLossPercent = Number(networkStats?.packetLossPercent);
+  if (!Number.isFinite(packetLossPercent)) return '-';
+  return `${packetLossPercent.toFixed(packetLossPercent >= 10 ? 0 : 1)}%`;
+}
+
 function renderAdminStatus(payload = {}) {
   latestAdminStatus = payload;
   const users = Array.isArray(payload.users) ? [...payload.users] : [];
@@ -1186,12 +1197,14 @@ function renderAdminStatus(payload = {}) {
               <td>${userNameHtml}</td>
               <td>${escapeHtml(clientLabel)}</td>
               <td>${escapeHtml(user.remoteAddress || '-')}</td>
+              <td title="WebRTC round-trip time from this browser">${formatStatusLatency(user.networkStats)}</td>
+              <td title="WebRTC audio packet loss reported by this browser">${formatStatusPacketLoss(user.networkStats)}</td>
               <td>${user.online ? statusTimeHtml(user.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
               <td>${user.online ? 'Now' : statusTimeHtml(user.lastOnlineAt)}</td>
             </tr>
           `;
         }).join('')
-      : '<tr><td colspan="6" class="status-empty">No users configured.</td></tr>';
+      : '<tr><td colspan="8" class="status-empty">No users configured.</td></tr>';
   }
 
   if (statusFeedsBody) {
@@ -1208,12 +1221,14 @@ function renderAdminStatus(payload = {}) {
               <td><span class="status-primary">${escapeHtml(feed.name)}</span></td>
               <td>${escapeHtml(clientLabel)}</td>
               <td>${escapeHtml(feed.remoteAddress || '-')}</td>
+              <td title="WebRTC round-trip time from this browser">${formatStatusLatency(feed.networkStats)}</td>
+              <td title="WebRTC audio packet loss reported by this browser">${formatStatusPacketLoss(feed.networkStats)}</td>
               <td>${feed.online ? statusTimeHtml(feed.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
               <td>${feed.online ? 'Now' : statusTimeHtml(feed.lastSeenAt, { empty: 'Never' })}</td>
             </tr>
           `;
         }).join('')
-      : '<tr><td colspan="6" class="status-empty">No feeds configured.</td></tr>';
+      : '<tr><td colspan="8" class="status-empty">No feeds configured.</td></tr>';
   }
 
   if (statusBridgesBody) {
