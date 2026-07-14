@@ -1245,11 +1245,13 @@ function renderAdminStatus(payload = {}) {
               <td><span class="status-primary">${escapeHtml(bridge.name)}</span></td>
               <td>${escapeHtml(bridge.client || 'Bridge')}</td>
               <td>${escapeHtml(bridge.remoteAddress || '-')}</td>
+              <td>-</td>
+              <td>-</td>
               <td>${bridge.online ? statusTimeHtml(bridge.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
               <td>${bridge.online ? 'Now' : statusTimeHtml(bridge.lastSeenAt)}</td>
             </tr>
           `).join('')
-      : '<tr><td colspan="6" class="status-empty">No bridge announced.</td></tr>';
+      : '<tr><td colspan="8" class="status-empty">No bridge announced.</td></tr>';
   }
 
   if (statusCompanionsBody) {
@@ -1267,12 +1269,14 @@ function renderAdminStatus(payload = {}) {
               <td><span class="status-primary">${escapeHtml(companion.name)}</span></td>
               <td>${escapeHtml(companion.client || '-')}</td>
               <td>${escapeHtml(companion.remoteAddress || '-')}</td>
+              <td>-</td>
+              <td>-</td>
               <td>${connectedSince}</td>
               <td>${lastSeen}</td>
             </tr>
           `;
         }).join('')
-      : '<tr><td colspan="6" class="status-empty">No Companion instance connected.</td></tr>';
+      : '<tr><td colspan="8" class="status-empty">No Companion instance connected.</td></tr>';
   }
 
   setStatusText('status-version', `Server version ${payload.appVersion || 'unknown'}`);

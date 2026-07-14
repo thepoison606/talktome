@@ -1,6 +1,6 @@
 [package]
 name = "talktome-bridge-client"
-version = "1.0.6"
+version = "1.0.7"
 description = "Native Talktome bridge client"
 authors = ["Talktome"]
 edition = "2021"

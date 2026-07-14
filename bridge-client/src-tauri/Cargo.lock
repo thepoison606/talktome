@@ -3685,7 +3685,7 @@ dependencies = [
 
 [[package]]
 name = "talktome-bridge-client"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "cpal",
  "futures-util",
