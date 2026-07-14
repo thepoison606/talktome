@@ -1,5 +1,28 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Talktome Server",
+        "width": 760,
+        "height": 620,
+        "minWidth": 620,
+        "minHeight": 360,
+        "visible": false,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "closable": true,
+        "minimizable": false,
+        "maximizable": false,
+        "transparent": false,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true
+      }
+    ]
+  },
   "bundle": {
     "resources": [
       "binaries/better_sqlite3.node",
