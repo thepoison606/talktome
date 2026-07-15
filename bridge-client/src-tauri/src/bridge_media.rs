@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
-use std::net::UdpSocket;
+use std::net::{ToSocketAddrs, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{sync_channel, SyncSender};
@@ -24,6 +24,9 @@ use crate::audio;
 
 const OUTPUT_QUEUE_LIMIT_FRAMES: usize = 9_600;
 const DECODER_STARTUP_GRACE_MS: u64 = 10;
+const OUTPUT_HANDSHAKE_ATTEMPTS: usize = 3;
+const OUTPUT_HANDSHAKE_INTERVAL_MS: u64 = 15;
+const OUTPUT_HANDSHAKE_SSRC: u32 = 0x5441_4c4b;
 const FFMPEG_ENV_VAR: &str = "TALKTOME_FFMPEG";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -145,6 +148,8 @@ pub struct ActivateBridgeOutputRequest {
     pub clock_rate: u32,
     pub channels: u16,
     pub fmtp: Option<String>,
+    pub handshake_ip: Option<String>,
+    pub handshake_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -229,6 +234,7 @@ struct BridgeMediaState {
 struct PendingBridgeOutput {
     request: ReserveBridgeOutputRequest,
     port: u16,
+    socket: UdpSocket,
 }
 
 struct BridgeInputRuntime {
@@ -321,8 +327,6 @@ impl BridgeMediaManager {
             .local_addr()
             .map_err(|err| format!("failed to read reserved RTP port: {err}"))?
             .port();
-        drop(socket);
-
         let mut state = self.lock()?;
         Self::stop_output_locked(&mut state, &request.stream_id);
         state.pending_outputs.insert(
@@ -330,6 +334,7 @@ impl BridgeMediaManager {
             PendingBridgeOutput {
                 request: request.clone(),
                 port,
+                socket,
             },
         );
         Ok(ReservedBridgeOutput {
@@ -362,7 +367,7 @@ impl BridgeMediaManager {
         let output_sample_rate = mixer.sample_rate;
         let source_queue = mixer.add_source(stream_id.clone())?;
         let runtime = match BridgeOutputRuntime::start(
-            &pending,
+            pending,
             &request,
             mixer_key.clone(),
             source_queue,
@@ -508,7 +513,8 @@ impl BridgeInputRuntime {
                         bytes.extend_from_slice(&left.to_le_bytes());
                         bytes.extend_from_slice(&right.to_le_bytes());
                     }
-                    callback_level.store(rms_milli_db(sum_squares, sample_count), Ordering::Relaxed);
+                    callback_level
+                        .store(rms_milli_db(sum_squares, sample_count), Ordering::Relaxed);
                     let _ = callback_sender.try_send(bytes);
                 },
                 move |err| {
@@ -750,12 +756,29 @@ impl BridgeOutputMixerRuntime {
 
 impl BridgeOutputRuntime {
     fn start(
-        pending: &PendingBridgeOutput,
+        pending: PendingBridgeOutput,
         request: &ActivateBridgeOutputRequest,
         mixer_key: OutputMixerKey,
         queue: Arc<Mutex<VecDeque<StereoFrame>>>,
         output_sample_rate: SampleRate,
     ) -> Result<Self, String> {
+        let PendingBridgeOutput {
+            request: _,
+            port,
+            socket,
+        } = pending;
+        match (
+            request.handshake_ip.as_deref().map(str::trim),
+            request.handshake_port,
+        ) {
+            (Some(host), Some(handshake_port)) if !host.is_empty() && handshake_port > 0 => {
+                send_output_handshake(&socket, host, handshake_port)?;
+            }
+            (None, None) => {}
+            _ => return Err("bridge RTP handshake destination is incomplete".to_string()),
+        }
+        drop(socket);
+
         let output_sample_rate = output_sample_rate.to_string();
         let fmtp_line = request
             .fmtp
@@ -774,7 +797,7 @@ impl BridgeOutputRuntime {
              {}\
              a=rtcp-mux\n\
              a=recvonly\n",
-            pending.port,
+            port,
             request.payload_type,
             request.payload_type,
             request.clock_rate,
@@ -908,6 +931,36 @@ impl BridgeOutputRuntime {
             let _ = reader.join();
         }
     }
+}
+
+fn send_output_handshake(socket: &UdpSocket, host: &str, port: u16) -> Result<(), String> {
+    if host.is_empty() || port == 0 {
+        return Err("bridge RTP handshake destination is required".to_string());
+    }
+    let destination = (host, port)
+        .to_socket_addrs()
+        .map_err(|err| format!("failed to resolve bridge RTP handshake destination: {err}"))?
+        .find(|address| address.is_ipv4())
+        .ok_or_else(|| "bridge RTP handshake destination has no IPv4 address".to_string())?;
+    // The server-side PlainTransport uses comedia for the return path. Sending
+    // RTCP from the reserved receive port lets mediasoup learn the NAT-mapped
+    // tuple before FFmpeg takes over the same local port.
+    let packet = build_rtcp_receiver_report(OUTPUT_HANDSHAKE_SSRC);
+
+    for attempt in 0..OUTPUT_HANDSHAKE_ATTEMPTS {
+        socket
+            .send_to(&packet, destination)
+            .map_err(|err| format!("failed to send bridge RTP handshake: {err}"))?;
+        if attempt + 1 < OUTPUT_HANDSHAKE_ATTEMPTS {
+            thread::sleep(Duration::from_millis(OUTPUT_HANDSHAKE_INTERVAL_MS));
+        }
+    }
+    Ok(())
+}
+
+fn build_rtcp_receiver_report(ssrc: u32) -> [u8; 8] {
+    let ssrc = ssrc.to_be_bytes();
+    [0x80, 201, 0, 1, ssrc[0], ssrc[1], ssrc[2], ssrc[3]]
 }
 
 fn choose_f32_config(
@@ -1069,4 +1122,49 @@ fn read_last_error(last_error: &Arc<Mutex<Option<String>>>) -> Option<String> {
         .ok()
         .and_then(|error| error.clone())
         .filter(|message| !message.trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_minimal_rtcp_receiver_report() {
+        let packet = build_rtcp_receiver_report(0x1234_5678);
+
+        assert_eq!(packet, [0x80, 201, 0, 1, 0x12, 0x34, 0x56, 0x78]);
+    }
+
+    #[test]
+    fn sends_handshake_from_reserved_output_port() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").expect("bind handshake receiver");
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("set receiver timeout");
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("bind handshake sender");
+        let sender_port = sender.local_addr().expect("read sender address").port();
+        let receiver_port = receiver.local_addr().expect("read receiver address").port();
+
+        send_output_handshake(&sender, "127.0.0.1", receiver_port).expect("send output handshake");
+
+        let mut packet = [0_u8; 8];
+        let (bytes, source) = receiver.recv_from(&mut packet).expect("receive handshake");
+        assert_eq!(bytes, packet.len());
+        assert_eq!(source.port(), sender_port);
+        assert_eq!(packet, build_rtcp_receiver_report(OUTPUT_HANDSHAKE_SSRC));
+
+        drop(sender);
+        let rebound = UdpSocket::bind(("127.0.0.1", sender_port)).expect("rebind reserved port");
+        rebound
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("set rebound timeout");
+        receiver
+            .send_to(b"return RTP", source)
+            .expect("send return packet");
+        let mut return_packet = [0_u8; 10];
+        let received = rebound
+            .recv(&mut return_packet)
+            .expect("receive return packet");
+        assert_eq!(&return_packet[..received], b"return RTP");
+    }
 }

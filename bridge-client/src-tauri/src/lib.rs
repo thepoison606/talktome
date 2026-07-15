@@ -3,7 +3,7 @@ mod bridge_media;
 mod model;
 mod probe;
 
-use audio::AudioInventory;
+use audio::{AudioDeviceSnapshot, AudioInventory};
 use bridge_media::{
     ActivateBridgeOutputRequest, BridgeMediaManager, BridgeMediaStatus, ReserveBridgeOutputRequest,
     ReservedBridgeOutput, SetBridgeOutputLevelRequest, StartBridgeInputRequest,
@@ -323,6 +323,11 @@ fn list_audio_devices() -> Result<AudioInventory, String> {
 }
 
 #[tauri::command]
+fn get_audio_device_snapshot() -> Result<AudioDeviceSnapshot, String> {
+    audio::list_audio_device_snapshot()
+}
+
+#[tauri::command]
 fn get_bridge_status() -> BridgeStatus {
     BridgeStatus::default()
 }
@@ -390,6 +395,7 @@ async fn announce_bridge(
     api_key: String,
     bridge_id: Option<String>,
     bridge_name: String,
+    inventory: AudioInventory,
     http: tauri::State<'_, BridgeHttpClient>,
 ) -> Result<BridgeAnnounceResponse, String> {
     let server_url = normalize_server_url(&server_url)?;
@@ -408,7 +414,6 @@ async fn announce_bridge(
     } else {
         bridge_name
     };
-    let inventory = audio::list_audio_devices()?;
     let payload = BridgeAnnouncePayload {
         bridge_id,
         bridge_name,
@@ -859,6 +864,7 @@ pub fn run() {
             announce_bridge,
             bridge_api_request,
             get_audio_probe_ports_status,
+            get_audio_device_snapshot,
             get_autostart_enabled,
             get_bridge_media_status,
             get_bridge_status,

@@ -1,14 +1,14 @@
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{Device, SampleRate, SupportedBufferSize, SupportedStreamConfigRange};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AudioInventory {
     pub host: String,
     pub devices: Vec<AudioDeviceInfo>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AudioDeviceInfo {
     pub id: String,
     pub name: String,
@@ -20,7 +20,7 @@ pub struct AudioDeviceInfo {
     pub channel_pairs: Vec<ChannelPair>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AudioConfigRange {
     pub channels: u16,
     pub min_sample_rate: u32,
@@ -30,11 +30,25 @@ pub struct AudioConfigRange {
     pub max_buffer_size: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChannelPair {
     pub label: String,
     pub left_channel: u16,
     pub right_channel: u16,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AudioDeviceSnapshot {
+    pub host: String,
+    pub devices: Vec<AudioDeviceSnapshotEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AudioDeviceSnapshotEntry {
+    pub id: String,
+    pub name: String,
+    pub direction: String,
+    pub is_default: bool,
 }
 
 pub fn list_audio_devices() -> Result<AudioInventory, String> {
@@ -78,6 +92,53 @@ pub fn list_audio_devices() -> Result<AudioInventory, String> {
     }
 
     Ok(AudioInventory {
+        host: host_name,
+        devices,
+    })
+}
+
+/// Lists endpoint identity only. In particular, this avoids supported-config
+/// queries, which activate WASAPI audio clients and must not run in a poll loop.
+pub fn list_audio_device_snapshot() -> Result<AudioDeviceSnapshot, String> {
+    let host = cpal::default_host();
+    let host_name = format!("{:?}", host.id());
+    let default_input_name = host.default_input_device().map(|device| device.to_string());
+    let default_output_name = host
+        .default_output_device()
+        .map(|device| device.to_string());
+    let mut devices = Vec::new();
+
+    match host.input_devices() {
+        Ok(input_devices) => {
+            for (index, device) in input_devices.enumerate() {
+                devices.push(snapshot_device(
+                    &host_name,
+                    "input",
+                    index,
+                    device,
+                    default_input_name.as_deref(),
+                ));
+            }
+        }
+        Err(err) => eprintln!("failed to enumerate input devices: {err}"),
+    }
+
+    match host.output_devices() {
+        Ok(output_devices) => {
+            for (index, device) in output_devices.enumerate() {
+                devices.push(snapshot_device(
+                    &host_name,
+                    "output",
+                    index,
+                    device,
+                    default_output_name.as_deref(),
+                ));
+            }
+        }
+        Err(err) => eprintln!("failed to enumerate output devices: {err}"),
+    }
+
+    Ok(AudioDeviceSnapshot {
         host: host_name,
         devices,
     })
@@ -145,6 +206,25 @@ fn describe_device(
         supported_configs,
         channel_pairs,
     })
+}
+
+fn snapshot_device(
+    host_name: &str,
+    direction: &str,
+    index: usize,
+    device: Device,
+    default_name: Option<&str>,
+) -> AudioDeviceSnapshotEntry {
+    let name = device.to_string();
+    let id = device_id_for(host_name, direction, index, &device);
+    let is_default = default_name.is_some_and(|default| default == name);
+
+    AudioDeviceSnapshotEntry {
+        id,
+        name,
+        direction: direction.to_string(),
+        is_default,
+    }
 }
 
 fn device_id_for(host_name: &str, direction: &str, index: usize, device: &Device) -> String {

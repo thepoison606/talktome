@@ -39,6 +39,11 @@ optional Talktome Bridge app.
 If clients can open the page but audio does not connect, check Admin `Config`,
 the announced media address and the RTC port range/firewall rules.
 
+For WAN use, the announced media address must resolve directly to the Talktome
+server and the configured RTC UDP range must be forwarded to it. The native
+Bridge opens its return-audio NAT mapping automatically; it does not require a
+fixed inbound port or a Bridge-side port-forwarding rule.
+
 ### Docker
 
 Replace `<HOST-IP>` with the LAN address clients use to reach this host.

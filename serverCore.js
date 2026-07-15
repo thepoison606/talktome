@@ -196,6 +196,7 @@ const DEFAULT_RTC_PORT_START = 40000;
 const DEFAULT_RTC_PORT_COUNT = 10000;
 const BRIDGE_REGISTRY_STALE_MS = 45_000;
 const BRIDGE_CONTROL_SESSION_STALE_MS = 30_000;
+const BRIDGE_RTP_HANDSHAKE_TIMEOUT_MS = 3_000;
 const SERVER_STARTED_AT = Date.now();
 
 const bridgeRegistry = new Map();
@@ -4122,9 +4123,20 @@ app.post(
       }
       if (!router) return res.status(503).json({ error: "Router not initialized" });
       const producerId = String(req.body?.producerId || "");
+      // New Bridge clients establish the return path from their reserved UDP
+      // receive port. Keep the explicit target fallback for older clients.
+      const useRtpHandshake = req.body?.rtpHandshake === true;
       const targetPort = Number(req.body?.port);
-      const targetIp = resolveBridgeRequestIp(req);
-      if (!producerId || !targetIp || !Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) {
+      const targetIp = useRtpHandshake ? "" : resolveBridgeRequestIp(req);
+      if (
+        !producerId
+        || (!useRtpHandshake && (
+          !targetIp
+          || !Number.isInteger(targetPort)
+          || targetPort < 1
+          || targetPort > 65535
+        ))
+      ) {
         return res.status(400).json({ error: "Invalid bridge consumer target" });
       }
       let producerPeerId = null;
@@ -4138,19 +4150,40 @@ app.post(
       if (!router.canConsume({ producerId, rtpCapabilities: router.rtpCapabilities })) {
         return res.status(409).json({ error: "Cannot consume producer" });
       }
+      const mediaRoute = useRtpHandshake ? resolveTransportAnnouncedAddress() : null;
+      if (useRtpHandshake && (mediaRoute?.error || !mediaRoute?.announcedAddress)) {
+        return res.status(500).json({ error: mediaRoute?.error || "No announced media IP" });
+      }
       const transport = await router.createPlainTransport({
-        listenIp: { ip: "0.0.0.0" },
+        listenIp: useRtpHandshake
+          ? { ip: "0.0.0.0", announcedIp: mediaRoute.announcedAddress }
+          : { ip: "0.0.0.0" },
         rtcpMux: true,
-        comedia: false,
+        comedia: useRtpHandshake,
       });
-      await transport.connect({ ip: targetIp, port: targetPort });
+      if (!useRtpHandshake) {
+        await transport.connect({ ip: targetIp, port: targetPort });
+      }
       const consumer = await transport.consume({
         producerId,
         rtpCapabilities: router.rtpCapabilities,
         paused: true,
       });
       consumer.__plainTransport = transport;
+      consumer.__bridgeRtpHandshakeRequired = useRtpHandshake;
       req.bridgePeer.consumers.set(consumer.id, consumer);
+      if (useRtpHandshake) {
+        transport.on("tuple", (tuple) => {
+          console.log(
+            `[BRIDGE][RTP] Learned return path ${tuple.remoteIp}:${tuple.remotePort} `
+            + `for consumer ${consumer.id}`
+          );
+        });
+        console.log(
+          `[BRIDGE][RTP] Waiting for return-path handshake on `
+          + `${mediaRoute.announcedAddress}:${transport.tuple.localPort} for consumer ${consumer.id}`
+        );
+      }
       const cleanup = () => {
         req.bridgePeer?.consumers.delete(consumer.id);
         try {
@@ -4170,6 +4203,13 @@ app.post(
         producerId,
         kind: consumer.kind,
         rtpParameters: consumer.rtpParameters,
+        transport: useRtpHandshake ? {
+          ip: mediaRoute.announcedAddress,
+          port: transport.tuple.localPort,
+          protocol: transport.tuple.protocol,
+          rtcpMux: true,
+          comedia: true,
+        } : null,
       });
     } catch (error) {
       res.status(500).json({ error: error?.message || "Failed to create bridge consumer" });
@@ -4185,10 +4225,15 @@ app.post(
     const consumer = req.bridgePeer.consumers.get(req.params.consumerId);
     if (!consumer) return res.status(404).json({ error: "Consumer not found" });
     try {
+      if (consumer.__bridgeRtpHandshakeRequired) {
+        await waitForBridgeRtpHandshake(consumer.__plainTransport);
+      }
       await consumer.resume();
       res.json({ ok: true });
     } catch (error) {
-      res.status(500).json({ error: error?.message || "Failed to resume bridge consumer" });
+      const status = error?.code === "BRIDGE_RTP_HANDSHAKE_TIMEOUT" ? 504 : 500;
+      console.warn(`[BRIDGE][RTP] Failed to resume consumer ${consumer.id}:`, error?.message || error);
+      res.status(status).json({ error: error?.message || "Failed to resume bridge consumer" });
     }
   }
 );
@@ -5445,6 +5490,50 @@ function resolveBridgeRequestIp(req) {
   if (address.startsWith("::ffff:")) address = address.slice(7);
   if (address === "::1") address = "127.0.0.1";
   return address;
+}
+
+function waitForBridgeRtpHandshake(transport) {
+  const currentTuple = transport?.tuple;
+  if (currentTuple?.remoteIp && currentTuple?.remotePort) {
+    return Promise.resolve(currentTuple);
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      transport?.off?.("tuple", onTuple);
+      transport?.observer?.off?.("close", onClose);
+    };
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+    const onTuple = (tuple) => {
+      if (tuple?.remoteIp && tuple?.remotePort) finish(resolve, tuple);
+    };
+    const onClose = () => {
+      finish(reject, new Error("Bridge RTP transport closed before the handshake completed"));
+    };
+
+    transport?.on?.("tuple", onTuple);
+    transport?.observer?.on?.("close", onClose);
+    const tupleAfterListeners = transport?.tuple;
+    if (tupleAfterListeners?.remoteIp && tupleAfterListeners?.remotePort) {
+      finish(resolve, tupleAfterListeners);
+      return;
+    }
+    timer = setTimeout(() => {
+      const error = new Error(
+        "Bridge RTP handshake timed out. Check the server announced media address and UDP RTC port forwarding."
+      );
+      error.code = "BRIDGE_RTP_HANDSHAKE_TIMEOUT";
+      finish(reject, error);
+    }, BRIDGE_RTP_HANDSHAKE_TIMEOUT_MS);
+  });
 }
 
 function buildBridgeProducerPayload(peerId, producerId, appData) {

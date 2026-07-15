@@ -25,7 +25,9 @@ const STORAGE_KEYS = {
   bridgeToken: "talktome:bridge-token"
 };
 const MANAGED_EVENT_FALLBACK_POLL_MS = 250;
-const MANAGED_INVENTORY_WATCH_MS = 2_000;
+// This timer only reads the lightweight device snapshot. Full format discovery
+// runs at startup, on manual refresh, or after the snapshot actually changes.
+const MANAGED_INVENTORY_WATCH_MS = 30_000;
 const MANAGED_RETRY_MS = 2_000;
 const MANAGED_LEVEL_TRIGGER_POLL_MS = 50;
 const MANAGED_LEVEL_TRIGGER_ATTACK_MS = 45;
@@ -53,6 +55,7 @@ let managedRetryRunning = false;
 let managedLevelTriggerRunning = false;
 let managedInventoryWatchRunning = false;
 let lastAnnouncedInventorySignature = "";
+let lastAudioDeviceSnapshotSignature = "";
 let lastManagedBridgePortsHtml = "";
 let bridgeEventStreamListenerPromise = null;
 let resizeWindowFrame = null;
@@ -223,6 +226,25 @@ function inventorySignature(inventory) {
 
   return JSON.stringify({
     host: inventory.host || "",
+    devices
+  });
+}
+
+function audioDeviceSnapshotSignature(snapshot) {
+  if (!snapshot) return "";
+  const devices = (snapshot.devices || []).map((device) => ({
+    id: device.id || "",
+    name: device.name || "",
+    direction: device.direction || "",
+    isDefault: Boolean(device.is_default ?? device.isDefault)
+  })).sort((a, b) => (
+    a.direction.localeCompare(b.direction)
+    || a.id.localeCompare(b.id)
+    || a.name.localeCompare(b.name)
+  ));
+
+  return JSON.stringify({
+    host: snapshot.host || "",
     devices
   });
 }
@@ -1036,20 +1058,29 @@ async function startManagedConsumer(session, producerPayload) {
     });
     const consumer = await bridgeApi("POST", managedSessionPath(session, "/consumers"), {
       producerId,
-      port: reserved.port
+      port: reserved.port,
+      rtpHandshake: true
     });
     output.consumerId = consumer.id;
     const codec = (consumer.rtpParameters?.codecs || []).find((entry) =>
       String(entry.mimeType || "").toLowerCase() === "audio/opus"
     ) || consumer.rtpParameters?.codecs?.[0];
     if (!codec) throw new Error("Server returned no audio codec for bridge consumer");
+    const returnTransport = consumer.transport;
+    const handshake = returnTransport?.ip && Number(returnTransport?.port) > 0
+      ? {
+          handshakeIp: returnTransport.ip,
+          handshakePort: Number(returnTransport.port)
+        }
+      : {};
     await invoke("activate_bridge_output", {
       request: {
         streamId,
         payloadType: Number(codec.payloadType || 100),
         clockRate: Number(codec.clockRate || 48000),
         channels: Number(codec.channels || 2),
-        fmtp: codecParametersToFmtp(codec.parameters)
+        fmtp: codecParametersToFmtp(codec.parameters),
+        ...handshake
       }
     });
     await bridgeApi(
@@ -1896,7 +1927,6 @@ async function retryDueManagedSessions() {
 
   managedRetryRunning = true;
   try {
-    await refreshManagedInventoryOnly().catch(() => {});
     const portsByKey = new Map((managedBridgeConfig?.ports || []).map((port) => [bridgePortKey(port), port]));
     for (const session of due) {
       const port = portsByKey.get(bridgePortKey(session.port));
@@ -1915,7 +1945,6 @@ async function syncManagedBridge() {
   if (!bridgeId || !serverUrlInput.value.trim() || !getBridgeCredential()) return;
   managedSyncRunning = true;
   try {
-    await refreshManagedInventoryOnly().catch(() => {});
     await announceBridge({ quiet: true, syncConfig: false });
     setServerConnectionState("connected");
     await auditManagedSessionDevices();
@@ -1952,11 +1981,17 @@ async function watchManagedInventory() {
 
   managedInventoryWatchRunning = true;
   try {
-    const inventory = await refreshManagedInventoryOnly();
-    const nextSignature = inventorySignature(inventory);
-    if (nextSignature && nextSignature !== lastAnnouncedInventorySignature) {
-      await suppressWindowFocusHide(900);
-      await announceBridge({ quiet: true, syncConfig: false });
+    const snapshot = await invoke("get_audio_device_snapshot");
+    const nextSnapshotSignature = audioDeviceSnapshotSignature(snapshot);
+    if (!lastAudioDeviceSnapshotSignature) {
+      lastAudioDeviceSnapshotSignature = nextSnapshotSignature;
+    } else if (nextSnapshotSignature && nextSnapshotSignature !== lastAudioDeviceSnapshotSignature) {
+      const inventory = await refreshManagedInventoryOnly();
+      const nextInventorySignature = inventorySignature(inventory);
+      if (nextInventorySignature && nextInventorySignature !== lastAnnouncedInventorySignature) {
+        await suppressWindowFocusHide(900);
+        await announceBridge({ quiet: true, syncConfig: false });
+      }
     }
     await auditManagedSessionDevices();
     await auditManagedNativeMediaStatus();
@@ -2126,6 +2161,7 @@ function renderBridgeStatus(status) {
 
 function renderInventory(inventory) {
   currentInventory = inventory;
+  lastAudioDeviceSnapshotSignature = audioDeviceSnapshotSignature(inventory);
   renderSummary(inventory);
   if (!deviceList) {
     renderAllPortControls();
@@ -2163,12 +2199,16 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
     const bridgeId = localStorage.getItem(STORAGE_KEYS.bridgeId) || "";
     const sendAnnounce = async (authToken) => {
       if (invoke) {
+        if (!currentInventory) {
+          throw new Error("Refresh audio devices before saving.");
+        }
         await suppressWindowFocusHide(250);
         return invoke("announce_bridge", {
           serverUrl,
           apiKey: authToken,
           bridgeId: bridgeId || null,
-          bridgeName
+          bridgeName,
+          inventory: currentInventory
         });
       }
 
