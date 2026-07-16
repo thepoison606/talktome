@@ -175,6 +175,8 @@ struct TrayAutostartMenuItem {
     item: Mutex<Option<CheckMenuItem<Wry>>>,
 }
 
+const WINDOW_FOCUS_HIDE_DELAY: Duration = Duration::from_millis(150);
+
 impl WindowFocusGuard {
     fn suppress_for(&self, duration: Duration) -> Result<(), String> {
         let mut suppress_hide_until = self
@@ -218,6 +220,24 @@ fn handle_tray_left_click(app: &AppHandle, rect: tauri::Rect) {
     }
 
     toggle_main_window_from_tray(app, rect);
+}
+
+fn hide_main_window_after_focus_check(window: tauri::Window<Wry>) {
+    std::thread::spawn(move || {
+        std::thread::sleep(WINDOW_FOCUS_HIDE_DELAY);
+
+        if window.is_focused().unwrap_or(false) {
+            return;
+        }
+
+        let should_suppress = window
+            .app_handle()
+            .try_state::<WindowFocusGuard>()
+            .is_some_and(|guard| guard.should_suppress_hide());
+        if !should_suppress {
+            let _ = window.hide();
+        }
+    });
 }
 
 fn set_tray_autostart_checked(app: &AppHandle, enabled: bool) {
@@ -847,13 +867,7 @@ pub fn run() {
                         let _ = window.hide();
                     }
                     tauri::WindowEvent::Focused(false) => {
-                        let should_suppress = window
-                            .app_handle()
-                            .try_state::<WindowFocusGuard>()
-                            .is_some_and(|guard| guard.should_suppress_hide());
-                        if !should_suppress {
-                            let _ = window.hide();
-                        }
+                        hide_main_window_after_focus_check(window.clone());
                     }
                     _ => {}
                 }

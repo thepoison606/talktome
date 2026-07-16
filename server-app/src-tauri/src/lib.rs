@@ -34,6 +34,7 @@ const TRAY_QUIT_ID: &str = "quit";
 const MAX_LOG_LINES: usize = 200;
 const APP_DATA_DIR_NAME: &str = "talktome";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const WINDOW_FOCUS_HIDE_DELAY: Duration = Duration::from_millis(150);
 
 #[derive(Default)]
 struct ServerManager {
@@ -147,6 +148,24 @@ fn handle_tray_left_click(app: &AppHandle, rect: tauri::Rect) {
     }
 
     toggle_main_window_from_tray(app, rect);
+}
+
+fn hide_main_window_after_focus_check(window: tauri::Window<Wry>) {
+    std::thread::spawn(move || {
+        std::thread::sleep(WINDOW_FOCUS_HIDE_DELAY);
+
+        if window.is_focused().unwrap_or(false) {
+            return;
+        }
+
+        let should_suppress = window
+            .app_handle()
+            .try_state::<WindowFocusGuard>()
+            .is_some_and(|guard| guard.should_suppress_hide());
+        if !should_suppress {
+            let _ = window.hide();
+        }
+    });
 }
 
 impl ServerManager {
@@ -615,7 +634,7 @@ fn start_server_internal(app: &AppHandle) -> Result<(), String> {
 
     state.starting = true;
     state.last_error = None;
-    state.push_log("Starting Talktome server…");
+    state.push_log(format!("Starting Talktome server v{APP_VERSION}…"));
     drop(state);
 
     let mut command = Command::new(&binary);
@@ -1151,12 +1170,7 @@ pub fn run() {
                     let _ = window.hide();
                 }
                 tauri::WindowEvent::Focused(false) => {
-                    if let Some(guard) = window.app_handle().try_state::<WindowFocusGuard>() {
-                        if guard.should_suppress_hide() {
-                            return;
-                        }
-                    }
-                    let _ = window.hide();
+                    hide_main_window_after_focus_check(window.clone());
                 }
                 _ => {}
             }
