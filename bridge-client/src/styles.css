@@ -210,6 +210,14 @@ h3 {
   margin-top: 0;
 }
 
+.connection-error {
+  color: #fca5a5;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  margin-top: 0;
+}
+
+.connection-error:empty,
 .autostart-status:empty {
   display: none;
 }
@@ -294,7 +302,7 @@ h3 {
 .managed-port-trigger-grid {
   display: grid;
   gap: 0.45rem 0.55rem;
-  grid-template-columns: minmax(10rem, 0.8fr) minmax(0, 1fr) 8rem;
+  grid-template-columns: minmax(10rem, 0.8fr) minmax(0, 1fr) minmax(9rem, 0.7fr);
 }
 
 .managed-port-control {
@@ -318,8 +326,21 @@ h3 {
   padding: 0.3rem 0.45rem;
 }
 
-.managed-port-control--threshold input {
-  text-align: right;
+.managed-port-control--threshold input[type="range"] {
+  accent-color: #60a5fa;
+  min-height: 2rem;
+  padding: 0;
+}
+
+.managed-port-threshold-label {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.managed-port-threshold-label output {
+  color: #edf2f7;
+  font-variant-numeric: tabular-nums;
 }
 
 .managed-port-error {

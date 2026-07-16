@@ -11,6 +11,7 @@ const apiKeyInput = document.getElementById("api-key");
 const bridgeNameInput = document.getElementById("bridge-name");
 const announceBridgeButton = document.getElementById("announce-bridge");
 const announceStatus = document.getElementById("announce-status");
+const announceError = document.getElementById("announce-error");
 const autostartInput = document.getElementById("autostart-enabled");
 const autostartStatus = document.getElementById("autostart-status");
 
@@ -36,6 +37,7 @@ const MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB = -45;
 const MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB = -120;
 const MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB = -10;
 const MANAGED_DEFAULT_TARGET_VOLUME = 0.9;
+const DEFAULT_SERVER_HTTPS_PORT = "8443";
 const MIN_WINDOW_HEIGHT = 260;
 const MAX_WINDOW_HEIGHT = 820;
 
@@ -159,6 +161,33 @@ function setServerConnectionState(state) {
   }
 }
 
+function setBridgeConnectionError(error = null) {
+  if (!announceError) return;
+  if (!error) {
+    announceError.textContent = "";
+    requestBridgeWindowResize();
+    return;
+  }
+
+  const message = String(error?.message || error);
+  if (isServerOfflineError(error)) {
+    let serverUrl = serverUrlInput.value.trim();
+    try {
+      serverUrl = normalizeServerUrl(serverUrl);
+      const parsedUrl = new URL(serverUrl);
+      const portHint = parsedUrl.port
+        ? ""
+        : " If the server does not use HTTPS port 443, include its port in the URL (for example :8443).";
+      announceError.textContent = `Could not reach ${serverUrl}.${portHint}`;
+    } catch {
+      announceError.textContent = message;
+    }
+  } else {
+    announceError.textContent = message;
+  }
+  requestBridgeWindowResize();
+}
+
 async function loadAutostartState() {
   if (!invoke) {
     autostartInput.disabled = true;
@@ -253,12 +282,46 @@ function getBridgeCredential() {
   return localStorage.getItem(STORAGE_KEYS.bridgeToken) || apiKeyInput.value.trim();
 }
 
+function serverUrlHasExplicitPort(value) {
+  const withoutScheme = String(value || "").replace(/^[a-z][a-z\d+.-]*:\/\//i, "");
+  const authorityParts = withoutScheme.split(/[/?#]/, 1)[0].split("@");
+  const authority = authorityParts[authorityParts.length - 1] || "";
+  if (authority.startsWith("[")) {
+    return /^\[[^\]]+\]:\d+$/.test(authority);
+  }
+  return /^[^:]+:\d+$/.test(authority);
+}
+
 function normalizeServerUrl(value) {
-  const trimmed = String(value || "").trim().replace(/\/+$/, "");
+  const trimmed = String(value || "").trim();
   if (!trimmed) {
     throw new Error("Server URL is required");
   }
-  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+  const hasExplicitPort = serverUrlHasExplicitPort(trimmed);
+  const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error("Server URL is invalid");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("Server URL must use HTTPS or HTTP");
+  }
+  if (!parsed.hostname || parsed.username || parsed.password) {
+    throw new Error("Server URL must contain a valid host without credentials");
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error("Server URL must not contain a query or fragment");
+  }
+  if (parsed.protocol === "https:" && !hasExplicitPort) {
+    parsed.port = DEFAULT_SERVER_HTTPS_PORT;
+  }
+
+  return parsed.toString().replace(/\/+$/, "");
 }
 
 function getBridgeClientPlatform() {
@@ -677,16 +740,44 @@ function buildManagedChannelOptions(device, selectedLeft, selectedRight) {
   return html.join("");
 }
 
-function formatActiveReturnPaths(count) {
+function getManagedIncomingSpeakerNames(session) {
+  const names = [];
+  const seen = new Set();
+  const addName = (value) => {
+    const name = String(value || "").trim();
+    const key = name.toLocaleLowerCase();
+    if (!name || seen.has(key)) return;
+    seen.add(key);
+    names.push(name);
+  };
+
+  for (const output of session?.outputs?.values?.() || []) {
+    addName(output?.speakerName);
+  }
+  for (const entry of Array.isArray(session?.addressedNow) ? session.addressedNow : []) {
+    addName(entry?.fromName || entry?.speakerName || entry?.name);
+  }
+
+  return names;
+}
+
+function formatActiveReturnPaths(count, speakerNames = []) {
   const activeCount = Number(count) || 0;
   if (activeCount <= 0) return "No active incoming talk";
+  if (speakerNames.length) {
+    const unknownCount = Math.max(0, activeCount - speakerNames.length);
+    const unknownSuffix = unknownCount > 0
+      ? ` + ${unknownCount} other${unknownCount === 1 ? "" : "s"}`
+      : "";
+    return `${speakerNames.join(", ")}${unknownSuffix} speaking`;
+  }
   if (activeCount === 1) return "1 active incoming talk";
   return `${activeCount} active incoming talks`;
 }
 
 function formatManagedReturnPathStatus(session) {
   const outputs = [...(session?.outputs?.values?.() || [])];
-  const base = formatActiveReturnPaths(outputs.length);
+  const base = formatActiveReturnPaths(outputs.length, getManagedIncomingSpeakerNames(session));
   if (!outputs.length) return base;
 
   const decodedFrames = outputs.reduce((sum, output) => sum + (Number(output.decodedFrames) || 0), 0);
@@ -773,8 +864,11 @@ function renderManagedTriggerControls(port, draft) {
         </select>
       </label>
       <label class="managed-port-control managed-port-control--threshold"${showDetails ? "" : " hidden"}>
-        <span>Threshold dBFS</span>
-        <input data-managed-port-control data-field="triggerThreshold" type="number" min="${MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB}" max="${MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB}" step="1" value="${escapeHtml(thresholdValue)}">
+        <span class="managed-port-threshold-label">
+          <span>Threshold</span>
+          <output data-trigger-threshold-value>${escapeHtml(thresholdValue)} dBFS</output>
+        </span>
+        <input data-managed-port-control data-field="triggerThreshold" type="range" min="${MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB}" max="${MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB}" step="1" value="${escapeHtml(thresholdValue)}" aria-label="Audio trigger threshold">
       </label>
     </div>
   `;
@@ -938,6 +1032,13 @@ function handleManagedPortControlChange(event) {
   }
 
   updateManagedPortDraftFromElement(card);
+  if (field === "triggerThreshold") {
+    const thresholdValue = Number(control.value);
+    const valueDisplay = card.querySelector("[data-trigger-threshold-value]");
+    if (valueDisplay instanceof HTMLOutputElement && Number.isFinite(thresholdValue)) {
+      valueDisplay.textContent = `${Math.round(thresholdValue)} dBFS`;
+    }
+  }
   if (field === "triggerMode") {
     renderManagedBridgePorts();
   }
@@ -959,6 +1060,15 @@ async function handleManagedPortSaveClick(event) {
 
 function renderManagedBridgePorts() {
   const configuredPorts = managedBridgeConfig?.ports ?? [];
+  if (!managedBridgeConfig) {
+    const html = '<div class="empty-state">Connect to the server to load bridge endpoints.</div>';
+    if (html !== lastManagedBridgePortsHtml) {
+      bridgePorts.innerHTML = html;
+      lastManagedBridgePortsHtml = html;
+    }
+    requestBridgeWindowResize();
+    return;
+  }
   if (!configuredPorts.length) {
     const html = '<div class="empty-state">No enabled bridge endpoints are assigned to this bridge.</div>';
     if (html !== lastManagedBridgePortsHtml) {
@@ -972,10 +1082,6 @@ function renderManagedBridgePorts() {
   const html = configuredPorts.map((port) => {
     const key = bridgePortKey(port);
     const session = managedSessions.get(key);
-    const addressedNow = Array.isArray(session?.addressedNow) ? session.addressedNow : [];
-    const speakerNames = addressedNow
-      .map((entry) => entry?.speakerName || entry?.name || null)
-      .filter(Boolean);
     const hasOutput = bridgePortHasOutput(port);
     const state = getManagedSessionState(session, port);
     const sessionError = session?.error && session.error !== state.label ? session.error : "";
@@ -1000,7 +1106,6 @@ function renderManagedBridgePorts() {
       </div>
       ${renderManagedTriggerControls(port, draft)}
       ${hasOutput ? `<small>${escapeHtml(formatManagedReturnPathStatus(session))}</small>` : ""}
-      ${speakerNames.length ? `<small>From: ${escapeHtml(speakerNames.join(", "))}</small>` : ""}
       ${sessionError ? `<div class="managed-port-error">${escapeHtml(sessionError)}</div>` : ""}
       ${editState.error ? `<div class="managed-port-error">${escapeHtml(editState.error)}</div>` : ""}
       </article>
@@ -2191,9 +2296,13 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
     throw new Error("API key or bridge token is required");
   }
 
+  serverUrlInput.value = serverUrl;
   saveBridgeSettings();
-  announceBridgeButton.disabled = true;
-  if (!quiet) setServerConnectionState("connecting");
+  if (!quiet) {
+    announceBridgeButton.disabled = true;
+    setBridgeConnectionError();
+    setServerConnectionState("connecting");
+  }
 
   try {
     const bridgeId = localStorage.getItem(STORAGE_KEYS.bridgeId) || "";
@@ -2255,6 +2364,7 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
       localStorage.setItem(STORAGE_KEYS.bridgeId, announcedBridge.id);
     }
     lastAnnouncedInventorySignature = inventorySignature(currentInventory);
+    setBridgeConnectionError();
     if (connectionStatus) {
       connectionStatus.textContent = "Announced";
     }
@@ -2278,7 +2388,7 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
       }
     }
   } finally {
-    announceBridgeButton.disabled = false;
+    if (!quiet) announceBridgeButton.disabled = false;
   }
 }
 
@@ -2287,6 +2397,7 @@ async function announceBridgeFromButton() {
     await announceBridge();
   } catch (error) {
     console.error(error);
+    setBridgeConnectionError(error);
     if (connectionStatus) {
       connectionStatus.textContent = "Save failed";
     }
@@ -2739,6 +2850,7 @@ async function refreshDevices() {
         if (isServerOfflineError(announceError)) {
           setServerConnectionState("disconnected");
         }
+        setBridgeConnectionError(announceError);
       }
     }
   } catch (error) {

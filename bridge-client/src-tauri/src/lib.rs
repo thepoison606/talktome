@@ -176,6 +176,8 @@ struct TrayAutostartMenuItem {
 }
 
 const WINDOW_FOCUS_HIDE_DELAY: Duration = Duration::from_millis(150);
+const BRIDGE_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_SERVER_HTTPS_PORT: u16 = 8443;
 
 impl WindowFocusGuard {
     fn suppress_for(&self, duration: Duration) -> Result<(), String> {
@@ -283,6 +285,7 @@ impl BridgeHttpClient {
     fn new() -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
+            .connect_timeout(Duration::from_secs(5))
             .build()
             .map_err(|err| format!("failed to build bridge HTTP client: {err}"))?;
         Ok(Self { client })
@@ -446,6 +449,7 @@ async fn announce_bridge(
         .post(format!("{server_url}/api/v1/bridge/announce"))
         .bearer_auth(api_key)
         .json(&payload)
+        .timeout(BRIDGE_HTTP_REQUEST_TIMEOUT)
         .send()
         .await
         .map_err(|err| format!("bridge announce request failed: {err}"))?;
@@ -491,7 +495,8 @@ async fn bridge_api_request(
     let mut request = http
         .client
         .request(method, format!("{server_url}{path}"))
-        .bearer_auth(api_key);
+        .bearer_auth(api_key)
+        .timeout(BRIDGE_HTTP_REQUEST_TIMEOUT);
     if let Some(body) = body {
         request = request.json(&body);
     }
@@ -580,16 +585,63 @@ fn get_bridge_media_status(
     manager.status()
 }
 
+fn server_url_has_explicit_port(value: &str) -> bool {
+    let without_scheme = value
+        .split_once("://")
+        .map(|(_, remainder)| remainder)
+        .unwrap_or(value);
+    let authority = without_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+
+    if let Some(remainder) = authority.strip_prefix('[') {
+        return remainder
+            .split_once(']')
+            .is_some_and(|(_, port)| port.strip_prefix(':').is_some_and(is_decimal_port));
+    }
+
+    authority.rsplit_once(':').is_some_and(|(host, port)| {
+        !host.is_empty() && !host.contains(':') && is_decimal_port(port)
+    })
+}
+
+fn is_decimal_port(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 fn normalize_server_url(value: &str) -> Result<String, String> {
-    let trimmed = value.trim().trim_end_matches('/');
+    let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err("Server URL is required".to_string());
     }
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        Ok(trimmed.to_string())
+
+    let has_explicit_port = server_url_has_explicit_port(trimmed);
+    let candidate = if trimmed.contains("://") {
+        trimmed.to_string()
     } else {
-        Ok(format!("https://{trimmed}"))
+        format!("https://{trimmed}")
+    };
+    let mut parsed = reqwest::Url::parse(&candidate).map_err(|_| "Server URL is invalid")?;
+    if !matches!(parsed.scheme(), "https" | "http") {
+        return Err("Server URL must use HTTPS or HTTP".to_string());
     }
+    if parsed.host_str().is_none() || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Server URL must contain a valid host without credentials".to_string());
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("Server URL must not contain a query or fragment".to_string());
+    }
+    if parsed.scheme() == "https" && !has_explicit_port {
+        parsed
+            .set_port(Some(DEFAULT_SERVER_HTTPS_PORT))
+            .map_err(|_| "Server URL contains an invalid port")?;
+    }
+
+    Ok(parsed.to_string().trim_end_matches('/').to_string())
 }
 
 #[tauri::command]
@@ -900,4 +952,52 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Talktome Bridge");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_server_url;
+
+    #[test]
+    fn normalizes_default_talktome_server_urls() {
+        for input in [
+            "intercom.local",
+            "intercom.local:8443",
+            "https://intercom.local",
+            "https://intercom.local:8443",
+        ] {
+            assert_eq!(
+                normalize_server_url(input).unwrap(),
+                "https://intercom.local:8443",
+                "unexpected normalization for {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_explicit_and_protocol_default_ports() {
+        assert_eq!(
+            normalize_server_url("https://intercom.local:3").unwrap(),
+            "https://intercom.local:3"
+        );
+        assert_eq!(
+            normalize_server_url("https://intercom.local:443").unwrap(),
+            "https://intercom.local"
+        );
+        assert_eq!(
+            normalize_server_url("http://intercom.local").unwrap(),
+            "http://intercom.local"
+        );
+    }
+
+    #[test]
+    fn supports_ipv6_and_rejects_unsafe_server_urls() {
+        assert_eq!(
+            normalize_server_url("https://[::1]").unwrap(),
+            "https://[::1]:8443"
+        );
+        assert!(normalize_server_url("ftp://intercom.local").is_err());
+        assert!(normalize_server_url("https://user:secret@intercom.local").is_err());
+        assert!(normalize_server_url("https://intercom.local?key=value").is_err());
+    }
 }

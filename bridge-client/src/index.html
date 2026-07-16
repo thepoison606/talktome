@@ -32,7 +32,7 @@
         <div class="server-grid">
           <label>
             <span>Server IP/URL</span>
-            <input id="server-url" type="url" autocomplete="url" />
+            <input id="server-url" type="url" autocomplete="url" placeholder="https://intercom.local:8443" />
           </label>
           <label>
             <span>API key</span>
@@ -43,6 +43,7 @@
             <input id="bridge-name" type="text" autocomplete="off" />
           </label>
         </div>
+        <div class="connection-error" id="announce-error" role="status"></div>
         <div class="autostart-status" id="autostart-status"></div>
       </section>
 
