@@ -1,7 +1,7 @@
 {
   "name": "talktome-server-app",
   "private": true,
-  "version": "1.0.11",
+  "version": "1.0.12",
   "type": "module",
   "scripts": {
     "dev": "npm run prepare:server -- --optional && tauri dev",
