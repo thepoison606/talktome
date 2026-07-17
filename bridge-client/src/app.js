@@ -9,7 +9,6 @@ const stopAllPortsButton = document.getElementById("stop-all-ports");
 const serverUrlInput = document.getElementById("server-url");
 const apiKeyInput = document.getElementById("api-key");
 const bridgeNameInput = document.getElementById("bridge-name");
-const announceBridgeButton = document.getElementById("announce-bridge");
 const announceStatus = document.getElementById("announce-status");
 const announceError = document.getElementById("announce-error");
 const autostartInput = document.getElementById("autostart-enabled");
@@ -64,10 +63,17 @@ let lastManagedBridgePortsHtml = "";
 let bridgeEventStreamListenerPromise = null;
 let resizeWindowFrame = null;
 let lastRequestedWindowHeight = 0;
+let bridgeSettingsApplyTimer = null;
+let bridgeSettingsApplyRunning = false;
+let bridgeSettingsApplyQueued = false;
 const managedSessions = new Map();
 const nativeEventStreamSessions = new Map();
 const managedPortDrafts = new Map();
 const managedPortEditStates = new Map();
+const managedPortDraftRevisions = new Map();
+const managedPortAutoSaveTimers = new Map();
+const managedPortSaveInFlight = new Set();
+const managedPortSaveQueued = new Set();
 
 function measureBridgeWindowContentHeight() {
   const shell = document.querySelector(".shell");
@@ -924,7 +930,9 @@ function updateManagedPortDraftFromElement(card) {
     trigger: port.kind === "user" ? readManagedTriggerFromElement(card) : null,
   };
   managedPortDrafts.set(key, draft);
-  managedPortEditStates.set(key, { dirty: true });
+  managedPortDraftRevisions.set(key, (managedPortDraftRevisions.get(key) || 0) + 1);
+  const editState = managedPortEditStates.get(key) || {};
+  managedPortEditStates.set(key, { ...editState, dirty: true, error: null });
 }
 
 function validateManagedPortAssignment(assignment, label) {
@@ -964,6 +972,7 @@ async function saveManagedBridgePort(key) {
   const card = getManagedPortElement(key);
   if (!card) return;
   updateManagedPortDraftFromElement(card);
+  const saveRevision = managedPortDraftRevisions.get(key) || 0;
   const draft = managedPortDrafts.get(key) || getManagedPortDraft(port);
 
   validateManagedPortAssignment(draft.input, "Input");
@@ -999,13 +1008,50 @@ async function saveManagedBridgePort(key) {
       `/api/v1/bridge/${encodeURIComponent(bridgeId)}/ports/${encodeURIComponent(port.kind)}/${encodeURIComponent(targetId)}`,
       payload
     );
-    managedPortDrafts.delete(key);
-    managedPortEditStates.delete(key);
+    if ((managedPortDraftRevisions.get(key) || 0) === saveRevision) {
+      managedPortDrafts.delete(key);
+      managedPortEditStates.delete(key);
+    } else {
+      managedPortEditStates.set(key, { dirty: true });
+    }
     await reconcileManagedBridgeConfig(config);
   } catch (error) {
-    managedPortEditStates.set(key, { error: String(error?.message || error) });
+    managedPortEditStates.set(key, {
+      dirty: true,
+      error: String(error?.message || error)
+    });
     renderManagedBridgePorts();
     throw error;
+  }
+}
+
+function scheduleManagedPortAutoSave(key, delay = 200) {
+  if (!key) return;
+  const existingTimer = managedPortAutoSaveTimers.get(key);
+  if (existingTimer) window.clearTimeout(existingTimer);
+  const timer = window.setTimeout(() => {
+    managedPortAutoSaveTimers.delete(key);
+    runManagedPortAutoSave(key);
+  }, delay);
+  managedPortAutoSaveTimers.set(key, timer);
+}
+
+async function runManagedPortAutoSave(key) {
+  if (managedPortSaveInFlight.has(key)) {
+    managedPortSaveQueued.add(key);
+    return;
+  }
+
+  managedPortSaveInFlight.add(key);
+  try {
+    await saveManagedBridgePort(key);
+  } catch (error) {
+    console.error("Failed to save managed bridge port", error);
+  } finally {
+    managedPortSaveInFlight.delete(key);
+    if (managedPortSaveQueued.delete(key)) {
+      scheduleManagedPortAutoSave(key, 0);
+    }
   }
 }
 
@@ -1051,6 +1097,9 @@ function handleManagedPortControlChange(event) {
   if (field === "triggerMode") {
     renderManagedBridgePorts();
   }
+  if (event.type === "change") {
+    scheduleManagedPortAutoSave(card.dataset.managedPortKey || "");
+  }
 }
 
 function startManagedRangeInteraction(event) {
@@ -1066,20 +1115,6 @@ function finishManagedRangeInteraction() {
   managedRangeInteractionActive = false;
   suppressWindowFocusHide(750);
   window.requestAnimationFrame(renderManagedBridgePorts);
-}
-
-async function handleManagedPortSaveClick(event) {
-  const button = event.target instanceof Element
-    ? event.target.closest("[data-save-managed-port]")
-    : null;
-  if (!(button instanceof HTMLButtonElement)) return;
-  const key = button.dataset.saveManagedPort || "";
-  if (!key) return;
-  try {
-    await saveManagedBridgePort(key);
-  } catch (error) {
-    console.error("Failed to save managed bridge port", error);
-  }
 }
 
 function renderManagedBridgePorts() {
@@ -1108,11 +1143,12 @@ function renderManagedBridgePorts() {
     const key = bridgePortKey(port);
     const session = managedSessions.get(key);
     const hasOutput = bridgePortHasOutput(port);
-    const state = getManagedSessionState(session, port);
-    const sessionError = session?.error && session.error !== state.label ? session.error : "";
     const draft = getManagedPortDraft(port);
     const editState = managedPortEditStates.get(key) || {};
-    const saveLabel = editState.saving ? "Saving" : "Save";
+    const state = editState.saving
+      ? { label: "Saving", className: "warning" }
+      : getManagedSessionState(session, port);
+    const sessionError = session?.error && session.error !== state.label ? session.error : "";
     return `
       <article class="managed-port-card" data-managed-port-key="${escapeHtml(key)}">
       <div class="managed-port-title">
@@ -1122,7 +1158,6 @@ function renderManagedBridgePorts() {
         </div>
         <div class="managed-port-actions">
           <span class="managed-port-state ${escapeHtml(state.className)}">${escapeHtml(state.label)}</span>
-          <button type="button" class="managed-port-save" data-save-managed-port="${escapeHtml(key)}"${editState.saving ? " disabled" : ""}>${escapeHtml(saveLabel)}</button>
         </div>
       </div>
       <div class="managed-port-routing-grid">
@@ -2362,109 +2397,129 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
   serverUrlInput.value = serverUrl;
   saveBridgeSettings();
   if (!quiet) {
-    announceBridgeButton.disabled = true;
     setBridgeConnectionError();
     setServerConnectionState("connecting");
   }
 
-  try {
-    const bridgeId = localStorage.getItem(STORAGE_KEYS.bridgeId) || "";
-    const sendAnnounce = async (authToken) => {
-      if (invoke) {
-        if (!currentInventory) {
-          throw new Error("Refresh audio devices before saving.");
-        }
-        await suppressWindowFocusHide(250);
-        return invoke("announce_bridge", {
-          serverUrl,
-          apiKey: authToken,
-          bridgeId: bridgeId || null,
-          bridgeName,
-          inventory: currentInventory
-        });
-      }
-
+  const bridgeId = localStorage.getItem(STORAGE_KEYS.bridgeId) || "";
+  const sendAnnounce = async (authToken) => {
+    if (invoke) {
       if (!currentInventory) {
-        throw new Error("Refresh audio devices before saving.");
+        throw new Error("Audio devices are not ready yet.");
       }
-
-      const response = await fetch(`${serverUrl}/api/v1/bridge/announce`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${authToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          bridgeId,
-          bridgeName,
-          platform: getBridgeClientPlatform(),
-          inventory: currentInventory
-        })
+      await suppressWindowFocusHide(250);
+      return invoke("announce_bridge", {
+        serverUrl,
+        apiKey: authToken,
+        bridgeId: bridgeId || null,
+        bridgeName,
+        inventory: currentInventory
       });
+    }
 
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload.error || `Save failed (${response.status})`);
-      }
-      return payload;
-    };
+    if (!currentInventory) {
+      throw new Error("Audio devices are not ready yet.");
+    }
 
-    let announceResponse;
+    const response = await fetch(`${serverUrl}/api/v1/bridge/announce`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${authToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        bridgeId,
+        bridgeName,
+        platform: getBridgeClientPlatform(),
+        inventory: currentInventory
+      })
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || `Bridge update failed (${response.status})`);
+    }
+    return payload;
+  };
+
+  let announceResponse;
+  try {
+    announceResponse = await sendAnnounce(credential);
+  } catch (error) {
+    if (!bridgeToken || !apiKey || credential === apiKey || !/auth|access|forbidden|required|401|403/i.test(String(error.message || error))) {
+      throw error;
+    }
+    announceResponse = await sendAnnounce(apiKey);
+  }
+  const announcedBridge = announceResponse?.bridge || announceResponse || {};
+  if (announceResponse?.bridgeToken) {
+    localStorage.setItem(STORAGE_KEYS.bridgeToken, announceResponse.bridgeToken);
+  }
+
+  if (announcedBridge.id) {
+    localStorage.setItem(STORAGE_KEYS.bridgeId, announcedBridge.id);
+  }
+  lastAnnouncedInventorySignature = inventorySignature(currentInventory);
+  setBridgeConnectionError();
+  if (connectionStatus) {
+    connectionStatus.textContent = "Announced";
+  }
+  setServerConnectionState("connected");
+  if (syncConfig && announcedBridge.id) {
     try {
-      announceResponse = await sendAnnounce(credential);
+      const config = await bridgeApi(
+        "GET",
+        `/api/v1/bridge/${encodeURIComponent(announcedBridge.id)}/config`
+      );
+      await reconcileManagedBridgeConfig(config);
+      startManagedTimers();
+      if (connectionStatus) {
+        connectionStatus.textContent = managedSessions.size ? "Connected" : "Announced";
+      }
     } catch (error) {
-      if (!bridgeToken || !apiKey || credential === apiKey || !/auth|access|forbidden|required|401|403/i.test(String(error.message || error))) {
-        throw error;
+      if (isServerOfflineError(error)) {
+        setServerConnectionState("disconnected");
       }
-      announceResponse = await sendAnnounce(apiKey);
+      throw error;
     }
-    const announcedBridge = announceResponse?.bridge || announceResponse || {};
-    if (announceResponse?.bridgeToken) {
-      localStorage.setItem(STORAGE_KEYS.bridgeToken, announceResponse.bridgeToken);
-    }
-
-    if (announcedBridge.id) {
-      localStorage.setItem(STORAGE_KEYS.bridgeId, announcedBridge.id);
-    }
-    lastAnnouncedInventorySignature = inventorySignature(currentInventory);
-    setBridgeConnectionError();
-    if (connectionStatus) {
-      connectionStatus.textContent = "Announced";
-    }
-    setServerConnectionState("connected");
-    if (syncConfig && announcedBridge.id) {
-      try {
-        const config = await bridgeApi(
-          "GET",
-          `/api/v1/bridge/${encodeURIComponent(announcedBridge.id)}/config`
-        );
-        await reconcileManagedBridgeConfig(config);
-        startManagedTimers();
-        if (connectionStatus) {
-          connectionStatus.textContent = managedSessions.size ? "Connected" : "Announced";
-        }
-      } catch (error) {
-        if (isServerOfflineError(error)) {
-          setServerConnectionState("disconnected");
-        }
-        throw error;
-      }
-    }
-  } finally {
-    if (!quiet) announceBridgeButton.disabled = false;
   }
 }
 
-async function announceBridgeFromButton() {
+async function applyBridgeSettings() {
   try {
     await announceBridge();
   } catch (error) {
     console.error(error);
     setBridgeConnectionError(error);
     if (connectionStatus) {
-      connectionStatus.textContent = "Save failed";
+      connectionStatus.textContent = "Connection failed";
     }
     setServerConnectionState("disconnected");
+  }
+}
+
+function scheduleBridgeSettingsApply(delay = 700) {
+  saveBridgeSettings();
+  if (bridgeSettingsApplyTimer) window.clearTimeout(bridgeSettingsApplyTimer);
+  bridgeSettingsApplyTimer = window.setTimeout(runBridgeSettingsApply, delay);
+}
+
+async function runBridgeSettingsApply() {
+  bridgeSettingsApplyTimer = null;
+  if (bridgeSettingsApplyRunning) {
+    bridgeSettingsApplyQueued = true;
+    return;
+  }
+
+  bridgeSettingsApplyRunning = true;
+  try {
+    await applyBridgeSettings();
+  } finally {
+    bridgeSettingsApplyRunning = false;
+    if (bridgeSettingsApplyQueued) {
+      bridgeSettingsApplyQueued = false;
+      scheduleBridgeSettingsApply(0);
+    }
   }
 }
 
@@ -2935,16 +2990,15 @@ async function refreshDevices() {
 addPortButton?.addEventListener("click", addPort);
 stopAllPortsButton?.addEventListener("click", stopAllPorts);
 refreshButton?.addEventListener("click", refreshDevices);
-announceBridgeButton.addEventListener("click", announceBridgeFromButton);
 autostartInput.addEventListener("change", setAutostartState);
 bridgePorts?.addEventListener("change", handleManagedPortControlChange);
 bridgePorts?.addEventListener("input", handleManagedPortControlChange);
-bridgePorts?.addEventListener("click", handleManagedPortSaveClick);
 bridgePorts?.addEventListener("pointerdown", startManagedRangeInteraction);
 window.addEventListener("pointerup", finishManagedRangeInteraction);
 window.addEventListener("pointercancel", finishManagedRangeInteraction);
 [serverUrlInput, apiKeyInput, bridgeNameInput].forEach((input) => {
-  input.addEventListener("change", saveBridgeSettings);
+  input.addEventListener("input", () => scheduleBridgeSettingsApply());
+  input.addEventListener("change", () => scheduleBridgeSettingsApply(0));
 });
 window.addEventListener("beforeunload", () => {
   if (managedHeartbeatTimer) window.clearInterval(managedHeartbeatTimer);
@@ -2952,6 +3006,8 @@ window.addEventListener("beforeunload", () => {
   if (managedInventoryTimer) window.clearInterval(managedInventoryTimer);
   if (managedRetryTimer) window.clearInterval(managedRetryTimer);
   if (managedLevelTriggerTimer) window.clearInterval(managedLevelTriggerTimer);
+  if (bridgeSettingsApplyTimer) window.clearTimeout(bridgeSettingsApplyTimer);
+  for (const timer of managedPortAutoSaveTimers.values()) window.clearTimeout(timer);
   for (const session of managedSessions.values()) {
     stopManagedEventStream(session);
   }

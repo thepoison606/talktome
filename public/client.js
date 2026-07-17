@@ -9490,7 +9490,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     suspendedLockRestoreTimer = setTimeout(() => {
       suspendedLockRestoreTimer = null;
       if (!suspendedLockState) return;
-      if (producer || pendingTalkStart) {
+      // A paused warm producer intentionally remains available between talks.
+      // Only wait while another talk is actually still starting or active.
+      if (pendingTalkStart || isTalking || currentTargets.length > 0) {
         scheduleRestoreSuspendedLock();
         return;
       }
@@ -9795,6 +9797,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     if (!isOperatorSession()) return;
     const shouldRestoreSuspendedLock = Boolean(suspendedLockState) && !e?.suppressLockRestore;
     const inputKey = getTalkInputKey(e);
+    let producerPausePromise = null;
 
     if (activeLockButton && e.currentTarget && e.currentTarget !== activeLockButton) {
       return;
@@ -9826,7 +9829,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     emitTalkTargetsUpdated('talk-targets-cleared', []);
 
     if (producer && !producer.closed) {
-      pauseTalkProducer(producer).catch((error) => {
+      producerPausePromise = pauseTalkProducer(producer).catch((error) => {
         console.warn('Failed to pause talk producer, closing it instead:', error);
         const staleProducer = producer;
         if (staleProducer && !staleProducer.closed) {
@@ -9865,7 +9868,11 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     emitPttState('talk-stopped', { talking: false, lockActive: false, target: null, targets: [] });
 
     if (shouldRestoreSuspendedLock) {
-      scheduleRestoreSuspendedLock();
+      if (producerPausePromise) {
+        producerPausePromise.finally(() => scheduleRestoreSuspendedLock());
+      } else {
+        scheduleRestoreSuspendedLock();
+      }
     }
   }
 
