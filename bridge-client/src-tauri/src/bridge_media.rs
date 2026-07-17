@@ -191,6 +191,7 @@ pub struct BridgeMediaStreamError {
 pub struct BridgeMediaInputStats {
     pub stream_id: String,
     pub rms_db: f32,
+    pub captured_frames: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -242,6 +243,7 @@ struct BridgeInputRuntime {
     child: Arc<Mutex<Child>>,
     last_error: Arc<Mutex<Option<String>>>,
     level_milli_db: Arc<AtomicI32>,
+    captured_frames: Arc<AtomicU64>,
     sender: Option<SyncSender<Vec<u8>>>,
     writer: Option<JoinHandle<()>>,
 }
@@ -493,6 +495,8 @@ impl BridgeInputRuntime {
         let stream_error = Arc::clone(&last_error);
         let level_milli_db = Arc::new(AtomicI32::new(-120_000));
         let callback_level = Arc::clone(&level_milli_db);
+        let captured_frames = Arc::new(AtomicU64::new(0));
+        let callback_captured_frames = Arc::clone(&captured_frames);
         let stream = device
             .build_input_stream::<f32, _, _>(
                 config,
@@ -515,6 +519,7 @@ impl BridgeInputRuntime {
                     }
                     callback_level
                         .store(rms_milli_db(sum_squares, sample_count), Ordering::Relaxed);
+                    callback_captured_frames.fetch_add(frames as u64, Ordering::Relaxed);
                     let _ = callback_sender.try_send(bytes);
                 },
                 move |err| {
@@ -589,6 +594,7 @@ impl BridgeInputRuntime {
             child,
             last_error,
             level_milli_db,
+            captured_frames,
             sender: Some(sender),
             writer: Some(writer),
         })
@@ -1075,6 +1081,7 @@ fn status_from(state: &BridgeMediaState) -> BridgeMediaStatus {
         .map(|(stream_id, runtime)| BridgeMediaInputStats {
             stream_id: stream_id.clone(),
             rms_db: runtime.level_milli_db.load(Ordering::Relaxed) as f32 / 1000.0,
+            captured_frames: runtime.captured_frames.load(Ordering::Relaxed),
         })
         .collect::<Vec<_>>();
     let mut output_stream_stats = state

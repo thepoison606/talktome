@@ -330,6 +330,7 @@ h3 {
   accent-color: #60a5fa;
   min-height: 2rem;
   padding: 0;
+  touch-action: none;
 }
 
 .managed-port-threshold-label {
@@ -341,6 +342,15 @@ h3 {
 .managed-port-threshold-label output {
   color: #edf2f7;
   font-variant-numeric: tabular-nums;
+}
+
+.managed-port-input-level {
+  color: #9fb0c0;
+  font-variant-numeric: tabular-nums;
+}
+
+.managed-port-input-level.warning {
+  color: #fca5a5;
 }
 
 .managed-port-error {

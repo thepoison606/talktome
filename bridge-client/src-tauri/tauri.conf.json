@@ -40,6 +40,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "entitlements": "Entitlements.plist",
+      "infoPlist": "Info.plist",
+      "signingIdentity": "-"
+    },
     "windows": {
       "nsis": {
         "installerHooks": "installer-hooks.nsh"

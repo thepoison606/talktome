@@ -33,6 +33,7 @@ const MANAGED_RETRY_MS = 2_000;
 const MANAGED_LEVEL_TRIGGER_POLL_MS = 50;
 const MANAGED_LEVEL_TRIGGER_ATTACK_MS = 45;
 const MANAGED_LEVEL_TRIGGER_RELEASE_MS = 450;
+const MANAGED_INPUT_ACTIVITY_GRACE_MS = 2000;
 const MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB = -45;
 const MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB = -120;
 const MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB = -10;
@@ -56,6 +57,7 @@ let managedLevelTriggerTimer = null;
 let managedRetryRunning = false;
 let managedLevelTriggerRunning = false;
 let managedInventoryWatchRunning = false;
+let managedRangeInteractionActive = false;
 let lastAnnouncedInventorySignature = "";
 let lastAudioDeviceSnapshotSignature = "";
 let lastManagedBridgePortsHtml = "";
@@ -869,6 +871,7 @@ function renderManagedTriggerControls(port, draft) {
           <output data-trigger-threshold-value>${escapeHtml(thresholdValue)} dBFS</output>
         </span>
         <input data-managed-port-control data-field="triggerThreshold" type="range" min="${MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB}" max="${MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB}" step="1" value="${escapeHtml(thresholdValue)}" aria-label="Audio trigger threshold">
+        <small class="managed-port-input-level" data-managed-input-level>Input level: waiting…</small>
       </label>
     </div>
   `;
@@ -1033,15 +1036,36 @@ function handleManagedPortControlChange(event) {
 
   updateManagedPortDraftFromElement(card);
   if (field === "triggerThreshold") {
+    if (event.type === "input" && managedRangeInteractionActive) {
+      suppressWindowFocusHide(5000);
+    }
     const thresholdValue = Number(control.value);
     const valueDisplay = card.querySelector("[data-trigger-threshold-value]");
     if (valueDisplay instanceof HTMLOutputElement && Number.isFinite(thresholdValue)) {
       valueDisplay.textContent = `${Math.round(thresholdValue)} dBFS`;
     }
+    if (event.type === "change") {
+      finishManagedRangeInteraction();
+    }
   }
   if (field === "triggerMode") {
     renderManagedBridgePorts();
   }
+}
+
+function startManagedRangeInteraction(event) {
+  const control = event.target;
+  if (!(control instanceof HTMLInputElement) || control.type !== "range") return;
+  if (!control.matches('[data-field="triggerThreshold"]')) return;
+  managedRangeInteractionActive = true;
+  suppressWindowFocusHide(5000);
+}
+
+function finishManagedRangeInteraction() {
+  if (!managedRangeInteractionActive) return;
+  managedRangeInteractionActive = false;
+  suppressWindowFocusHide(750);
+  window.requestAnimationFrame(renderManagedBridgePorts);
 }
 
 async function handleManagedPortSaveClick(event) {
@@ -1059,6 +1083,7 @@ async function handleManagedPortSaveClick(event) {
 }
 
 function renderManagedBridgePorts() {
+  if (managedRangeInteractionActive) return;
   const configuredPorts = managedBridgeConfig?.ports ?? [];
   if (!managedBridgeConfig) {
     const html = '<div class="empty-state">Connect to the server to load bridge endpoints.</div>';
@@ -1310,8 +1335,42 @@ function getManagedLevelTriggerThreshold(port) {
 function getManagedInputLevelMap(status) {
   return new Map((status?.inputStreamStats || []).map((entry) => [
     String(entry.streamId || ""),
-    Number(entry.rmsDb ?? entry.rms_db ?? -120)
+    {
+      rmsDb: Number(entry.rmsDb ?? entry.rms_db ?? -120),
+      capturedFrames: Number(entry.capturedFrames ?? entry.captured_frames ?? NaN)
+    }
   ]));
+}
+
+function updateManagedInputLevelDisplay(session, inputStats) {
+  const card = getManagedPortElement(bridgePortKey(session.port));
+  const display = card?.querySelector("[data-managed-input-level]");
+  if (!(display instanceof HTMLElement)) return;
+
+  const rmsDb = Number(inputStats?.rmsDb);
+  const capturedFrames = Number(inputStats?.capturedFrames);
+  const elapsed = Date.now() - Number(session.inputStartedAt || Date.now());
+  display.classList.remove("warning");
+
+  if (Number.isFinite(capturedFrames) && capturedFrames <= 0) {
+    display.textContent = elapsed >= MANAGED_INPUT_ACTIVITY_GRACE_MS
+      ? "No input audio — check microphone permission"
+      : "Input level: waiting…";
+    display.classList.toggle("warning", elapsed >= MANAGED_INPUT_ACTIVITY_GRACE_MS);
+    return;
+  }
+
+  if (!Number.isFinite(rmsDb)) {
+    display.textContent = "Input level unavailable";
+    display.classList.add("warning");
+    return;
+  }
+
+  display.textContent = `Input level: ${rmsDb.toFixed(1)} dBFS`;
+  if (elapsed >= MANAGED_INPUT_ACTIVITY_GRACE_MS && rmsDb <= MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB) {
+    display.textContent += " — check device and channels";
+    display.classList.add("warning");
+  }
 }
 
 async function sendManagedCommandResult(session, payload, result) {
@@ -1765,7 +1824,9 @@ async function processManagedLevelTriggers() {
         continue;
       }
 
-      const levelDb = levels.get(session.inputStreamId);
+      const inputStats = levels.get(session.inputStreamId);
+      updateManagedInputLevelDisplay(session, inputStats);
+      const levelDb = Number(inputStats?.rmsDb);
       if (!Number.isFinite(levelDb)) continue;
       const thresholdDb = getManagedLevelTriggerThreshold(session.port);
 
@@ -1920,6 +1981,7 @@ async function startManagedSession(port, { reuse = false, silentRetry = false } 
         ssrc: rtp.ssrc
       }
     });
+    session.inputStartedAt = Date.now();
     const producer = await bridgeApi("POST", managedSessionPath(session, "/producers"), rtp);
     session.producerId = producer.id;
     session.ready = true;
@@ -1955,6 +2017,7 @@ async function stopManagedSession(session, { remove = true } = {}) {
   }
   session.sessionId = null;
   session.producerId = null;
+  session.inputStartedAt = 0;
   session.outputs.clear();
   session.talking = false;
   session.talkSource = null;
@@ -2877,6 +2940,9 @@ autostartInput.addEventListener("change", setAutostartState);
 bridgePorts?.addEventListener("change", handleManagedPortControlChange);
 bridgePorts?.addEventListener("input", handleManagedPortControlChange);
 bridgePorts?.addEventListener("click", handleManagedPortSaveClick);
+bridgePorts?.addEventListener("pointerdown", startManagedRangeInteraction);
+window.addEventListener("pointerup", finishManagedRangeInteraction);
+window.addEventListener("pointercancel", finishManagedRangeInteraction);
 [serverUrlInput, apiKeyInput, bridgeNameInput].forEach((input) => {
   input.addEventListener("change", saveBridgeSettings);
 });
