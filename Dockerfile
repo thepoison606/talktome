@@ -16,6 +16,7 @@ COPY db.js ./
 COPY dbHandler.js ./
 COPY server.js ./
 COPY serverCore.js ./
+COPY webrtcConfig.js ./
 COPY public ./public
 COPY LICENSE ./
 COPY README.md ./

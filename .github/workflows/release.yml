@@ -17,6 +17,8 @@ on:
       - "package-lock.json"
       - "server.js"
       - "serverCore.js"
+      - "webrtcConfig.js"
+      - "webrtcConfig.test.js"
       - "db.js"
       - "dbHandler.js"
       - "dataPaths.js"

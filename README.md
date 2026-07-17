@@ -102,11 +102,32 @@ Useful environment overrides:
 - `PUBLIC_IP`: manual WebRTC announced address
 - `MDNS_HOST`: mDNS hostname, or `off`
 - `TALKTOME_MEDIA_INTERFACE`: preferred network adapter
+- `TALKTOME_MEDIA_INTERNAL_IP`: optional bindable LAN address advertised in addition to `PUBLIC_IP`
 - `TALKTOME_RTC_PORT_START` and `TALKTOME_RTC_PORT_COUNT`: RTC range override
+- `TALKTOME_ICE_SERVERS_JSON`: browser STUN/TURN servers as standard `RTCIceServer` JSON
+- `TALKTOME_ICE_TRANSPORT_POLICY`: browser ICE policy, `all` (default) or `relay`
+- `TALKTOME_TURN_URLS`, `TALKTOME_TURN_USERNAME` and `TALKTOME_TURN_CREDENTIAL`: simple TURN-only alternative to the JSON setting
 - `TALKTOME_DATA_DIR`: data directory override
 - `COMPANION_API_KEY`: fixed Companion/API key
 
-Changing the media network or RTC port range requires a server restart. Guest login changes apply immediately.
+Changing media-network, RTC-port or browser ICE environment settings requires a server restart. Guest login changes apply immediately.
+
+For browser clients behind restrictive NAT or firewalls, configure one or more TURN servers. The JSON form supports multiple STUN/TURN entries and transports:
+
+```sh
+TALKTOME_ICE_SERVERS_JSON='[
+  {"urls":"stun:turn.example.com:3478"},
+  {
+    "urls":["turn:turn.example.com:3478?transport=udp","turns:turn.example.com:5349?transport=tcp"],
+    "username":"talktome",
+    "credential":"replace-me"
+  }
+]'
+```
+
+Use `TALKTOME_ICE_TRANSPORT_POLICY=relay` only when browser media must always use TURN. TURN applies to browser WebRTC media; Bridge endpoints use their own RTP path and are not relayed by this setting. Keep TURN credentials in the deployment environment rather than checked-in configuration files.
+
+If the server has both a public address and a directly reachable LAN address, set `PUBLIC_IP` to the public address and `TALKTOME_MEDIA_INTERNAL_IP` to the server's bindable LAN IP. Browsers then receive both candidates. Do not set the internal value to an address that is not assigned to the server.
 
 ## Data
 

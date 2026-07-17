@@ -37,7 +37,6 @@ const MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB = -45;
 const MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB = -120;
 const MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB = -10;
 const MANAGED_DEFAULT_TARGET_VOLUME = 0.9;
-const DEFAULT_SERVER_HTTPS_PORT = "8443";
 const MIN_WINDOW_HEIGHT = 260;
 const MAX_WINDOW_HEIGHT = 820;
 
@@ -290,23 +289,12 @@ function getBridgeCredential() {
   return localStorage.getItem(STORAGE_KEYS.bridgeToken) || apiKeyInput.value.trim();
 }
 
-function serverUrlHasExplicitPort(value) {
-  const withoutScheme = String(value || "").replace(/^[a-z][a-z\d+.-]*:\/\//i, "");
-  const authorityParts = withoutScheme.split(/[/?#]/, 1)[0].split("@");
-  const authority = authorityParts[authorityParts.length - 1] || "";
-  if (authority.startsWith("[")) {
-    return /^\[[^\]]+\]:\d+$/.test(authority);
-  }
-  return /^[^:]+:\d+$/.test(authority);
-}
-
 function normalizeServerUrl(value) {
   const trimmed = String(value || "").trim();
   if (!trimmed) {
     throw new Error("Server URL is required");
   }
 
-  const hasExplicitPort = serverUrlHasExplicitPort(trimmed);
   const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(trimmed)
     ? trimmed
     : `https://${trimmed}`;
@@ -324,9 +312,6 @@ function normalizeServerUrl(value) {
   }
   if (parsed.search || parsed.hash) {
     throw new Error("Server URL must not contain a query or fragment");
-  }
-  if (parsed.protocol === "https:" && !hasExplicitPort) {
-    parsed.port = DEFAULT_SERVER_HTTPS_PORT;
   }
 
   return parsed.toString().replace(/\/+$/, "");

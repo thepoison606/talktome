@@ -177,7 +177,6 @@ struct TrayAutostartMenuItem {
 
 const WINDOW_FOCUS_HIDE_DELAY: Duration = Duration::from_millis(150);
 const BRIDGE_HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-const DEFAULT_SERVER_HTTPS_PORT: u16 = 8443;
 
 impl WindowFocusGuard {
     fn suppress_for(&self, duration: Duration) -> Result<(), String> {
@@ -585,47 +584,18 @@ fn get_bridge_media_status(
     manager.status()
 }
 
-fn server_url_has_explicit_port(value: &str) -> bool {
-    let without_scheme = value
-        .split_once("://")
-        .map(|(_, remainder)| remainder)
-        .unwrap_or(value);
-    let authority = without_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .rsplit('@')
-        .next()
-        .unwrap_or_default();
-
-    if let Some(remainder) = authority.strip_prefix('[') {
-        return remainder
-            .split_once(']')
-            .is_some_and(|(_, port)| port.strip_prefix(':').is_some_and(is_decimal_port));
-    }
-
-    authority.rsplit_once(':').is_some_and(|(host, port)| {
-        !host.is_empty() && !host.contains(':') && is_decimal_port(port)
-    })
-}
-
-fn is_decimal_port(value: &str) -> bool {
-    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
-}
-
 fn normalize_server_url(value: &str) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err("Server URL is required".to_string());
     }
 
-    let has_explicit_port = server_url_has_explicit_port(trimmed);
     let candidate = if trimmed.contains("://") {
         trimmed.to_string()
     } else {
         format!("https://{trimmed}")
     };
-    let mut parsed = reqwest::Url::parse(&candidate).map_err(|_| "Server URL is invalid")?;
+    let parsed = reqwest::Url::parse(&candidate).map_err(|_| "Server URL is invalid")?;
     if !matches!(parsed.scheme(), "https" | "http") {
         return Err("Server URL must use HTTPS or HTTP".to_string());
     }
@@ -635,12 +605,6 @@ fn normalize_server_url(value: &str) -> Result<String, String> {
     if parsed.query().is_some() || parsed.fragment().is_some() {
         return Err("Server URL must not contain a query or fragment".to_string());
     }
-    if parsed.scheme() == "https" && !has_explicit_port {
-        parsed
-            .set_port(Some(DEFAULT_SERVER_HTTPS_PORT))
-            .map_err(|_| "Server URL contains an invalid port")?;
-    }
-
     Ok(parsed.to_string().trim_end_matches('/').to_string())
 }
 
@@ -959,19 +923,23 @@ mod tests {
     use super::normalize_server_url;
 
     #[test]
-    fn normalizes_default_talktome_server_urls() {
-        for input in [
-            "intercom.local",
-            "intercom.local:8443",
-            "https://intercom.local",
-            "https://intercom.local:8443",
-        ] {
-            assert_eq!(
-                normalize_server_url(input).unwrap(),
-                "https://intercom.local:8443",
-                "unexpected normalization for {input}"
-            );
-        }
+    fn normalizes_supported_server_urls_without_inventing_a_port() {
+        assert_eq!(
+            normalize_server_url("intercom.local").unwrap(),
+            "https://intercom.local"
+        );
+        assert_eq!(
+            normalize_server_url("https://intercom.local").unwrap(),
+            "https://intercom.local"
+        );
+        assert_eq!(
+            normalize_server_url("intercom.local:8443").unwrap(),
+            "https://intercom.local:8443"
+        );
+        assert_eq!(
+            normalize_server_url("https://intercom.local:8445").unwrap(),
+            "https://intercom.local:8445"
+        );
     }
 
     #[test]
@@ -994,7 +962,7 @@ mod tests {
     fn supports_ipv6_and_rejects_unsafe_server_urls() {
         assert_eq!(
             normalize_server_url("https://[::1]").unwrap(),
-            "https://[::1]:8443"
+            "https://[::1]"
         );
         assert!(normalize_server_url("ftp://intercom.local").is_err());
         assert!(normalize_server_url("https://user:secret@intercom.local").is_err());

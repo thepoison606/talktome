@@ -3176,6 +3176,122 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const myIdEl = document.getElementById("my-id");
   const sessionInfoPrefixEl = document.getElementById('session-info-prefix');
+  const mediaConnectionStatusEl = document.getElementById('media-connection-status');
+  const mediaConnectionStatusLabelEl = document.getElementById('media-connection-status-label');
+  let mediaInitialized = false;
+  const mediaConnectionState = {
+    signaling: socket.connected ? 'connected' : 'connecting',
+    send: 'idle',
+    receive: 'idle',
+    sendIce: 'idle',
+    receiveIce: 'idle',
+    iceError: null,
+  };
+
+  function describeIceCandidateError(event) {
+    if (!event) return null;
+    const parts = [];
+    if (event.errorCode) parts.push(`ICE ${event.errorCode}`);
+    if (event.errorText) parts.push(String(event.errorText));
+    if (event.url) parts.push(String(event.url));
+    return parts.length ? parts.join(' · ') : 'ICE candidate negotiation failed';
+  }
+
+  function renderMediaConnectionStatus() {
+    if (!mediaConnectionStatusEl || !mediaConnectionStatusLabelEl) return;
+
+    const states = [mediaConnectionState.send, mediaConnectionState.receive];
+    const iceStates = [mediaConnectionState.sendIce, mediaConnectionState.receiveIce];
+    let label = 'Media idle';
+    let className = '';
+
+    if (mediaConnectionState.signaling === 'failed') {
+      label = 'Server unavailable';
+      className = 'is-failed';
+    } else if (mediaConnectionState.signaling !== 'connected') {
+      label = 'Server connecting';
+      className = 'is-connecting';
+    } else if (states.includes('failed')) {
+      label = 'Media failed';
+      className = 'is-failed';
+    } else if (states.includes('disconnected')) {
+      label = 'Media interrupted';
+      className = 'is-warning';
+    } else if (states.includes('connecting')) {
+      label = 'Media connecting';
+      className = 'is-connecting';
+    } else if (iceStates.includes('gathering')) {
+      label = 'ICE gathering';
+      className = 'is-connecting';
+    } else if (states.includes('connected')) {
+      label = 'Media connected';
+      className = 'is-connected';
+    } else if (mediaConnectionState.iceError) {
+      label = 'ICE warning';
+      className = 'is-warning';
+    } else if (mediaInitialized) {
+      label = 'Media ready';
+      className = 'is-connected';
+    }
+
+    mediaConnectionStatusEl.className = `media-connection-status${className ? ` ${className}` : ''}`;
+    mediaConnectionStatusLabelEl.textContent = label;
+    mediaConnectionStatusEl.title = [
+      `Signaling: ${mediaConnectionState.signaling}`,
+      `Send media: ${mediaConnectionState.send}`,
+      `Receive media: ${mediaConnectionState.receive}`,
+      `Send ICE: ${mediaConnectionState.sendIce}`,
+      `Receive ICE: ${mediaConnectionState.receiveIce}`,
+      mediaConnectionState.iceError ? `Last ICE error: ${mediaConnectionState.iceError}` : null,
+    ].filter(Boolean).join('\n');
+  }
+
+  function setSignalingConnectionState(state) {
+    mediaConnectionState.signaling = state;
+    if (state === 'connected') mediaConnectionState.iceError = null;
+    renderMediaConnectionStatus();
+  }
+
+  function bindMediaTransportStatus(transport, direction) {
+    if (!transport || !['send', 'receive'].includes(direction)) return;
+    mediaConnectionState[direction] = transport.connectionState || 'new';
+    mediaConnectionState[`${direction}Ice`] = transport.iceGatheringState || 'new';
+    renderMediaConnectionStatus();
+
+    transport.on('connectionstatechange', (state) => {
+      if (direction === 'send' && transport !== sendTransport) return;
+      if (direction === 'receive' && transport !== recvTransport) return;
+      mediaConnectionState[direction] = state || transport.connectionState || 'unknown';
+      if (state === 'connected') mediaConnectionState.iceError = null;
+      renderMediaConnectionStatus();
+    });
+
+    transport.on('icegatheringstatechange', (state) => {
+      if (direction === 'send' && transport !== sendTransport) return;
+      if (direction === 'receive' && transport !== recvTransport) return;
+      mediaConnectionState[`${direction}Ice`] = state || transport.iceGatheringState || 'unknown';
+      renderMediaConnectionStatus();
+    });
+
+    transport.on('icecandidateerror', (event) => {
+      if (direction === 'send' && transport !== sendTransport) return;
+      if (direction === 'receive' && transport !== recvTransport) return;
+      mediaConnectionState.iceError = describeIceCandidateError(event);
+      renderMediaConnectionStatus();
+    });
+  }
+
+  function resetMediaConnectionState() {
+    mediaConnectionState.send = 'idle';
+    mediaConnectionState.receive = 'idle';
+    mediaConnectionState.sendIce = 'idle';
+    mediaConnectionState.receiveIce = 'idle';
+    mediaConnectionState.iceError = null;
+    renderMediaConnectionStatus();
+  }
+
+  renderMediaConnectionStatus();
+
   function setSessionDisplay(text, { connectionStatus = false } = {}) {
     if (sessionInfoPrefixEl) sessionInfoPrefixEl.hidden = connectionStatus;
     myIdEl.textContent = text;
@@ -3415,7 +3531,6 @@ let cachedUsers = [];
 let latestServerUsers = [];
 let cachedOperatorTargets = null;
   let incomingTalkState = { addressedNow: [], replyTarget: null };
-  let mediaInitialized = false;
   let initializingMediaPromise = null;
   let mediaStateGeneration = 0;
   let shouldInitializeAfterConnect = false;
@@ -5280,6 +5395,7 @@ let cachedOperatorTargets = null;
         throw new Error('Media initialization was superseded by a connection reset');
       }
       mediaInitialized = true;
+      renderMediaConnectionStatus();
       if (isOperatorSession() && session.kind === 'user' && micTrack?.readyState === 'live') {
         await ensureWarmTalkProducer('media-initialized');
       }
@@ -5312,6 +5428,7 @@ let cachedOperatorTargets = null;
     recvTransport = null;
     device = null;
     mediaInitialized = false;
+    resetMediaConnectionState();
   }
 
   function notifyServerProducerClosed(producerId, { context = 'producer-close' } = {}) {
@@ -5936,6 +6053,7 @@ let cachedOperatorTargets = null;
   // Signaling Events
   socket.on("connect", async () => {
     console.log("Connected to signaling server as", socket.id);
+    setSignalingConnectionState('connected');
     lastConnectedSocketId = socket.id;
     await recoverConnectedSession('socket-connect');
   });
@@ -5948,6 +6066,7 @@ let cachedOperatorTargets = null;
 
   socket.on("disconnect", (reason) => {
     console.log("Disconnected from server:", reason);
+    setSignalingConnectionState('disconnected');
     previousSocketId = lastConnectedSocketId;
     lastConnectedSocketId = null;
     connectionGeneration += 1;
@@ -6001,6 +6120,11 @@ let cachedOperatorTargets = null;
     if (!sessionResetInProgress && session?.name && reason === 'io server disconnect') {
       setTimeout(() => socket.connect(), 500);
     }
+  });
+
+  socket.on("connect_error", (error) => {
+    console.warn("Unable to connect to signaling server:", error?.message || error);
+    setSignalingConnectionState('failed');
   });
 
   socket.on("user-list", async users => {
@@ -8801,6 +8925,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       });
 
       sendTransport = device.createSendTransport(sendParams);
+      bindMediaTransportStatus(sendTransport, 'send');
       console.log("3. ✓ Send transport created");
 
       sendTransport.on(
@@ -8865,6 +8990,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       });
 
       recvTransport = device.createRecvTransport(recvParams);
+      bindMediaTransportStatus(recvTransport, 'receive');
       console.log("4. ✓ Recv transport created");
 
       recvTransport.on(

@@ -69,6 +69,7 @@
         display: inline-flex;
         align-items: center;
         gap: 0.45rem;
+        flex-wrap: wrap;
         flex: 1;
         min-width: 0;
         color: #94a3b8;
@@ -88,6 +89,56 @@
         color: #e2e8f0;
         font-weight: 600;
         word-break: break-word;
+      }
+
+      .media-connection-status {
+        align-items: center;
+        display: inline-flex;
+        flex: 0 0 auto;
+        gap: 0.3rem;
+        margin-left: 0.2rem;
+        padding: 0.16rem 0.42rem;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 999px;
+        background: rgba(30, 41, 59, 0.55);
+        color: #94a3b8;
+        font-size: 0.72rem;
+        font-weight: 700;
+        line-height: 1.2;
+        white-space: nowrap;
+      }
+
+      .media-connection-status__dot {
+        width: 0.48rem;
+        height: 0.48rem;
+        border-radius: 50%;
+        background: #64748b;
+        box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.16);
+      }
+
+      .media-connection-status.is-connecting .media-connection-status__dot {
+        background: #f59e0b;
+        box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.16);
+      }
+
+      .media-connection-status.is-connected .media-connection-status__dot {
+        background: #22c55e;
+        box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.16);
+      }
+
+      .media-connection-status.is-warning .media-connection-status__dot {
+        background: #f97316;
+        box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.16);
+      }
+
+      .media-connection-status.is-failed {
+        border-color: rgba(248, 113, 113, 0.36);
+        color: #fecaca;
+      }
+
+      .media-connection-status.is-failed .media-connection-status__dot {
+        background: #ef4444;
+        box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.18);
       }
 
       .session-bar button {
@@ -1815,6 +1866,10 @@
           <div class="session-info" aria-live="polite">
             <img class="session-brand-icon" src="/images/talktome-mark.png" alt="" aria-hidden="true" />
             <span id="session-info-prefix">Logged in as</span><span id="my-id">Connecting...</span>
+            <span id="media-connection-status" class="media-connection-status" title="Signaling and media connection status">
+              <span class="media-connection-status__dot" aria-hidden="true"></span>
+              <span id="media-connection-status-label">Connecting</span>
+            </span>
           </div>
           <div id="session-slide-hint" class="session-slide-hint" aria-hidden="true">← Slide to lock</div>
           <div id="target-layer-switcher" class="target-layer-switcher" hidden>

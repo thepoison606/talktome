@@ -12,6 +12,7 @@ const selfsigned = require("selfsigned");
 const QRCode = require("qrcode");
 const { getDataDir } = require("./dataPaths");
 const { ApplePttPushService } = require("./applePttPushService");
+const { buildWebRtcListenInfos, resolveClientIceConfig } = require("./webrtcConfig");
 
 function resolveServerAppVersion() {
   let version = process.env.TALKTOME_VERSION || process.env.npm_package_version || "";
@@ -44,6 +45,7 @@ function resolveServerAppVersion() {
 }
 
 const SERVER_APP_VERSION = resolveServerAppVersion();
+const CLIENT_ICE_CONFIG = resolveClientIceConfig(process.env);
 
 const workerName = process.platform === "win32" ? "mediasoup-worker.exe" : "mediasoup-worker";
 const windowsRuntimeDllPattern =
@@ -5637,6 +5639,11 @@ function warnIfDockerAnnouncedIpLooksInternal(announcedIp) {
   }
   console.log("[INIT] Worker created with PID:", worker.pid);
   console.log(`[INIT] RTC ports: ${RTC_PORT_RANGE.start}-${RTC_PORT_RANGE.end}`);
+  console.log(
+    CLIENT_ICE_CONFIG.iceServers.length > 0
+      ? `[INIT] Browser ICE: ${CLIENT_ICE_CONFIG.iceServers.length} configured server(s), policy ${CLIENT_ICE_CONFIG.iceTransportPolicy}`
+      : "[INIT] Browser ICE: direct connection candidates"
+  );
 
   router = await worker.createRouter({
     mediaCodecs: [
@@ -6511,12 +6518,7 @@ io.on("connection", (socket) => {
       warnIfDockerAnnouncedIpLooksInternal(mediaRoute.announcedAddress);
 
       const transport = await router.createWebRtcTransport({
-        listenIps: [
-          {
-            ip: "0.0.0.0",
-            announcedIp: mediaRoute.announcedAddress,
-          },
-        ],
+        listenInfos: buildWebRtcListenInfos({ mediaRoute, env: process.env }),
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
@@ -6535,6 +6537,7 @@ io.on("connection", (socket) => {
         iceParameters: transport.iceParameters,
         iceCandidates: transport.iceCandidates,
         dtlsParameters: transport.dtlsParameters,
+        ...CLIENT_ICE_CONFIG,
       });
     } catch (error) {
       console.error("[TRANSPORT] Error creating send transport:", error);
@@ -6560,12 +6563,7 @@ io.on("connection", (socket) => {
       warnIfDockerAnnouncedIpLooksInternal(mediaRoute.announcedAddress);
 
       const transport = await router.createWebRtcTransport({
-        listenIps: [
-          {
-            ip: "0.0.0.0",
-            announcedIp: mediaRoute.announcedAddress,
-          },
-        ],
+        listenInfos: buildWebRtcListenInfos({ mediaRoute, env: process.env }),
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
@@ -6583,6 +6581,7 @@ io.on("connection", (socket) => {
         iceParameters: transport.iceParameters,
         iceCandidates: transport.iceCandidates,
         dtlsParameters: transport.dtlsParameters,
+        ...CLIENT_ICE_CONFIG,
       });
     } catch (error) {
       console.error("[TRANSPORT] Error creating recv transport:", error);

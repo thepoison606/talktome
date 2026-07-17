@@ -4,7 +4,7 @@
   "version": "1.0.12",
   "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test webrtcConfig.test.js",
     "start": "node server.js",
     "radio:ptt": "node gateway/radioGateway.js ptt",
     "radio:play": "node gateway/radioGateway.js play",
