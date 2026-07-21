@@ -1,9 +1,9 @@
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{ToSocketAddrs, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{sync_channel, SyncSender};
+use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{
     atomic::{AtomicI32, AtomicU64, Ordering},
     Arc, Mutex,
@@ -36,6 +36,28 @@ fn ffmpeg_command() -> Command {
         Command::new(resolve_ffmpeg_path().unwrap_or_else(|| PathBuf::from("ffmpeg")));
     configure_ffmpeg_command(&mut command);
     command
+}
+
+fn spawn_ffmpeg_stderr_reader(
+    stream: impl Read + Send + 'static,
+    stream_id: String,
+    direction: &'static str,
+    warning_count: Arc<AtomicU64>,
+    last_warning: Arc<Mutex<Option<String>>>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        for line in BufReader::new(stream).lines().map_while(Result::ok) {
+            let message = line.trim();
+            if message.is_empty() {
+                continue;
+            }
+            warning_count.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut latest) = last_warning.lock() {
+                *latest = Some(message.to_string());
+            }
+            eprintln!("[bridge-media][{direction}][{stream_id}][ffmpeg] {message}");
+        }
+    })
 }
 
 #[cfg(windows)]
@@ -192,6 +214,10 @@ pub struct BridgeMediaInputStats {
     pub stream_id: String,
     pub rms_db: f32,
     pub captured_frames: u64,
+    pub dropped_chunks: u64,
+    pub dropped_frames: u64,
+    pub ffmpeg_warning_count: u64,
+    pub last_ffmpeg_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -200,6 +226,8 @@ pub struct BridgeMediaOutputStats {
     pub stream_id: String,
     pub decoded_frames: u64,
     pub decoded_bytes: u64,
+    pub ffmpeg_warning_count: u64,
+    pub last_ffmpeg_warning: Option<String>,
 }
 
 #[derive(Default)]
@@ -244,8 +272,13 @@ struct BridgeInputRuntime {
     last_error: Arc<Mutex<Option<String>>>,
     level_milli_db: Arc<AtomicI32>,
     captured_frames: Arc<AtomicU64>,
+    dropped_chunks: Arc<AtomicU64>,
+    dropped_frames: Arc<AtomicU64>,
+    ffmpeg_warning_count: Arc<AtomicU64>,
+    last_ffmpeg_warning: Arc<Mutex<Option<String>>>,
     sender: Option<SyncSender<Vec<u8>>>,
     writer: Option<JoinHandle<()>>,
+    stderr_reader: Option<JoinHandle<()>>,
 }
 
 struct BridgeOutputRuntime {
@@ -254,7 +287,10 @@ struct BridgeOutputRuntime {
     last_error: Arc<Mutex<Option<String>>>,
     decoded_frames: Arc<AtomicU64>,
     decoded_bytes: Arc<AtomicU64>,
+    ffmpeg_warning_count: Arc<AtomicU64>,
+    last_ffmpeg_warning: Arc<Mutex<Option<String>>>,
     reader: Option<JoinHandle<()>>,
+    stderr_reader: Option<JoinHandle<()>>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -497,6 +533,10 @@ impl BridgeInputRuntime {
         let callback_level = Arc::clone(&level_milli_db);
         let captured_frames = Arc::new(AtomicU64::new(0));
         let callback_captured_frames = Arc::clone(&captured_frames);
+        let dropped_chunks = Arc::new(AtomicU64::new(0));
+        let callback_dropped_chunks = Arc::clone(&dropped_chunks);
+        let dropped_frames = Arc::new(AtomicU64::new(0));
+        let callback_dropped_frames = Arc::clone(&dropped_frames);
         let stream = device
             .build_input_stream::<f32, _, _>(
                 config,
@@ -520,7 +560,12 @@ impl BridgeInputRuntime {
                     callback_level
                         .store(rms_milli_db(sum_squares, sample_count), Ordering::Relaxed);
                     callback_captured_frames.fetch_add(frames as u64, Ordering::Relaxed);
-                    let _ = callback_sender.try_send(bytes);
+                    if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
+                        callback_sender.try_send(bytes)
+                    {
+                        callback_dropped_chunks.fetch_add(1, Ordering::Relaxed);
+                        callback_dropped_frames.fetch_add(frames as u64, Ordering::Relaxed);
+                    }
                 },
                 move |err| {
                     let message = format!("bridge input stream error: {err}");
@@ -569,7 +614,7 @@ impl BridgeInputRuntime {
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|err| format!("failed to start ffmpeg Opus encoder: {err}"))?;
         let mut stdin = match child.stdin.take() {
@@ -580,6 +625,18 @@ impl BridgeInputRuntime {
                 return Err("ffmpeg encoder stdin is unavailable".to_string());
             }
         };
+        let stderr = child.stderr.take();
+        let ffmpeg_warning_count = Arc::new(AtomicU64::new(0));
+        let last_ffmpeg_warning = Arc::new(Mutex::new(None));
+        let stderr_reader = stderr.map(|stderr| {
+            spawn_ffmpeg_stderr_reader(
+                stderr,
+                request.stream_id.clone(),
+                "input",
+                Arc::clone(&ffmpeg_warning_count),
+                Arc::clone(&last_ffmpeg_warning),
+            )
+        });
         let child = Arc::new(Mutex::new(child));
         let writer = thread::spawn(move || {
             while let Ok(bytes) = receiver.recv() {
@@ -595,8 +652,13 @@ impl BridgeInputRuntime {
             last_error,
             level_milli_db,
             captured_frames,
+            dropped_chunks,
+            dropped_frames,
+            ffmpeg_warning_count,
+            last_ffmpeg_warning,
             sender: Some(sender),
             writer: Some(writer),
+            stderr_reader,
         })
     }
 
@@ -609,6 +671,9 @@ impl BridgeInputRuntime {
         }
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
+        }
+        if let Some(stderr_reader) = self.stderr_reader.take() {
+            let _ = stderr_reader.join();
         }
     }
 }
@@ -841,7 +906,7 @@ impl BridgeOutputRuntime {
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|err| format!("failed to start ffmpeg Opus decoder: {err}"))?;
         let mut stdin = match child.stdin.take() {
@@ -875,6 +940,18 @@ impl BridgeOutputRuntime {
                 return Err("ffmpeg decoder stdout is unavailable".to_string());
             }
         };
+        let stderr = child.stderr.take();
+        let ffmpeg_warning_count = Arc::new(AtomicU64::new(0));
+        let last_ffmpeg_warning = Arc::new(Mutex::new(None));
+        let stderr_reader = stderr.map(|stderr| {
+            spawn_ffmpeg_stderr_reader(
+                stderr,
+                request.stream_id.clone(),
+                "output",
+                Arc::clone(&ffmpeg_warning_count),
+                Arc::clone(&last_ffmpeg_warning),
+            )
+        });
         let child = Arc::new(Mutex::new(child));
         let reader_queue = Arc::clone(&queue);
         let last_error = Arc::new(Mutex::new(None));
@@ -924,7 +1001,10 @@ impl BridgeOutputRuntime {
             last_error,
             decoded_frames,
             decoded_bytes,
+            ffmpeg_warning_count,
+            last_ffmpeg_warning,
             reader: Some(reader),
+            stderr_reader,
         })
     }
 
@@ -935,6 +1015,9 @@ impl BridgeOutputRuntime {
         }
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
+        }
+        if let Some(stderr_reader) = self.stderr_reader.take() {
+            let _ = stderr_reader.join();
         }
     }
 }
@@ -1082,6 +1165,10 @@ fn status_from(state: &BridgeMediaState) -> BridgeMediaStatus {
             stream_id: stream_id.clone(),
             rms_db: runtime.level_milli_db.load(Ordering::Relaxed) as f32 / 1000.0,
             captured_frames: runtime.captured_frames.load(Ordering::Relaxed),
+            dropped_chunks: runtime.dropped_chunks.load(Ordering::Relaxed),
+            dropped_frames: runtime.dropped_frames.load(Ordering::Relaxed),
+            ffmpeg_warning_count: runtime.ffmpeg_warning_count.load(Ordering::Relaxed),
+            last_ffmpeg_warning: read_last_error(&runtime.last_ffmpeg_warning),
         })
         .collect::<Vec<_>>();
     let mut output_stream_stats = state
@@ -1091,6 +1178,8 @@ fn status_from(state: &BridgeMediaState) -> BridgeMediaStatus {
             stream_id: stream_id.clone(),
             decoded_frames: runtime.decoded_frames.load(Ordering::Relaxed),
             decoded_bytes: runtime.decoded_bytes.load(Ordering::Relaxed),
+            ffmpeg_warning_count: runtime.ffmpeg_warning_count.load(Ordering::Relaxed),
+            last_ffmpeg_warning: read_last_error(&runtime.last_ffmpeg_warning),
         })
         .collect::<Vec<_>>();
     input_stream_ids.sort();

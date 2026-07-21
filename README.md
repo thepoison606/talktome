@@ -70,6 +70,8 @@ docker run -d --restart unless-stopped --name talktome \
 ```
 
 Open `https://<HOST-IP>:8443/`. Allow the HTTPS port and the configured RTC port range in your firewall.
+The Admin `Config` page can restart the server. Docker deployments use their
+configured restart policy (as in the examples above).
 
 ### macOS Test Builds
 

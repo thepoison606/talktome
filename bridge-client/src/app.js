@@ -1778,9 +1778,31 @@ async function heartbeatManagedSessions() {
   ));
   if (!sessions.length) return;
 
+  let nativeMediaStatus = null;
+  if (invoke) {
+    nativeMediaStatus = await invoke("get_bridge_media_status").catch((error) => {
+      console.warn("failed to collect Bridge media diagnostics", error);
+      return null;
+    });
+  }
+  const inputStatsById = new Map((nativeMediaStatus?.inputStreamStats || []).map((entry) => [
+    String(entry.streamId || ""),
+    entry
+  ]));
+  const outputStatsById = new Map((nativeMediaStatus?.outputStreamStats || []).map((entry) => [
+    String(entry.streamId || ""),
+    entry
+  ]));
+
   for (const session of sessions) {
     try {
-      await bridgeApi("POST", managedSessionPath(session, "/heartbeat"), {});
+      const input = inputStatsById.get(session.inputStreamId) || null;
+      const outputs = [...session.outputs.values()]
+        .map((output) => outputStatsById.get(output.streamId))
+        .filter(Boolean);
+      await bridgeApi("POST", managedSessionPath(session, "/heartbeat"), {
+        mediaDiagnostics: input || outputs.length ? { input, outputs } : null
+      });
       if (session.error && session.statusLabel === "Server offline") {
         session.error = null;
         session.statusLabel = null;

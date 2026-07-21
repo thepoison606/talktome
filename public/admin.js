@@ -64,6 +64,8 @@ const configExportBtn = document.getElementById('config-export-btn');
 const configImportBtn = document.getElementById('config-import-btn');
 const configImportFile = document.getElementById('config-import-file');
 const apiKeyCopyBtn = document.getElementById('api-key-copy-btn');
+const containerRestartPanel = document.getElementById('container-restart-panel');
+const containerRestartBtn = document.getElementById('container-restart-btn');
 const mediaNetworkMeta = document.getElementById('media-network-meta');
 const mediaNetworkQrContainer = document.getElementById('media-network-qr');
 const mediaNetworkQrButton = document.getElementById('media-network-qr-button');
@@ -1152,6 +1154,8 @@ function formatStatusPacketLoss(networkStats) {
 }
 
 function renderAdminStatus(payload = {}) {
+  const canRestartContainer = Boolean(adminState.isSuperAdmin);
+  containerRestartPanel?.classList.toggle('is-hidden', !canRestartContainer);
   latestAdminStatus = payload;
   const users = Array.isArray(payload.users) ? [...payload.users] : [];
   const feeds = Array.isArray(payload.feeds) ? [...payload.feeds] : [];
@@ -3240,6 +3244,33 @@ if (apiKeyCopyBtn) {
       window.setTimeout(() => {
         apiKeyCopyBtn.disabled = false;
       }, 250);
+    }
+  });
+}
+
+if (containerRestartBtn) {
+  containerRestartBtn.addEventListener('click', async () => {
+    if (!confirm('Restart the server now? All connected clients will be disconnected briefly.')) {
+      return;
+    }
+
+    containerRestartBtn.disabled = true;
+    containerRestartBtn.textContent = 'Restarting…';
+    try {
+      const res = await authedFetch('/admin/restart', { method: 'POST' });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showMessage(payload.error || 'Failed to restart server', 'error', 'config');
+        containerRestartBtn.disabled = false;
+        containerRestartBtn.textContent = 'Restart server';
+        return;
+      }
+      showMessage('✅ Server restart requested. Reconnecting…', 'success', 'config');
+    } catch (err) {
+      console.error('Failed to restart server:', err);
+      showMessage('❌ Failed to restart server', 'error', 'config');
+      containerRestartBtn.disabled = false;
+      containerRestartBtn.textContent = 'Restart server';
     }
   });
 }
