@@ -3893,7 +3893,10 @@ app.delete(
   requireBridgeApiAuth,
   requireBridgeControlSession,
   (req, res) => {
-    closeBridgeControlSession(req.bridgeSession.id);
+    const reason = typeof req.body?.reason === "string" && req.body.reason.trim()
+      ? req.body.reason.trim().slice(0, 300)
+      : "bridge-session-client-stop";
+    closeBridgeControlSession(req.bridgeSession.id, reason);
     res.json({ ok: true });
   }
 );
@@ -3904,6 +3907,16 @@ app.post(
   requireBridgeControlSession,
   (req, res) => {
     logBridgeMediaDiagnostics(req.bridgeSession, req.body?.mediaDiagnostics);
+    for (const entry of Array.isArray(req.body?.lifecycleEvents) ? req.body.lifecycleEvents.slice(-20) : []) {
+      const event = typeof entry?.event === "string" ? entry.event.trim().slice(0, 80) : "unknown";
+      const detail = typeof entry?.detail === "string" ? entry.detail.trim().slice(0, 500) : "";
+      if (!event) continue;
+      console.log(
+        `[MEDIA][BRIDGE][LIFECYCLE] ${req.bridgeSession.bridgeId}/${req.bridgeSession.kind}:`
+        + `${req.bridgeSession.userId ?? req.bridgeSession.feedId} event=${JSON.stringify(event)}`
+        + (detail ? ` detail=${JSON.stringify(detail)}` : "")
+      );
+    }
     res.json({ ok: true });
   }
 );
@@ -5426,6 +5439,12 @@ function writeBridgeControlEventToStreams(session, entry) {
 function closeBridgeControlSession(sessionId, reason = "bridge-session-closed") {
   const session = bridgeControlSessions.get(String(sessionId));
   if (!session || session.closed) return false;
+  const sessionAgeMs = Math.max(0, Date.now() - Number(session.createdAt || Date.now()));
+  console.log(
+    `[MEDIA][BRIDGE][SESSION] close ${session.bridgeId}/${session.kind}:${session.userId ?? session.feedId} `
+    + `id=${session.id} reason=${JSON.stringify(String(reason))} ageMs=${sessionAgeMs} `
+    + `producer=${session.peer?.producers?.size || 0}`
+  );
   session.closed = true;
   for (const stream of [...(session.eventStreams || [])]) {
     try {
@@ -5583,6 +5602,10 @@ function createBridgeControlSession({ bridgeId, userId = null, feedId = null, po
   session.peer = peer;
   bridgeControlSessions.set(id, session);
   peers.set(id, peer);
+  console.log(
+    `[MEDIA][BRIDGE][SESSION] open ${session.bridgeId}/${session.kind}:${session.userId ?? session.feedId} `
+    + `id=${session.id} port=${session.port.id}`
+  );
 
   if (!isFeedPort) {
     updateUserLastOnline(peer.userId);

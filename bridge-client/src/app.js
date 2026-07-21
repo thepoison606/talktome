@@ -497,7 +497,7 @@ async function auditManagedSessionDevices() {
     if (!session.ready || session.starting) continue;
     const unavailableReason = getManagedPortUnavailableReason(session.port);
     if (!unavailableReason) continue;
-    await stopManagedSession(session, { remove: false });
+    await stopManagedSession(session, { remove: false, reason: "device-unavailable" });
     setManagedSessionError(session, new Error(unavailableReason));
   }
 }
@@ -536,7 +536,7 @@ async function auditManagedNativeMediaStatus(status = null) {
     }
     const message = inputError || outputError;
     if (!message) continue;
-    await stopManagedSession(session, { remove: false });
+    await stopManagedSession(session, { remove: false, reason: "native-media-error" });
     setManagedSessionError(session, new Error(message));
   }
 }
@@ -603,6 +603,7 @@ function isServerOfflineError(error) {
 
 function setManagedSessionError(session, error) {
   const classified = classifyManagedPortError(error);
+  recordManagedLifecycle(session, "error", classified.detail);
   session.error = classified.detail;
   session.statusLabel = classified.label;
   session.retryable = classified.retryable;
@@ -612,6 +613,16 @@ function setManagedSessionError(session, error) {
   } else {
     session.retryAt = null;
   }
+}
+
+function recordManagedLifecycle(session, event, detail = "") {
+  if (!session) return;
+  const events = session.lifecycleEvents || (session.lifecycleEvents = []);
+  events.push({
+    event: String(event || "unknown").slice(0, 80),
+    detail: String(detail || "").slice(0, 500)
+  });
+  if (events.length > 20) events.splice(0, events.length - 20);
 }
 
 function getManagedSessionState(session, port) {
@@ -1581,6 +1592,7 @@ function handleNativeBridgeEventStreamMessage(message) {
 
   if (payload.event === "open") {
     session.eventStreamActive = true;
+    recordManagedLifecycle(session, "event-stream-open", "native");
     session.error = null;
     renderManagedBridgePorts();
     return;
@@ -1607,6 +1619,7 @@ function handleNativeBridgeEventStreamMessage(message) {
         const data = JSON.parse(payload.data || "{}");
         reason = data.reason || reason;
       } catch {}
+      recordManagedLifecycle(session, "event-stream-session-closed", reason);
       setManagedSessionError(session, new Error(reason));
       session.ready = false;
       renderManagedBridgePorts();
@@ -1616,6 +1629,7 @@ function handleNativeBridgeEventStreamMessage(message) {
 
   if (payload.event === "error") {
     session.eventStreamActive = false;
+    recordManagedLifecycle(session, "event-stream-error", payload.error || "Bridge event stream failed");
     setManagedSessionError(session, payload.error || "Bridge event stream failed");
     renderManagedBridgePorts();
     return;
@@ -1625,6 +1639,7 @@ function handleNativeBridgeEventStreamMessage(message) {
     nativeEventStreamSessions.delete(payload.streamId);
     session.eventStreamId = null;
     session.eventStreamActive = false;
+    recordManagedLifecycle(session, "event-stream-closed", "native");
     renderManagedBridgePorts();
   }
 }
@@ -1801,7 +1816,8 @@ async function heartbeatManagedSessions() {
         .map((output) => outputStatsById.get(output.streamId))
         .filter(Boolean);
       await bridgeApi("POST", managedSessionPath(session, "/heartbeat"), {
-        mediaDiagnostics: input || outputs.length ? { input, outputs } : null
+        mediaDiagnostics: input || outputs.length ? { input, outputs } : null,
+        lifecycleEvents: session.lifecycleEvents?.splice(0) || []
       });
       if (session.error && session.statusLabel === "Server offline") {
         session.error = null;
@@ -1810,8 +1826,9 @@ async function heartbeatManagedSessions() {
     } catch (error) {
       if (!session.sessionId) continue;
       if (String(error?.message || error || "").toLowerCase().includes("bridge session not found")) {
-        await stopManagedSession(session, { remove: false });
+        await stopManagedSession(session, { remove: false, reason: "heartbeat-session-not-found" });
       } else {
+        recordManagedLifecycle(session, "heartbeat-error", String(error?.message || error));
         session.ready = false;
       }
       setManagedSessionError(session, error);
@@ -1959,20 +1976,21 @@ function createManagedSession(port) {
     statusLabel: null,
     starting: false,
     backgroundRetry: false,
-    error: null
+    error: null,
+    lifecycleEvents: []
   };
 }
 
-async function startManagedSession(port, { reuse = false, silentRetry = false } = {}) {
+async function startManagedSession(port, { reuse = false, silentRetry = false, reason = "initial-start" } = {}) {
   const key = bridgePortKey(port);
   const existingSession = managedSessions.get(key);
   const session = reuse && existingSession ? existingSession : createManagedSession(port);
   const backgroundRetry = Boolean(silentRetry && reuse && existingSession && existingSession.error && !existingSession.ready);
   if (existingSession && existingSession !== session) {
-    await stopManagedSession(existingSession);
+    await stopManagedSession(existingSession, { reason: "replaced-by-new-session" });
   }
   if (session.sessionId || session.ready || session.outputs?.size) {
-    await stopManagedSession(session, { remove: false });
+    await stopManagedSession(session, { remove: false, reason: `restart-before-start:${reason}` });
   }
   session.port = port;
   session.signature = bridgePortSignature(port);
@@ -1994,6 +2012,7 @@ async function startManagedSession(port, { reuse = false, silentRetry = false } 
   session.retryAt = null;
   session.retryable = true;
   managedSessions.set(key, session);
+  recordManagedLifecycle(session, "start-requested", reason);
   if (!backgroundRetry) {
     renderManagedBridgePorts();
   }
@@ -2007,6 +2026,7 @@ async function startManagedSession(port, { reuse = false, silentRetry = false } 
       feedId: port.kind === "feed" ? port.feedId : null
     });
     session.sessionId = registered.sessionId;
+    recordManagedLifecycle(session, "session-created", `reason=${reason}`);
     const transport = await bridgeApi(
       "POST",
       managedSessionPath(session, "/plain-send-transport"),
@@ -2027,6 +2047,7 @@ async function startManagedSession(port, { reuse = false, silentRetry = false } 
     const producer = await bridgeApi("POST", managedSessionPath(session, "/producers"), rtp);
     session.producerId = producer.id;
     session.ready = true;
+    recordManagedLifecycle(session, "producer-started", `reason=${reason}`);
     await startManagedEventStream(session);
     if (bridgePortHasOutput(port)) {
       const active = await bridgeApi("GET", managedSessionPath(session, "/active-producers"));
@@ -2039,7 +2060,7 @@ async function startManagedSession(port, { reuse = false, silentRetry = false } 
     session.error = null;
     session.statusLabel = null;
   } catch (error) {
-    await stopManagedSession(session, { remove: false });
+    await stopManagedSession(session, { remove: false, reason: `start-failed:${String(error?.message || error)}` });
     setManagedSessionError(session, error);
   } finally {
     session.starting = false;
@@ -2048,14 +2069,14 @@ async function startManagedSession(port, { reuse = false, silentRetry = false } 
   }
 }
 
-async function stopManagedSession(session, { remove = true } = {}) {
+async function stopManagedSession(session, { remove = true, reason = "client-stop" } = {}) {
   stopManagedEventStream(session);
   for (const output of [...session.outputs.values()]) {
     await stopManagedConsumer(session, output).catch(() => {});
   }
   await invoke("stop_bridge_input", { streamId: session.inputStreamId }).catch(() => {});
   if (session.sessionId) {
-    await bridgeApi("DELETE", managedSessionPath(session)).catch(() => {});
+    await bridgeApi("DELETE", managedSessionPath(session), { reason }).catch(() => {});
   }
   session.sessionId = null;
   session.producerId = null;
@@ -2086,12 +2107,12 @@ async function reconcileManagedBridgeConfig(config) {
   for (const [key, session] of [...managedSessions.entries()]) {
     const nextPort = wanted.get(key);
     if (!nextPort) {
-      await stopManagedSession(session);
+      await stopManagedSession(session, { reason: "port-removed-from-config" });
       continue;
     }
     const nextSignature = bridgePortSignature(nextPort);
     if (nextSignature !== session.signature) {
-      await stopManagedSession(session);
+      await stopManagedSession(session, { reason: "port-config-changed" });
       continue;
     }
     session.port = nextPort;
@@ -2100,9 +2121,9 @@ async function reconcileManagedBridgeConfig(config) {
   for (const [key, port] of wanted) {
     const session = managedSessions.get(key);
     if (!session) {
-      await startManagedSession(port);
+      await startManagedSession(port, { reason: "config-initial" });
     } else if (!session.ready && !session.starting && session.retryable !== false && (!session.retryAt || session.retryAt <= Date.now())) {
-      await startManagedSession(port, { reuse: true, silentRetry: true });
+      await startManagedSession(port, { reuse: true, silentRetry: true, reason: "config-retry" });
     }
   }
   renderManagedBridgePorts();
@@ -2141,7 +2162,7 @@ async function retryDueManagedSessions() {
     for (const session of due) {
       const port = portsByKey.get(bridgePortKey(session.port));
       if (!port || bridgePortSignature(port) !== session.signature) continue;
-      await startManagedSession(port, { reuse: true, silentRetry: true });
+      await startManagedSession(port, { reuse: true, silentRetry: true, reason: "scheduled-retry" });
     }
   } finally {
     managedRetryRunning = false;
