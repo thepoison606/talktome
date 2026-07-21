@@ -639,6 +639,7 @@ const adminStatusStreams = new Set();
 let adminStatusBroadcastTimer = null;
 let pendingAdminStatusReason = "status-changed";
 let pendingAdminStatusRefresh = { users: false, conferences: false, feeds: false };
+let containerRestartScheduled = false;
 
 function parseCookieHeader(header) {
   const cookies = {};
@@ -694,6 +695,43 @@ function requireSuperAdmin(req, res, next) {
     return res.status(403).json({ error: "Superadmin required" });
   }
   next();
+}
+
+function quoteWindowsCommandArgument(value) {
+  return `"${String(value).replace(/(["\\])/g, "\\$1")}"`;
+}
+
+function restartServerProcess() {
+  if (containerRestartScheduled) return;
+  containerRestartScheduled = true;
+
+  // Give the response a moment to reach the browser before ending the current
+  // process. Containers are restarted by their runtime; every other install
+  // starts an identical replacement process after this one has released its ports.
+  setTimeout(() => {
+    console.log("[ADMIN] Server restart requested.");
+    if (!isRunningInContainer()) {
+      const restartArgs = process.argv.slice(1);
+      const launcher = process.platform === "win32"
+        ? childProcess.spawn("cmd.exe", [
+          "/d", "/s", "/c",
+          `timeout /t 2 /nobreak >NUL & start \"\" /b ${[
+            process.execPath,
+            ...restartArgs,
+          ].map(quoteWindowsCommandArgument).join(" ")}`,
+        ], { detached: true, stdio: "ignore", windowsHide: true })
+        : childProcess.spawn("sh", [
+          "-c",
+          'sleep 2; exec "$@"',
+          "talktome-restart",
+          process.execPath,
+          ...restartArgs,
+        ], { detached: true, stdio: "ignore" });
+      launcher.unref();
+    }
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 1_000).unref();
+  }, 150).unref();
 }
 
 function writeAdminStatusEvent(stream, event, payload) {
@@ -2742,8 +2780,50 @@ function normalizeBrowserMediaStats(payload = {}) {
   if (Number.isFinite(packetLossPercent) && packetLossPercent >= 0 && packetLossPercent <= 100) {
     normalized.packetLossPercent = Math.round(packetLossPercent * 10) / 10;
   }
+  for (const key of [
+    "jitterMs",
+    "jitterBufferMs",
+    "packetsLost",
+    "packetsReceived",
+    "packetsDiscarded",
+    "concealedSamples",
+    "concealmentEvents",
+  ]) {
+    const value = Number(payload?.[key]);
+    if (Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER) {
+      normalized[key] = Math.round(value);
+    }
+  }
 
   return Object.keys(normalized).length ? normalized : null;
+}
+
+function logBrowserMediaStats(peer, socketId, stats) {
+  const now = Date.now();
+  const previous = peer.browserMediaStats || null;
+  const delta = (key) => previous ? Math.max(0, Number(stats[key] || 0) - Number(previous[key] || 0)) : 0;
+  const lostDelta = delta("packetsLost");
+  const discardedDelta = delta("packetsDiscarded");
+  const concealedSamplesDelta = delta("concealedSamples");
+  const concealmentEventsDelta = delta("concealmentEvents");
+  const hasNewProblem = lostDelta > 0 || discardedDelta > 0 || concealmentEventsDelta > 0;
+  const periodicLogDue = !peer.lastMediaDiagnosticsLogAt || now - peer.lastMediaDiagnosticsLogAt >= 30_000;
+  if (!hasNewProblem && !periodicLogDue) return;
+
+  const timestamp = new Date(now).toISOString();
+  const label = `${peer.kind || "client"}:${peer.userId ?? peer.feedId ?? peer.name ?? socketId}`;
+  const prefix = hasNewProblem ? "[MEDIA][WEBRTC][LOSS]" : "[MEDIA][WEBRTC][STATS]";
+  const method = hasNewProblem ? console.warn : console.log;
+  method(
+    `${prefix} ${timestamp} ${label} socket=${socketId} `
+    + `rttMs=${stats.roundTripMs ?? "unknown"} jitterMs=${stats.jitterMs ?? "unknown"} `
+    + `jitterBufferMs=${stats.jitterBufferMs ?? "unknown"} lossPct=${stats.packetLossPercent ?? "unknown"} `
+    + `packets=recv:${stats.packetsReceived ?? 0},lost:${stats.packetsLost ?? 0}(+${lostDelta}),`
+    + `discarded:${stats.packetsDiscarded ?? 0}(+${discardedDelta}) `
+    + `concealment=events:${stats.concealmentEvents ?? 0}(+${concealmentEventsDelta}),`
+    + `samples:${stats.concealedSamples ?? 0}(+${concealedSamplesDelta},~${Math.round(concealedSamplesDelta / 48)}ms)`
+  );
+  peer.lastMediaDiagnosticsLogAt = now;
 }
 
 function getFreshBrowserMediaStats(peer, now = Date.now()) {
@@ -2870,6 +2950,7 @@ function buildAdminStatusSnapshot() {
     appVersion: SERVER_APP_VERSION,
     generatedAt: new Date(now).toISOString(),
     serverStartedAt: statusIsoTimestamp(SERVER_STARTED_AT),
+    runningInContainer: isRunningInContainer(),
     users,
     feeds,
     bridges,
@@ -2889,6 +2970,15 @@ function buildAdminStatusSnapshot() {
 
 app.get("/admin/status", requireAdmin, (req, res) => {
   res.json(buildAdminStatusSnapshot());
+});
+
+app.post("/admin/restart", requireAdmin, requireSuperAdmin, (req, res) => {
+  if (containerRestartScheduled) {
+    return res.status(409).json({ error: "A server restart is already in progress" });
+  }
+
+  res.status(202).json({ restarting: true });
+  restartServerProcess();
 });
 
 app.get("/admin/status/events", requireAdmin, (req, res) => {
@@ -3813,6 +3903,7 @@ app.post(
   requireBridgeApiAuth,
   requireBridgeControlSession,
   (req, res) => {
+    logBridgeMediaDiagnostics(req.bridgeSession, req.body?.mediaDiagnostics);
     res.json({ ok: true });
   }
 );
@@ -3977,6 +4068,10 @@ app.post(
         }),
         appData: producerAppData,
       });
+      attachProducerMediaDiagnostics(
+        producer,
+        `bridge:${req.bridgeSession.bridgeId}/${req.bridgeSession.kind}:${req.bridgeSession.userId ?? req.bridgeSession.feedId}`
+      );
       producer.__startedAt = Date.now();
       peer.producers.set(producer.id, producer);
       producer.__recipientDeliveries = new Map();
@@ -5242,6 +5337,45 @@ function buildGatewayAudioRtpParameters({
   };
 }
 
+function attachProducerMediaDiagnostics(producer, label) {
+  if (!producer?.on) return;
+  let previousScore = null;
+  producer.on("score", (scores = []) => {
+    const compact = (Array.isArray(scores) ? scores : []).map((entry) => ({
+      ssrc: entry?.ssrc ?? null,
+      score: entry?.score ?? null,
+    }));
+    const serialized = JSON.stringify(compact);
+    if (serialized === previousScore) return;
+    previousScore = serialized;
+    const degraded = compact.some((entry) => Number(entry.score) < 10);
+    const method = degraded ? console.warn : console.log;
+    method(
+      `[MEDIA][RTP][PRODUCER-SCORE] ${new Date().toISOString()} ${label} `
+      + `producer=${producer.id} scores=${serialized}`
+    );
+  });
+}
+
+function attachWebRtcTransportDiagnostics(socketId, direction, transport) {
+  if (!transport?.on) return;
+  const log = (event, state, extra = "") => {
+    console.log(
+      `[MEDIA][WEBRTC][SERVER-TRANSPORT] ${new Date().toISOString()} socket=${socketId} `
+      + `direction=${direction} transport=${transport.id} event=${event} state=${state || "unknown"}`
+      + (extra ? ` ${extra}` : "")
+    );
+  };
+  transport.on("icestatechange", (state) => log("ice-state", state));
+  transport.on("iceselectedtuplechange", (tuple) => log(
+    "ice-selected-tuple",
+    transport.iceState,
+    `tuple=${tuple?.protocol || "unknown"}:${tuple?.remoteIp || "unknown"}:${tuple?.remotePort || "unknown"}`
+  ));
+  transport.on("dtlsstatechange", (state) => log("dtls-state", state));
+  transport.observer?.on?.("close", () => log("close", "closed"));
+}
+
 function queueBridgeControlEvent(session, event, payload = {}) {
   if (!session || session.closed) return;
   const relevantEvents = new Set([
@@ -5484,6 +5618,87 @@ function requireBridgeControlSession(req, res, next) {
     return res.status(410).json({ error: "Bridge peer is no longer available" });
   }
   next();
+}
+
+function finiteDiagnosticCounter(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
+}
+
+function logBridgeMediaDiagnostics(session, payload) {
+  const input = payload?.input && typeof payload.input === "object" ? payload.input : null;
+  const now = Date.now();
+  const timestamp = new Date(now).toISOString();
+  const label = `${session.bridgeId}/${session.kind}:${session.userId ?? session.feedId}`;
+  const previousOutputs = session.mediaOutputDiagnostics || {};
+  const nextOutputs = Object.create(null);
+  for (const output of Array.isArray(payload?.outputs) ? payload.outputs : []) {
+    const streamId = String(output?.streamId || "unknown").slice(0, 160);
+    const warningCount = finiteDiagnosticCounter(output?.ffmpegWarningCount);
+    const previousWarningCount = finiteDiagnosticCounter(previousOutputs[streamId]?.ffmpegWarningCount);
+    const warningDelta = Math.max(0, warningCount - previousWarningCount);
+    const lastWarning = typeof output?.lastFfmpegWarning === "string"
+      ? output.lastFfmpegWarning.trim().slice(0, 500)
+      : "";
+    if (warningDelta > 0) {
+      console.warn(
+        `[MEDIA][BRIDGE][FFMPEG] ${timestamp} ${label} output=${streamId} `
+        + `warnings=+${warningDelta}/${warningCount}`
+        + (lastWarning ? ` last=${JSON.stringify(lastWarning)}` : "")
+      );
+    }
+    nextOutputs[streamId] = {
+      ffmpegWarningCount: warningCount,
+      decodedFrames: finiteDiagnosticCounter(output?.decodedFrames),
+    };
+  }
+  session.mediaOutputDiagnostics = nextOutputs;
+  if (!input) return;
+
+  const current = {
+    capturedFrames: finiteDiagnosticCounter(input.capturedFrames),
+    droppedChunks: finiteDiagnosticCounter(input.droppedChunks),
+    droppedFrames: finiteDiagnosticCounter(input.droppedFrames),
+    ffmpegWarningCount: finiteDiagnosticCounter(input.ffmpegWarningCount),
+    rmsDb: Number.isFinite(Number(input.rmsDb)) ? Number(input.rmsDb) : null,
+    lastFfmpegWarning: typeof input.lastFfmpegWarning === "string"
+      ? input.lastFfmpegWarning.trim().slice(0, 500)
+      : "",
+    reportedAt: now,
+  };
+  const previous = session.mediaDiagnostics || null;
+
+  if (previous) {
+    const droppedChunksDelta = Math.max(0, current.droppedChunks - previous.droppedChunks);
+    const droppedFramesDelta = Math.max(0, current.droppedFrames - previous.droppedFrames);
+    const warningDelta = Math.max(0, current.ffmpegWarningCount - previous.ffmpegWarningCount);
+    if (droppedChunksDelta > 0 || droppedFramesDelta > 0) {
+      console.warn(
+        `[MEDIA][BRIDGE][DROP] ${timestamp} ${label} `
+        + `chunks=+${droppedChunksDelta}/${current.droppedChunks} `
+        + `frames=+${droppedFramesDelta}/${current.droppedFrames}`
+      );
+    }
+    if (warningDelta > 0) {
+      console.warn(
+        `[MEDIA][BRIDGE][FFMPEG] ${timestamp} ${label} warnings=+${warningDelta}/${current.ffmpegWarningCount}`
+        + (current.lastFfmpegWarning ? ` last=${JSON.stringify(current.lastFfmpegWarning)}` : "")
+      );
+    }
+    if (current.capturedFrames === previous.capturedFrames && now - previous.reportedAt >= 5_000) {
+      console.warn(`[MEDIA][BRIDGE][STALL] ${timestamp} ${label} capturedFrames=${current.capturedFrames}`);
+    }
+  }
+
+  if (!session.lastMediaHealthLogAt || now - session.lastMediaHealthLogAt >= 60_000) {
+    console.log(
+      `[MEDIA][BRIDGE][HEALTH] ${timestamp} ${label} capturedFrames=${current.capturedFrames} `
+      + `droppedChunks=${current.droppedChunks} droppedFrames=${current.droppedFrames} `
+      + `ffmpegWarnings=${current.ffmpegWarningCount} rmsDb=${current.rmsDb ?? "unknown"}`
+    );
+    session.lastMediaHealthLogAt = now;
+  }
+  session.mediaDiagnostics = current;
 }
 
 function resolveBridgeRequestIp(req) {
@@ -5923,11 +6138,26 @@ io.on("connection", (socket) => {
 
     const stats = normalizeBrowserMediaStats(payload);
     if (!stats) return;
+    logBrowserMediaStats(peer, socket.id, stats);
     peer.browserMediaStats = {
       ...stats,
       reportedAt: Date.now(),
     };
     scheduleAdminStatusBroadcast("browser-media-stats-updated");
+  });
+
+  socket.on("media-transport-event", (payload = {}) => {
+    const peer = peers.get(socket.id);
+    const direction = ["send", "receive"].includes(payload?.direction) ? payload.direction : "unknown";
+    const event = String(payload?.event || "unknown").slice(0, 80);
+    const state = String(payload?.state || "unknown").slice(0, 80);
+    const detail = typeof payload?.detail === "string" ? payload.detail.trim().slice(0, 500) : "";
+    const label = `${peer?.kind || "client"}:${peer?.userId ?? peer?.feedId ?? peer?.name ?? socket.id}`;
+    console.log(
+      `[MEDIA][WEBRTC][TRANSPORT] ${new Date().toISOString()} ${label} socket=${socket.id} `
+      + `direction=${direction} event=${event} state=${state}`
+      + (detail ? ` detail=${JSON.stringify(detail)}` : "")
+    );
   });
 
   socket.on("register-user", ({ id, name, kind = "user", force = false, guestProfileUserId = null } = {}, callback) => {
@@ -6529,6 +6759,7 @@ io.on("connection", (socket) => {
       });
 
       peers.get(socket.id).sendTransport = transport;
+      attachWebRtcTransportDiagnostics(socket.id, "send", transport);
       console.log(`[TRANSPORT] Send transport created: ${transport.id}`);
       console.log(`[TRANSPORT] ICE Candidates:`, transport.iceCandidates);
 
@@ -6573,6 +6804,7 @@ io.on("connection", (socket) => {
       });
 
       peers.get(socket.id).recvTransport = transport;
+      attachWebRtcTransportDiagnostics(socket.id, "receive", transport);
       console.log(`[TRANSPORT] Recv transport created: ${transport.id}`);
       console.log(`[TRANSPORT] ICE Candidates:`, transport.iceCandidates);
 
@@ -6716,6 +6948,7 @@ io.on("connection", (socket) => {
         rtpParameters: rtpParameters || buildGatewayAudioRtpParameters(),
         appData,
       });
+      attachProducerMediaDiagnostics(producer, `plain:${peer.kind}:${peer.userId ?? peer.feedId ?? socket.id}`);
 
       producer.__startedAt = Date.now();
       peer.producers.set(producer.id, producer);
@@ -6917,6 +7150,7 @@ io.on("connection", (socket) => {
             rtpParameters,
             appData,
           });
+          attachProducerMediaDiagnostics(producer, `webrtc:${peer.kind}:${peer.userId ?? peer.feedId ?? socket.id}`);
 
           producer.__startedAt = Date.now();
           peer.producers.set(producer.id, producer);

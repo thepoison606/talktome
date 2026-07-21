@@ -653,7 +653,26 @@ function collectMediaNetworkStatsFromReport(report, summary) {
     const packetsReceived = Number(stats.packetsReceived);
     if (!Number.isFinite(packetsLost) || !Number.isFinite(packetsReceived)) return;
     summary.packetsLost += Math.max(0, packetsLost);
+    summary.packetsReceived += Math.max(0, packetsReceived);
     summary.packetsTotal += Math.max(0, packetsLost) + Math.max(0, packetsReceived);
+    if (stats.type === 'inbound-rtp') {
+      const jitter = Number(stats.jitter);
+      if (Number.isFinite(jitter) && jitter >= 0) summary.jitters.push(jitter * 1000);
+      summary.packetsDiscarded += Math.max(0, Number(stats.packetsDiscarded) || 0);
+      summary.concealedSamples += Math.max(0, Number(stats.concealedSamples) || 0);
+      summary.concealmentEvents += Math.max(0, Number(stats.concealmentEvents) || 0);
+      const jitterBufferDelay = Number(stats.jitterBufferDelay);
+      const jitterBufferEmittedCount = Number(stats.jitterBufferEmittedCount);
+      if (
+        Number.isFinite(jitterBufferDelay)
+        && jitterBufferDelay >= 0
+        && Number.isFinite(jitterBufferEmittedCount)
+        && jitterBufferEmittedCount > 0
+      ) {
+        summary.jitterBufferDelaySeconds += jitterBufferDelay;
+        summary.jitterBufferEmittedCount += jitterBufferEmittedCount;
+      }
+    }
   });
 }
 
@@ -668,7 +687,18 @@ async function reportMediaNetworkStats() {
   mediaNetworkStatsReportInFlight = true;
   try {
     const reports = await Promise.allSettled(transports.map((transport) => transport.getStats()));
-    const summary = { roundTripTimes: [], packetsLost: 0, packetsTotal: 0 };
+    const summary = {
+      roundTripTimes: [],
+      jitters: [],
+      packetsLost: 0,
+      packetsReceived: 0,
+      packetsTotal: 0,
+      packetsDiscarded: 0,
+      concealedSamples: 0,
+      concealmentEvents: 0,
+      jitterBufferDelaySeconds: 0,
+      jitterBufferEmittedCount: 0,
+    };
     reports.forEach((result) => {
       if (result.status === 'fulfilled') {
         collectMediaNetworkStatsFromReport(result.value, summary);
@@ -681,12 +711,25 @@ async function reportMediaNetworkStats() {
     const packetLossPercent = summary.packetsTotal > 0
       ? (summary.packetsLost / summary.packetsTotal) * 100
       : null;
+    const averageJitterMs = summary.jitters.length
+      ? summary.jitters.reduce((total, value) => total + value, 0) / summary.jitters.length
+      : null;
+    const averageJitterBufferMs = summary.jitterBufferEmittedCount > 0
+      ? (summary.jitterBufferDelaySeconds / summary.jitterBufferEmittedCount) * 1000
+      : null;
 
     socket.emit('media-network-stats', {
       roundTripMs: Number.isFinite(averageRoundTripMs) ? Math.round(averageRoundTripMs) : null,
       packetLossPercent: Number.isFinite(packetLossPercent)
         ? Math.round(packetLossPercent * 10) / 10
         : null,
+      jitterMs: Number.isFinite(averageJitterMs) ? Math.round(averageJitterMs) : null,
+      jitterBufferMs: Number.isFinite(averageJitterBufferMs) ? Math.round(averageJitterBufferMs) : null,
+      packetsLost: summary.packetsLost,
+      packetsReceived: summary.packetsReceived,
+      packetsDiscarded: summary.packetsDiscarded,
+      concealedSamples: summary.concealedSamples,
+      concealmentEvents: summary.concealmentEvents,
     });
   } catch (error) {
     console.debug('Unable to collect WebRTC network stats:', error);
@@ -3252,6 +3295,17 @@ document.addEventListener("DOMContentLoaded", () => {
     renderMediaConnectionStatus();
   }
 
+  function reportMediaTransportEvent(direction, event, state, detail = null) {
+    if (!socket.connected) return;
+    socket.emit('media-transport-event', {
+      direction,
+      event,
+      state: state || 'unknown',
+      detail: detail ? String(detail).slice(0, 500) : null,
+      clientTime: new Date().toISOString(),
+    });
+  }
+
   function bindMediaTransportStatus(transport, direction) {
     if (!transport || !['send', 'receive'].includes(direction)) return;
     mediaConnectionState[direction] = transport.connectionState || 'new';
@@ -3264,6 +3318,7 @@ document.addEventListener("DOMContentLoaded", () => {
       mediaConnectionState[direction] = state || transport.connectionState || 'unknown';
       if (state === 'connected') mediaConnectionState.iceError = null;
       renderMediaConnectionStatus();
+      reportMediaTransportEvent(direction, 'connection-state', mediaConnectionState[direction]);
     });
 
     transport.on('icegatheringstatechange', (state) => {
@@ -3271,6 +3326,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (direction === 'receive' && transport !== recvTransport) return;
       mediaConnectionState[`${direction}Ice`] = state || transport.iceGatheringState || 'unknown';
       renderMediaConnectionStatus();
+      reportMediaTransportEvent(direction, 'ice-gathering-state', mediaConnectionState[`${direction}Ice`]);
     });
 
     transport.on('icecandidateerror', (event) => {
@@ -3278,6 +3334,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (direction === 'receive' && transport !== recvTransport) return;
       mediaConnectionState.iceError = describeIceCandidateError(event);
       renderMediaConnectionStatus();
+      reportMediaTransportEvent(direction, 'ice-candidate-error', 'warning', mediaConnectionState.iceError);
     });
   }
 
