@@ -614,6 +614,7 @@ let recvTransport = null;
 let producer = null;
 let mediaNetworkStatsTimer = null;
 let mediaNetworkStatsReportInFlight = false;
+let collectMediaConsumerNetworkStats = async () => [];
 
 function isAudioRtpStats(stats) {
   return stats?.kind === 'audio' || stats?.mediaType === 'audio';
@@ -676,6 +677,50 @@ function collectMediaNetworkStatsFromReport(report, summary) {
   });
 }
 
+function summarizeMediaNetworkStats(summary) {
+  const averageRoundTripMs = summary.roundTripTimes.length
+    ? summary.roundTripTimes.reduce((total, value) => total + value, 0) / summary.roundTripTimes.length
+    : null;
+  const packetLossPercent = summary.packetsTotal > 0
+    ? (summary.packetsLost / summary.packetsTotal) * 100
+    : null;
+  const averageJitterMs = summary.jitters.length
+    ? summary.jitters.reduce((total, value) => total + value, 0) / summary.jitters.length
+    : null;
+  const averageJitterBufferMs = summary.jitterBufferEmittedCount > 0
+    ? (summary.jitterBufferDelaySeconds / summary.jitterBufferEmittedCount) * 1000
+    : null;
+
+  return {
+    roundTripMs: Number.isFinite(averageRoundTripMs) ? Math.round(averageRoundTripMs) : null,
+    packetLossPercent: Number.isFinite(packetLossPercent)
+      ? Math.round(packetLossPercent * 10) / 10
+      : null,
+    jitterMs: Number.isFinite(averageJitterMs) ? Math.round(averageJitterMs) : null,
+    jitterBufferMs: Number.isFinite(averageJitterBufferMs) ? Math.round(averageJitterBufferMs) : null,
+    packetsLost: summary.packetsLost,
+    packetsReceived: summary.packetsReceived,
+    packetsDiscarded: summary.packetsDiscarded,
+    concealedSamples: summary.concealedSamples,
+    concealmentEvents: summary.concealmentEvents,
+  };
+}
+
+function createMediaNetworkStatsSummary() {
+  return {
+    roundTripTimes: [],
+    jitters: [],
+    packetsLost: 0,
+    packetsReceived: 0,
+    packetsTotal: 0,
+    packetsDiscarded: 0,
+    concealedSamples: 0,
+    concealmentEvents: 0,
+    jitterBufferDelaySeconds: 0,
+    jitterBufferEmittedCount: 0,
+  };
+}
+
 async function reportMediaNetworkStats() {
   if (mediaNetworkStatsReportInFlight) return;
   if (!socket.connected || (session.kind !== 'user' && session.kind !== 'feed')) return;
@@ -687,49 +732,18 @@ async function reportMediaNetworkStats() {
   mediaNetworkStatsReportInFlight = true;
   try {
     const reports = await Promise.allSettled(transports.map((transport) => transport.getStats()));
-    const summary = {
-      roundTripTimes: [],
-      jitters: [],
-      packetsLost: 0,
-      packetsReceived: 0,
-      packetsTotal: 0,
-      packetsDiscarded: 0,
-      concealedSamples: 0,
-      concealmentEvents: 0,
-      jitterBufferDelaySeconds: 0,
-      jitterBufferEmittedCount: 0,
-    };
+    const summary = createMediaNetworkStatsSummary();
     reports.forEach((result) => {
       if (result.status === 'fulfilled') {
         collectMediaNetworkStatsFromReport(result.value, summary);
       }
     });
 
-    const averageRoundTripMs = summary.roundTripTimes.length
-      ? summary.roundTripTimes.reduce((total, value) => total + value, 0) / summary.roundTripTimes.length
-      : null;
-    const packetLossPercent = summary.packetsTotal > 0
-      ? (summary.packetsLost / summary.packetsTotal) * 100
-      : null;
-    const averageJitterMs = summary.jitters.length
-      ? summary.jitters.reduce((total, value) => total + value, 0) / summary.jitters.length
-      : null;
-    const averageJitterBufferMs = summary.jitterBufferEmittedCount > 0
-      ? (summary.jitterBufferDelaySeconds / summary.jitterBufferEmittedCount) * 1000
-      : null;
+    const streams = await collectMediaConsumerNetworkStats();
 
     socket.emit('media-network-stats', {
-      roundTripMs: Number.isFinite(averageRoundTripMs) ? Math.round(averageRoundTripMs) : null,
-      packetLossPercent: Number.isFinite(packetLossPercent)
-        ? Math.round(packetLossPercent * 10) / 10
-        : null,
-      jitterMs: Number.isFinite(averageJitterMs) ? Math.round(averageJitterMs) : null,
-      jitterBufferMs: Number.isFinite(averageJitterBufferMs) ? Math.round(averageJitterBufferMs) : null,
-      packetsLost: summary.packetsLost,
-      packetsReceived: summary.packetsReceived,
-      packetsDiscarded: summary.packetsDiscarded,
-      concealedSamples: summary.concealedSamples,
-      concealmentEvents: summary.concealmentEvents,
+      ...summarizeMediaNetworkStats(summary),
+      streams,
     });
   } catch (error) {
     console.debug('Unable to collect WebRTC network stats:', error);
@@ -3376,6 +3390,45 @@ document.addEventListener("DOMContentLoaded", () => {
   const stoppedFeedKeys = new Set();
   const listenOnlyConferenceKeys = new Set();
   const activeFeedKeys = new Set();
+  collectMediaConsumerNetworkStats = async () => {
+    const consumerEntries = [];
+    for (const [streamKey, consumers] of peerConsumers.entries()) {
+      for (const consumer of consumers || []) {
+        if (
+          consumerEntries.length >= 50
+          || !consumer
+          || consumer.closed
+          || typeof consumer.getStats !== 'function'
+        ) {
+          continue;
+        }
+        const entry = audioElements.get(streamKey);
+        consumerEntries.push({
+          consumer,
+          streamKey,
+          targetKey: entry?.key || null,
+          type: entry?.type || consumer?.appData?.type || null,
+        });
+      }
+    }
+
+    const reports = await Promise.allSettled(consumerEntries.map(async (item) => {
+      const report = await item.consumer.getStats();
+      const summary = createMediaNetworkStatsSummary();
+      collectMediaNetworkStatsFromReport(report, summary);
+      return {
+        consumerId: item.consumer.id || null,
+        producerId: item.consumer.producerId || null,
+        streamKey: item.streamKey,
+        targetKey: item.targetKey,
+        type: item.type,
+        ...summarizeMediaNetworkStats(summary),
+      };
+    }));
+    return reports
+      .filter((result) => result.status === 'fulfilled')
+      .map((result) => result.value);
+  };
   let guestLoginEnabled = false;
   const isMobileLoginViewport = () => (
     window.matchMedia?.('(pointer: coarse)').matches
@@ -4484,6 +4537,7 @@ let cachedOperatorTargets = null;
     const consumersSet = peerConsumers.get(streamKey);
     if (consumersSet) {
       consumersSet.forEach(c => {
+        closeConsumerOnServer(c?.id);
         try { c.close(); } catch {}
       });
       peerConsumers.delete(streamKey);
@@ -8246,7 +8300,10 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       const feedId = Number(feedKey.split('-')[1]);
       const consumers = peerConsumers.get(mapKey);
       if (consumers) {
-        consumers.forEach(c => { try { c.close(); } catch {} });
+        consumers.forEach(c => {
+          closeConsumerOnServer(c?.id);
+          try { c.close(); } catch {}
+        });
         peerConsumers.delete(mapKey);
       }
       unregisterStreamKey(feedKey, mapKey);

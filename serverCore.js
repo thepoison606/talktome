@@ -2795,6 +2795,36 @@ function normalizeBrowserMediaStats(payload = {}) {
     }
   }
 
+  if (Array.isArray(payload?.streams)) {
+    normalized.streams = payload.streams.slice(0, 50).map((stream = {}) => {
+      const normalizedStream = {};
+      for (const key of ["consumerId", "producerId", "streamKey", "targetKey", "type"]) {
+        if (typeof stream?.[key] === "string" && stream[key].trim()) {
+          normalizedStream[key] = stream[key].trim().slice(0, 160);
+        }
+      }
+      for (const key of [
+        "jitterMs",
+        "jitterBufferMs",
+        "packetsLost",
+        "packetsReceived",
+        "packetsDiscarded",
+        "concealedSamples",
+        "concealmentEvents",
+      ]) {
+        const value = Number(stream?.[key]);
+        if (Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER) {
+          normalizedStream[key] = Math.round(value);
+        }
+      }
+      const streamLossPercent = Number(stream?.packetLossPercent);
+      if (Number.isFinite(streamLossPercent) && streamLossPercent >= 0 && streamLossPercent <= 100) {
+        normalizedStream.packetLossPercent = Math.round(streamLossPercent * 10) / 10;
+      }
+      return normalizedStream;
+    }).filter((stream) => stream.consumerId || stream.producerId || stream.streamKey);
+  }
+
   return Object.keys(normalized).length ? normalized : null;
 }
 
@@ -2806,7 +2836,36 @@ function logBrowserMediaStats(peer, socketId, stats) {
   const discardedDelta = delta("packetsDiscarded");
   const concealedSamplesDelta = delta("concealedSamples");
   const concealmentEventsDelta = delta("concealmentEvents");
-  const hasNewProblem = lostDelta > 0 || discardedDelta > 0 || concealmentEventsDelta > 0;
+  const previousStreams = new Map(
+    (Array.isArray(previous?.streams) ? previous.streams : [])
+      .map((stream) => [stream.consumerId || stream.producerId || stream.streamKey, stream])
+  );
+  const streamProblems = (Array.isArray(stats.streams) ? stats.streams : []).map((stream) => {
+    const key = stream.consumerId || stream.producerId || stream.streamKey;
+    const previousStream = previousStreams.get(key) || null;
+    const streamDelta = (field) => (
+      previousStream
+        ? Math.max(0, Number(stream[field] || 0) - Number(previousStream[field] || 0))
+        : 0
+    );
+    return {
+      stream,
+      lostDelta: streamDelta("packetsLost"),
+      discardedDelta: streamDelta("packetsDiscarded"),
+      concealedSamplesDelta: streamDelta("concealedSamples"),
+      concealmentEventsDelta: streamDelta("concealmentEvents"),
+    };
+  }).filter((entry) => (
+    entry.lostDelta > 0
+    || entry.discardedDelta > 0
+    || entry.concealmentEventsDelta > 0
+  ));
+  const hasNewProblem = (
+    lostDelta > 0
+    || discardedDelta > 0
+    || concealmentEventsDelta > 0
+    || streamProblems.length > 0
+  );
   const periodicLogDue = !peer.lastMediaDiagnosticsLogAt || now - peer.lastMediaDiagnosticsLogAt >= 30_000;
   if (!hasNewProblem && !periodicLogDue) return;
 
@@ -2823,6 +2882,21 @@ function logBrowserMediaStats(peer, socketId, stats) {
     + `concealment=events:${stats.concealmentEvents ?? 0}(+${concealmentEventsDelta}),`
     + `samples:${stats.concealedSamples ?? 0}(+${concealedSamplesDelta},~${Math.round(concealedSamplesDelta / 48)}ms)`
   );
+  for (const problem of streamProblems) {
+    const stream = problem.stream;
+    console.warn(
+      `[MEDIA][WEBRTC][SOURCE-LOSS] ${timestamp} ${label} socket=${socketId} `
+      + `type=${stream.type || "unknown"} target=${stream.targetKey || "unknown"} `
+      + `producer=${stream.producerId || "unknown"} consumer=${stream.consumerId || "unknown"} `
+      + `jitterMs=${stream.jitterMs ?? "unknown"} jitterBufferMs=${stream.jitterBufferMs ?? "unknown"} `
+      + `lossPct=${stream.packetLossPercent ?? "unknown"} `
+      + `packets=recv:${stream.packetsReceived ?? 0},lost:${stream.packetsLost ?? 0}(+${problem.lostDelta}),`
+      + `discarded:${stream.packetsDiscarded ?? 0}(+${problem.discardedDelta}) `
+      + `concealment=events:${stream.concealmentEvents ?? 0}(+${problem.concealmentEventsDelta}),`
+      + `samples:${stream.concealedSamples ?? 0}(+${problem.concealedSamplesDelta},`
+      + `~${Math.round(problem.concealedSamplesDelta / 48)}ms)`
+    );
+  }
   peer.lastMediaDiagnosticsLogAt = now;
 }
 
@@ -5813,7 +5887,10 @@ function listActiveProducersForPeer(peer, peerId) {
   for (const [otherPeerId, otherPeer] of peers) {
     if (otherPeerId === peerId) continue;
     for (const [producerId, producer] of otherPeer.producers) {
-      if (!producer || producer.paused) continue;
+      // A paused producer still exists and its consumer must stay attached.
+      // Excluding it makes periodic reconciliation recreate a consumer on
+      // every talk/pause cycle.
+      if (!producer || producer.closed) continue;
       const appData = producer.appData;
       const type = String(appData?.type || "").trim().toLowerCase();
       if (type === "feed" && loadFeedIds().has(String(appData.id))) {
@@ -6601,7 +6678,9 @@ io.on("connection", (socket) => {
       if (otherSocketId === socket.id) continue;
 
       for (const [producerId, producer] of otherPeer.producers) {
-        if (!producer || producer.paused) continue;
+        // Paused talk producers remain valid. Keep them in reconciliation so
+        // clients do not tear down and recreate their consumers while idle.
+        if (!producer || producer.closed) continue;
         const appData = producer?.appData;
         if (!appData || typeof appData !== "object") continue;
         const type = String(appData.type || "").trim().toLowerCase();
@@ -7308,6 +7387,23 @@ io.on("connection", (socket) => {
         return callback({ error: "Receive transport not ready" });
       }
 
+      const existingConsumers = Array.from(peer.consumers.values()).filter((candidate) => (
+        candidate
+        && !candidate.closed
+        && !candidate.__plainTransport
+        && String(candidate.producerId || "") === String(producerId)
+      ));
+      for (const existingConsumer of existingConsumers) {
+        console.warn(
+          `[CONSUME] Replacing stale duplicate consumer ${existingConsumer.id} for ${socket.id} `
+          + `and producer ${producerId}`
+        );
+        try {
+          existingConsumer.close();
+        } catch {}
+        peer.consumers.delete(existingConsumer.id);
+      }
+
       const consumer = await transport.consume({
         producerId,
         rtpCapabilities,
@@ -7379,9 +7475,14 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("disconnect", () => {
-    console.log(`[CONN] Client disconnected: ${socket.id}`);
+  socket.on("disconnect", (reason) => {
     const peer = peers.get(socket.id);
+    console.log(
+      `[CONN] Client disconnected: ${socket.id} reason=${JSON.stringify(reason || "unknown")} `
+      + `peer=${peer?.kind || "unknown"}:${peer?.userId ?? peer?.feedId ?? peer?.name ?? "unknown"} `
+      + `send=${peer?.sendTransport?.connectionState || "none"} `
+      + `receive=${peer?.recvTransport?.connectionState || "none"}`
+    );
     const disconnectedUserId =
       peer && peer.kind === "user" && peer.userId !== null && peer.userId !== undefined
         ? peer.userId
