@@ -1672,7 +1672,9 @@ async function startNativeManagedEventStream(session) {
       streamId,
       serverUrl: normalizeServerUrl(serverUrlInput.value),
       apiKey: getBridgeCredential(),
-      path: managedSessionPath(session, "/events/stream")
+      path: managedSessionPath(session, "/events/stream"),
+      inputStreamId: session.inputStreamId,
+      outputStreamPrefix: `${session.port.id}:consumer:`
     }
   });
   return true;
@@ -1816,7 +1818,11 @@ async function heartbeatManagedSessions() {
         .map((output) => outputStatsById.get(output.streamId))
         .filter(Boolean);
       await bridgeApi("POST", managedSessionPath(session, "/heartbeat"), {
-        mediaDiagnostics: input || outputs.length ? { input, outputs } : null,
+        // Native event streams report media health independently of WebView
+        // timer throttling. Keep this fallback for browser/EventSource mode.
+        mediaDiagnostics: session.eventStreamId
+          ? null
+          : (input || outputs.length ? { input, outputs } : null),
         lifecycleEvents: session.lifecycleEvents?.splice(0) || []
       });
       if (session.error && session.statusLabel === "Server offline") {

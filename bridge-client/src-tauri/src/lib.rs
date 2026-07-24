@@ -328,6 +328,8 @@ struct BridgeEventStreamRequest {
     server_url: String,
     api_key: String,
     path: String,
+    input_stream_id: String,
+    output_stream_prefix: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -624,14 +626,33 @@ fn start_bridge_event_stream(
     if !path.starts_with("/api/v1/bridge/") {
         return Err("Bridge event stream path is not allowed".to_string());
     }
+    let heartbeat_path = bridge_event_stream_heartbeat_path(&path)?;
     let stream_id = request.stream_id.trim().to_string();
     if stream_id.is_empty() {
         return Err("Bridge event stream id is required".to_string());
+    }
+    let input_stream_id = request.input_stream_id.trim().to_string();
+    if input_stream_id.is_empty() {
+        return Err("Bridge input stream id is required".to_string());
+    }
+    let output_stream_prefix = request.output_stream_prefix.trim().to_string();
+    if output_stream_prefix.is_empty() {
+        return Err("Bridge output stream prefix is required".to_string());
     }
 
     let stop_flag = streams.start(&stream_id)?;
     let client = http.client.clone();
     tauri::async_runtime::spawn(async move {
+        tauri::async_runtime::spawn(run_bridge_health_reporter(
+            app.clone(),
+            client.clone(),
+            server_url.clone(),
+            api_key.clone(),
+            heartbeat_path,
+            input_stream_id,
+            output_stream_prefix,
+            stop_flag.clone(),
+        ));
         if let Err(error) = run_bridge_event_stream(
             app.clone(),
             client,
@@ -645,6 +666,7 @@ fn start_bridge_event_stream(
         {
             emit_bridge_event_stream_message(&app, &stream_id, "error", None, Some(error));
         }
+        stop_flag.store(true, Ordering::SeqCst);
         emit_bridge_event_stream_message(&app, &stream_id, "closed", None, None);
     });
     Ok(())
@@ -656,6 +678,83 @@ fn stop_bridge_event_stream(
     streams: tauri::State<'_, BridgeEventStreamManager>,
 ) -> Result<(), String> {
     streams.stop(stream_id.trim())
+}
+
+fn bridge_event_stream_heartbeat_path(path: &str) -> Result<String, String> {
+    path.strip_suffix("/events/stream")
+        .map(|session_path| format!("{session_path}/heartbeat"))
+        .ok_or_else(|| "Bridge event stream path must end with /events/stream".to_string())
+}
+
+fn bridge_media_diagnostics(
+    status: BridgeMediaStatus,
+    input_stream_id: &str,
+    output_stream_prefix: &str,
+) -> Option<serde_json::Value> {
+    let input = status
+        .input_stream_stats
+        .into_iter()
+        .find(|entry| entry.stream_id == input_stream_id);
+    let outputs = status
+        .output_stream_stats
+        .into_iter()
+        .filter(|entry| entry.stream_id.starts_with(output_stream_prefix))
+        .collect::<Vec<_>>();
+    if input.is_none() && outputs.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "input": input,
+        "outputs": outputs,
+    }))
+}
+
+async fn run_bridge_health_reporter(
+    app: tauri::AppHandle,
+    client: reqwest::Client,
+    server_url: String,
+    api_key: String,
+    heartbeat_path: String,
+    input_stream_id: String,
+    output_stream_prefix: String,
+    stop_flag: Arc<AtomicBool>,
+) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        if stop_flag.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let diagnostics = match app.state::<BridgeMediaManager>().status() {
+            Ok(status) => bridge_media_diagnostics(status, &input_stream_id, &output_stream_prefix),
+            Err(error) => {
+                eprintln!(
+                    "[bridge-health][{input_stream_id}] failed to read media status: {error}"
+                );
+                continue;
+            }
+        };
+        let response = client
+            .post(format!("{server_url}{heartbeat_path}"))
+            .bearer_auth(&api_key)
+            .json(&serde_json::json!({
+                "mediaDiagnostics": diagnostics,
+                "lifecycleEvents": [],
+            }))
+            .timeout(BRIDGE_HTTP_REQUEST_TIMEOUT)
+            .send()
+            .await;
+        match response {
+            Ok(response) if response.status().is_success() => {}
+            Ok(response) => eprintln!(
+                "[bridge-health][{input_stream_id}] heartbeat failed with HTTP {}",
+                response.status()
+            ),
+            Err(error) => {
+                eprintln!("[bridge-health][{input_stream_id}] heartbeat request failed: {error}")
+            }
+        }
+    }
 }
 
 async fn run_bridge_event_stream(
@@ -920,7 +1019,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_server_url;
+    use super::{bridge_event_stream_heartbeat_path, normalize_server_url};
 
     #[test]
     fn normalizes_supported_server_urls_without_inventing_a_port() {
@@ -967,5 +1066,17 @@ mod tests {
         assert!(normalize_server_url("ftp://intercom.local").is_err());
         assert!(normalize_server_url("https://user:secret@intercom.local").is_err());
         assert!(normalize_server_url("https://intercom.local?key=value").is_err());
+    }
+
+    #[test]
+    fn derives_heartbeat_path_from_bridge_event_stream_path() {
+        assert_eq!(
+            bridge_event_stream_heartbeat_path("/api/v1/bridge/sessions/session-1/events/stream")
+                .unwrap(),
+            "/api/v1/bridge/sessions/session-1/heartbeat"
+        );
+        assert!(
+            bridge_event_stream_heartbeat_path("/api/v1/bridge/sessions/session-1/events").is_err()
+        );
     }
 }
