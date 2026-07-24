@@ -3967,6 +3967,10 @@ app.get(
       }
       try {
         res.write(": heartbeat\n\n");
+        // The Bridge keeps this SSE stream in its native process. Its webview
+        // heartbeat may be throttled while the app is hidden, but a writable
+        // native stream still proves that this control session is alive.
+        session.lastSeenAt = Date.now();
       } catch {
         session.eventStreams.delete(stream);
         clearInterval(stream.heartbeat);
