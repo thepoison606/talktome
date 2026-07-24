@@ -8957,6 +8957,18 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
           || peerConsumers.has(streamKey)
           || (targetStreamMap.get(targetKey)?.has(streamKey) ?? false);
 
+        if (payload?.retainOnly) {
+          logReceiveDiagnostic(
+            alreadyHave ? 'consumer-retained-paused-producer' : 'retain-only-producer-skipped',
+            {
+              producerId: payload.producerId || null,
+              streamKey,
+              targetKey,
+            }
+          );
+          continue;
+        }
+
         if (alreadyHave) continue;
         await handleIncomingProducer(payload);
       }

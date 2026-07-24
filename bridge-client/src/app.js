@@ -2052,6 +2052,7 @@ async function startManagedSession(port, { reuse = false, silentRetry = false, r
     if (bridgePortHasOutput(port)) {
       const active = await bridgeApi("GET", managedSessionPath(session, "/active-producers"));
       for (const producerPayload of active.producers || []) {
+        if (producerPayload?.retainOnly) continue;
         await startManagedConsumer(session, producerPayload);
       }
     }

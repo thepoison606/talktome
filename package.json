@@ -4,7 +4,7 @@
   "version": "1.1.0",
   "main": "server.js",
   "scripts": {
-    "test": "node --test webrtcConfig.test.js",
+    "test": "node --test *.test.js",
     "start": "node server.js",
     "radio:ptt": "node gateway/radioGateway.js ptt",
     "radio:play": "node gateway/radioGateway.js play",

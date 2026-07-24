@@ -13,6 +13,11 @@ const QRCode = require("qrcode");
 const { getDataDir } = require("./dataPaths");
 const { ApplePttPushService } = require("./applePttPushService");
 const { buildWebRtcListenInfos, resolveClientIceConfig } = require("./webrtcConfig");
+const {
+  producerDeliveryChanged,
+  resolveProducerReconciliationDelivery,
+  shouldAnnounceProducerDelivery,
+} = require("./producerReconciliation");
 
 function resolveServerAppVersion() {
   let version = process.env.TALKTOME_VERSION || process.env.npm_package_version || "";
@@ -4176,6 +4181,7 @@ app.post(
           producerId: producer.id,
           appData: producer.appData,
           speakerSocketId: req.bridgeSession.id,
+          forceAnnounce: true,
         });
         syncPeerCompanionState(peer, { reason: "bridge-producer-resumed" });
         broadcastRuntimeUserStates("bridge-producer-resumed");
@@ -5854,12 +5860,13 @@ function waitForBridgeRtpHandshake(transport) {
   });
 }
 
-function buildBridgeProducerPayload(peerId, producerId, appData) {
+function buildBridgeProducerPayload(peerId, producerId, appData, { retainOnly = false } = {}) {
   const speakerPeer = peers.get(peerId);
   return {
     peerId,
     producerId,
     appData,
+    retainOnly: Boolean(retainOnly),
     speakerUserId: speakerPeer?.userId ?? speakerPeer?.guestProfileUserId ?? null,
     speakerName: speakerPeer?.name || null,
     speakerKind: speakerPeer?.kind || null,
@@ -5887,25 +5894,36 @@ function listActiveProducersForPeer(peer, peerId) {
   for (const [otherPeerId, otherPeer] of peers) {
     if (otherPeerId === peerId) continue;
     for (const [producerId, producer] of otherPeer.producers) {
-      // A paused producer still exists and its consumer must stay attached.
-      // Excluding it makes periodic reconciliation recreate a consumer on
-      // every talk/pause cycle.
       if (!producer || producer.closed) continue;
       const appData = producer.appData;
       const type = String(appData?.type || "").trim().toLowerCase();
-      if (type === "feed" && loadFeedIds().has(String(appData.id))) {
-        response.push(buildBridgeProducerPayload(otherPeerId, producerId, appData));
-      } else if (type === "conference" && loadConferenceIds().has(String(appData.id))) {
-        response.push(buildBridgeProducerPayload(otherPeerId, producerId, appData));
-      } else if (["user", "talk", "guest"].includes(type)) {
-        const delivery = resolveProducerRecipientDeliveries({
-          appData,
-          speakerSocketId: otherPeerId,
-        }).find((candidate) => candidate.recipientSocketId === peerId);
-        if (delivery?.appData) {
-          response.push(buildBridgeProducerPayload(otherPeerId, producerId, delivery.appData));
+      let activeDelivery = null;
+
+      if (!producer.paused) {
+        if (type === "feed" && loadFeedIds().has(String(appData.id))) {
+          activeDelivery = { recipientSocketId: peerId, appData };
+        } else if (type === "conference" && loadConferenceIds().has(String(appData.id))) {
+          activeDelivery = { recipientSocketId: peerId, appData };
+        } else if (["user", "talk", "guest"].includes(type)) {
+          activeDelivery = resolveProducerRecipientDeliveries({
+            appData,
+            speakerSocketId: otherPeerId,
+          }).find((candidate) => candidate.recipientSocketId === peerId) || null;
         }
       }
+
+      const reconciliationDelivery = resolveProducerReconciliationDelivery({
+        producer,
+        recipientSocketId: peerId,
+        activeDelivery,
+      });
+      if (!reconciliationDelivery?.appData) continue;
+      response.push(buildBridgeProducerPayload(
+        otherPeerId,
+        producerId,
+        reconciliationDelivery.appData,
+        { retainOnly: reconciliationDelivery.retainOnly }
+      ));
     }
   }
   return response;
@@ -6031,14 +6049,6 @@ function resolveApplePttSpeakerName(socketId) {
   return trimmed || "Talktome";
 }
 
-function buildProducerDeliverySignature(appData = {}) {
-  return [
-    appData?.type || "",
-    appData?.id ?? "",
-    appData?.targetPeer || "",
-  ].join(":");
-}
-
 function resolveProducerRecipientDeliveriesForTargets({ targets, speakerSocketId }) {
   const deliveries = [];
   const seenRecipients = new Set();
@@ -6119,7 +6129,7 @@ function closeProducerConsumersForRecipient({ producerId, recipientSocketId }) {
   }
 }
 
-function syncProducerRecipients({ producer, speakerSocketId }) {
+function syncProducerRecipients({ producer, speakerSocketId, forceAnnounce = false }) {
   if (!producer) return [];
 
   const deliveries = resolveProducerRecipientDeliveries({
@@ -6135,17 +6145,18 @@ function syncProducerRecipients({ producer, speakerSocketId }) {
 
   for (const [recipientSocketId, previousAppData] of previousDeliveries.entries()) {
     const nextAppData = nextDeliveries.get(recipientSocketId);
-    const deliveryChanged = !nextAppData
-      || buildProducerDeliverySignature(previousAppData) !== buildProducerDeliverySignature(nextAppData);
+    const deliveryChanged = producerDeliveryChanged(previousAppData, nextAppData);
     if (!deliveryChanged) continue;
     closeProducerConsumersForRecipient({ producerId: producer.id, recipientSocketId });
   }
 
   for (const [recipientSocketId, nextAppData] of nextDeliveries.entries()) {
     const previousAppData = previousDeliveries.get(recipientSocketId);
-    const deliveryChanged = !previousAppData
-      || buildProducerDeliverySignature(previousAppData) !== buildProducerDeliverySignature(nextAppData);
-    if (!deliveryChanged) continue;
+    if (!shouldAnnounceProducerDelivery({
+      previousAppData,
+      nextAppData,
+      forceAnnounce,
+    })) continue;
     const recipientPeer = peers.get(recipientSocketId);
     if (!recipientPeer?.socket) continue;
     recipientPeer.socket.emit("new-producer", {
@@ -6159,11 +6170,20 @@ function syncProducerRecipients({ producer, speakerSocketId }) {
   return deliveries;
 }
 
-function announceProducerToRecipients({ producerId, appData, speakerSocketId }) {
+function announceProducerToRecipients({
+  producerId,
+  appData,
+  speakerSocketId,
+  forceAnnounce = false,
+}) {
   const speakerPeer = peers.get(speakerSocketId);
   const producer = speakerPeer?.producers?.get(producerId) || null;
   if (!producer) return [];
-  return syncProducerRecipients({ producer, speakerSocketId }).map((delivery) => delivery.recipientSocketId);
+  return syncProducerRecipients({
+    producer,
+    speakerSocketId,
+    forceAnnounce,
+  }).map((delivery) => delivery.recipientSocketId);
 }
 
 async function sendApplePttSpeakerStarted({ type, targetId, targets = null, speakerSocketId, reason }) {
@@ -6678,49 +6698,46 @@ io.on("connection", (socket) => {
       if (otherSocketId === socket.id) continue;
 
       for (const [producerId, producer] of otherPeer.producers) {
-        // Paused talk producers remain valid. Keep them in reconciliation so
-        // clients do not tear down and recreate their consumers while idle.
         if (!producer || producer.closed) continue;
         const appData = producer?.appData;
         if (!appData || typeof appData !== "object") continue;
         const type = String(appData.type || "").trim().toLowerCase();
+        let activeDelivery = null;
 
-        if (type === "feed") {
+        if (!producer.paused && type === "feed") {
           const feedId = appData.id;
           if (feedId == null) continue;
           const membership = loadFeedIds();
           if (membership.has(String(feedId))) {
-            response.push({ peerId: otherSocketId, producerId, appData });
+            activeDelivery = { recipientSocketId: socket.id, appData };
           }
-          continue;
-        }
-
-        if (type === "conference") {
+        } else if (!producer.paused && type === "conference") {
           const confId = appData.id;
           if (confId == null) continue;
           const membership = loadConferenceIds();
           if (membership.has(String(confId))) {
-            response.push({ peerId: otherSocketId, producerId, appData });
+            activeDelivery = { recipientSocketId: socket.id, appData };
           }
-          continue;
+        } else if (!producer.paused && (type === "user" || type === "talk")) {
+          const deliveries = resolveProducerRecipientDeliveries({ appData, speakerSocketId: otherSocketId });
+          activeDelivery = deliveries.find((candidate) => candidate.recipientSocketId === socket.id) || null;
+        } else if (!producer.paused && type === "guest") {
+          const deliveries = resolveProducerRecipientDeliveries({ appData, speakerSocketId: otherSocketId });
+          activeDelivery = deliveries.find((candidate) => candidate.recipientSocketId === socket.id) || null;
         }
 
-        if (type === "user" || type === "talk") {
-          const deliveries = resolveProducerRecipientDeliveries({ appData, speakerSocketId: otherSocketId });
-          const delivery = deliveries.find((candidate) => candidate.recipientSocketId === socket.id);
-          if (delivery?.appData) {
-            response.push({ peerId: otherSocketId, producerId, appData: delivery.appData });
-          }
-          continue;
-        }
-
-        if (type === "guest") {
-          const deliveries = resolveProducerRecipientDeliveries({ appData, speakerSocketId: otherSocketId });
-          const delivery = deliveries.find((candidate) => candidate.recipientSocketId === socket.id);
-          if (delivery?.appData) {
-            response.push({ peerId: otherSocketId, producerId, appData: delivery.appData });
-          }
-        }
+        const reconciliationDelivery = resolveProducerReconciliationDelivery({
+          producer,
+          recipientSocketId: socket.id,
+          activeDelivery,
+        });
+        if (!reconciliationDelivery?.appData) continue;
+        response.push({
+          peerId: otherSocketId,
+          producerId,
+          appData: reconciliationDelivery.appData,
+          retainOnly: Boolean(reconciliationDelivery.retainOnly),
+        });
       }
     }
 
@@ -7082,6 +7099,7 @@ io.on("connection", (socket) => {
           producerId: producer.id,
           appData,
           speakerSocketId: socket.id,
+          forceAnnounce: true,
         });
       });
 
@@ -7305,6 +7323,7 @@ io.on("connection", (socket) => {
               producerId: producer.id,
               appData,
               speakerSocketId: socket.id,
+              forceAnnounce: true,
             });
             void sendApplePttSpeakerStarted({
               type,
