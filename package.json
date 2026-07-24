@@ -1,7 +1,7 @@
 {
   "bin": "server.js",
   "name": "intercom",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "main": "server.js",
   "scripts": {
     "test": "node --test *.test.js",
