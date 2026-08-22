@@ -14,17 +14,16 @@
     "radio:stream": "node gateway/radioGateway.js stream",
     "radio:stream-rx": "node gateway/radioGateway.js stream-rx",
     "gateway:sync": "scripts/sync-gateway-to-pi.sh",
-    "prebuild:pkg": "node scripts/resolve-build-version.js --version-json build-version.json && npm rebuild better-sqlite3 --target=18.20.4 --runtime=node --dist-url=https://nodejs.org/dist",
-    "build:win64": "npm run prebuild:pkg && npx --no-install pkg package.json --targets node18-win-x64 --output talktome_win64 --assets \"public/**/*\" --assets \"node_modules/socket.io/client-dist/**/*\" --assets \"node_modules/mediasoup/worker/out/Release/*\" --assets \"node_modules/better-sqlite3/build/Release/better_sqlite3.node\" && node scripts/copy-runtime-deps.js win64 && node scripts/postbuild-pkg.js",
-    "build:mac_arm64": "npm run prebuild:pkg && npx --no-install pkg package.json --targets node18-macos-arm64 --output talktome_arm64 --assets \"public/**/*\" --assets \"node_modules/socket.io/client-dist/**/*\" --assets \"node_modules/mediasoup/worker/out/Release/mediasoup-worker*\" --assets \"node_modules/better-sqlite3/build/Release/better_sqlite3.node\" && node scripts/copy-runtime-deps.js mac_arm64 && node scripts/postbuild-pkg.js",
-    "postbuild:pkg": "node scripts/postbuild-pkg.js"
+    "prebuild:pkg": "node scripts/verify-build-node.js && node scripts/resolve-build-version.js --version-json build-version.json && npm rebuild better-sqlite3",
+    "build:win64": "npm run prebuild:pkg && npx --no-install pkg package.json --targets node24-win-x64 --output talktome_win64 && node scripts/copy-runtime-deps.js win64",
+    "build:mac_arm64": "npm run prebuild:pkg && npx --no-install pkg package.json --targets node24-macos-arm64 --output talktome_arm64 && node scripts/copy-runtime-deps.js mac_arm64"
   },
   "keywords": [],
   "author": "",
   "license": "Apache-2.0",
   "description": "",
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=24.0.0 <25"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
@@ -40,7 +39,7 @@
   },
   "devDependencies": {
     "esbuild": "^0.25.5",
-    "pkg": "npm:@yao-pkg/pkg@^6.8.0",
+    "pkg": "npm:@yao-pkg/pkg@^6.22.0",
     "webpack": "^5.99.9",
     "webpack-cli": "^6.0.1"
   },
@@ -49,10 +48,14 @@
       "public/**/*",
       "node_modules/socket.io/client-dist/**/*",
       "node_modules/mediasoup/worker/out/Release/*",
-      "node_modules/better-sqlite3/build/Release/better_sqlite3.node"
-    ],
-    "dependencies": [
+      "node_modules/better-sqlite3/build/Release/better_sqlite3.node",
       "node_modules/selfsigned/**/*"
     ]
+  },
+  "allowScripts": {
+    "better-sqlite3@11.10.0": true,
+    "esbuild@0.25.5": true,
+    "esbuild@0.28.2": true,
+    "mediasoup@3.19.2": true
   }
 }
