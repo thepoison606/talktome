@@ -54,5 +54,8 @@
     "dependencies": [
       "node_modules/selfsigned/**/*"
     ]
+  },
+  "overrides": {
+    "engine.io": "6.6.7"
   }
 }
