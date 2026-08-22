@@ -1,4 +1,4 @@
-FROM node:18-bookworm-slim
+FROM node:26-bookworm-slim
 
 ARG TALKTOME_VERSION=""
 
