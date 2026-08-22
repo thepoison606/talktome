@@ -103,7 +103,7 @@ jobs:
 
       - name: Restore LGPL FFmpeg sidecar
         id: ffmpeg-sidecar
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: bridge-client/.ffmpeg-sidecars/${{ matrix.ffmpeg_sidecar }}
           key: ffmpeg-${{ runner.os }}-${{ hashFiles('bridge-client/scripts/build-ffmpeg-lgpl-*.sh') }}
