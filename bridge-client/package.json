@@ -21,7 +21,7 @@
     "@tauri-apps/plugin-opener": "^2"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.8.4",
+    "@tauri-apps/cli": "^2.11.4",
     "vite": "^7.3.6"
   }
 }
