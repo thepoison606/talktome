@@ -1,4 +1,5 @@
 mod audio;
+mod discovery_task;
 mod bridge_media;
 mod model;
 mod ndi;
@@ -345,22 +346,22 @@ struct BridgeEventStreamMessage {
     error: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_audio_devices() -> Result<AudioInventory, String> {
     audio::list_audio_devices()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_audio_device_snapshot() -> Result<AudioDeviceSnapshot, String> {
     audio::list_audio_device_snapshot()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_ndi_status() -> ndi::NdiStatus {
     network_audio::ndi_status(Duration::from_millis(250))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_omt_status() -> omt::OmtStatus {
     network_audio::omt_status(Duration::from_millis(250))
 }

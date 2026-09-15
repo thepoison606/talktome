@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
-    mpsc::{self, SyncSender},
+    atomic::{AtomicI32, AtomicU64},
+    mpsc::SyncSender,
     Arc, Mutex,
 };
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::audio::{AudioDeviceInfo, AudioDeviceSnapshotEntry};
+use crate::audio::AudioDeviceInfo;
 use crate::bridge_media::BridgeOutputMixerSource;
 use crate::{ndi, omt};
 
@@ -40,201 +39,69 @@ pub struct NetworkAudioScan {
     pub warnings: Vec<String>,
 }
 
-const BACKEND_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+type NdiScan = (Vec<AudioDeviceInfo>, ndi::NdiStatus);
+type OmtScan = (Vec<AudioDeviceInfo>, omt::OmtStatus);
+static NDI_SCAN: std::sync::OnceLock<crate::discovery_task::DiscoveryTask<NdiScan>> =
+    std::sync::OnceLock::new();
+static OMT_SCAN: std::sync::OnceLock<crate::discovery_task::DiscoveryTask<OmtScan>> =
+    std::sync::OnceLock::new();
 
-// See audio.rs: timed-out native calls stay detached, so never start another
-// probe against that backend until the Bridge process is restarted.
-static NDI_TIMED_OUT: AtomicBool = AtomicBool::new(false);
-static OMT_TIMED_OUT: AtomicBool = AtomicBool::new(false);
+fn poll_ndi(wait: Duration) -> Option<NdiScan> {
+    NDI_SCAN
+        .get_or_init(crate::discovery_task::DiscoveryTask::new)
+        .poll(Duration::from_secs(5), move || {
+            (ndi::audio_devices(wait), ndi::status(wait))
+        })
+        .0
+}
+fn poll_omt(wait: Duration) -> Option<OmtScan> {
+    OMT_SCAN
+        .get_or_init(crate::discovery_task::DiscoveryTask::new)
+        .poll(Duration::from_secs(5), move || {
+            (omt::audio_devices(wait), omt::status(wait))
+        })
+        .0
+}
 
 pub fn audio_devices(wait: Duration) -> NetworkAudioScan {
-    let ndi = spawn_backend_probe("NDI", &NDI_TIMED_OUT, move || ndi::audio_devices(wait));
-    let omt = spawn_backend_probe("OMT", &OMT_TIMED_OUT, move || omt::audio_devices(wait));
     let mut devices = Vec::new();
     let mut warnings = Vec::new();
-
-    collect_backend_probe(ndi, BACKEND_PROBE_TIMEOUT, &mut devices, &mut warnings);
-    collect_backend_probe(omt, BACKEND_PROBE_TIMEOUT, &mut devices, &mut warnings);
-
+    match poll_ndi(wait) {
+        Some((found, _)) => devices.extend(found),
+        None => warnings
+            .push("NDI discovery is still running; results will appear automatically.".into()),
+    }
+    match poll_omt(wait) {
+        Some((found, _)) => devices.extend(found),
+        None => warnings
+            .push("OMT discovery is still running; results will appear automatically.".into()),
+    }
     NetworkAudioScan { devices, warnings }
 }
 
-pub fn audio_device_snapshot(wait: Duration) -> Vec<AudioDeviceSnapshotEntry> {
-    audio_devices(wait)
-        .devices
-        .into_iter()
-        .map(|device| AudioDeviceSnapshotEntry {
-            id: device.id,
-            name: device.name,
-            direction: device.direction,
-            is_default: false,
-        })
-        .collect()
-}
-
-struct BackendProbe {
-    name: &'static str,
-    timed_out: &'static AtomicBool,
-    started_at: Instant,
-    receiver: Option<mpsc::Receiver<Vec<AudioDeviceInfo>>>,
-}
-
-fn spawn_backend_probe(
-    name: &'static str,
-    timed_out: &'static AtomicBool,
-    probe: impl FnOnce() -> Vec<AudioDeviceInfo> + Send + 'static,
-) -> BackendProbe {
-    if timed_out.load(Ordering::Relaxed) {
-        return BackendProbe {
-            name,
-            timed_out,
-            started_at: Instant::now(),
-            receiver: None,
-        };
-    }
-
-    let (sender, receiver) = mpsc::sync_channel(1);
-    let started_at = Instant::now();
-    thread::spawn(move || {
-        let _ = sender.send(probe());
-    });
-    BackendProbe {
-        name,
-        timed_out,
-        started_at,
-        receiver: Some(receiver),
-    }
-}
-
-fn collect_backend_probe(
-    probe: BackendProbe,
-    timeout: Duration,
-    devices: &mut Vec<AudioDeviceInfo>,
-    warnings: &mut Vec<String>,
-) {
-    let Some(receiver) = probe.receiver else {
-        warnings.push(format!(
-            "Skipped {} audio: its backend stopped responding earlier.",
-            probe.name
-        ));
-        return;
-    };
-    let remaining = timeout.saturating_sub(probe.started_at.elapsed());
-    match receiver.recv_timeout(remaining) {
-        Ok(mut found) => devices.append(&mut found),
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            probe.timed_out.store(true, Ordering::Relaxed);
-            warnings.push(format!(
-                "Skipped {} audio: its backend did not respond within {} seconds.",
-                probe.name,
-                timeout.as_secs()
-            ));
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            probe.timed_out.store(true, Ordering::Relaxed);
-            warnings.push(format!(
-                "Skipped {} audio: its backend probe stopped unexpectedly.",
-                probe.name
-            ));
-        }
-    }
-}
-
 pub fn ndi_status(wait: Duration) -> ndi::NdiStatus {
-    if NDI_TIMED_OUT.load(Ordering::Relaxed) {
-        return ndi::NdiStatus {
+    poll_ndi(wait)
+        .map(|(_, status)| status)
+        .unwrap_or_else(|| ndi::NdiStatus {
             available: false,
             version: None,
             runtime_path: None,
             source_count: 0,
             source_names: Vec::new(),
-            error: Some("NDI backend timed out and was disabled for this Bridge session".to_string()),
-        };
-    }
-    let (sender, receiver) = mpsc::sync_channel(1);
-    thread::spawn(move || {
-        let _ = sender.send(ndi::status(wait));
-    });
-    match receiver.recv_timeout(BACKEND_PROBE_TIMEOUT) {
-        Ok(status) => status,
-        Err(_) => {
-            NDI_TIMED_OUT.store(true, Ordering::Relaxed);
-            ndi::NdiStatus {
-                available: false,
-                version: None,
-                runtime_path: None,
-                source_count: 0,
-                source_names: Vec::new(),
-                error: Some(
-                    "NDI backend timed out and was disabled for this Bridge session".to_string(),
-                ),
-            }
-        }
-    }
+            error: Some("Discovery is still running".into()),
+        })
 }
-
 pub fn omt_status(wait: Duration) -> omt::OmtStatus {
-    if OMT_TIMED_OUT.load(Ordering::Relaxed) {
-        return omt::OmtStatus {
+    poll_omt(wait)
+        .map(|(_, status)| status)
+        .unwrap_or_else(|| omt::OmtStatus {
             available: false,
             version: None,
             runtime_path: None,
             source_count: 0,
             source_names: Vec::new(),
-            error: Some("OMT backend timed out and was disabled for this Bridge session".to_string()),
-        };
-    }
-    let (sender, receiver) = mpsc::sync_channel(1);
-    thread::spawn(move || {
-        let _ = sender.send(omt::status(wait));
-    });
-    match receiver.recv_timeout(BACKEND_PROBE_TIMEOUT) {
-        Ok(status) => status,
-        Err(_) => {
-            OMT_TIMED_OUT.store(true, Ordering::Relaxed);
-            omt::OmtStatus {
-                available: false,
-                version: None,
-                runtime_path: None,
-                source_count: 0,
-                source_names: Vec::new(),
-                error: Some(
-                    "OMT backend timed out and was disabled for this Bridge session".to_string(),
-                ),
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{collect_backend_probe, spawn_backend_probe};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::Duration;
-
-    static TEST_TIMED_OUT: AtomicBool = AtomicBool::new(false);
-
-    #[test]
-    fn quarantines_a_backend_that_does_not_answer_in_time() {
-        TEST_TIMED_OUT.store(false, Ordering::Relaxed);
-        let probe = spawn_backend_probe("test", &TEST_TIMED_OUT, || {
-            std::thread::sleep(Duration::from_millis(100));
-            Vec::new()
-        });
-        let mut devices = Vec::new();
-        let mut warnings = Vec::new();
-
-        collect_backend_probe(
-            probe,
-            Duration::from_millis(5),
-            &mut devices,
-            &mut warnings,
-        );
-
-        assert!(devices.is_empty());
-        assert_eq!(warnings.len(), 1);
-        assert!(TEST_TIMED_OUT.load(Ordering::Relaxed));
-    }
+            error: Some("Discovery is still running".into()),
+        })
 }
 
 pub fn is_input_device(device_id: &str) -> bool {

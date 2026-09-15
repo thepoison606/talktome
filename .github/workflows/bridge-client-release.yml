@@ -86,6 +86,12 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Test retained audio discovery
+        shell: bash
+        run: |
+          rustc --edition 2021 --test bridge-client/src-tauri/src/discovery_task.rs -o "$RUNNER_TEMP/discovery-tests.exe"
+          "$RUNNER_TEMP/discovery-tests.exe"
+
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@v2
         with:

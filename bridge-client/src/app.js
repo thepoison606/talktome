@@ -245,6 +245,11 @@ function renderNdiStatus(status) {
   ndiRuntime.dataset.state = available ? "available" : "unavailable";
   if (!available) {
     const error = String(status?.error || "NDI Runtime not found");
+    if (/discovery is still running/i.test(error)) {
+      ndiRuntimeDetail.textContent = "Discovering NDI devices…";
+      ndiRuntimeDetail.title = error;
+      return;
+    }
     const timedOut = /timed out|did not respond/i.test(error);
     ndiRuntimeDetail.textContent = timedOut
       ? "Backend did not respond. NDI devices were skipped for this session."
@@ -273,6 +278,11 @@ function renderOmtStatus(status) {
   const version = String(status?.version || "OMT");
   if (!available) {
     const error = String(status?.error || "Bundled OMT backend not found");
+    if (/discovery is still running/i.test(error)) {
+      omtRuntimeDetail.textContent = "Discovering OMT devices…";
+      omtRuntimeDetail.title = error;
+      return;
+    }
     const timedOut = /timed out|did not respond/i.test(error);
     omtRuntimeDetail.textContent = timedOut
       ? "Backend did not respond. OMT devices were skipped for this session."
@@ -2781,26 +2791,16 @@ async function watchManagedInventory() {
     || Date.now() < managedInventoryWatchRetryAt
   ) return;
   if (isBridgeSettingsControlFocused()) return;
-  if (!serverUrlInput.value.trim() || !getBridgeCredential()) return;
-
   managedInventoryWatchRunning = true;
   try {
-    const snapshot = await withTimeout(
-      invoke("get_audio_device_snapshot"),
-      AUDIO_INVENTORY_TIMEOUT_MS,
-      "Audio device snapshot"
-    );
-    const nextSnapshotSignature = audioDeviceSnapshotSignature(snapshot);
-    managedInventoryWatchRetryAt = 0;
-    if (!lastAudioDeviceSnapshotSignature) {
-      lastAudioDeviceSnapshotSignature = nextSnapshotSignature;
-    } else if (nextSnapshotSignature && nextSnapshotSignature !== lastAudioDeviceSnapshotSignature) {
-      const inventory = await refreshManagedInventoryOnly();
-      const nextInventorySignature = inventorySignature(inventory);
-      if (nextInventorySignature && nextInventorySignature !== lastAnnouncedInventorySignature) {
-        await suppressWindowFocusHide(900);
-        await announceBridge({ quiet: true, syncConfig: false });
-      }
+    // Native discovery is retained and non-blocking. Poll even when endpoint
+    // identities have not changed so late device details and backend status arrive.
+    const inventory = await refreshManagedInventoryOnly();
+    const nextInventorySignature = inventorySignature(inventory);
+    if (serverUrlInput.value.trim() && getBridgeCredential()
+      && nextInventorySignature && nextInventorySignature !== lastAnnouncedInventorySignature) {
+      await suppressWindowFocusHide(900);
+      await announceBridge({ quiet: true, syncConfig: false });
     }
     await auditManagedSessionDevices();
     await auditManagedNativeMediaStatus();
@@ -2978,7 +2978,7 @@ function renderInventory(inventory) {
   if (audioScanStatus) {
     const warnings = Array.isArray(inventory?.warnings) ? inventory.warnings : [];
     audioScanStatus.textContent = warnings.length
-      ? `${warnings.length} audio component${warnings.length === 1 ? " was" : "s were"} skipped because ${warnings.length === 1 ? "it" : "they"} could not be queried safely.`
+      ? `${warnings.length} audio discovery notice${warnings.length === 1 ? "" : "s"} — hover for details.`
       : "";
     audioScanStatus.title = warnings.join("\n");
     requestBridgeWindowResize();
@@ -3702,3 +3702,7 @@ installBridgeWindowAutoResize();
 loadAutostartState();
 listenForAutostartChanges();
 refreshDevices();
+// Discovery also completes before a server connection has been configured.
+if (invoke && !managedInventoryTimer) {
+  managedInventoryTimer = window.setInterval(watchManagedInventory, MANAGED_INVENTORY_WATCH_MS);
+}

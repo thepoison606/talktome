@@ -94,7 +94,7 @@ struct CachedSources {
     updated_at: Option<Instant>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OmtStatus {
     pub available: bool,

@@ -2,9 +2,8 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{Device, SampleRate, SupportedBufferSize, SupportedStreamConfigRange};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{mpsc, Mutex, OnceLock};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use crate::network_audio;
 
@@ -59,81 +58,102 @@ pub struct AudioDeviceSnapshotEntry {
     pub is_default: bool,
 }
 
-const DEVICE_DETAILS_TIMEOUT: Duration = Duration::from_secs(2);
-const SYSTEM_DIRECTION_TIMEOUT: Duration = Duration::from_secs(4);
-const PROBE_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
-
-// Native driver calls cannot be cancelled safely. A timed-out worker is left
-// detached, so retries are delayed. The quarantine uses stable endpoint IDs and
-// is cleared when the lightweight snapshot observes a topology change.
-static TIMED_OUT_DEVICE_PROBES: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
-static TIMED_OUT_DIRECTIONS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
-static LAST_SYSTEM_DEVICE_SNAPSHOT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-
-fn is_probe_quarantined(quarantine: &Mutex<HashMap<String, Instant>>, key: &str) -> bool {
-    let Ok(mut entries) = quarantine.lock() else {
-        return false;
-    };
-    let Some(timed_out_at) = entries.get(key).copied() else {
-        return false;
-    };
-    if timed_out_at.elapsed() < PROBE_RETRY_COOLDOWN {
-        return true;
-    }
-    entries.remove(key);
-    false
+// Enumeration and device details have independent retained workers. Slow calls
+// keep running without holding up other devices or being spawned again.
+#[derive(Clone)]
+struct DiscoveredDevice {
+    key: String,
+    index: usize,
+    device: Device,
+    default_name: Option<String>,
 }
+type Enumeration = Result<Vec<DiscoveredDevice>, String>;
+static INPUT_SCAN: OnceLock<crate::discovery_task::DiscoveryTask<Enumeration>> = OnceLock::new();
+static OUTPUT_SCAN: OnceLock<crate::discovery_task::DiscoveryTask<Enumeration>> = OnceLock::new();
+type Details = crate::discovery_task::DiscoveryTask<Result<Option<AudioDeviceInfo>, String>>;
+static DETAILS: OnceLock<Mutex<HashMap<String, Details>>> = OnceLock::new();
 
-fn quarantine_probe(quarantine: &Mutex<HashMap<String, Instant>>, key: String) {
-    if let Ok(mut entries) = quarantine.lock() {
-        entries.insert(key, Instant::now());
+fn enumerate(direction: &'static str) -> Enumeration {
+    let host = cpal::default_host();
+    let default_name = match direction {
+        "input" => host.default_input_device(),
+        _ => host.default_output_device(),
     }
-}
-
-fn clear_probe_quarantines() {
-    if let Some(quarantine) = TIMED_OUT_DEVICE_PROBES.get() {
-        if let Ok(mut entries) = quarantine.lock() {
-            entries.clear();
-        }
-    }
-    if let Some(quarantine) = TIMED_OUT_DIRECTIONS.get() {
-        if let Ok(mut entries) = quarantine.lock() {
-            entries.clear();
-        }
-    }
-}
-
-fn update_system_device_snapshot(devices: &[AudioDeviceSnapshotEntry]) {
-    let mut identities = devices
-        .iter()
-        .map(|device| format!("{}:{}", device.direction, device.id))
-        .collect::<Vec<_>>();
-    identities.sort();
-    let signature = identities.join("\n");
-    let snapshots = LAST_SYSTEM_DEVICE_SNAPSHOT.get_or_init(|| Mutex::new(None));
-    let Ok(mut previous) = snapshots.lock() else {
-        return;
-    };
-    if previous.as_ref() != Some(&signature) {
-        clear_probe_quarantines();
-        *previous = Some(signature);
-    }
+    .map(|device| device.to_string());
+    // CPAL's direction-filtered iterators may query capabilities while iterating.
+    // Do that in each device worker instead of stalling the entire enumeration.
+    let devices = host.devices().map_err(|error| error.to_string())?;
+    Ok(devices
+        .enumerate()
+        .map(|(index, device)| DiscoveredDevice {
+            key: device_probe_key("system", direction, index, &device),
+            index,
+            device,
+            default_name: default_name.clone(),
+        })
+        .collect())
 }
 
 pub fn list_audio_devices() -> Result<AudioInventory, String> {
-    let host = cpal::default_host();
-    let host_name = format!("{:?}", host.id());
-    let input_probe = spawn_system_direction_probe(host_name.clone(), "input");
-    let output_probe = spawn_system_direction_probe(host_name.clone(), "output");
-    let network_scan = network_audio::audio_devices(Duration::from_millis(250));
+    let host_name = format!("{:?}", cpal::default_host().id());
     let mut devices = Vec::new();
     let mut warnings = Vec::new();
-
-    collect_system_direction_probe(input_probe, &mut devices, &mut warnings);
-    collect_system_direction_probe(output_probe, &mut devices, &mut warnings);
-    devices.extend(network_scan.devices);
-    warnings.extend(network_scan.warnings);
-
+    for (direction, scan) in [("input", &INPUT_SCAN), ("output", &OUTPUT_SCAN)] {
+        let (found, running) = scan
+            .get_or_init(crate::discovery_task::DiscoveryTask::new)
+            .poll(Duration::from_secs(5), move || enumerate(direction));
+        if running && found.is_none() {
+            warnings.push(format!("System audio {direction} discovery is still running; results will appear automatically."));
+        }
+        match found {
+            Some(Ok(found)) => {
+                let mut details = DETAILS
+                    .get_or_init(|| Mutex::new(HashMap::new()))
+                    .lock()
+                    .unwrap();
+                for entry in found {
+                    let name = host_name.clone();
+                    let key = entry.key.clone();
+                    let (result, pending) = details.entry(key).or_insert_with(Details::new).poll(
+                        Duration::from_secs(30),
+                        move || {
+                            let supported = match direction {
+                                "input" => entry.device.supports_input(),
+                                _ => entry.device.supports_output(),
+                            };
+                            if !supported {
+                                return Ok(None);
+                            }
+                            describe_device(
+                                &name,
+                                direction,
+                                entry.index,
+                                entry.device,
+                                entry.default_name.as_deref(),
+                            )
+                            .map(Some)
+                        },
+                    );
+                    match result {
+                        Some(Ok(Some(device))) => devices.push(device),
+                        Some(Ok(None)) => {}
+                        Some(Err(error)) => warnings.push(error),
+                        None if pending => warnings.push(format!(
+                            "An audio {direction} device is still being queried."
+                        )),
+                        None => warnings.push(format!(
+                            "An audio {direction} device query failed; retry pending."
+                        )),
+                    }
+                }
+            }
+            Some(Err(error)) => warnings.push(format!("System audio {direction}: {error}")),
+            _ => {}
+        }
+    }
+    let network = network_audio::audio_devices(Duration::from_millis(250));
+    devices.extend(network.devices);
+    warnings.extend(network.warnings);
     Ok(AudioInventory {
         host: host_name,
         devices,
@@ -141,223 +161,21 @@ pub fn list_audio_devices() -> Result<AudioInventory, String> {
     })
 }
 
-struct SystemDirectionProbe {
-    direction: &'static str,
-    probe_key: String,
-    started_at: Instant,
-    receiver: Option<mpsc::Receiver<(Vec<AudioDeviceInfo>, Vec<String>)>>,
-}
-
-fn spawn_system_direction_probe(host_name: String, direction: &'static str) -> SystemDirectionProbe {
-    let probe_key = format!("{host_name}:{direction}");
-    let timed_out = TIMED_OUT_DIRECTIONS.get_or_init(|| Mutex::new(HashMap::new()));
-    if is_probe_quarantined(timed_out, &probe_key) {
-        return SystemDirectionProbe {
-            direction,
-            probe_key,
-            started_at: Instant::now(),
-            receiver: None,
-        };
-    }
-
-    let (sender, receiver) = mpsc::sync_channel(1);
-    let started_at = Instant::now();
-    thread::spawn(move || {
-        let host = cpal::default_host();
-        let default_name = match direction {
-            "input" => host.default_input_device(),
-            "output" => host.default_output_device(),
-            _ => None,
-        }
-        .map(|device| device.to_string());
-        let result = match direction {
-            "input" => match host.input_devices() {
-                Ok(devices) => describe_devices_with_timeout(
-                    &host_name,
-                    direction,
-                    devices.enumerate(),
-                    default_name.as_deref(),
-                ),
-                Err(error) => (Vec::new(), vec![format!(
-                    "Failed to enumerate input devices: {error}"
-                )]),
-            },
-            "output" => match host.output_devices() {
-                Ok(devices) => describe_devices_with_timeout(
-                    &host_name,
-                    direction,
-                    devices.enumerate(),
-                    default_name.as_deref(),
-                ),
-                Err(error) => (Vec::new(), vec![format!(
-                    "Failed to enumerate output devices: {error}"
-                )]),
-            },
-            _ => (Vec::new(), vec![format!("Unknown audio direction: {direction}")]),
-        };
-        let _ = sender.send(result);
-    });
-
-    SystemDirectionProbe {
-        direction,
-        probe_key,
-        started_at,
-        receiver: Some(receiver),
-    }
-}
-
-fn collect_system_direction_probe(
-    probe: SystemDirectionProbe,
-    devices: &mut Vec<AudioDeviceInfo>,
-    warnings: &mut Vec<String>,
-) {
-    let timed_out = TIMED_OUT_DIRECTIONS.get_or_init(|| Mutex::new(HashMap::new()));
-    let Some(receiver) = probe.receiver else {
-        warnings.push(format!(
-            "Skipped all system audio {}s: device enumeration stopped responding earlier.",
-            probe.direction
-        ));
-        return;
-    };
-    let remaining = SYSTEM_DIRECTION_TIMEOUT.saturating_sub(probe.started_at.elapsed());
-    match receiver.recv_timeout(remaining) {
-        Ok((mut found, mut skipped)) => {
-            devices.append(&mut found);
-            warnings.append(&mut skipped);
-        }
-        Err(error) => {
-            quarantine_probe(timed_out, probe.probe_key);
-            let reason = match error {
-                mpsc::RecvTimeoutError::Timeout => format!(
-                    "device enumeration did not respond within {} seconds",
-                    SYSTEM_DIRECTION_TIMEOUT.as_secs()
-                ),
-                mpsc::RecvTimeoutError::Disconnected => {
-                    "device enumeration stopped unexpectedly".to_string()
-                }
-            };
-            warnings.push(format!(
-                "Skipped all system audio {}s: {reason}.",
-                probe.direction
-            ));
-        }
-    }
-}
-
-fn describe_devices_with_timeout(
-    host_name: &str,
-    direction: &str,
-    devices: impl Iterator<Item = (usize, Device)>,
-    default_name: Option<&str>,
-) -> (Vec<AudioDeviceInfo>, Vec<String>) {
-    let timed_out = TIMED_OUT_DEVICE_PROBES.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut pending = Vec::new();
-    let mut warnings = Vec::new();
-
-    for (index, device) in devices {
-        let probe_key = device_probe_key(host_name, direction, index, &device);
-        if is_probe_quarantined(timed_out, &probe_key) {
-            warnings.push(format!(
-                "Skipped {direction} audio device #{index}: its driver stopped responding earlier."
-            ));
-            continue;
-        }
-
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let host_name = host_name.to_string();
-        let direction = direction.to_string();
-        let default_name = default_name.map(str::to_string);
-        let started_at = Instant::now();
-        thread::spawn(move || {
-            let result = describe_device(
-                &host_name,
-                &direction,
-                index,
-                device,
-                default_name.as_deref(),
-            );
-            let _ = sender.send(result);
-        });
-        pending.push((index, probe_key, started_at, receiver));
-    }
-
-    let mut found = Vec::new();
-    for (index, probe_key, started_at, receiver) in pending {
-        let remaining = DEVICE_DETAILS_TIMEOUT.saturating_sub(started_at.elapsed());
-        match receiver.recv_timeout(remaining) {
-            Ok(Ok(device)) => found.push(device),
-            Ok(Err(error)) => warnings.push(format!(
-                "Skipped {direction} audio device #{index}: {error}"
-            )),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                quarantine_probe(timed_out, probe_key);
-                warnings.push(format!(
-                    "Skipped {direction} audio device #{index}: its driver did not respond within {} seconds.",
-                    DEVICE_DETAILS_TIMEOUT.as_secs()
-                ));
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                quarantine_probe(timed_out, probe_key);
-                warnings.push(format!(
-                    "Skipped {direction} audio device #{index}: its driver probe stopped unexpectedly."
-                ));
-            }
-        }
-    }
-
-    (found, warnings)
-}
-
-/// Lists endpoint identity only. In particular, this avoids supported-config
-/// queries, which activate WASAPI audio clients and must not run in a poll loop.
+/// Read the same retained inventory; never perform a second native scan in a poll.
 pub fn list_audio_device_snapshot() -> Result<AudioDeviceSnapshot, String> {
-    let host = cpal::default_host();
-    let host_name = format!("{:?}", host.id());
-    let default_input_name = host.default_input_device().map(|device| device.to_string());
-    let default_output_name = host
-        .default_output_device()
-        .map(|device| device.to_string());
-    let mut devices = Vec::new();
-
-    match host.input_devices() {
-        Ok(input_devices) => {
-            for (index, device) in input_devices.enumerate() {
-                devices.push(snapshot_device(
-                    &host_name,
-                    "input",
-                    index,
-                    device,
-                    default_input_name.as_deref(),
-                ));
-            }
-        }
-        Err(err) => eprintln!("failed to enumerate input devices: {err}"),
-    }
-
-    match host.output_devices() {
-        Ok(output_devices) => {
-            for (index, device) in output_devices.enumerate() {
-                devices.push(snapshot_device(
-                    &host_name,
-                    "output",
-                    index,
-                    device,
-                    default_output_name.as_deref(),
-                ));
-            }
-        }
-        Err(err) => eprintln!("failed to enumerate output devices: {err}"),
-    }
-
-    update_system_device_snapshot(&devices);
-
-    devices.extend(network_audio::audio_device_snapshot(Duration::from_millis(
-        100,
-    )));
-
+    let inventory = list_audio_devices()?;
     Ok(AudioDeviceSnapshot {
-        host: host_name,
-        devices,
+        host: inventory.host,
+        devices: inventory
+            .devices
+            .into_iter()
+            .map(|device| AudioDeviceSnapshotEntry {
+                id: device.id,
+                name: device.name,
+                direction: device.direction,
+                is_default: device.is_default,
+            })
+            .collect(),
     })
 }
 
@@ -365,30 +183,17 @@ pub fn find_audio_device(direction: &str, device_id: &str) -> Result<Device, Str
     let host = cpal::default_host();
     let host_name = format!("{:?}", host.id());
 
-    match direction {
-        "input" => {
-            let devices = host
-                .input_devices()
-                .map_err(|err| format!("failed to enumerate input devices: {err}"))?;
-            for (index, device) in devices.enumerate() {
-                if device_id_for(&host_name, direction, index, &device) == device_id {
-                    return Ok(device);
-                }
-            }
-        }
-        "output" => {
-            let devices = host
-                .output_devices()
-                .map_err(|err| format!("failed to enumerate output devices: {err}"))?;
-            for (index, device) in devices.enumerate() {
-                if device_id_for(&host_name, direction, index, &device) == device_id {
-                    return Ok(device);
-                }
-            }
-        }
-        _ => return Err(format!("unknown audio device direction: {direction}")),
+    if direction != "input" && direction != "output" {
+        return Err(format!("unknown audio device direction: {direction}"));
     }
-
+    let devices = host
+        .devices()
+        .map_err(|err| format!("failed to enumerate devices: {err}"))?;
+    for (index, device) in devices.enumerate() {
+        if device_id_for(&host_name, direction, index, &device) == device_id {
+            return Ok(device);
+        }
+    }
     Err(format!("{direction} device not found: {device_id}"))
 }
 
@@ -431,26 +236,6 @@ fn display_name_for_native_device(name: &str) -> String {
         format!("System audio · {name}")
     } else {
         name.to_string()
-    }
-}
-
-fn snapshot_device(
-    host_name: &str,
-    direction: &str,
-    index: usize,
-    device: Device,
-    default_name: Option<&str>,
-) -> AudioDeviceSnapshotEntry {
-    let native_name = device.to_string();
-    let name = display_name_for_native_device(&native_name);
-    let id = device_id_for(host_name, direction, index, &device);
-    let is_default = default_name.is_some_and(|default| default == native_name);
-
-    AudioDeviceSnapshotEntry {
-        id,
-        name,
-        direction: direction.to_string(),
-        is_default,
     }
 }
 
