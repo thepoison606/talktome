@@ -568,6 +568,16 @@ fn get_local_audio_only() -> bool {
     audio_diagnostics::local_only()
 }
 
+#[tauri::command]
+async fn save_audio_diagnostics(app: AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let directory = app.path().download_dir().map_err(|e| format!("Downloads folder unavailable: {e}"))?;
+        let report = audio_diagnostic_report(app);
+        audio_diagnostics::save_report(&directory, &report)
+            .map(|path| path.to_string_lossy().into_owned())
+    }).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command(async)]
 fn refresh_audio_details() { audio::refresh_completed_details(); }
 
@@ -1090,6 +1100,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             audio_diagnostic_report,
+            save_audio_diagnostics,
             refresh_audio_details,
             get_local_audio_only,
             set_local_audio_only,

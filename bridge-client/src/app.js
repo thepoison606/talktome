@@ -3723,16 +3723,16 @@ if (invoke) {
       audioTestStatus.textContent = "Saved. Fully quit Bridge from the tray and restart to apply.";
     } catch (error) { audioTestStatus.textContent = String(error); }
   });
-  document.getElementById("download-audio-diagnostics").addEventListener("click", async () => {
+  document.getElementById("download-audio-diagnostics").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    audioTestStatus.textContent = "Saving audio diagnostics…";
     try {
-      const report = await invoke("audio_diagnostic_report");
-      const url = URL.createObjectURL(new Blob([report], { type: "text/plain" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "talktome-bridge-audio-diagnostics.txt";
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (error) { audioTestStatus.textContent = String(error); }
+      const path = await withTimeout(invoke("save_audio_diagnostics"), 10000, "Save audio diagnostics");
+      audioTestStatus.textContent = `Saved: ${path}`;
+    } catch (error) {
+      audioTestStatus.textContent = `Could not save diagnostics: ${String(error)}`;
+    } finally { button.disabled = false; }
   });
 }
 // Discovery also completes before a server connection has been configured.

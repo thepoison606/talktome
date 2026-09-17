@@ -91,6 +91,8 @@ jobs:
         run: |
           rustc --edition 2021 --test bridge-client/src-tauri/src/discovery_task.rs -o "$RUNNER_TEMP/discovery-tests.exe"
           "$RUNNER_TEMP/discovery-tests.exe"
+          rustc --edition 2021 --test bridge-client/src-tauri/src/audio_diagnostics.rs -o "$RUNNER_TEMP/diagnostics-tests.exe"
+          "$RUNNER_TEMP/diagnostics-tests.exe"
 
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@v2
