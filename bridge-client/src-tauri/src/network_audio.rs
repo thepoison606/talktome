@@ -47,23 +47,41 @@ static OMT_SCAN: std::sync::OnceLock<crate::discovery_task::DiscoveryTask<OmtSca
     std::sync::OnceLock::new();
 
 fn poll_ndi(wait: Duration) -> Option<NdiScan> {
+    if crate::audio_diagnostics::local_only() {
+        return None;
+    }
     NDI_SCAN
         .get_or_init(crate::discovery_task::DiscoveryTask::new)
         .poll(Duration::from_secs(5), move || {
-            (ndi::audio_devices(wait), ndi::status(wait))
+            (
+                crate::audio_diagnostics::trace("NDI devices", || ndi::audio_devices(wait)),
+                crate::audio_diagnostics::trace("NDI status", || ndi::status(wait)),
+            )
         })
         .0
 }
 fn poll_omt(wait: Duration) -> Option<OmtScan> {
+    if crate::audio_diagnostics::local_only() {
+        return None;
+    }
     OMT_SCAN
         .get_or_init(crate::discovery_task::DiscoveryTask::new)
         .poll(Duration::from_secs(5), move || {
-            (omt::audio_devices(wait), omt::status(wait))
+            (
+                crate::audio_diagnostics::trace("OMT devices", || omt::audio_devices(wait)),
+                crate::audio_diagnostics::trace("OMT status", || omt::status(wait)),
+            )
         })
         .0
 }
 
 pub fn audio_devices(wait: Duration) -> NetworkAudioScan {
+    if crate::audio_diagnostics::local_only() {
+        return NetworkAudioScan {
+            devices: Vec::new(),
+            warnings: Vec::new(),
+        };
+    }
     let mut devices = Vec::new();
     let mut warnings = Vec::new();
     match poll_ndi(wait) {
@@ -88,7 +106,14 @@ pub fn ndi_status(wait: Duration) -> ndi::NdiStatus {
             runtime_path: None,
             source_count: 0,
             source_names: Vec::new(),
-            error: Some("Discovery is still running".into()),
+            error: Some(
+                if crate::audio_diagnostics::local_only() {
+                    "Disabled: local audio only"
+                } else {
+                    "Discovery is still running"
+                }
+                .into(),
+            ),
         })
 }
 pub fn omt_status(wait: Duration) -> omt::OmtStatus {
@@ -100,7 +125,14 @@ pub fn omt_status(wait: Duration) -> omt::OmtStatus {
             runtime_path: None,
             source_count: 0,
             source_names: Vec::new(),
-            error: Some("Discovery is still running".into()),
+            error: Some(
+                if crate::audio_diagnostics::local_only() {
+                    "Disabled: local audio only"
+                } else {
+                    "Discovery is still running"
+                }
+                .into(),
+            ),
         })
 }
 
@@ -113,6 +145,9 @@ pub fn is_output_device(device_id: &str) -> bool {
 }
 
 pub fn start_input(request: InputStartRequest) -> Result<NetworkAudioInputRuntime, String> {
+    if crate::audio_diagnostics::local_only() {
+        return Err("Network audio disabled: local audio only".into());
+    }
     if ndi::is_input_device(&request.device_id) {
         return ndi::NdiInputRuntime::start(
             request.device_id,
@@ -152,6 +187,9 @@ pub fn start_output(
     sources: Arc<Mutex<HashMap<String, BridgeOutputMixerSource>>>,
     last_error: Arc<Mutex<Option<String>>>,
 ) -> Result<NetworkAudioOutputRuntime, String> {
+    if crate::audio_diagnostics::local_only() {
+        return Err("Network audio disabled: local audio only".into());
+    }
     if ndi::is_output_device(&device_id) {
         return ndi::NdiOutputRuntime::start(device_id, sources, last_error)
             .map(NetworkAudioOutputRuntime::Ndi);

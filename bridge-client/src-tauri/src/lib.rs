@@ -1,6 +1,7 @@
 mod audio;
-mod discovery_task;
+mod audio_diagnostics;
 mod bridge_media;
+mod discovery_task;
 mod model;
 mod ndi;
 mod network_audio;
@@ -539,82 +540,146 @@ async fn bridge_api_request(
     serde_json::from_str(&text).map_err(|err| format!("failed to parse bridge API response: {err}"))
 }
 
+async fn run_media_command<T: Send + 'static>(
+    app: AppHandle,
+    name: &'static str,
+    work: impl FnOnce(&BridgeMediaManager) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<BridgeMediaManager>().with_operation(|manager| {
+            audio_diagnostics::trace(format!("media {name}"), || work(manager))
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
-fn start_bridge_input(
+fn audio_diagnostic_report(app: AppHandle) -> String {
+    format!(
+        "Build: {}\n{}",
+        app.config().version.as_deref().unwrap_or("unknown"),
+        audio_diagnostics::report()
+    )
+}
+
+#[tauri::command]
+fn get_local_audio_only() -> bool {
+    audio_diagnostics::local_only()
+}
+
+#[tauri::command(async)]
+fn refresh_audio_details() { audio::refresh_completed_details(); }
+
+#[tauri::command]
+fn set_local_audio_only(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let directory = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    let marker = directory.join("local-audio-only");
+    if enabled {
+        std::fs::write(marker, b"enabled").map_err(|e| e.to_string())?;
+    } else if marker.exists() {
+        std::fs::remove_file(marker).map_err(|e| e.to_string())?;
+    }
+    // Apply only at process startup: native calls already running cannot be cancelled safely.
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_bridge_input(
     request: StartBridgeInputRequest,
-    manager: tauri::State<'_, BridgeMediaManager>,
+    app: AppHandle,
 ) -> Result<BridgeMediaStatus, String> {
-    manager.start_input(request)
+    run_media_command(app, "start_input", move |manager| {
+        manager.start_input(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn stop_bridge_input(
-    stream_id: String,
-    manager: tauri::State<'_, BridgeMediaManager>,
-) -> Result<BridgeMediaStatus, String> {
-    manager.stop_input(stream_id)
+async fn stop_bridge_input(stream_id: String, app: AppHandle) -> Result<BridgeMediaStatus, String> {
+    run_media_command(app, "stop_input", move |manager| {
+        manager.stop_input(stream_id)
+    })
+    .await
 }
 
 #[tauri::command]
-fn reserve_bridge_output(
+async fn reserve_bridge_output(
     request: ReserveBridgeOutputRequest,
-    manager: tauri::State<'_, BridgeMediaManager>,
+    app: AppHandle,
 ) -> Result<ReservedBridgeOutput, String> {
-    manager.reserve_output(request)
+    run_media_command(app, "reserve_output", move |manager| {
+        manager.reserve_output(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn ensure_bridge_output_endpoint(
+async fn ensure_bridge_output_endpoint(
     request: EnsureBridgeOutputEndpointRequest,
-    manager: tauri::State<'_, BridgeMediaManager>,
+    app: AppHandle,
 ) -> Result<BridgeMediaStatus, String> {
-    manager.ensure_output_endpoint(request)
+    run_media_command(app, "ensure_output_endpoint", move |manager| {
+        manager.ensure_output_endpoint(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn release_bridge_output_endpoint(
+async fn release_bridge_output_endpoint(
     endpoint_id: String,
-    manager: tauri::State<'_, BridgeMediaManager>,
+    app: AppHandle,
 ) -> Result<BridgeMediaStatus, String> {
-    manager.release_output_endpoint(endpoint_id)
+    run_media_command(app, "release_output_endpoint", move |manager| {
+        manager.release_output_endpoint(endpoint_id)
+    })
+    .await
 }
 
 #[tauri::command]
-fn activate_bridge_output(
+async fn activate_bridge_output(
     request: ActivateBridgeOutputRequest,
-    manager: tauri::State<'_, BridgeMediaManager>,
+    app: AppHandle,
 ) -> Result<BridgeMediaStatus, String> {
-    manager.activate_output(request)
+    run_media_command(app, "activate_output", move |manager| {
+        manager.activate_output(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn stop_bridge_output(
+async fn stop_bridge_output(
     stream_id: String,
-    manager: tauri::State<'_, BridgeMediaManager>,
+    app: AppHandle,
 ) -> Result<BridgeMediaStatus, String> {
-    manager.stop_output(stream_id)
+    run_media_command(app, "stop_output", move |manager| {
+        manager.stop_output(stream_id)
+    })
+    .await
 }
 
 #[tauri::command]
-fn set_bridge_output_level(
+async fn set_bridge_output_level(
     request: SetBridgeOutputLevelRequest,
-    manager: tauri::State<'_, BridgeMediaManager>,
+    app: AppHandle,
 ) -> Result<BridgeMediaStatus, String> {
-    manager.set_output_level(request)
+    run_media_command(app, "set_output_level", move |manager| {
+        manager.set_output_level(request)
+    })
+    .await
 }
 
 #[tauri::command]
-fn stop_all_bridge_media(
-    manager: tauri::State<'_, BridgeMediaManager>,
-) -> Result<BridgeMediaStatus, String> {
-    manager.stop_all()
+async fn stop_all_bridge_media(app: AppHandle) -> Result<BridgeMediaStatus, String> {
+    run_media_command(app, "stop_all", move |manager| manager.stop_all()).await
 }
 
 #[tauri::command]
-fn get_bridge_media_status(
-    manager: tauri::State<'_, BridgeMediaManager>,
-) -> Result<BridgeMediaStatus, String> {
-    manager.status()
+async fn get_bridge_media_status(app: AppHandle) -> Result<BridgeMediaStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<BridgeMediaManager>().status())
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn normalize_server_url(value: &str) -> Result<String, String> {
@@ -928,6 +993,9 @@ pub fn run() {
         .manage(TrayAutostartMenuItem::default())
         .manage(http)
         .setup(|app| {
+            if let Ok(directory) = app.path().app_config_dir() {
+                audio_diagnostics::set_local_only(directory.join("local-audio-only").exists());
+            }
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
@@ -1021,6 +1089,10 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            audio_diagnostic_report,
+            refresh_audio_details,
+            get_local_audio_only,
+            set_local_audio_only,
             activate_bridge_output,
             announce_bridge,
             bridge_api_request,

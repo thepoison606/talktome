@@ -24,6 +24,8 @@ const omtRuntimeDetail = document.getElementById("omt-runtime-detail");
 const refreshOmtButton = document.getElementById("refresh-omt");
 const omtRuntimeLink = document.getElementById("omt-runtime-link");
 const audioScanStatus = document.getElementById("audio-scan-status");
+const localAudioOnly = document.getElementById("local-audio-only");
+const audioTestStatus = document.getElementById("audio-test-status");
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
@@ -245,6 +247,11 @@ function renderNdiStatus(status) {
   ndiRuntime.dataset.state = available ? "available" : "unavailable";
   if (!available) {
     const error = String(status?.error || "NDI Runtime not found");
+    if (error.startsWith("Disabled:")) {
+      ndiRuntimeDetail.textContent = "Disabled — local audio only";
+      refreshNdiButton.disabled = true;
+      return;
+    }
     if (/discovery is still running/i.test(error)) {
       ndiRuntimeDetail.textContent = "Discovering NDI devices…";
       ndiRuntimeDetail.title = error;
@@ -278,6 +285,11 @@ function renderOmtStatus(status) {
   const version = String(status?.version || "OMT");
   if (!available) {
     const error = String(status?.error || "Bundled OMT backend not found");
+    if (error.startsWith("Disabled:")) {
+      omtRuntimeDetail.textContent = "Disabled — local audio only";
+      refreshOmtButton.disabled = true;
+      return;
+    }
     if (/discovery is still running/i.test(error)) {
       omtRuntimeDetail.textContent = "Discovering OMT devices…";
       omtRuntimeDetail.title = error;
@@ -3576,6 +3588,7 @@ async function refreshDevices() {
     refreshButton.textContent = "Refreshing";
   }
   try {
+    await invoke("refresh_audio_details");
     await suppressWindowFocusHide(250);
     // Inventory probes each backend with a native timeout first. Status checks
     // run afterwards so a quarantined backend cannot block the other results.
@@ -3702,6 +3715,26 @@ installBridgeWindowAutoResize();
 loadAutostartState();
 listenForAutostartChanges();
 refreshDevices();
+if (invoke) {
+  invoke("get_local_audio_only").then(value => { localAudioOnly.checked = value; });
+  localAudioOnly.addEventListener("change", async () => {
+    try {
+      await invoke("set_local_audio_only", { enabled: localAudioOnly.checked });
+      audioTestStatus.textContent = "Saved. Fully quit Bridge from the tray and restart to apply.";
+    } catch (error) { audioTestStatus.textContent = String(error); }
+  });
+  document.getElementById("download-audio-diagnostics").addEventListener("click", async () => {
+    try {
+      const report = await invoke("audio_diagnostic_report");
+      const url = URL.createObjectURL(new Blob([report], { type: "text/plain" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "talktome-bridge-audio-diagnostics.txt";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) { audioTestStatus.textContent = String(error); }
+  });
+}
 // Discovery also completes before a server connection has been configured.
 if (invoke && !managedInventoryTimer) {
   managedInventoryTimer = window.setInterval(watchManagedInventory, MANAGED_INVENTORY_WATCH_MS);

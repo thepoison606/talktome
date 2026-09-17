@@ -1,4 +1,5 @@
 //! Retained native work: polling never waits, and a slow call is never duplicated.
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,10 @@ struct State<T> {
 }
 
 impl<T: Clone + Send + 'static> DiscoveryTask<T> {
+    pub fn refresh_completed(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.running { state.started = None; }
+    }
     pub fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(State {
@@ -28,8 +33,27 @@ impl<T: Clone + Send + 'static> DiscoveryTask<T> {
         refresh: Duration,
         work: impl FnOnce() -> T + Send + 'static,
     ) -> (Option<T>, bool) {
+        self.poll_limited(refresh, None, work)
+    }
+
+    pub fn poll_limited(
+        &self,
+        refresh: Duration,
+        limit: Option<(&'static AtomicUsize, usize)>,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> (Option<T>, bool) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !state.running && state.started.is_none_or(|at| at.elapsed() >= refresh) {
+            if let Some((active, max)) = limit {
+                if active
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                        (count < max).then_some(count + 1)
+                    })
+                    .is_err()
+                {
+                    return (state.value.clone(), true);
+                }
+            }
             state.running = true;
             state.started = Some(Instant::now());
             let shared = Arc::clone(&self.state);
@@ -40,6 +64,9 @@ impl<T: Clone + Send + 'static> DiscoveryTask<T> {
                     state.value = Some(value);
                 }
                 state.running = false;
+                if let Some((active, _)) = limit {
+                    active.fetch_sub(1, Ordering::SeqCst);
+                }
             });
         }
         (state.value.clone(), state.running)
@@ -49,6 +76,24 @@ impl<T: Clone + Send + 'static> DiscoveryTask<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn limits_native_concurrency_and_starts_queued_work_later() {
+        static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        let first = DiscoveryTask::new();
+        let queued = DiscoveryTask::new();
+        let (send, receive) = std::sync::mpsc::channel();
+        first.poll_limited(Duration::MAX, Some((&ACTIVE, 1)), move || {
+            receive.recv().unwrap()
+        });
+        assert_eq!(
+            queued.poll_limited(Duration::MAX, Some((&ACTIVE, 1)), || panic!("over limit")),
+            (None, true)
+        );
+        send.send(1).unwrap();
+        assert_eq!(await_result(&first), 1);
+        queued.poll_limited(Duration::MAX, Some((&ACTIVE, 1)), || 2);
+        assert_eq!(await_result(&queued), 2);
+    }
     fn await_result(task: &DiscoveryTask<i32>) -> i32 {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {

@@ -243,6 +243,7 @@ pub struct BridgeMediaOutputStats {
 #[derive(Default)]
 pub struct BridgeMediaManager {
     inner: Mutex<BridgeMediaState>,
+    operation: Mutex<()>,
 }
 
 impl Drop for BridgeMediaManager {
@@ -352,6 +353,16 @@ enum BridgeOutputStreamRuntime {
 }
 
 impl BridgeMediaManager {
+    pub fn with_operation<T>(
+        &self,
+        work: impl FnOnce(&Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _guard = self
+            .operation
+            .try_lock()
+            .map_err(|_| "Audio operation still running; retry shortly".to_string())?;
+        work(self)
+    }
     pub fn start_input(
         &self,
         request: StartBridgeInputRequest,
@@ -527,7 +538,15 @@ impl BridgeMediaManager {
     }
 
     pub fn status(&self) -> Result<BridgeMediaStatus, String> {
-        let state = self.lock()?;
+        // Never queue status polling behind a native start/stop or driver call.
+        let _operation = self
+            .operation
+            .try_lock()
+            .map_err(|_| "Audio operation still running".to_string())?;
+        let state = self
+            .inner
+            .try_lock()
+            .map_err(|_| "Audio state is busy".to_string())?;
         Ok(status_from(&state))
     }
 
@@ -618,7 +637,10 @@ impl BridgeInputRuntime {
                     "48000".to_string(),
                 )
             } else {
-                let device = audio::find_audio_device("input", &request.assignment.device_id)?;
+                let device = crate::audio_diagnostics::trace(
+                    format!("find input {}", request.assignment.device_id),
+                    || audio::find_audio_device("input", &request.assignment.device_id),
+                )?;
                 let config = choose_f32_config(
                     &device,
                     "input",
@@ -631,57 +653,68 @@ impl BridgeInputRuntime {
                 let channels = usize::from(config.channels);
                 let left_index = usize::from(request.assignment.left_channel - 1);
                 let right_index = usize::from(request.assignment.right_channel - 1);
-                let native_stream = device
-                    .build_input_stream::<f32, _, _>(
-                        config,
-                        move |data, _| {
-                            if channels == 0 || left_index >= channels || right_index >= channels {
-                                return;
-                            }
-                            let frames = data.len() / channels;
-                            let mut bytes =
-                                Vec::with_capacity(frames * 2 * std::mem::size_of::<f32>());
-                            let mut sum_squares = 0.0_f64;
-                            let mut sample_count = 0_usize;
-                            for frame in data.chunks_exact(channels) {
-                                let left = frame[left_index];
-                                let right = frame[right_index];
-                                sum_squares += f64::from(left * left);
-                                sum_squares += f64::from(right * right);
-                                sample_count += 2;
-                                bytes.extend_from_slice(&left.to_le_bytes());
-                                bytes.extend_from_slice(&right.to_le_bytes());
-                            }
-                            callback_level
-                                .store(rms_milli_db(sum_squares, sample_count), Ordering::Relaxed);
-                            callback_captured_frames.fetch_add(frames as u64, Ordering::Relaxed);
-                            if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
-                                callback_sender.try_send(bytes)
-                            {
-                                callback_dropped_chunks.fetch_add(1, Ordering::Relaxed);
-                                callback_dropped_frames.fetch_add(frames as u64, Ordering::Relaxed);
-                            }
-                        },
-                        move |err| {
-                            let message = format!("bridge input stream error: {err}");
-                            if is_recoverable_stream_error(err.kind()) {
-                                if matches!(err.kind(), ErrorKind::Xrun) {
-                                    callback_xrun_count.fetch_add(1, Ordering::Relaxed);
+                let native_stream = crate::audio_diagnostics::trace("build input stream", || {
+                    device
+                        .build_input_stream::<f32, _, _>(
+                            config,
+                            move |data, _| {
+                                if channels == 0
+                                    || left_index >= channels
+                                    || right_index >= channels
+                                {
+                                    return;
                                 }
-                                eprintln!("[bridge-media][input][recoverable] {message}");
-                                return;
-                            }
-                            eprintln!("[bridge-media][input][fatal] {message}");
-                            if let Ok(mut last_error) = stream_error.lock() {
-                                *last_error = Some(message);
-                            }
-                        },
-                        None,
-                    )
-                    .map_err(|err| format!("failed to build bridge input stream: {err}"))?;
-                native_stream
-                    .play()
-                    .map_err(|err| format!("failed to start bridge input stream: {err}"))?;
+                                let frames = data.len() / channels;
+                                let mut bytes =
+                                    Vec::with_capacity(frames * 2 * std::mem::size_of::<f32>());
+                                let mut sum_squares = 0.0_f64;
+                                let mut sample_count = 0_usize;
+                                for frame in data.chunks_exact(channels) {
+                                    let left = frame[left_index];
+                                    let right = frame[right_index];
+                                    sum_squares += f64::from(left * left);
+                                    sum_squares += f64::from(right * right);
+                                    sample_count += 2;
+                                    bytes.extend_from_slice(&left.to_le_bytes());
+                                    bytes.extend_from_slice(&right.to_le_bytes());
+                                }
+                                callback_level.store(
+                                    rms_milli_db(sum_squares, sample_count),
+                                    Ordering::Relaxed,
+                                );
+                                callback_captured_frames
+                                    .fetch_add(frames as u64, Ordering::Relaxed);
+                                if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
+                                    callback_sender.try_send(bytes)
+                                {
+                                    callback_dropped_chunks.fetch_add(1, Ordering::Relaxed);
+                                    callback_dropped_frames
+                                        .fetch_add(frames as u64, Ordering::Relaxed);
+                                }
+                            },
+                            move |err| {
+                                let message = format!("bridge input stream error: {err}");
+                                if is_recoverable_stream_error(err.kind()) {
+                                    if matches!(err.kind(), ErrorKind::Xrun) {
+                                        callback_xrun_count.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    eprintln!("[bridge-media][input][recoverable] {message}");
+                                    return;
+                                }
+                                eprintln!("[bridge-media][input][fatal] {message}");
+                                if let Ok(mut last_error) = stream_error.lock() {
+                                    *last_error = Some(message);
+                                }
+                            },
+                            None,
+                        )
+                        .map_err(|err| format!("failed to build bridge input stream: {err}"))
+                })?;
+                crate::audio_diagnostics::trace("play input stream", || {
+                    native_stream
+                        .play()
+                        .map_err(|err| format!("failed to start bridge input stream: {err}"))
+                })?;
                 (
                     BridgeInputStreamRuntime::Native(native_stream),
                     input_sample_rate,
@@ -818,7 +851,10 @@ impl BridgeOutputMixerRuntime {
             )?;
             (BridgeOutputStreamRuntime::Network(runtime), SAMPLE_RATE_48K)
         } else {
-            let device = audio::find_audio_device("output", &assignment.device_id)?;
+            let device = crate::audio_diagnostics::trace(
+                format!("find output {}", assignment.device_id),
+                || audio::find_audio_device("output", &assignment.device_id),
+            )?;
             let config = choose_f32_config(
                 &device,
                 "output",
@@ -828,66 +864,70 @@ impl BridgeOutputMixerRuntime {
             let channels = usize::from(config.channels);
             let left_index = usize::from(assignment.left_channel - 1);
             let right_index = usize::from(assignment.right_channel - 1);
-            let native_stream = device
-                .build_output_stream::<f32, _, _>(
-                    config,
-                    move |data, _| {
-                        data.fill(0.0);
-                        if channels == 0 || left_index >= channels || right_index >= channels {
-                            return;
-                        }
-                        let source_queues = output_sources
-                            .lock()
-                            .map(|sources| sources.values().cloned().collect::<Vec<_>>())
-                            .unwrap_or_default();
-                        if source_queues.is_empty() {
-                            return;
-                        }
-                        for frame in data.chunks_exact_mut(channels) {
-                            let mut left = 0.0_f32;
-                            let mut right = 0.0_f32;
-                            for source in &source_queues {
-                                let level = source.level.lock().map(|level| *level).unwrap_or(
-                                    BridgeOutputLevel {
-                                        volume: 1.0,
-                                        muted: false,
-                                    },
-                                );
-                                if level.muted || level.volume <= 0.0 {
-                                    continue;
-                                }
-                                if let Ok(mut queue) = source.queue.lock() {
-                                    if let Some(stereo) = queue.pop_front() {
-                                        left += stereo.left * level.volume;
-                                        right += stereo.right * level.volume;
+            let native_stream = crate::audio_diagnostics::trace("build output stream", || {
+                device
+                    .build_output_stream::<f32, _, _>(
+                        config,
+                        move |data, _| {
+                            data.fill(0.0);
+                            if channels == 0 || left_index >= channels || right_index >= channels {
+                                return;
+                            }
+                            let source_queues = output_sources
+                                .lock()
+                                .map(|sources| sources.values().cloned().collect::<Vec<_>>())
+                                .unwrap_or_default();
+                            if source_queues.is_empty() {
+                                return;
+                            }
+                            for frame in data.chunks_exact_mut(channels) {
+                                let mut left = 0.0_f32;
+                                let mut right = 0.0_f32;
+                                for source in &source_queues {
+                                    let level = source.level.lock().map(|level| *level).unwrap_or(
+                                        BridgeOutputLevel {
+                                            volume: 1.0,
+                                            muted: false,
+                                        },
+                                    );
+                                    if level.muted || level.volume <= 0.0 {
+                                        continue;
+                                    }
+                                    if let Ok(mut queue) = source.queue.lock() {
+                                        if let Some(stereo) = queue.pop_front() {
+                                            left += stereo.left * level.volume;
+                                            right += stereo.right * level.volume;
+                                        }
                                     }
                                 }
+                                if left_index == right_index {
+                                    frame[left_index] = ((left + right) * 0.5).clamp(-1.0, 1.0);
+                                } else {
+                                    frame[left_index] = left.clamp(-1.0, 1.0);
+                                    frame[right_index] = right.clamp(-1.0, 1.0);
+                                }
                             }
-                            if left_index == right_index {
-                                frame[left_index] = ((left + right) * 0.5).clamp(-1.0, 1.0);
-                            } else {
-                                frame[left_index] = left.clamp(-1.0, 1.0);
-                                frame[right_index] = right.clamp(-1.0, 1.0);
+                        },
+                        move |err| {
+                            let message = format!("bridge output stream error: {err}");
+                            if is_recoverable_stream_error(err.kind()) {
+                                eprintln!("[bridge-media][output][recoverable] {message}");
+                                return;
                             }
-                        }
-                    },
-                    move |err| {
-                        let message = format!("bridge output stream error: {err}");
-                        if is_recoverable_stream_error(err.kind()) {
-                            eprintln!("[bridge-media][output][recoverable] {message}");
-                            return;
-                        }
-                        eprintln!("[bridge-media][output][fatal] {message}");
-                        if let Ok(mut last_error) = stream_error.lock() {
-                            *last_error = Some(message);
-                        }
-                    },
-                    None,
-                )
-                .map_err(|err| format!("failed to build bridge output stream: {err}"))?;
-            native_stream
-                .play()
-                .map_err(|err| format!("failed to start bridge output stream: {err}"))?;
+                            eprintln!("[bridge-media][output][fatal] {message}");
+                            if let Ok(mut last_error) = stream_error.lock() {
+                                *last_error = Some(message);
+                            }
+                        },
+                        None,
+                    )
+                    .map_err(|err| format!("failed to build bridge output stream: {err}"))
+            })?;
+            crate::audio_diagnostics::trace("play output stream", || {
+                native_stream
+                    .play()
+                    .map_err(|err| format!("failed to start bridge output stream: {err}"))
+            })?;
             (
                 BridgeOutputStreamRuntime::Native(native_stream),
                 sample_rate,
@@ -1201,6 +1241,16 @@ fn choose_f32_config(
     direction: &str,
     min_channels: u16,
 ) -> Result<StreamConfig, String> {
+    crate::audio_diagnostics::trace(format!("choose stream format {direction}"), || {
+        choose_f32_config_inner(device, direction, min_channels)
+    })
+}
+
+fn choose_f32_config_inner(
+    device: &cpal::Device,
+    direction: &str,
+    min_channels: u16,
+) -> Result<StreamConfig, String> {
     let ranges: Vec<SupportedStreamConfigRange> = match direction {
         "input" => device
             .supported_input_configs()
@@ -1375,6 +1425,18 @@ fn read_last_error(last_error: &Arc<Mutex<Option<String>>>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn status_and_competing_operations_do_not_wait_for_busy_audio() {
+        let manager = BridgeMediaManager::default();
+        let guard = manager.operation.lock().unwrap();
+        assert!(manager.status().unwrap_err().contains("still running"));
+        assert!(manager.with_operation(|_| Ok(())).is_err());
+        drop(guard);
+        let state = manager.inner.lock().unwrap();
+        assert!(manager.status().unwrap_err().contains("busy"));
+        drop(state);
+        assert!(manager.status().is_ok());
+    }
 
     #[test]
     fn only_non_fatal_stream_notifications_are_recoverable() {

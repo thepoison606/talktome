@@ -72,6 +72,15 @@ static INPUT_SCAN: OnceLock<crate::discovery_task::DiscoveryTask<Enumeration>> =
 static OUTPUT_SCAN: OnceLock<crate::discovery_task::DiscoveryTask<Enumeration>> = OnceLock::new();
 type Details = crate::discovery_task::DiscoveryTask<Result<Option<AudioDeviceInfo>, String>>;
 static DETAILS: OnceLock<Mutex<HashMap<String, Details>>> = OnceLock::new();
+static ACTIVE_DETAILS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn refresh_completed_details() {
+    if let Some(details) = DETAILS.get() {
+        if let Ok(details) = details.lock() {
+            for task in details.values() { task.refresh_completed(); }
+        }
+    }
+}
 
 fn enumerate(direction: &'static str) -> Enumeration {
     let host = cpal::default_host();
@@ -101,7 +110,11 @@ pub fn list_audio_devices() -> Result<AudioInventory, String> {
     for (direction, scan) in [("input", &INPUT_SCAN), ("output", &OUTPUT_SCAN)] {
         let (found, running) = scan
             .get_or_init(crate::discovery_task::DiscoveryTask::new)
-            .poll(Duration::from_secs(5), move || enumerate(direction));
+            .poll(Duration::from_secs(5), move || {
+                crate::audio_diagnostics::trace(format!("enumerate {direction}"), || {
+                    enumerate(direction)
+                })
+            });
         if running && found.is_none() {
             warnings.push(format!("System audio {direction} discovery is still running; results will appear automatically."));
         }
@@ -114,32 +127,38 @@ pub fn list_audio_devices() -> Result<AudioInventory, String> {
                 for entry in found {
                     let name = host_name.clone();
                     let key = entry.key.clone();
-                    let (result, pending) = details.entry(key).or_insert_with(Details::new).poll(
-                        Duration::from_secs(30),
-                        move || {
-                            let supported = match direction {
-                                "input" => entry.device.supports_input(),
-                                _ => entry.device.supports_output(),
-                            };
+                    let label = format!("{direction} {}", entry.key);
+                    let (result, pending) = details
+                        .entry(key)
+                        .or_insert_with(Details::new)
+                        .poll_limited(Duration::MAX, Some((&ACTIVE_DETAILS, 4)), move || {
+                            let supported = crate::audio_diagnostics::trace(
+                                format!("capabilities {label}"),
+                                || match direction {
+                                    "input" => entry.device.supports_input(),
+                                    _ => entry.device.supports_output(),
+                                },
+                            );
                             if !supported {
                                 return Ok(None);
                             }
-                            describe_device(
-                                &name,
-                                direction,
-                                entry.index,
-                                entry.device,
-                                entry.default_name.as_deref(),
-                            )
+                            crate::audio_diagnostics::trace(format!("details {label}"), || {
+                                describe_device(
+                                    &name,
+                                    direction,
+                                    entry.index,
+                                    entry.device,
+                                    entry.default_name.as_deref(),
+                                )
+                            })
                             .map(Some)
-                        },
-                    );
+                        });
                     match result {
                         Some(Ok(Some(device))) => devices.push(device),
                         Some(Ok(None)) => {}
                         Some(Err(error)) => warnings.push(error),
                         None if pending => warnings.push(format!(
-                            "An audio {direction} device is still being queried."
+                            "Audio {direction} device details are pending or queued."
                         )),
                         None => warnings.push(format!(
                             "An audio {direction} device query failed; retry pending."
@@ -204,9 +223,15 @@ fn describe_device(
     device: Device,
     default_name: Option<&str>,
 ) -> Result<AudioDeviceInfo, String> {
-    let native_name = device.to_string();
+    let native_name =
+        crate::audio_diagnostics::trace(format!("device name {direction} #{index}"), || {
+            device.to_string()
+        });
     let name = display_name_for_native_device(&native_name);
-    let supported_configs = supported_configs_for(&device, direction)?;
+    let supported_configs =
+        crate::audio_diagnostics::trace(format!("formats {direction} {native_name}"), || {
+            supported_configs_for(&device, direction)
+        })?;
     let max_channels = supported_configs
         .iter()
         .map(|config| config.channels)
