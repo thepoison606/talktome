@@ -517,11 +517,18 @@ async fn bridge_api_request(
     if let Some(body) = body {
         request = request.json(&body);
     }
+    // Do not include URL query parameters, request bodies, or authentication.
+    let diagnostic_path = path.split('?').next().unwrap_or("bridge API");
+    audio_diagnostics::record(format!("BEGIN bridge API {diagnostic_path}"));
     let response = request
         .send()
         .await
-        .map_err(|err| format!("bridge API request failed: {err}"))?;
+        .map_err(|err| {
+            audio_diagnostics::record(format!("ERROR bridge API {diagnostic_path}: {}", err.without_url()));
+            "bridge API request failed (see audio diagnostics)".to_string()
+        })?;
     let status = response.status();
+    audio_diagnostics::record(format!("RESPONSE bridge API {diagnostic_path}: HTTP {status}"));
     let text = response
         .text()
         .await
@@ -547,7 +554,7 @@ async fn run_media_command<T: Send + 'static>(
 ) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(move || {
         app.state::<BridgeMediaManager>().with_operation(|manager| {
-            audio_diagnostics::trace(format!("media {name}"), || work(manager))
+            audio_diagnostics::trace_result(format!("media {name}"), || work(manager))
         })
     })
     .await

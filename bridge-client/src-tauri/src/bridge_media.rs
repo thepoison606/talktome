@@ -637,7 +637,7 @@ impl BridgeInputRuntime {
                     "48000".to_string(),
                 )
             } else {
-                let device = crate::audio_diagnostics::trace(
+                let device = crate::audio_diagnostics::trace_result(
                     format!("find input {}", request.assignment.device_id),
                     || audio::find_audio_device("input", &request.assignment.device_id),
                 )?;
@@ -653,7 +653,7 @@ impl BridgeInputRuntime {
                 let channels = usize::from(config.channels);
                 let left_index = usize::from(request.assignment.left_channel - 1);
                 let right_index = usize::from(request.assignment.right_channel - 1);
-                let native_stream = crate::audio_diagnostics::trace("build input stream", || {
+                let native_stream = crate::audio_diagnostics::trace_result("build input stream", || {
                     device
                         .build_input_stream::<f32, _, _>(
                             config,
@@ -694,6 +694,7 @@ impl BridgeInputRuntime {
                             },
                             move |err| {
                                 let message = format!("bridge input stream error: {err}");
+                                crate::audio_diagnostics::record(message.clone());
                                 if is_recoverable_stream_error(err.kind()) {
                                     if matches!(err.kind(), ErrorKind::Xrun) {
                                         callback_xrun_count.fetch_add(1, Ordering::Relaxed);
@@ -710,7 +711,7 @@ impl BridgeInputRuntime {
                         )
                         .map_err(|err| format!("failed to build bridge input stream: {err}"))
                 })?;
-                crate::audio_diagnostics::trace("play input stream", || {
+                crate::audio_diagnostics::trace_result("play input stream", || {
                     native_stream
                         .play()
                         .map_err(|err| format!("failed to start bridge input stream: {err}"))
@@ -851,7 +852,7 @@ impl BridgeOutputMixerRuntime {
             )?;
             (BridgeOutputStreamRuntime::Network(runtime), SAMPLE_RATE_48K)
         } else {
-            let device = crate::audio_diagnostics::trace(
+            let device = crate::audio_diagnostics::trace_result(
                 format!("find output {}", assignment.device_id),
                 || audio::find_audio_device("output", &assignment.device_id),
             )?;
@@ -864,7 +865,7 @@ impl BridgeOutputMixerRuntime {
             let channels = usize::from(config.channels);
             let left_index = usize::from(assignment.left_channel - 1);
             let right_index = usize::from(assignment.right_channel - 1);
-            let native_stream = crate::audio_diagnostics::trace("build output stream", || {
+            let native_stream = crate::audio_diagnostics::trace_result("build output stream", || {
                 device
                     .build_output_stream::<f32, _, _>(
                         config,
@@ -910,6 +911,7 @@ impl BridgeOutputMixerRuntime {
                         },
                         move |err| {
                             let message = format!("bridge output stream error: {err}");
+                            crate::audio_diagnostics::record(message.clone());
                             if is_recoverable_stream_error(err.kind()) {
                                 eprintln!("[bridge-media][output][recoverable] {message}");
                                 return;
@@ -923,7 +925,7 @@ impl BridgeOutputMixerRuntime {
                     )
                     .map_err(|err| format!("failed to build bridge output stream: {err}"))
             })?;
-            crate::audio_diagnostics::trace("play output stream", || {
+            crate::audio_diagnostics::trace_result("play output stream", || {
                 native_stream
                     .play()
                     .map_err(|err| format!("failed to start bridge output stream: {err}"))
@@ -1241,7 +1243,7 @@ fn choose_f32_config(
     direction: &str,
     min_channels: u16,
 ) -> Result<StreamConfig, String> {
-    crate::audio_diagnostics::trace(format!("choose stream format {direction}"), || {
+    crate::audio_diagnostics::trace_result(format!("choose stream format {direction}"), || {
         choose_f32_config_inner(device, direction, min_channels)
     })
 }

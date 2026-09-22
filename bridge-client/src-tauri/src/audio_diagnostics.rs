@@ -15,7 +15,7 @@ pub fn local_only() -> bool {
     LOCAL_ONLY.load(Ordering::Relaxed)
 }
 
-fn record(message: String) {
+pub(crate) fn record(message: String) {
     let mut events = EVENTS
         .get_or_init(|| Mutex::new(VecDeque::new()))
         .lock()
@@ -32,6 +32,17 @@ pub fn trace<T>(label: impl Into<String>, work: impl FnOnce() -> T) -> T {
     let result = work();
     record(format!("END {label} ({} ms)", start.elapsed().as_millis()));
     result
+}
+pub fn trace_result<T, E: std::fmt::Display>(label: impl Into<String>, work: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+    let label = label.into();
+    trace(label.clone(), || {
+        let result = work();
+        match &result {
+            Ok(_) => record(format!("OK {label}")),
+            Err(error) => record(format!("ERROR {label}: {error}")),
+        }
+        result
+    })
 }
 pub fn report() -> String {
     let events = EVENTS

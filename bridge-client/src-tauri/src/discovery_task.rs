@@ -2,6 +2,32 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use std::collections::HashMap;
+use std::sync::{mpsc, OnceLock};
+
+type Job = Box<dyn FnOnce() + Send>;
+// Each limiter owns a FIFO serviced continuously, independently of UI polling.
+fn enqueue(active: &'static AtomicUsize, max: usize, job: Job) {
+    static POOLS: OnceLock<Mutex<HashMap<usize, mpsc::Sender<Job>>>> = OnceLock::new();
+    assert!(max > 0);
+    let mut pools = POOLS.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    let sender = pools.entry(active as *const AtomicUsize as usize).or_insert_with(|| {
+        let (sender, receiver) = mpsc::channel::<Job>();
+        let receiver = Arc::new(Mutex::new(receiver));
+        for _ in 0..max {
+            let receiver = Arc::clone(&receiver);
+            std::thread::spawn(move || loop {
+                let job = receiver.lock().unwrap().recv();
+                let Ok(job) = job else { break };
+                active.fetch_add(1, Ordering::SeqCst);
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                active.fetch_sub(1, Ordering::SeqCst);
+            });
+        }
+        sender
+    });
+    sender.send(job).expect("discovery workers available");
+}
 
 pub struct DiscoveryTask<T> {
     state: Arc<Mutex<State<T>>>,
@@ -44,30 +70,22 @@ impl<T: Clone + Send + 'static> DiscoveryTask<T> {
     ) -> (Option<T>, bool) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !state.running && state.started.is_none_or(|at| at.elapsed() >= refresh) {
-            if let Some((active, max)) = limit {
-                if active
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                        (count < max).then_some(count + 1)
-                    })
-                    .is_err()
-                {
-                    return (state.value.clone(), true);
-                }
-            }
             state.running = true;
             state.started = Some(Instant::now());
             let shared = Arc::clone(&self.state);
-            std::thread::spawn(move || {
+            let job = move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
                 let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
                 if let Ok(value) = result {
                     state.value = Some(value);
                 }
                 state.running = false;
-                if let Some((active, _)) = limit {
-                    active.fetch_sub(1, Ordering::SeqCst);
-                }
-            });
+            };
+            if let Some((active, max)) = limit {
+                enqueue(active, max, Box::new(job));
+            } else {
+                std::thread::spawn(job);
+            }
         }
         (state.value.clone(), state.running)
     }
@@ -76,6 +94,24 @@ impl<T: Clone + Send + 'static> DiscoveryTask<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn drains_queue_without_polling_and_survives_panics() {
+        static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        let (send, receive) = mpsc::channel();
+        let tasks: Vec<_> = (0..12).map(|_| DiscoveryTask::new()).collect();
+        for (index, task) in tasks.iter().enumerate() {
+            let send = send.clone();
+            task.poll_limited(Duration::MAX, Some((&ACTIVE, 2)), move || {
+                assert!(ACTIVE.load(Ordering::SeqCst) <= 2);
+                if index == 0 { panic!("simulated native panic"); }
+                send.send(index).unwrap();
+                index
+            });
+        }
+        for _ in 1..12 {
+            receive.recv_timeout(Duration::from_secs(2)).expect("queue must drain without polling");
+        }
+    }
     #[test]
     fn limits_native_concurrency_and_starts_queued_work_later() {
         static ACTIVE: AtomicUsize = AtomicUsize::new(0);
@@ -86,12 +122,12 @@ mod tests {
             receive.recv().unwrap()
         });
         assert_eq!(
-            queued.poll_limited(Duration::MAX, Some((&ACTIVE, 1)), || panic!("over limit")),
+            queued.poll_limited(Duration::MAX, Some((&ACTIVE, 1)), || 2),
             (None, true)
         );
         send.send(1).unwrap();
         assert_eq!(await_result(&first), 1);
-        queued.poll_limited(Duration::MAX, Some((&ACTIVE, 1)), || 2);
+        // No second scheduling poll: queued work must run as soon as capacity frees.
         assert_eq!(await_result(&queued), 2);
     }
     fn await_result(task: &DiscoveryTask<i32>) -> i32 {
