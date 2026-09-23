@@ -7548,6 +7548,9 @@ function emitUserListToOperators() {
 }
 
 io.on("connection", (socket) => {
+  socket.on("connection-health", (acknowledge) => {
+    if (typeof acknowledge === "function") acknowledge(true);
+  });
   console.log(`[CONN] Client connected: ${socket.id}`);
   peers.set(socket.id, {
     socket,
