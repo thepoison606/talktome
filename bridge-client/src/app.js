@@ -2812,11 +2812,12 @@ async function syncManagedBridge() {
   // producing avoidable failures, programmatic connection updates can disturb
   // the text selection in Windows WebView2 while the user is still typing.
   if (isBridgeSettingsControlFocused()) return;
-  const bridgeId = localStorage.getItem(STORAGE_KEYS.bridgeId) || "";
-  if (!bridgeId || !serverUrlInput.value.trim() || !getBridgeCredential()) return;
+  if (!serverUrlInput.value.trim() || !getBridgeCredential()) return;
   managedSyncRunning = true;
   try {
     await announceBridge({ quiet: true, syncConfig: false });
+    const bridgeId = localStorage.getItem(STORAGE_KEYS.bridgeId) || "";
+    if (!bridgeId) throw new Error("Bridge announce did not return an ID");
     setServerConnectionState("connected");
     await auditManagedSessionDevices();
     await auditManagedNativeMediaStatus();
@@ -2887,10 +2888,14 @@ async function watchManagedInventory() {
   }
 }
 
-function startManagedTimers() {
+function startManagedConnectionRetry() {
   if (!managedHeartbeatTimer) {
     managedHeartbeatTimer = window.setInterval(syncManagedBridge, 10_000);
   }
+}
+
+function startManagedTimers() {
+  startManagedConnectionRetry();
   if (!managedInventoryTimer) {
     managedInventoryTimer = window.setInterval(watchManagedInventory, MANAGED_INVENTORY_WATCH_MS);
   }
@@ -3182,6 +3187,10 @@ async function applyBridgeSettings() {
       connectionStatus.textContent = "Connection failed";
     }
     setServerConnectionState("disconnected");
+  } finally {
+    if (invoke && currentInventory && serverUrlInput.value.trim() && getBridgeCredential()) {
+      startManagedConnectionRetry();
+    }
   }
 }
 
@@ -3717,6 +3726,9 @@ async function refreshDevices() {
       deviceList.innerHTML = `<div class="empty-state">Audio probe failed: ${String(error)}</div>`;
     }
   } finally {
+    if (currentInventory && serverUrlInput.value.trim() && getBridgeCredential()) {
+      startManagedConnectionRetry();
+    }
     if (refreshButton) {
       refreshButton.disabled = false;
       refreshButton.textContent = "Refresh";

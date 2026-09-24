@@ -42,6 +42,21 @@ async function setup() {
   return { scope, sounds, played, transport };
 }
 
+test('a background tab plays one connection sound cycle until visible again', async () => {
+  const f = await setup();
+  f.sounds.setBackground(true);
+  f.sounds.disconnected();
+  f.sounds.reconnected();
+  f.sounds.disconnected();
+  f.sounds.reconnected();
+  assert.equal(f.played.length, 2);
+
+  f.sounds.setBackground(false);
+  f.sounds.disconnected();
+  f.sounds.reconnected();
+  assert.equal(f.played.length, 4);
+});
+
 test('heartbeat recovery plays once with an unused receive transport', async () => {
   const f = await setup();
   f.transport('send', 'connected');

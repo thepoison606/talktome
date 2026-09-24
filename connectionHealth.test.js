@@ -5,6 +5,7 @@ const { createConnectionHealth } = require('./public/connectionHealth');
 function setup() {
   let time = 0;
   let tick;
+  let paused = false;
   const replies = [];
   const changes = [];
   const socket = {
@@ -18,11 +19,46 @@ function setup() {
   };
   const health = createConnectionHealth(socket, (value) => changes.push(value), {
     now: () => time,
+    isPaused: () => paused,
     schedule(callback, delay) { assert.equal(delay, 500); tick = callback; return 1; },
     cancel() { tick = null; },
   });
-  return { health, socket, replies, changes, advance(ms) { time += ms; tick?.(); } };
+  return {
+    health, socket, replies, changes,
+    setPaused(value) { paused = value; },
+    advance(ms) { time += ms; tick?.(); },
+  };
 }
+
+test('background timer throttling does not repeatedly report loss and recovery', () => {
+  const f = setup();
+  f.health.start();
+  f.replies[0](null, true);
+  f.setPaused(true);
+  for (let i = 0; i < 3; i++) f.advance(10_000);
+  assert.deepEqual(f.changes, []);
+  assert.equal(f.replies.length, 1);
+  f.setPaused(false);
+  f.advance(500);
+  assert.deepEqual(f.changes, []);
+  f.replies.at(-1)(null, true);
+  f.advance(500);
+  assert.deepEqual(f.changes, []);
+});
+
+test('first foreground tick after a fully suspended tab does not report a false outage', () => {
+  const f = setup();
+  f.health.start();
+  f.replies[0](null, true);
+  f.setPaused(true);
+  // Safari can suspend the page without running any interval callback.
+  f.setPaused(false);
+  f.advance(30_000);
+  assert.deepEqual(f.changes, []);
+  f.replies.at(-1)(null, true);
+  f.advance(500);
+  assert.deepEqual(f.changes, []);
+});
 
 test('silent loss warns after two seconds, once, and a fresh reply clears it', () => {
   const f = setup();
@@ -36,7 +72,7 @@ test('silent loss warns after two seconds, once, and a fresh reply clears it', (
   assert.deepEqual(f.changes, [true]);
   f.replies.at(-1)(null, true);
   assert.deepEqual(f.changes, [true, false]);
-  f.advance(2000);
+  for (let i = 0; i < 4; i++) f.advance(500);
   assert.deepEqual(f.changes, [true, false, true]);
 });
 
@@ -53,7 +89,7 @@ test('healthy replies keep the connection healthy indefinitely', () => {
 test('expired, failed and invalid replies cannot clear the warning', () => {
   const f = setup();
   f.health.start();
-  f.advance(2000);
+  for (let i = 0; i < 4; i++) f.advance(500);
   f.replies[0](null, true);
   f.replies.at(-1)(new Error('timeout'));
   f.replies.at(-1)(null, false);
@@ -70,7 +106,7 @@ test('stop cancels polling and replies from an earlier connection are ignored', 
   assert.equal(f.replies.length, 1);
   f.socket.connected = true;
   f.health.start();
-  f.advance(1500);
+  for (let i = 0; i < 3; i++) f.advance(500);
   previousReply(null, true);
   f.advance(500);
   assert.deepEqual(f.changes, [true]);

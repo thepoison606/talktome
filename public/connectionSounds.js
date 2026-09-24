@@ -6,6 +6,8 @@
     let lost = false;
     let enabled = true;
     let source = null;
+    let background = false;
+    let backgroundCycleComplete = false;
     // Fetch while connected: the loss notification must not require the server.
     for (const name of ['disconnected', 'reconnected']) {
       files[name] = load(`/audio/${name}.mp3`)
@@ -58,8 +60,24 @@
           source = null;
         }
       },
-      disconnected() { if (!lost) { lost = true; play('disconnected'); } },
-      reconnected() { if (lost) { lost = false; play('reconnected'); } },
+      setBackground(value) {
+        const next = !!value;
+        if (background !== next) {
+          background = next;
+          backgroundCycleComplete = false;
+        }
+      },
+      disconnected() {
+        if (lost) return;
+        lost = true;
+        if (!background || !backgroundCycleComplete) play('disconnected');
+      },
+      reconnected() {
+        if (!lost) return;
+        lost = false;
+        if (!background || !backgroundCycleComplete) play('reconnected');
+        if (background) backgroundCycleComplete = true;
+      },
     };
   }
   if (typeof module !== 'undefined') module.exports = { createConnectionSounds };

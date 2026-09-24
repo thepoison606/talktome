@@ -8,6 +8,10 @@ const socket = io({
 });
 
 const connectionSounds = createConnectionSounds(() => ensureAudioContext());
+connectionSounds.setBackground(document.visibilityState === 'hidden');
+document.addEventListener('visibilitychange', () => {
+  connectionSounds.setBackground(document.visibilityState === 'hidden');
+});
 for (const event of ['pointerdown', 'touchend', 'click', 'keydown']) {
   // Retry on later gestures too: mobile Safari may interrupt an unlocked context.
   document.addEventListener(event, () => {
@@ -7149,7 +7153,7 @@ let cachedOperatorTargets = null;
     if (sessionResetInProgress || !session.name) return;
     if (interrupted) connectionSounds.disconnected();
     else announceConnectionRecovery();
-  });
+  }, { isPaused: () => document.visibilityState === 'hidden' });
   if (socket.connected) connectionHealth.start();
 
   socket.on("connect", async () => {
