@@ -36,6 +36,32 @@ test('missing audio never breaks connection handling', async () => {
   sounds.reconnected();
 });
 
+test('muting connection sounds keeps connection state and stops current playback', async () => {
+  let played = 0;
+  let stopped = 0;
+  const ctx = {
+    state: 'running', destination: {},
+    decodeAudioData: async (bytes) => bytes,
+    createBufferSource: () => ({
+      connect() {}, disconnect() {}, stop() { stopped++; }, start() { played++; },
+    }),
+  };
+  const sounds = createConnectionSounds(() => ctx, async () => ({
+    ok: true, arrayBuffer: async () => new ArrayBuffer(1),
+  }));
+  await sounds.prepare();
+  sounds.disconnected();
+  sounds.setEnabled(false);
+  assert.equal(played, 1);
+  assert.equal(stopped, 1);
+  sounds.reconnected();
+  sounds.disconnected();
+  assert.equal(played, 1);
+  sounds.setEnabled(true);
+  sounds.reconnected();
+  assert.equal(played, 2);
+});
+
 test('a later touch resumes an interrupted context without replaying stale sounds', async () => {
   let resumes = 0;
   let played = 0;

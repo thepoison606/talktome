@@ -13,6 +13,7 @@ const { resolveServerAppVersion } = require("./appVersion");
 const { createBrowserSessionStore } = require("./browserSessions");
 const { loadProxySsoConfig, resolveProxySsoIdentity } = require("./proxySso");
 const { getDataDir } = require("./dataPaths");
+const { normalizeRegisteredClientType, describeStatusClient } = require("./statusClient");
 const { ApplePttPushService } = require("./applePttPushService");
 const { buildGuestLoginUrl, buildLoginUrl, normalizeConnectUrl, selectAdminQrUrl } = require("./qrConnectUrl");
 const { buildWebRtcListenInfos, resolveClientIceConfig } = require("./webrtcConfig");
@@ -3482,27 +3483,6 @@ function statusRemoteAddress(socket) {
     : null;
 }
 
-function describeStatusClient(socket) {
-  const userAgent = String(socket?.handshake?.headers?.["user-agent"] || "");
-  if (!userAgent) return "Unknown client";
-
-  let browser = "Browser";
-  if (/EdgiOS|Edg\//i.test(userAgent)) browser = "Edge";
-  else if (/CriOS|Chrome\//i.test(userAgent)) browser = "Chrome";
-  else if (/FxiOS|Firefox\//i.test(userAgent)) browser = "Firefox";
-  else if (/Safari\//i.test(userAgent)) browser = "Safari";
-
-  let platform = "";
-  if (/iPhone/i.test(userAgent)) platform = "iPhone";
-  else if (/iPad/i.test(userAgent)) platform = "iPad";
-  else if (/Android/i.test(userAgent)) platform = "Android";
-  else if (/Windows/i.test(userAgent)) platform = "Win";
-  else if (/Macintosh|Mac OS X/i.test(userAgent)) platform = "macOS";
-  else if (/Linux/i.test(userAgent)) platform = "Linux";
-
-  return platform ? `${platform} ${browser}` : browser;
-}
-
 function normalizeBridgePlatform(value) {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "macos" || normalized === "darwin" || normalized === "mac") return "macos";
@@ -3789,7 +3769,7 @@ function buildAdminStatusSnapshot() {
         client: online
           ? (isBridge
               ? `${describeBridgeStatusClient(bridge?.platform, bridge?.host)}: ${bridge?.name || peer.bridgeId || "unknown"}`
-              : describeStatusClient(peer.socket))
+              : describeStatusClient(peer.socket, peer.clientType))
           : null,
         remoteAddress: online && !isBridge ? statusRemoteAddress(peer.socket) : null,
         networkStats,
@@ -3818,7 +3798,7 @@ function buildAdminStatusSnapshot() {
       client: online
         ? (isBridge
             ? `${describeBridgeStatusClient(bridge?.platform, bridge?.host)}: ${bridge?.name || peer.bridgeId || "unknown"}`
-            : describeStatusClient(peer.socket))
+            : describeStatusClient(peer.socket, peer.clientType))
         : null,
       remoteAddress: online && !isBridge ? statusRemoteAddress(peer.socket) : null,
       networkStats,
@@ -7600,7 +7580,7 @@ io.on("connection", (socket) => {
     );
   });
 
-  socket.on("register-user", ({ id, name, kind = "user", force = false, guestProfileUserId = null, productionId = null } = {}, callback) => {
+  socket.on("register-user", ({ id, name, kind = "user", force = false, guestProfileUserId = null, productionId = null, clientType = null } = {}, callback) => {
     const peer = peers.get(socket.id);
     if (!peer) {
       if (typeof callback === "function") callback({ error: "Peer not registered" });
@@ -7755,6 +7735,7 @@ io.on("connection", (socket) => {
     }
 
     peer.connectedAt = Date.now();
+    peer.clientType = normalizeRegisteredClientType(clientType);
     emitUserListToOperators();
 
     if (normalizedKind === "user" && peer.userId !== null && peer.userId !== undefined) {

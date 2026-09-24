@@ -7,6 +7,7 @@ const BUILTIN_DEFAULT_CLIENT_SETTINGS = Object.freeze({
   dimFeedsWhileSpeaking: false,
   dimWhenAddressed: true,
   audioAutoProcessing: false,
+  playConnectionSounds: true,
   leftHandMode: false,
   lockMultipleTargets: false,
 });

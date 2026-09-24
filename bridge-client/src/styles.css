@@ -356,6 +356,11 @@ h3 {
   padding: 0.18rem 0.45rem;
 }
 
+.managed-port-state.active {
+  background: rgba(139, 92, 246, 0.24);
+  color: #ddd6fe;
+}
+
 .managed-port-state.error {
   background: #4a2024;
   color: #fecaca;
@@ -422,6 +427,18 @@ h3 {
 .managed-port-input-level {
   color: #9fb0c0;
   font-variant-numeric: tabular-nums;
+}
+
+.managed-port-status-row {
+  align-items: baseline;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.managed-port-status-row [hidden] {
+  display: none;
 }
 
 .managed-port-input-level.warning {

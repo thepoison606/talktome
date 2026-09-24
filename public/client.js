@@ -10,7 +10,9 @@ const socket = io({
 const connectionSounds = createConnectionSounds(() => ensureAudioContext());
 for (const event of ['pointerdown', 'touchend', 'click', 'keydown']) {
   // Retry on later gestures too: mobile Safari may interrupt an unlocked context.
-  document.addEventListener(event, () => { void connectionSounds.prepare(); }, { passive: true });
+  document.addEventListener(event, () => {
+    if (playConnectionSoundsEnabled) void connectionSounds.prepare();
+  }, { passive: true });
 }
 
 const USER_AGENT = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
@@ -153,6 +155,7 @@ const FEED_DIM_SELF_STORAGE_KEY = 'feedDimSelf';
 const FEED_DIM_INCOMING_STORAGE_KEY = 'feedDimIncoming';
 const AUDIO_PROCESSING_STORAGE_KEY = 'audioProcessingEnabled';
 const AUDIO_PROCESSING_EXPLICIT_STORAGE_KEY = 'audioProcessingEnabledExplicit';
+const CONNECTION_SOUNDS_STORAGE_KEY = 'playConnectionSounds';
 const LEFT_HAND_MODE_STORAGE_KEY = 'leftHandModeEnabled';
 const LOCK_MULTIPLE_TARGETS_STORAGE_KEY = 'lockMultipleTargetsEnabled';
 const FEED_INPUT_GAIN_DB_STORAGE_KEY = 'feedInputGainDb';
@@ -294,6 +297,9 @@ let feedDimIncoming = hasServerDefaultClientSetting('dimWhenAddressed')
   ? serverDefaultClientSettings.dimWhenAddressed === true
   : true;
 let audioProcessingEnabled = false;
+let playConnectionSoundsEnabled = hasServerDefaultClientSetting('playConnectionSounds')
+  ? serverDefaultClientSettings.playConnectionSounds === true
+  : true;
 let audioProcessingReinitializePending = false;
 let refreshTalkProducerForAudioProcessingChange = null;
 let ensureWarmTalkProducerAfterMicAccess = () => Promise.resolve(null);
@@ -617,6 +623,10 @@ if (typeof window !== 'undefined') {
         audioProcessingEnabled = false;
       }
     }
+    const storedConnectionSounds = window.localStorage?.getItem(CONNECTION_SOUNDS_STORAGE_KEY);
+    if (storedConnectionSounds !== null) {
+      playConnectionSoundsEnabled = storedConnectionSounds === 'true';
+    }
     const storedLeftHandMode = window.localStorage?.getItem(LEFT_HAND_MODE_STORAGE_KEY);
     if (storedLeftHandMode !== null) {
       leftHandModeEnabled = storedLeftHandMode === 'true';
@@ -660,6 +670,7 @@ if (typeof window !== 'undefined') {
     console.warn('Unable to restore saved preferences from storage:', err);
   }
 }
+connectionSounds.setEnabled(playConnectionSoundsEnabled);
 syncAudioProcessingOptions();
 
 const FEED_PROFILE = {
@@ -944,6 +955,7 @@ let sessionSlideHintEl;
 let dimWhileSpeakingToggle;
 let dimWhenAddressedToggle;
 let audioProcessingToggle;
+let connectionSoundsToggle;
 let leftHandModeToggle;
 let lockMultipleTargetsToggle;
 let userLevelControls;
@@ -1514,6 +1526,20 @@ function setAudioProcessingEnabled(enabled, { persist = true, updateUI = true, r
     }
   } else if (settingsMenuOpen) {
     startInputMonitor();
+  }
+}
+
+function setPlayConnectionSounds(enabled, { persist = true } = {}) {
+  playConnectionSoundsEnabled = !!enabled;
+  connectionSounds.setEnabled(playConnectionSoundsEnabled);
+  if (connectionSoundsToggle) connectionSoundsToggle.checked = playConnectionSoundsEnabled;
+  if (persist && typeof window !== 'undefined') {
+    try {
+      window.localStorage?.setItem(CONNECTION_SOUNDS_STORAGE_KEY, String(playConnectionSoundsEnabled));
+    } catch (err) {
+      console.warn('Unable to persist connection sounds preference:', err);
+    }
+    persistUserAudioSettingsHandler();
   }
 }
 
@@ -3147,6 +3173,7 @@ document.addEventListener("DOMContentLoaded", () => {
   dimWhileSpeakingToggle = document.getElementById('toggle-self-dim');
   dimWhenAddressedToggle = document.getElementById('toggle-incoming-dim');
   audioProcessingToggle = document.getElementById('toggle-processing');
+  connectionSoundsToggle = document.getElementById('toggle-connection-sounds');
   leftHandModeToggle = document.getElementById('toggle-left-hand-mode');
   lockMultipleTargetsToggle = document.getElementById('toggle-lock-multiple-targets');
   userLevelControls = document.getElementById('user-level-controls');
@@ -3279,6 +3306,13 @@ document.addEventListener("DOMContentLoaded", () => {
     audioProcessingToggle.checked = syncAudioProcessingOptions();
     audioProcessingToggle.addEventListener('change', () => {
       setAudioProcessingEnabled(audioProcessingToggle.checked);
+    });
+  }
+
+  if (connectionSoundsToggle) {
+    connectionSoundsToggle.checked = playConnectionSoundsEnabled;
+    connectionSoundsToggle.addEventListener('change', () => {
+      setPlayConnectionSounds(connectionSoundsToggle.checked);
     });
   }
 
@@ -8184,6 +8218,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       dimFeedsWhileSpeaking: feedDimSelf,
       dimWhenAddressed: feedDimIncoming,
       audioAutoProcessing: audioProcessingEnabled,
+      playConnectionSounds: playConnectionSoundsEnabled,
       leftHandMode: leftHandModeEnabled,
       lockMultipleTargets: lockMultipleTargetsEnabled,
       userInputGainDb,
@@ -8217,6 +8252,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     setFeedDimSelf(settings.dimFeedsWhileSpeaking, { persist: false });
     setFeedDimIncoming(settings.dimWhenAddressed, { persist: false });
     setAudioProcessingEnabled(settings.audioAutoProcessing, { persist: false });
+    setPlayConnectionSounds(settings.playConnectionSounds, { persist: false });
     setLeftHandMode(settings.leftHandMode, { persist: false });
     setLockMultipleTargets(settings.lockMultipleTargets, { persist: false });
     setUserInputGainDb(Number(settings.userInputGainDb), { persist: false });

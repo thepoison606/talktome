@@ -75,9 +75,13 @@ let managedRetryTimer = null;
 let managedLevelTriggerTimer = null;
 let managedRetryRunning = false;
 let managedLevelTriggerRunning = false;
+let managedLevelTriggerStartedAt = 0;
+let managedLevelDisplayRefreshRunning = false;
+let lastManagedLevelDisplayRefreshAt = 0;
 let managedInventoryWatchRunning = false;
 let managedInventoryWatchRetryAt = 0;
 let managedRangeInteractionActive = false;
+let lastManagedRangeFocusSuppressionAt = 0;
 let lastAnnouncedInventorySignature = "";
 let lastAudioDeviceSnapshotSignature = "";
 let lastManagedBridgePortsHtml = "";
@@ -732,6 +736,9 @@ async function auditManagedNativeMediaStatus(status = null) {
     for (const output of session.outputs.values()) {
       const stats = outputStats.get(output.streamId);
       if (stats) {
+        if (stats.decodedFrames > output.decodedFrames) {
+          output.lastDecodedAt = Date.now();
+        }
         output.decodedFrames = stats.decodedFrames;
         output.decodedBytes = stats.decodedBytes;
       }
@@ -849,8 +856,8 @@ function getManagedSessionState(session, port) {
       className: session.inputRetryable === false ? "error" : "warning"
     };
   }
-  if (port.kind === "feed") return { label: "Streaming", className: "" };
-  if (session.talking) return { label: "Transmitting", className: "" };
+  if (port.kind === "feed") return { label: "Streaming", className: "active" };
+  if (session.talking) return { label: "Transmitting", className: "active" };
   const addressedNow = Array.isArray(session.addressedNow) ? session.addressedNow : [];
   if (addressedNow.length) return { label: "Receiving", className: "" };
   return { label: "Ready", className: "" };
@@ -969,11 +976,13 @@ function getManagedIncomingSpeakerNames(session) {
     names.push(name);
   };
 
-  for (const output of session?.outputs?.values?.() || []) {
-    addName(output?.speakerName);
-  }
   for (const entry of Array.isArray(session?.addressedNow) ? session.addressedNow : []) {
     addName(entry?.fromName || entry?.speakerName || entry?.name);
+  }
+  for (const output of session?.outputs?.values?.() || []) {
+    if (String(output?.appData?.type || "").toLowerCase() === "feed") {
+      addName(output?.speakerName);
+    }
   }
 
   return names;
@@ -994,12 +1003,18 @@ function formatActiveReturnPaths(count, speakerNames = []) {
 }
 
 function formatManagedReturnPathStatus(session) {
+  const addressedNow = Array.isArray(session?.addressedNow) ? session.addressedNow : [];
   const outputs = [...(session?.outputs?.values?.() || [])];
-  const base = formatActiveReturnPaths(outputs.length, getManagedIncomingSpeakerNames(session));
+  const feedOutputs = outputs.filter((output) => String(output?.appData?.type || "").toLowerCase() === "feed");
+  const activeCount = addressedNow.length + feedOutputs.length;
+  if (!activeCount) return "No active incoming talk";
+
+  const base = formatActiveReturnPaths(activeCount, getManagedIncomingSpeakerNames(session));
   if (!outputs.length) return base;
 
-  const decodedFrames = outputs.reduce((sum, output) => sum + (Number(output.decodedFrames) || 0), 0);
-  if (decodedFrames > 0) return `${base}, receiving audio`;
+  if (outputs.some((output) => Date.now() - Number(output.lastDecodedAt || 0) < 1_500)) {
+    return `${base}, receiving audio`;
+  }
 
   const oldestOutputAge = outputs.reduce((age, output) => {
     const startedAt = Number(output.startedAt) || Date.now();
@@ -1087,7 +1102,6 @@ function renderManagedTriggerControls(port, draft) {
           <output data-trigger-threshold-value>${escapeHtml(thresholdValue)} dBFS</output>
         </span>
         <input data-managed-port-control data-field="triggerThreshold" type="range" min="${MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB}" max="${MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB}" step="1" value="${escapeHtml(thresholdValue)}" aria-label="Audio trigger threshold">
-        <small class="managed-port-input-level" data-managed-input-level>Input level: waiting…</small>
       </label>
     </div>
   `;
@@ -1278,6 +1292,30 @@ function handleManagedPortControlChange(event) {
   const portKey = card.dataset.managedPortKey || "";
 
   const field = control.dataset.field || "";
+  if (field === "triggerThreshold" && event.type === "input") {
+    const thresholdValue = Number(control.value);
+    const valueDisplay = card.querySelector("[data-trigger-threshold-value]");
+    if (valueDisplay instanceof HTMLOutputElement && Number.isFinite(thresholdValue)) {
+      valueDisplay.textContent = `${Math.round(thresholdValue)} dBFS`;
+      const port = (managedBridgeConfig?.ports || []).find((entry) => bridgePortKey(entry) === portKey);
+      if (port) {
+        const draft = managedPortDrafts.get(portKey) || getManagedPortDraft(port);
+        draft.trigger = { ...draft.trigger, thresholdDb: thresholdValue };
+        managedPortDrafts.set(portKey, draft);
+        managedPortDraftRevisions.set(portKey, (managedPortDraftRevisions.get(portKey) || 0) + 1);
+        managedPortEditStates.set(portKey, {
+          ...managedPortEditStates.get(portKey),
+          dirty: true,
+          error: null
+        });
+      }
+    }
+    if (managedRangeInteractionActive && Date.now() - lastManagedRangeFocusSuppressionAt >= 2_500) {
+      lastManagedRangeFocusSuppressionAt = Date.now();
+      suppressWindowFocusHide(5000);
+    }
+    return;
+  }
   if (field === "inputDevice" || field === "outputDevice") {
     const direction = field.startsWith("output") ? "output" : "input";
     const channelSelect = card.querySelector(`[data-field="${direction}Channel"]`);
@@ -1293,9 +1331,6 @@ function handleManagedPortControlChange(event) {
 
   updateManagedPortDraftFromElement(card);
   if (field === "triggerThreshold") {
-    if (event.type === "input" && managedRangeInteractionActive) {
-      suppressWindowFocusHide(5000);
-    }
     const thresholdValue = Number(control.value);
     const valueDisplay = card.querySelector("[data-trigger-threshold-value]");
     if (valueDisplay instanceof HTMLOutputElement && Number.isFinite(thresholdValue)) {
@@ -1306,6 +1341,13 @@ function handleManagedPortControlChange(event) {
     }
   }
   if (field === "triggerMode") {
+    const showDetails = control.value === "audio-level";
+    for (const detail of card.querySelectorAll('[data-field="triggerTarget"], [data-field="triggerThreshold"]')) {
+      if (detail.parentElement instanceof HTMLElement) detail.parentElement.hidden = !showDetails;
+    }
+    const inputLevel = card.querySelector('[data-managed-input-level]');
+    if (inputLevel instanceof HTMLElement) inputLevel.hidden = !showDetails;
+    requestBridgeWindowResize();
     const session = managedSessions.get(portKey);
     const nextMode = control.value === "audio-level" ? "audio-level" : "external";
     const previousMode = session?.port?.trigger?.mode === "audio-level"
@@ -1356,6 +1398,7 @@ function startManagedRangeInteraction(event) {
   if (!(control instanceof HTMLInputElement) || control.type !== "range") return;
   if (!control.matches('[data-field="triggerThreshold"]')) return;
   managedRangeInteractionActive = true;
+  lastManagedRangeFocusSuppressionAt = Date.now();
   suppressWindowFocusHide(5000);
 }
 
@@ -1422,7 +1465,10 @@ function renderManagedBridgePorts() {
         ${hasOutput ? renderManagedAssignmentControls(port, "output", draft.output) : ""}
       </div>
       ${renderManagedTriggerControls(port, draft)}
-      ${hasOutput ? `<small>${escapeHtml(formatManagedReturnPathStatus(session))}</small>` : ""}
+      ${hasOutput || port.kind === "user" ? `<div class="managed-port-status-row">
+        ${hasOutput ? `<small>${escapeHtml(formatManagedReturnPathStatus(session))}</small>` : "<span></span>"}
+        ${port.kind === "user" ? `<small class="managed-port-input-level" data-managed-input-level${draft.trigger?.mode === "audio-level" ? "" : " hidden"}>Input level: waiting…</small>` : ""}
+      </div>` : ""}
       ${sessionError ? `<div class="managed-port-error">${escapeHtml(sessionError)}</div>` : ""}
       ${editState.error ? `<div class="managed-port-error">${escapeHtml(editState.error)}</div>` : ""}
       </article>
@@ -1466,7 +1512,8 @@ async function startManagedConsumer(session, producerPayload) {
     speakerName: producerPayload.speakerName || null,
     startedAt: Date.now(),
     decodedFrames: 0,
-    decodedBytes: 0
+    decodedBytes: 0,
+    lastDecodedAt: 0
   };
   session.outputs.set(producerId, output);
   renderManagedBridgePorts();
@@ -1912,6 +1959,7 @@ async function handleManagedEvent(session, event) {
     case "incoming-talk-state":
       session.replyTarget = payload.state?.replyTarget || null;
       session.addressedNow = payload.state?.addressedNow || [];
+      renderManagedBridgePorts();
       break;
     case "api-talk-command":
       await handleManagedTalkCommand(session, payload);
@@ -2218,8 +2266,32 @@ async function heartbeatManagedSessions() {
   }
 }
 
+async function refreshManagedInputLevelsDuringTransition() {
+  if (managedLevelDisplayRefreshRunning || !invoke || Date.now() - lastManagedLevelDisplayRefreshAt < 100) return;
+  managedLevelDisplayRefreshRunning = true;
+  lastManagedLevelDisplayRefreshAt = Date.now();
+  try {
+    const levels = getManagedInputLevelMap(await invoke("get_bridge_media_status"));
+    for (const session of managedSessions.values()) {
+      if (session.ready && session.inputReady && isManagedLevelTriggerEnabledForSession(session)) {
+        updateManagedInputLevelDisplay(session, levels.get(session.inputStreamId));
+      }
+    }
+  } catch {
+    // The regular trigger poll reports native media errors.
+  } finally {
+    managedLevelDisplayRefreshRunning = false;
+  }
+}
+
 async function processManagedLevelTriggers() {
-  if (managedLevelTriggerRunning || !invoke || !managedSessions.size) return;
+  if (managedLevelTriggerRunning) {
+    if (Date.now() - managedLevelTriggerStartedAt >= 150) {
+      refreshManagedInputLevelsDuringTransition();
+    }
+    return;
+  }
+  if (!invoke || !managedSessions.size) return;
   const sessions = [...managedSessions.values()].filter((session) => (
     session.ready
     && session.inputReady
@@ -2229,6 +2301,7 @@ async function processManagedLevelTriggers() {
   if (!sessions.length) return;
 
   managedLevelTriggerRunning = true;
+  managedLevelTriggerStartedAt = Date.now();
   try {
     const status = await invoke("get_bridge_media_status");
     await auditManagedNativeMediaStatus(status);
@@ -2255,10 +2328,10 @@ async function processManagedLevelTriggers() {
         releaseRequired: false
       };
       session.levelTriggerState = state;
-      if (state.pending) continue;
-      const triggerRevision = Number(state.revision || 0);
       const inputStats = levels.get(session.inputStreamId);
       updateManagedInputLevelDisplay(session, inputStats);
+      if (state.pending) continue;
+      const triggerRevision = Number(state.revision || 0);
       const levelDb = Number(inputStats?.rmsDb);
 
       if (!triggerTarget) {
@@ -2350,6 +2423,7 @@ async function processManagedLevelTriggers() {
     // Status polling errors are handled by the regular managed sync loop.
   } finally {
     managedLevelTriggerRunning = false;
+    managedLevelTriggerStartedAt = 0;
   }
 }
 

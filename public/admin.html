@@ -1014,6 +1014,7 @@
         display: flex;
         align-items: center;
         justify-content: flex-end;
+        grid-column: 1 / -1;
         min-height: 2.2rem;
       }
 
@@ -1333,7 +1334,7 @@
         }
 
         .config-transfer-grid {
-          grid-template-columns: 1fr;
+          grid-template-columns: minmax(160px, 190px) minmax(0, 1fr);
         }
 
         .config-layout > .config-panel:nth-of-type(1) {
@@ -1596,16 +1597,16 @@
 
       .config-transfer-grid {
         display: grid;
-        grid-template-columns: minmax(180px, 220px) minmax(0, 1fr);
+        grid-template-columns: minmax(160px, 190px) minmax(0, 1fr);
         gap: 1rem;
-        align-items: end;
+        align-items: start;
       }
 
       .config-export-group,
       .config-import-group {
         display: grid;
         gap: 0.5rem;
-        align-content: end;
+        grid-template-rows: auto 2.2rem;
       }
 
       .config-export-group button {
@@ -1618,7 +1619,12 @@
         gap: 0.75rem;
         align-items: center;
         min-width: 0;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
+      }
+
+      .config-import-actions button {
+        flex: none;
+        margin-left: auto;
       }
 
       .config-import-actions input[type='file'] {
@@ -2837,6 +2843,10 @@
           grid-template-columns: 1fr;
         }
 
+        .config-import-group {
+          grid-template-rows: auto auto;
+        }
+
         .default-client-settings-selects,
         .default-client-settings-toggles {
           grid-template-columns: 1fr;
@@ -4010,6 +4020,13 @@
                     <span>Audio auto processing</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-audio-processing" role="switch" />
+                      <span class="admin-switch__track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <label class="default-client-setting-toggle">
+                    <span>Play connection sounds</span>
+                    <span class="admin-switch">
+                      <input type="checkbox" id="default-client-connection-sounds" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
                   </label>

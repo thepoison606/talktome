@@ -114,6 +114,7 @@ const defaultClientDimAmount = document.getElementById('default-client-dim-amoun
 const defaultClientDimSelf = document.getElementById('default-client-dim-self');
 const defaultClientDimIncoming = document.getElementById('default-client-dim-incoming');
 const defaultClientAudioProcessing = document.getElementById('default-client-audio-processing');
+const defaultClientConnectionSounds = document.getElementById('default-client-connection-sounds');
 const defaultClientLeftHand = document.getElementById('default-client-left-hand');
 const defaultClientLockMultiple = document.getElementById('default-client-lock-multiple');
 const adminImageLightbox = document.getElementById('admin-image-lightbox');
@@ -3118,6 +3119,7 @@ async function loadDefaultClientSettings() {
   if (defaultClientDimSelf) defaultClientDimSelf.checked = settings.dimFeedsWhileSpeaking === true;
   if (defaultClientDimIncoming) defaultClientDimIncoming.checked = settings.dimWhenAddressed === true;
   if (defaultClientAudioProcessing) defaultClientAudioProcessing.checked = settings.audioAutoProcessing === true;
+  if (defaultClientConnectionSounds) defaultClientConnectionSounds.checked = settings.playConnectionSounds !== false;
   if (defaultClientLeftHand) defaultClientLeftHand.checked = settings.leftHandMode === true;
   if (defaultClientLockMultiple) defaultClientLockMultiple.checked = settings.lockMultipleTargets === true;
   return payload;
@@ -4315,6 +4317,7 @@ if (defaultClientSettingsForm) {
       dimFeedsWhileSpeaking: Boolean(defaultClientDimSelf?.checked),
       dimWhenAddressed: Boolean(defaultClientDimIncoming?.checked),
       audioAutoProcessing: Boolean(defaultClientAudioProcessing?.checked),
+      playConnectionSounds: Boolean(defaultClientConnectionSounds?.checked),
       leftHandMode: Boolean(defaultClientLeftHand?.checked),
       lockMultipleTargets: Boolean(defaultClientLockMultiple?.checked),
     };
@@ -5105,6 +5108,7 @@ function renderUserAudioSettingsFields(settings, targets = []) {
     <label class="user-audio-settings-switch"><span>Dim feeds while speaking</span><span class="admin-switch"><input id="admin-dim-speaking" type="checkbox" role="switch" ${checked('dimFeedsWhileSpeaking')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <label class="user-audio-settings-switch"><span>Dim when addressed</span><span class="admin-switch"><input id="admin-dim-addressed" type="checkbox" role="switch" ${checked('dimWhenAddressed')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <label class="user-audio-settings-switch"><span>Audio auto processing</span><span class="admin-switch"><input id="admin-auto-processing" type="checkbox" role="switch" ${checked('audioAutoProcessing')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
+    <label class="user-audio-settings-switch"><span>Play connection sounds</span><span class="admin-switch"><input id="admin-connection-sounds" type="checkbox" role="switch" ${checked('playConnectionSounds')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <label class="user-audio-settings-switch"><span>Left-hand mode</span><span class="admin-switch"><input id="admin-left-hand" type="checkbox" role="switch" ${checked('leftHandMode')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <label class="user-audio-settings-switch"><span>Lock multiple targets</span><span class="admin-switch"><input id="admin-lock-multiple" type="checkbox" role="switch" ${checked('lockMultipleTargets')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <div class="user-audio-settings-range"><label class="user-audio-settings-range__label" for="admin-mic-gain"><span>Manual mic gain</span><output id="admin-mic-gain-value">${Number(settings.userInputGainDb).toFixed(1)} dB</output></label><input id="admin-mic-gain" type="range" min="-30" max="40" step="0.5" value="${settings.userInputGainDb}"></div>
@@ -5157,6 +5161,7 @@ userAudioSettingsForm?.addEventListener('submit', async (event) => {
     dimFeedsWhileSpeaking: document.getElementById('admin-dim-speaking').checked,
     dimWhenAddressed: document.getElementById('admin-dim-addressed').checked,
     audioAutoProcessing: document.getElementById('admin-auto-processing').checked,
+    playConnectionSounds: document.getElementById('admin-connection-sounds').checked,
     leftHandMode: document.getElementById('admin-left-hand').checked,
     lockMultipleTargets: document.getElementById('admin-lock-multiple').checked,
     userInputGainDb: Number(document.getElementById('admin-mic-gain').value),

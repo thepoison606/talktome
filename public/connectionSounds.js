@@ -4,6 +4,7 @@
     const buffers = {};
     const decoding = {};
     let lost = false;
+    let enabled = true;
     let source = null;
     // Fetch while connected: the loss notification must not require the server.
     for (const name of ['disconnected', 'reconnected']) {
@@ -34,6 +35,7 @@
       }));
     }
     function play(name) {
+      if (!enabled) return;
       const ctx = getContext();
       // Never queue a stale announcement for a later user gesture.
       if (!ctx || ctx.state !== 'running' || !buffers[name]) return;
@@ -49,6 +51,13 @@
     }
     return {
       prepare,
+      setEnabled(value) {
+        enabled = !!value;
+        if (!enabled && source) {
+          try { source.stop(); } catch {}
+          source = null;
+        }
+      },
       disconnected() { if (!lost) { lost = true; play('disconnected'); } },
       reconnected() { if (lost) { lost = false; play('reconnected'); } },
     };
