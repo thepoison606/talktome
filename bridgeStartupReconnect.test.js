@@ -50,6 +50,7 @@ test('failed startup announce still schedules a connection retry', async () => {
 test('retry can register a Bridge without a saved ID once the network returns', async () => {
   let bridgeId = '';
   let announceCalls = 0;
+  let managedTimersStarted = 0;
   const requestedPaths = [];
   const states = [];
   const context = bridgeFunction('async function syncManagedBridge()', 'async function watchManagedInventory()', {
@@ -72,6 +73,7 @@ test('retry can register a Bridge without a saved ID once the network returns', 
       return { ports: [] };
     },
     async reconcileManagedBridgeConfig() {},
+    startManagedTimers() { managedTimersStarted += 1; },
     async heartbeatManagedSessions() {},
     connectionStatus: { textContent: '' },
     managedSessions: new Map(),
@@ -83,6 +85,7 @@ test('retry can register a Bridge without a saved ID once the network returns', 
   assert.equal(context.managedSyncRunning, false);
   await context.syncManagedBridge();
   assert.equal(announceCalls, 2);
+  assert.equal(managedTimersStarted, 1);
   assert.deepEqual(requestedPaths, [['GET', '/api/v1/bridge/new-bridge-id/config']]);
   assert.equal(context.connectionStatus.textContent, 'Announced');
   assert.deepEqual(states, ['disconnected', 'connected']);

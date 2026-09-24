@@ -2826,6 +2826,7 @@ async function syncManagedBridge() {
       `/api/v1/bridge/${encodeURIComponent(bridgeId)}/config`
     );
     await reconcileManagedBridgeConfig(config);
+    startManagedTimers();
     await heartbeatManagedSessions();
     if (connectionStatus) {
       connectionStatus.textContent = managedSessions.size ? "Connected" : "Announced";
