@@ -14,7 +14,7 @@
     "prepare:version": "node ../scripts/resolve-build-version.js --tauri-config tauri.local-version.json"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.8.4",
+    "@tauri-apps/cli": "^2.11.5",
     "vite": "^7.0.0"
   }
 }
