@@ -5612,7 +5612,7 @@ let cachedOperatorTargets = null;
     }
   }
 
-  function setTargetVolumeAndPersist(targetKey, volumeStorageKey, volume, persistedState = null) {
+  function setTargetVolumeAndPersist(targetKey, volumeStorageKey, volume, persistedState = null, { syncServer = true } = {}) {
     const clamped = Math.max(0, Math.min(1, Number(volume) || 0));
     applyVolumeToTarget(targetKey, clamped);
     storeVolume(volumeStorageKey, clamped);
@@ -5626,7 +5626,7 @@ let cachedOperatorTargets = null;
     if (targetKey.startsWith('feed-') && isOperatorSession()) {
       applyFeedDucking();
     }
-    emitTargetAudioStateSnapshot('target-audio-volume');
+    if (syncServer) emitTargetAudioStateSnapshot('target-audio-volume');
     return clamped;
   }
 
@@ -8944,15 +8944,17 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       volSlider.value = getStoredVolume(userKey).toString();
       volSlider.className = 'volume-slider';
       volSlider.title = 'Source Volume';
-      volSlider.addEventListener('input', e => {
+      const updateVolume = (e, syncServer) => {
         const vol = parseFloat(e.target.value);
         const currentTargetKey = getCurrentTargetKey();
         setTargetVolumeAndPersist(currentTargetKey, userKey, vol, {
           targetType: 'user',
           targetId: targetIdNum,
           muted: mutedPeers.has(currentTargetKey),
-        });
-      });
+        }, { syncServer });
+      };
+      volSlider.addEventListener('input', e => updateVolume(e, false));
+      volSlider.addEventListener('change', e => updateVolume(e, true));
       if (!isOnline) {
         volSlider.disabled = true;
       }
@@ -9584,14 +9586,16 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       confSlider.value = getStoredVolume(confKey).toString();
       confSlider.className = 'volume-slider';
       confSlider.title = 'Conference Volume';
-      confSlider.addEventListener('input', e => {
+      const updateVolume = (e, syncServer) => {
         const vol = parseFloat(e.target.value);
         setTargetVolumeAndPersist(key, confKey, vol, {
           targetType: 'conference',
           targetId: id,
           muted: mutedPeers.has(key),
-        });
-      });
+        }, { syncServer });
+      };
+      confSlider.addEventListener('input', e => updateVolume(e, false));
+      confSlider.addEventListener('change', e => updateVolume(e, true));
       info.appendChild(confSlider);
 
       const muteBtn = document.createElement('button');
@@ -9831,14 +9835,16 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       feedSlider.value = getStoredVolume(feedKey).toString();
       feedSlider.className = 'volume-slider';
       feedSlider.title = 'Feed Volume';
-      feedSlider.addEventListener('input', e => {
+      const updateVolume = (e, syncServer) => {
         const vol = Math.max(0, Math.min(1, parseFloat(e.target.value)));
         setTargetVolumeAndPersist(key, feedKey, vol, {
           targetType: 'feed',
           targetId: id,
           muted: mutedPeers.has(key),
-        });
-      });
+        }, { syncServer });
+      };
+      feedSlider.addEventListener('input', e => updateVolume(e, false));
+      feedSlider.addEventListener('change', e => updateVolume(e, true));
       info.appendChild(feedSlider);
 
       const muteBtn = document.createElement('button');

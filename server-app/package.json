@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "npm run prepare:server -- --optional && npm run prepare:version && tauri dev --config tauri.local-version.json",
     "build": "npm run prepare:server && npm run prepare:version && tauri build --config tauri.local-version.json",
-    "build:release:macos": "npm run prepare:server -- --force && tauri build --bundles app --config tauri.release-version.json && mkdir -p src-tauri/target/release/bundle/dmg && ../scripts/create-macos-dmg.sh src-tauri/target/release/bundle/macos \"Talktome Server\" \"src-tauri/target/release/bundle/dmg/Talktome Server_aarch64.dmg\"",
+    "build:release:macos": "npm run prepare:server -- --force && tauri build --bundles app --config tauri.release-version.json && mkdir -p src-tauri/target/release/bundle/dmg && ../scripts/create-macos-dmg.sh src-tauri/target/release/bundle/macos \"Talktome Server\" \"src-tauri/target/release/bundle/dmg/Talktome Server_aarch64.dmg\" src-tauri/icons/icon.icns",
     "build:release:windows": "npm run prepare:server -- --force && tauri build --bundles nsis --config tauri.release-version.json",
     "dev:ui": "vite --host 127.0.0.1 --port 1430 --strictPort",
     "build:ui": "vite build",
