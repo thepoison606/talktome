@@ -1602,6 +1602,76 @@
         align-items: start;
       }
 
+      .config-auto-backup-form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(10rem, 12rem);
+        gap: 0.75rem 1rem;
+        align-items: end;
+        margin-top: 1.25rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--border);
+      }
+
+      .config-auto-backup-form.is-collapsed {
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+      }
+
+      .config-auto-backup-toggle {
+        min-height: 2.2rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .config-auto-backup-interval {
+        display: grid;
+        gap: 0.35rem;
+        font-weight: 600;
+      }
+
+      .config-auto-backup-status {
+        grid-column: 1 / -1;
+        display: grid;
+        gap: 0.3rem;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .config-auto-backup-status code {
+        overflow-wrap: anywhere;
+        user-select: text;
+      }
+
+      .config-auto-backup-footer {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+        gap: 0.75rem;
+        align-items: center;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .config-auto-backup-form.is-collapsed .config-auto-backup-footer {
+        grid-column: 2;
+        grid-template-columns: auto;
+      }
+
+      #config-auto-backup-error {
+        grid-column: 1 / -1;
+        color: var(--danger);
+        font-size: 0.82rem;
+      }
+
+      .config-auto-backup-actions {
+        display: flex;
+        justify-content: flex-end;
+      }
+
       .config-export-group,
       .config-import-group {
         display: grid;
@@ -2843,6 +2913,10 @@
           grid-template-columns: 1fr;
         }
 
+        .config-auto-backup-form {
+          grid-template-columns: 1fr;
+        }
+
         .config-import-group {
           grid-template-rows: auto auto;
         }
@@ -3275,6 +3349,14 @@
       }
 
       @media (max-width: 480px) {
+        .config-auto-backup-footer {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .config-auto-backup-actions {
+          grid-column: 1 / -1;
+        }
+
         .admin-bar,
         main {
           width: calc(100% - 1rem);
@@ -3323,6 +3405,7 @@
       .status-with-stop { position: relative; display: flex; align-items: center; gap: 6px; }
       .status-with-stop:has(.status-stop-mic) { padding-right: 36px; }
       .status-with-stop .status-indicator { min-width: 0; }
+      .status-talk-lock-icon { width: 15px; height: 15px; flex: 0 0 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
       .status-table .status-sort-button { display: inline; min-height: 0; background: none; border: 0; padding: 0; border-radius: 0; color: inherit; font: inherit; text-transform: inherit; text-align: left; cursor: pointer; box-shadow: none; }
       .status-table .status-sort-button:hover,
       .status-table .status-stop-mic:hover { background: transparent; transform: none; box-shadow: none; }
@@ -3455,8 +3538,8 @@
                     <th data-status-production-column hidden>Production</th>
                     <th>Client</th>
                     <th>Address</th>
-                    <th title="WebRTC round-trip time between this browser and the server">RTT</th>
-                    <th title="Audio packet loss, cumulative since the current WebRTC transport connected">Loss</th>
+                    <th title="Browser: WebRTC round-trip time. Bridge: API request round-trip time.">RTT</th>
+                    <th title="Browser: WebRTC audio packet loss. Bridge: input RTP packet loss to the server.">Loss</th>
                     <th>Connected since</th>
                     <th>Last seen</th>
                   </tr>
@@ -3493,8 +3576,8 @@
                     <th data-status-production-column aria-hidden="true" hidden></th>
                     <th>Client</th>
                     <th>Address</th>
-                    <th title="WebRTC round-trip time between this browser and the server">RTT</th>
-                    <th title="Audio packet loss, cumulative since the current WebRTC transport connected">Loss</th>
+                    <th title="Browser: WebRTC round-trip time. Bridge: API request round-trip time.">RTT</th>
+                    <th title="Browser: WebRTC audio packet loss. Bridge: input RTP packet loss to the server.">Loss</th>
                     <th>Connected since</th>
                     <th>Last seen</th>
                   </tr>
@@ -3531,8 +3614,8 @@
                     <th data-status-production-column aria-hidden="true" hidden></th>
                     <th>Client</th>
                     <th>Address</th>
-                    <th title="WebRTC round-trip time between this browser and the server">RTT</th>
-                    <th title="Audio packet loss, cumulative since the current WebRTC transport connected">Loss</th>
+                    <th title="Bridge API request round-trip time across active ports">RTT</th>
+                    <th title="Input RTP packet loss from Bridge to server across active ports">Loss</th>
                     <th>Connected since</th>
                     <th>Last seen</th>
                   </tr>
@@ -4059,7 +4142,6 @@
 
               <div class="setting-meta">
                 <div>Export and import the full server configuration as a JSON backup.</div>
-                <div>This includes server config, users, feeds, conferences, memberships and target routing.</div>
               </div>
 
               <div class="config-transfer-grid">
@@ -4076,6 +4158,37 @@
                   </div>
                 </div>
               </div>
+
+              <form id="config-auto-backup-form" class="config-auto-backup-form is-collapsed">
+                <label class="config-auto-backup-toggle">
+                  <span>Automatic backups</span>
+                  <span class="admin-switch">
+                    <input type="checkbox" id="config-auto-backup-enabled" role="switch" />
+                    <span class="admin-switch__track" aria-hidden="true"></span>
+                  </span>
+                </label>
+                <label class="config-auto-backup-interval" id="config-auto-backup-interval-field" for="config-auto-backup-interval" hidden>
+                  <span>Every</span>
+                  <select id="config-auto-backup-interval">
+                    <option value="1">1 day</option>
+                    <option value="3">3 days</option>
+                    <option value="7" selected>7 days</option>
+                    <option value="14">14 days</option>
+                    <option value="30">30 days</option>
+                  </select>
+                </label>
+                <div class="config-auto-backup-status" id="config-auto-backup-status" hidden>
+                  <div>Location: <code id="config-auto-backup-directory">Loading…</code></div>
+                </div>
+                <div class="config-auto-backup-footer">
+                  <div class="config-auto-backup-time" hidden>Last backup: <span id="config-auto-backup-last" aria-live="polite">Never</span></div>
+                  <div class="config-auto-backup-time" hidden>Next backup: <span id="config-auto-backup-next" aria-live="polite">Disabled</span></div>
+                  <div class="config-auto-backup-actions">
+                    <button type="submit">Save</button>
+                  </div>
+                </div>
+                <div id="config-auto-backup-error" class="is-hidden" aria-live="polite"></div>
+              </form>
             </section>
           </div>
         </div>

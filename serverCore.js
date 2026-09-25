@@ -13,6 +13,10 @@ const { resolveServerAppVersion } = require("./appVersion");
 const { createBrowserSessionStore } = require("./browserSessions");
 const { loadProxySsoConfig, resolveProxySsoIdentity } = require("./proxySso");
 const { getDataDir } = require("./dataPaths");
+const {
+  normalizeAutomaticBackupSettings,
+  createAutomaticConfigBackup,
+} = require("./automaticConfigBackup");
 const { normalizeRegisteredClientType, describeStatusClient } = require("./statusClient");
 const { ApplePttPushService } = require("./applePttPushService");
 const { buildGuestLoginUrl, buildLoginUrl, normalizeConnectUrl, selectAdminQrUrl } = require("./qrConnectUrl");
@@ -39,6 +43,7 @@ const {
   serializeDefaultClientSettingsScript,
 } = require("./defaultClientSettings");
 const { stopPeerTransmission } = require("./transmissionControl");
+const { validateCompleteTargetOrder } = require("./targetOrdering");
 const { resolveActiveProductionSelection } = require("./productionSelection");
 const { createTallyStateStore, normalizeTallyBus } = require("./tallyState");
 const {
@@ -2909,6 +2914,38 @@ app.get('/users/:id/targets', (req, res) => {
   }
 });
 
+app.put('/api/v1/client/targets/order', (req, res) => {
+  const browserSession = getBrowserSession(req)?.session;
+  if (browserSession?.kind !== 'user') {
+    return res.status(401).json({ error: 'User login required' });
+  }
+  const userId = Number(browserSession.userId);
+  const user = getUserById(userId);
+  if (!user || user.is_superadmin || user.is_guest_profile) {
+    return res.status(403).json({ error: 'User cannot arrange targets' });
+  }
+
+  const productionId = areMultipleProductionsEnabled()
+    ? Number(req.body?.productionId)
+    : Number(getPrimaryProduction()?.id);
+  if (!Number.isSafeInteger(productionId) || productionId < 1) {
+    return res.status(400).json({ error: 'Select a production first' });
+  }
+  if (!isUserInProduction(userId, productionId)) {
+    return res.status(403).json({ error: 'User is not a member of this production' });
+  }
+
+  try {
+    const currentTargets = getProductionTargets(userId, productionId);
+    const items = validateCompleteTargetOrder(req.body?.items, currentTargets);
+    updateProductionTargetOrder(productionId, userId, items);
+    notifyTargetChange(userId);
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ error: error.message || 'Failed to arrange targets' });
+  }
+});
+
 app.get('/users/:id/productions', (req, res) => {
   try {
     const user = getUserById(req.params.id);
@@ -3559,6 +3596,7 @@ function buildBridgeDeviceIssues(bridge, users = [], feeds = []) {
 }
 
 const BROWSER_MEDIA_STATS_STALE_MS = 15_000;
+const BRIDGE_NETWORK_STATS_STALE_MS = 30_000;
 
 function normalizeBrowserMediaStats(payload = {}) {
   const roundTripMs = Number(payload?.roundTripMs);
@@ -3700,6 +3738,59 @@ function getFreshBrowserMediaStats(peer, now = Date.now()) {
   };
 }
 
+function getFreshBridgeNetworkStats(session, now = Date.now()) {
+  const stats = session?.networkStats;
+  if (!Number.isFinite(stats?.reportedAt) || now - stats.reportedAt > BRIDGE_NETWORK_STATS_STALE_MS) return null;
+  return {
+    roundTripMs: stats.roundTripMs,
+    packetLossPercent: stats.packetLossPercent,
+  };
+}
+
+function getBridgeAggregateNetworkStats(bridgeId, now = Date.now()) {
+  const stats = [...bridgeControlSessions.values()]
+    .filter((session) => !session.closed && session.bridgeId === bridgeId)
+    .map((session) => session.networkStats)
+    .filter((entry) => Number.isFinite(entry?.reportedAt) && now - entry.reportedAt <= BRIDGE_NETWORK_STATS_STALE_MS);
+  if (!stats.length) return null;
+  const roundTrips = stats.map((entry) => entry.roundTripMs).filter(Number.isFinite);
+  const packetStats = stats.filter((entry) => Number.isFinite(entry.packetsReceived) && Number.isFinite(entry.packetsLost));
+  const packetsReceived = packetStats.reduce((total, entry) => total + entry.packetsReceived, 0);
+  const packetsLost = packetStats.reduce((total, entry) => total + entry.packetsLost, 0);
+  return {
+    roundTripMs: roundTrips.length
+      ? Math.round(roundTrips.reduce((total, value) => total + value, 0) / roundTrips.length)
+      : null,
+    packetLossPercent: packetsReceived + packetsLost > 0
+      ? Math.round(1000 * packetsLost / (packetsReceived + packetsLost)) / 10
+      : null,
+  };
+}
+
+async function collectBridgeInputPacketStats(peer) {
+  const producers = [...(peer?.producers?.values() || [])].filter((producer) => !producer.closed && producer.kind === "audio");
+  const producerStats = await Promise.all(producers.map((producer) => producer.getStats()));
+  let packetsReceived = 0;
+  let packetsLost = 0;
+  let hasPackets = false;
+  for (const stats of producerStats) {
+    for (const entry of stats) {
+      if (entry.type !== "inbound-rtp") continue;
+      const received = Number(entry.packetCount);
+      const reportedLost = Number(entry.packetsLost);
+      // mediasoup can expose a negative loss correction as an unsigned 32-bit value.
+      const lost = reportedLost > 0x7fffffff && reportedLost <= 0xffffffff
+        ? Math.max(0, reportedLost - 0x100000000)
+        : reportedLost;
+      if (!Number.isSafeInteger(received) || received < 0 || !Number.isSafeInteger(lost) || lost < 0) continue;
+      packetsReceived += received;
+      packetsLost += lost;
+      hasPackets = true;
+    }
+  }
+  return hasPackets ? { packetsReceived, packetsLost } : null;
+}
+
 function buildAdminStatusTalkTargets(targets, usersById, conferencesById) {
   return normalizeRuntimeTalkTargets(targets).map((target) => {
     if (target.type === "user") {
@@ -3750,13 +3841,19 @@ function buildAdminStatusSnapshot() {
       const bridge = isBridge
         ? bridgeRegistry.get(String(peer.bridgeId)) || null
         : null;
-      const networkStats = online && !isBridge ? getFreshBrowserMediaStats(peer, now) : null;
+      const networkStats = online
+        ? isBridge
+          ? getFreshBridgeNetworkStats(bridgeControlSessions.get(found.socketId), now)
+          : getFreshBrowserMediaStats(peer, now)
+        : null;
 
       return {
         id: Number(user.id),
         name: user.name,
         online,
         talking: online && activeTargets.length > 0,
+        talkLocked: online && activeTargets.length > 0
+          && Boolean(companionUserState.get(String(user.id))?.talkLocked),
         talkTargets,
         activeProduction: activeProduction
           ? { id: Number(activeProduction.id), name: activeProduction.name }
@@ -3784,7 +3881,11 @@ function buildAdminStatusSnapshot() {
     const bridge = isBridge
       ? bridgeRegistry.get(String(peer.bridgeId)) || null
       : null;
-    const networkStats = online && !isBridge ? getFreshBrowserMediaStats(peer, now) : null;
+    const networkStats = online
+      ? isBridge
+        ? getFreshBridgeNetworkStats(bridgeControlSessions.get(found.socketId), now)
+        : getFreshBrowserMediaStats(peer, now)
+      : null;
 
     return {
       id: Number(feed.id),
@@ -3818,6 +3919,7 @@ function buildAdminStatusSnapshot() {
       connectedAt: bridge.connectedAt,
       lastSeenAt: bridge.lastSeenAt,
       remoteAddress: bridge.remoteAddress,
+      networkStats: bridge.stale ? null : getBridgeAggregateNetworkStats(bridge.id, now),
       client: describeBridgeStatusClient(bridge.platform, bridge.host),
       inventory: bridge.inventory,
       deviceMissing: deviceIssues.length > 0,
@@ -4417,15 +4519,48 @@ app.put("/admin/settings/multiple-productions", requireAdmin, (req, res) => {
   }
 });
 
+function buildConfigBackupBundle() {
+  return {
+    format: "talktome-config",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    serverConfig: loadRuntimeConfig() || {},
+    database: exportDatabaseSnapshot(),
+  };
+}
+
+const automaticConfigBackup = createAutomaticConfigBackup({
+  directory: path.join(dataDir, "backups"),
+  getSettings: () => (loadRuntimeConfig() || {}).automaticBackup,
+  buildBundle: buildConfigBackupBundle,
+});
+automaticConfigBackup.schedule();
+
+app.get("/admin/settings/automatic-backup", requireAdmin, (req, res) => {
+  res.json(automaticConfigBackup.getStatus());
+});
+
+app.put("/admin/settings/automatic-backup", requireAdmin, (req, res) => {
+  let settings;
+  try {
+    settings = normalizeAutomaticBackupSettings(req.body, { strict: true });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+  try {
+    const currentConfig = loadRuntimeConfig() || {};
+    const wasEnabled = normalizeAutomaticBackupSettings(currentConfig.automaticBackup).enabled;
+    saveRuntimeConfig({ ...currentConfig, automaticBackup: settings });
+    const status = automaticConfigBackup.settingsChanged({ createImmediately: settings.enabled && !wasEnabled });
+    return res.json(status);
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Failed to save automatic backup settings" });
+  }
+});
+
 app.get("/admin/config/export", requireAdmin, (req, res) => {
   try {
-    const bundle = {
-      format: "talktome-config",
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      serverConfig: loadRuntimeConfig() || {},
-      database: exportDatabaseSnapshot(),
-    };
+    const bundle = buildConfigBackupBundle();
 
     const stamp = bundle.exportedAt.replace(/[:.]/g, "-");
     res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -4530,6 +4665,17 @@ app.post("/admin/config/import", requireAdmin, (req, res) => {
       if (Object.prototype.hasOwnProperty.call(bundle.serverConfig, "multipleProductions")) {
         nextConfig.multipleProductions = bundle.serverConfig.multipleProductions === true;
       }
+
+      if (Object.prototype.hasOwnProperty.call(bundle.serverConfig, "automaticBackup")) {
+        try {
+          nextConfig.automaticBackup = normalizeAutomaticBackupSettings(
+            bundle.serverConfig.automaticBackup,
+            { strict: true }
+          );
+        } catch (error) {
+          return res.status(400).json({ error: `Config file contains invalid automatic backup settings: ${error.message}` });
+        }
+      }
     }
 
     importDatabaseSnapshot(bundle.database);
@@ -4543,6 +4689,9 @@ app.post("/admin/config/import", requireAdmin, (req, res) => {
       }
     }
     saveRuntimeConfig(nextConfig);
+    automaticConfigBackup.settingsChanged({
+      createImmediately: normalizeAutomaticBackupSettings(nextConfig.automaticBackup).enabled,
+    });
 
     res.json({
       ok: true,
@@ -5070,8 +5219,34 @@ app.post(
   "/api/v1/bridge/sessions/:sessionId/heartbeat",
   requireBridgeApiAuth,
   requireBridgeControlSession,
-  (req, res) => {
+  async (req, res) => {
     logBridgeMediaDiagnostics(req.bridgeSession, req.body?.mediaDiagnostics);
+    const reportedRoundTripMs = req.body?.networkStats?.roundTripMs;
+    const roundTripMs = Number.isFinite(reportedRoundTripMs)
+      && reportedRoundTripMs >= 0 && reportedRoundTripMs <= 60_000
+      ? Math.round(reportedRoundTripMs)
+      : null;
+    let packetStats = null;
+    try {
+      packetStats = await collectBridgeInputPacketStats(req.bridgePeer);
+    } catch (error) {
+      console.warn(`[MEDIA][BRIDGE][STATS] Failed to collect input RTP stats: ${error?.message || error}`);
+    }
+    if (!req.bridgeSession.closed) {
+      const packetsReceived = packetStats?.packetsReceived ?? null;
+      const packetsLost = packetStats?.packetsLost ?? null;
+      const packetTotal = (packetsReceived ?? 0) + (packetsLost ?? 0);
+      req.bridgeSession.networkStats = {
+        roundTripMs,
+        packetsReceived,
+        packetsLost,
+        packetLossPercent: packetTotal > 0
+          ? Math.round(1000 * packetsLost / packetTotal) / 10
+          : null,
+        reportedAt: Date.now(),
+      };
+      scheduleAdminStatusBroadcast("bridge-network-stats");
+    }
     for (const entry of Array.isArray(req.body?.lifecycleEvents) ? req.body.lifecycleEvents.slice(-20) : []) {
       const event = typeof entry?.event === "string" ? entry.event.trim().slice(0, 80) : "unknown";
       const detail = typeof entry?.detail === "string" ? entry.detail.trim().slice(0, 500) : "";

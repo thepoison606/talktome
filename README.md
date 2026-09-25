@@ -145,6 +145,8 @@ State is stored in SQLite `app.db`; config, certificates and generated API keys 
 
 Back up this directory before upgrades if you need to preserve accounts and routing.
 
+Admin → Config → Backup and restore can also write automatic JSON configuration backups to the `backups` subdirectory of this app data directory. This is off by default; choose an interval of 1, 3, 7, 14 or 30 days. Enabling it creates the first backup immediately. Backups are retained until you remove them.
+
 
 ## Users, Feeds And Guests
 

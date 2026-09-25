@@ -446,6 +446,11 @@
         border-bottom: 1px solid rgba(148, 163, 184, 0.2);
       }
 
+      .settings-subheader--plain {
+        padding-bottom: 0;
+        border-bottom: 0;
+      }
+
       .settings-subheader__title {
         font-size: 1rem;
         font-weight: 700;
@@ -491,13 +496,6 @@
         color: #e2e8f0;
       }
 
-      .shortcut-settings__desc {
-        margin: 0;
-        font-size: 0.83rem;
-        line-height: 1.45;
-        color: #94a3b8;
-      }
-
       .shortcut-settings__list {
         display: grid;
         gap: 0.55rem;
@@ -538,6 +536,101 @@
       .shortcut-settings__target-type {
         font-size: 0.78rem;
         color: #94a3b8;
+      }
+
+      .arrange-targets__list {
+        display: grid;
+        gap: 0.5rem;
+      }
+
+      .arrange-targets__row {
+        display: grid;
+        grid-template-columns: 2.4rem minmax(0, 1fr);
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.45rem 0.6rem;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 8px;
+        background: rgba(15, 23, 42, 0.5);
+        position: relative;
+      }
+
+      .arrange-targets__kind {
+        color: #94a3b8;
+        font-size: 0.75rem;
+      }
+
+      .arrange-targets__name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 0.86rem;
+        font-weight: 600;
+      }
+
+      .arrange-targets__handle {
+        appearance: none;
+        display: grid;
+        place-items: center;
+        width: 2.4rem;
+        height: 2.4rem;
+        padding: 0;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: #94a3b8;
+        cursor: grab;
+        touch-action: none;
+      }
+
+      .arrange-targets__handle:hover,
+      .arrange-targets__handle:focus-visible {
+        color: #e2e8f0;
+        background: rgba(148, 163, 184, 0.12);
+      }
+
+      .arrange-targets__handle:focus-visible {
+        outline: 2px solid #60a5fa;
+        outline-offset: 2px;
+      }
+
+      .arrange-targets__row.is-dragging {
+        z-index: 1;
+        opacity: 0.9;
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.35);
+      }
+
+      .arrange-targets__row.is-dragging .arrange-targets__handle {
+        cursor: grabbing;
+      }
+
+      .arrange-targets__row.is-drop-before::before,
+      .arrange-targets__row.is-drop-after::after {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        height: 3px;
+        border-radius: 3px;
+        background: #60a5fa;
+        pointer-events: none;
+      }
+
+      .arrange-targets__row.is-drop-before::before {
+        top: -0.35rem;
+      }
+
+      .arrange-targets__row.is-drop-after::after {
+        bottom: -0.35rem;
+      }
+
+      .arrange-targets__message {
+        color: #94a3b8;
+        font-size: 0.8rem;
+      }
+
+      .arrange-targets__message.is-error {
+        color: #fca5a5;
       }
 
       .shortcut-settings__binding-wrap {
@@ -776,10 +869,15 @@
         background: transparent;
       }
 
-      input:focus,
-      select:focus {
+      input:not([type="range"]):focus,
+      select:focus,
+      input[type="range"]:focus-visible {
         outline: 2px solid rgba(59, 130, 246, 0.6);
         outline-offset: 1px;
+      }
+
+      input[type="range"]:focus:not(:focus-visible) {
+        outline: none;
       }
 
       input::placeholder {
@@ -1306,6 +1404,22 @@
         gap: 0.5rem;
         min-width: 0;
         flex-wrap: nowrap;
+      }
+
+      #targets-list .target-talk-lock-icon {
+        display: none;
+        width: 1rem;
+        height: 1rem;
+        flex: 0 0 1rem;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
+      #targets-list li.target-item.talk-locked .target-talk-lock-icon {
+        display: block;
       }
 
       #targets-list .volume-slider,
@@ -2180,12 +2294,15 @@
         font-size: 0.72rem; line-height: 1.5; margin: 0;
       }
       #settings-menu .settings-details { border-top: 1px solid #334155; padding-top: 10px; }
+      #settings-menu .settings-details--level-trigger:not([open]) { padding-top: 6px; margin-bottom: -6px; }
       #settings-menu summary { cursor: pointer; font-size: 0.82rem; color: #cbd5e1; padding: 6px 0; }
       #settings-menu .settings-details[open] > summary { margin-bottom: 8px; }
+      #settings-menu .processing-options--close-to-previous { margin-top: -6px; }
       #settings-menu .user-level-controls,
       #settings-menu .voice-trigger-controls { margin: 0; gap: 8px; border: 0; padding: 0; }
       #settings-menu .settings-nav-button { padding: 10px 12px; }
-      #settings-menu #shortcut-settings-open { grid-template-areas: "title arrow"; }
+      #settings-menu #shortcut-settings-open,
+      #settings-menu #arrange-targets-open { grid-template-areas: "title arrow"; }
       #settings-menu .settings-nav-button__title { font-size: 0.85rem; font-weight: 500; }
       #settings-menu .settings-nav-button__desc { font-size: 0.72rem; }
       #settings-menu .settings-actions { position: static; padding: 8px 0 0; border: 0; }
@@ -2393,7 +2510,7 @@
               </div>
               </div>
               </details>
-              <details class="settings-details feed-optional">
+              <details class="settings-details settings-details--level-trigger feed-optional">
               <summary>Level trigger</summary>
               <div class="voice-trigger-controls feed-optional" id="voice-trigger-controls">
                 <label class="settings-switch">
@@ -2440,7 +2557,7 @@
                   <span>Left-hand mode</span>
                 </label>
               </div>
-              <div class="processing-options">
+              <div class="processing-options processing-options--close-to-previous">
                 <label class="settings-switch" title="Keep locked targets active while temporarily talking to or locking additional targets.">
                   <input type="checkbox" id="toggle-lock-multiple-targets" role="switch" />
                   <span class="settings-switch__track" aria-hidden="true"></span>
@@ -2451,6 +2568,10 @@
                 <span class="settings-nav-button__title">Keyboard shortcuts</span>
                 <span class="settings-nav-button__arrow" aria-hidden="true">&#8250;</span>
               </button>
+              <button type="button" class="settings-nav-button feed-optional" id="arrange-targets-open" hidden>
+                <span class="settings-nav-button__title">Arrange targets</span>
+                <span class="settings-nav-button__arrow" aria-hidden="true">&#8250;</span>
+              </button>
               </section>
               <div class="settings-actions">
                 <span id="settings-server-version" class="settings-server-version" hidden></span>
@@ -2458,7 +2579,7 @@
               </div>
             </div>
             <div class="settings-view" id="settings-shortcuts-view" hidden>
-              <div class="settings-subheader">
+              <div class="settings-subheader settings-subheader--plain">
                 <button type="button" class="settings-back-button" id="shortcut-settings-back">Back</button>
                 <span class="settings-subheader__title">Keyboard shortcuts</span>
                 <button type="button" class="shortcut-settings__button shortcut-settings__button--secondary" id="shortcut-reset-btn">
@@ -2466,12 +2587,18 @@
                 </button>
               </div>
               <div class="shortcut-settings feed-optional" id="shortcut-settings" hidden>
-                <p class="shortcut-settings__desc">
-                  Targets default to 1-9 in target order. Reply defaults to Space. Click Set key and press a key to store a custom shortcut.
-                </p>
                 <div class="shortcut-settings__empty" id="shortcut-settings-empty" hidden>No talk targets available yet.</div>
                 <div class="shortcut-settings__list" id="shortcut-settings-list"></div>
               </div>
+            </div>
+            <div class="settings-view" id="settings-arrange-view" hidden>
+              <div class="settings-subheader settings-subheader--plain">
+                <button type="button" class="settings-back-button" id="arrange-targets-back">Back</button>
+                <span class="settings-subheader__title">Arrange targets</span>
+              </div>
+              <div class="arrange-targets__list" id="arrange-targets-list"></div>
+              <div class="shortcut-settings__empty" id="arrange-targets-empty" hidden>No targets available.</div>
+              <span class="arrange-targets__message" id="arrange-targets-message" role="status" aria-live="polite" hidden></span>
             </div>
           </div>
         </div>

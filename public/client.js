@@ -949,8 +949,11 @@ let qualitySelect;
 let dimAmountSelect;
 let settingsMainView;
 let settingsShortcutsView;
+let settingsArrangeView;
 let shortcutSettingsOpenButton;
 let shortcutSettingsBackButton;
+let arrangeTargetsOpenButton;
+let arrangeTargetsBackButton;
 let shortcutSettingsSection;
 let shortcutSettingsList;
 let shortcutSettingsEmpty;
@@ -1045,6 +1048,8 @@ let settingsMenuOpen = false;
 let stopHotkeyCaptureHandler = () => {};
 let renderTargetHotkeySettingsHandler = () => {};
 let refreshTargetHotkeyUiHandler = () => {};
+let loadArrangeTargetsHandler = () => {};
+let cancelArrangeTargetsDragHandler = () => {};
 let restartVoiceTriggerMonitorHandler = () => {};
 
 function attachPlaybackAudioDiagnostics(audioEl, label) {
@@ -2203,13 +2208,16 @@ function handleSettingsMenuClosed() {
 }
 
 function setActiveSettingsView(nextView = 'main') {
-  const resolvedView = nextView === 'shortcuts' ? 'shortcuts' : 'main';
-  if (resolvedView === activeSettingsView && settingsMainView && settingsShortcutsView) {
+  const resolvedView = nextView === 'shortcuts' || nextView === 'arrange' ? nextView : 'main';
+  if (resolvedView === activeSettingsView && settingsMainView && settingsShortcutsView && settingsArrangeView) {
     return;
   }
 
   if (resolvedView !== 'shortcuts') {
     stopHotkeyCaptureHandler({ rerender: false });
+  }
+  if (resolvedView !== 'arrange') {
+    cancelArrangeTargetsDragHandler();
   }
 
   activeSettingsView = resolvedView;
@@ -2220,9 +2228,14 @@ function setActiveSettingsView(nextView = 'main') {
   if (settingsShortcutsView) {
     settingsShortcutsView.hidden = resolvedView !== 'shortcuts';
   }
+  if (settingsArrangeView) {
+    settingsArrangeView.hidden = resolvedView !== 'arrange';
+  }
 
   if (resolvedView === 'shortcuts') {
     renderTargetHotkeySettingsHandler();
+  } else if (resolvedView === 'arrange') {
+    loadArrangeTargetsHandler();
   }
 }
 
@@ -3167,8 +3180,11 @@ document.addEventListener("DOMContentLoaded", () => {
   dimAmountSelect = document.getElementById('dim-amount-select');
   settingsMainView = document.getElementById('settings-main-view');
   settingsShortcutsView = document.getElementById('settings-shortcuts-view');
+  settingsArrangeView = document.getElementById('settings-arrange-view');
   shortcutSettingsOpenButton = document.getElementById('shortcut-settings-open');
   shortcutSettingsBackButton = document.getElementById('shortcut-settings-back');
+  arrangeTargetsOpenButton = document.getElementById('arrange-targets-open');
+  arrangeTargetsBackButton = document.getElementById('arrange-targets-back');
   shortcutSettingsSection = document.getElementById('shortcut-settings');
   shortcutSettingsList = document.getElementById('shortcut-settings-list');
   shortcutSettingsEmpty = document.getElementById('shortcut-settings-empty');
@@ -3223,6 +3239,8 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   bindSettingsViewButton(shortcutSettingsOpenButton, 'shortcuts');
   bindSettingsViewButton(shortcutSettingsBackButton, 'main');
+  bindSettingsViewButton(arrangeTargetsOpenButton, 'arrange');
+  bindSettingsViewButton(arrangeTargetsBackButton, 'main');
 
   if (feedInputProcessingToggle) {
     feedInputProcessingToggle.checked = feedInputProcessingEnabled;
@@ -4016,6 +4034,232 @@ let selfTalkingKey = null;
 let cachedUsers = [];
 let latestServerUsers = [];
 let cachedOperatorTargets = null;
+  const arrangeTargetsList = document.getElementById('arrange-targets-list');
+  const arrangeTargetsEmpty = document.getElementById('arrange-targets-empty');
+  const arrangeTargetsMessage = document.getElementById('arrange-targets-message');
+  let arrangeTargetsDraft = [];
+  let arrangeTargetsSaved = [];
+  let arrangeTargetsLoadGeneration = 0;
+  let arrangeTargetsSaving = false;
+  let arrangeTargetsForUserId = null;
+  let arrangeTargetsForProductionId = null;
+  let arrangeTargetsDrag = null;
+
+  function setArrangeTargetsMessage(message = '', isError = false) {
+    if (!arrangeTargetsMessage) return;
+    arrangeTargetsMessage.textContent = message;
+    arrangeTargetsMessage.hidden = !message;
+    arrangeTargetsMessage.classList.toggle('is-error', isError);
+  }
+
+  function renderArrangeTargets() {
+    if (!arrangeTargetsList || !arrangeTargetsEmpty) return;
+    arrangeTargetsList.replaceChildren();
+    arrangeTargetsEmpty.hidden = arrangeTargetsDraft.length > 0;
+
+    arrangeTargetsDraft.forEach((target, index) => {
+      const name = String(target.name || `${target.targetType} ${target.targetId}`);
+      const kind = target.targetType === 'conference'
+        ? target.canTalk === false ? 'Conference · Listen only' : 'Conference'
+        : target.targetType === 'feed' ? 'Feed' : 'User';
+      const row = document.createElement('div');
+      row.className = 'arrange-targets__row';
+      const handle = document.createElement('button');
+      handle.type = 'button';
+      handle.className = 'arrange-targets__handle';
+      handle.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>';
+      handle.setAttribute('aria-label', `Reorder ${name}. Drag or use the up and down arrow keys.`);
+      handle.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (arrangeTargetsSaving) return;
+        const nextIndex = index + (event.key === 'ArrowUp' ? -1 : 1);
+        moveArrangeTarget(index, nextIndex, true);
+      });
+      const identity = document.createElement('div');
+      identity.className = 'shortcut-settings__target';
+      const label = document.createElement('span');
+      label.className = 'arrange-targets__name';
+      label.textContent = name;
+      const type = document.createElement('span');
+      type.className = 'arrange-targets__kind';
+      type.textContent = kind;
+      identity.append(label, type);
+      row.append(handle, identity);
+      arrangeTargetsList.appendChild(row);
+    });
+  }
+
+  function clearArrangeTargetsDrag() {
+    if (!arrangeTargetsDrag) return;
+    const { pointerId } = arrangeTargetsDrag;
+    arrangeTargetsDrag = null;
+    arrangeTargetsList.querySelectorAll('.arrange-targets__row').forEach((row) => {
+      row.classList.remove('is-dragging', 'is-drop-before', 'is-drop-after');
+      row.style.transform = '';
+    });
+    try {
+      if (arrangeTargetsList.hasPointerCapture?.(pointerId)) {
+        arrangeTargetsList.releasePointerCapture(pointerId);
+      }
+    } catch {}
+  }
+
+  cancelArrangeTargetsDragHandler = clearArrangeTargetsDrag;
+
+  function updateArrangeTargetsDropPosition(clientY) {
+    const drag = arrangeTargetsDrag;
+    if (!drag) return;
+    const rows = [...arrangeTargetsList.querySelectorAll('.arrange-targets__row')];
+    const otherRows = rows.filter((row) => row !== drag.row);
+    const beforeIndex = otherRows.findIndex((row) => {
+      const box = row.getBoundingClientRect();
+      return clientY < box.top + box.height / 2;
+    });
+    drag.destinationIndex = beforeIndex < 0 ? otherRows.length : beforeIndex;
+    rows.forEach((row) => row.classList.remove('is-drop-before', 'is-drop-after'));
+    if (drag.destinationIndex === drag.sourceIndex) return;
+    const nextRow = otherRows[drag.destinationIndex];
+    if (nextRow) nextRow.classList.add('is-drop-before');
+    else otherRows.at(-1)?.classList.add('is-drop-after');
+  }
+
+  function moveArrangeTarget(sourceIndex, destinationIndex, restoreFocus = false) {
+    if (arrangeTargetsSaving || destinationIndex < 0 || destinationIndex >= arrangeTargetsDraft.length
+      || sourceIndex === destinationIndex) return;
+    const [target] = arrangeTargetsDraft.splice(sourceIndex, 1);
+    arrangeTargetsDraft.splice(destinationIndex, 0, target);
+    renderArrangeTargets();
+    if (restoreFocus) {
+      arrangeTargetsList.children[destinationIndex]?.querySelector('.arrange-targets__handle')?.focus({ preventScroll: true });
+    }
+    persistArrangeTargets();
+  }
+
+  arrangeTargetsList?.addEventListener('pointerdown', (event) => {
+    const handle = event.target.closest('.arrange-targets__handle');
+    if (!handle || !event.isPrimary || event.button !== 0 || arrangeTargetsSaving || arrangeTargetsDrag) return;
+    const row = handle.closest('.arrange-targets__row');
+    const sourceIndex = [...arrangeTargetsList.children].indexOf(row);
+    if (sourceIndex < 0 || arrangeTargetsDraft.length < 2) return;
+    event.preventDefault();
+    arrangeTargetsDrag = {
+      pointerId: event.pointerId,
+      row,
+      sourceIndex,
+      destinationIndex: sourceIndex,
+      startY: event.clientY,
+      moved: false,
+    };
+    try {
+      arrangeTargetsList.setPointerCapture(event.pointerId);
+    } catch {}
+  });
+
+  arrangeTargetsList?.addEventListener('pointermove', (event) => {
+    const drag = arrangeTargetsDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    event.preventDefault();
+    if (!drag.moved && Math.abs(event.clientY - drag.startY) < 4) return;
+    drag.moved = true;
+    drag.row.classList.add('is-dragging');
+    drag.row.style.transform = `translateY(${event.clientY - drag.startY}px)`;
+    updateArrangeTargetsDropPosition(event.clientY);
+  });
+
+  arrangeTargetsList?.addEventListener('pointerup', (event) => {
+    const drag = arrangeTargetsDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (drag.moved) updateArrangeTargetsDropPosition(event.clientY);
+    const { sourceIndex, destinationIndex, moved } = drag;
+    clearArrangeTargetsDrag();
+    if (moved) moveArrangeTarget(sourceIndex, destinationIndex);
+  });
+
+  arrangeTargetsList?.addEventListener('pointercancel', (event) => {
+    if (event.pointerId === arrangeTargetsDrag?.pointerId) clearArrangeTargetsDrag();
+  });
+
+  async function loadArrangeTargets() {
+    if (session.kind !== 'user' || !session.userId) return;
+    clearArrangeTargetsDrag();
+    const generation = ++arrangeTargetsLoadGeneration;
+    const userId = session.userId;
+    const productionId = session.productionId;
+    arrangeTargetsDraft = [];
+    arrangeTargetsSaved = [];
+    arrangeTargetsForUserId = null;
+    arrangeTargetsForProductionId = null;
+    renderArrangeTargets();
+    setArrangeTargetsMessage('Loading…');
+    try {
+      const productionQuery = productionId ? `?productionId=${encodeURIComponent(productionId)}` : '';
+      const targets = await fetchJSON(`/users/${encodeURIComponent(userId)}/targets${productionQuery}`);
+      if (generation !== arrangeTargetsLoadGeneration || activeSettingsView !== 'arrange'
+        || session.userId !== userId || session.productionId !== productionId) return false;
+      arrangeTargetsDraft = Array.isArray(targets) ? targets.map((target) => ({ ...target })) : [];
+      arrangeTargetsSaved = arrangeTargetsDraft.map((target) => ({ ...target }));
+      arrangeTargetsForUserId = userId;
+      arrangeTargetsForProductionId = productionId;
+      renderArrangeTargets();
+      setArrangeTargetsMessage();
+      return true;
+    } catch (error) {
+      if (generation !== arrangeTargetsLoadGeneration) return false;
+      setArrangeTargetsMessage(`Could not load targets: ${error.message}`, true);
+      return false;
+    }
+  }
+
+  loadArrangeTargetsHandler = loadArrangeTargets;
+  async function persistArrangeTargets() {
+    if (arrangeTargetsSaving || session.kind !== 'user' || !session.userId) return;
+    const userId = arrangeTargetsForUserId;
+    const productionId = arrangeTargetsForProductionId;
+    if (session.userId !== userId || session.productionId !== productionId) {
+      loadArrangeTargets();
+      return;
+    }
+    const generation = arrangeTargetsLoadGeneration;
+    const submitted = arrangeTargetsDraft.map((target) => ({ ...target }));
+    arrangeTargetsSaving = true;
+    setArrangeTargetsMessage('Saving…');
+    let refreshOnFinish = false;
+    try {
+      const response = await fetch('/api/v1/client/targets/order', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productionId,
+          items: submitted.map(({ targetType, targetId }) => ({ targetType, targetId })),
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (generation !== arrangeTargetsLoadGeneration || session.userId !== userId
+        || session.productionId !== productionId) {
+        refreshOnFinish = activeSettingsView === 'arrange';
+        return;
+      }
+      if (response.status === 409) {
+        if (await loadArrangeTargets()) {
+          setArrangeTargetsMessage('Targets changed. The latest list has been loaded.', true);
+        }
+        return;
+      }
+      if (!response.ok) throw new Error(payload.error || 'Could not save target order');
+      arrangeTargetsSaved = submitted;
+      setArrangeTargetsMessage('Saved');
+    } catch (error) {
+      if (generation !== arrangeTargetsLoadGeneration) return;
+      arrangeTargetsDraft = arrangeTargetsSaved.map((target) => ({ ...target }));
+      renderArrangeTargets();
+      setArrangeTargetsMessage(error.message || 'Could not save target order', true);
+    } finally {
+      arrangeTargetsSaving = false;
+      if (refreshOnFinish) loadArrangeTargets();
+    }
+  }
   const conferenceMemberListenExclusions = new Map();
   const conferenceMemberListenLevels = new Map();
   let loadedConferenceListenExclusionsKey = null;
@@ -5901,6 +6145,12 @@ let cachedOperatorTargets = null;
     }
     if (shortcutSettingsOpenButton) {
       shortcutSettingsOpenButton.hidden = !isOperator;
+    }
+    if (arrangeTargetsOpenButton) {
+      arrangeTargetsOpenButton.hidden = session.kind !== 'user';
+    }
+    if (session.kind !== 'user' && activeSettingsView === 'arrange') {
+      setActiveSettingsView('main');
     }
 
     if (feedBanner) {
@@ -8681,6 +8931,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       const labelRow = document.createElement('div');
       labelRow.className = 'target-label-row';
       labelRow.appendChild(label);
+      labelRow.insertAdjacentHTML('afterbegin', '<svg class="target-talk-lock-icon" viewBox="0 0 24 24" aria-label="Talk locked" role="img"><path d="M7 10V7a5 5 0 0 1 10 0v3"/><rect x="5" y="10" width="14" height="11" rx="2"/></svg>');
       info.appendChild(labelRow);
 
       const persistedUserState = getPersistedTargetAudioState('user', targetIdNum);
@@ -8803,17 +9054,17 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       applyMuteVisualState(li, initialMuted);
 
       if (isOnline) {
+        li.append(icon, info, actions, hint);
+      } else {
+        li.append(icon, info, actions);
+      }
+
+      if (isOnline) {
         const lockEntry = getTalkLockEntry({ type: 'user', id: socketId });
         if (lockEntry) {
           lockEntry.button = talkBtn;
           setTalkButtonLocked(talkBtn, true);
         }
-      }
-
-      if (isOnline) {
-        li.append(icon, info, actions, hint);
-      } else {
-        li.append(icon, info, actions);
       }
 
       let rowPttGestureActive = false;
@@ -9316,6 +9567,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       const labelRow = document.createElement('div');
       labelRow.className = 'target-label-row';
       labelRow.appendChild(label);
+      labelRow.insertAdjacentHTML('afterbegin', '<svg class="target-talk-lock-icon" viewBox="0 0 24 24" aria-label="Talk locked" role="img"><path d="M7 10V7a5 5 0 0 1 10 0v3"/><rect x="5" y="10" width="14" height="11" rx="2"/></svg>');
 
       const status = document.createElement('div');
       status.className = 'target-status target-status-inline';
@@ -9443,13 +9695,14 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
       actions.append(muteBtn, talkBtn);
 
+      li.append(icon, info, actions, hint);
+
       const lockEntry = getTalkLockEntry({ type: 'conference', id });
       if (lockEntry) {
         lockEntry.button = talkBtn;
         setTalkButtonLocked(talkBtn, true);
       }
 
-      li.append(icon, info, actions, hint);
       let rowPttGestureActive = false;
       let rowPttStartX = 0;
       let rowPttLockedByGesture = false;
@@ -11643,7 +11896,10 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   // Safety stop so PTT can't get stuck on iOS/background transitions.
   function stopTalkingSafely({ respectLock = false, pointerId = null } = {}) {
     if (!isOperatorSession()) return;
-    if (!producer && !isTalking && !pendingTalkStart) return;
+    // An idle warm producer is already paused; unrelated pointer releases need no stop.
+    if ((!producer || producer.closed || producer.paused)
+      && !isTalking && !pendingTalkStart && currentTargets.length === 0
+      && activeTalkPointers.size === 0 && !hasActiveTalkLocks()) return;
     if (respectLock && hasActiveTalkLocks()) return;
     if (pointerId !== null) {
       if (activeTalkPointers.has(pointerId)) {

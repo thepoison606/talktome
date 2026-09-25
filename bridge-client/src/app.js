@@ -2241,14 +2241,19 @@ async function heartbeatManagedSessions() {
       const outputs = [...session.outputs.values()]
         .map((output) => outputStatsById.get(output.streamId))
         .filter(Boolean);
+      const heartbeatStartedAt = performance.now();
       await bridgeApi("POST", managedSessionPath(session, "/heartbeat"), {
         // Native event streams report media health independently of WebView
         // timer throttling. Keep this fallback for browser/EventSource mode.
         mediaDiagnostics: session.eventStreamId
           ? null
           : (input || outputs.length ? { input, outputs } : null),
+        networkStats: Number.isFinite(session.lastHeartbeatRoundTripMs)
+          ? { roundTripMs: session.lastHeartbeatRoundTripMs }
+          : null,
         lifecycleEvents: session.lifecycleEvents?.splice(0) || []
       });
+      session.lastHeartbeatRoundTripMs = Math.round(performance.now() - heartbeatStartedAt);
       if (session.error && session.statusLabel === "Server offline") {
         session.error = null;
         session.statusLabel = null;
