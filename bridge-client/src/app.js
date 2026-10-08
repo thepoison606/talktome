@@ -249,14 +249,14 @@ function renderNdiStatus(status) {
   ndiRuntime.dataset.state = available ? "available" : "unavailable";
   if (!available) {
     const error = String(status?.error || "NDI Runtime not found");
-    const timedOut = /timed out|did not respond/i.test(error);
+    const timedOut = /timed out|did not respond|query is still running/i.test(error);
     ndiRuntimeDetail.textContent = timedOut
-      ? "Backend did not respond. NDI devices were skipped for this session."
+      ? "NDI query is taking longer than expected. Try Refresh again shortly."
       : "Runtime not installed. NDI devices are hidden until the current NDI Runtime is installed.";
     ndiRuntimeDetail.title = error;
     if (ndiRuntimeLink) {
       ndiRuntimeLink.href = timedOut ? "https://ndi.video/" : "https://ndi.video/tools/";
-      ndiRuntimeLink.textContent = timedOut ? "NDI® information" : "Download NDI\nTools";
+      ndiRuntimeLink.textContent = "Info";
     }
     return;
   }
@@ -266,7 +266,7 @@ function renderNdiStatus(status) {
   ndiRuntimeDetail.title = String(status?.runtimePath || "");
   if (ndiRuntimeLink) {
     ndiRuntimeLink.href = "https://ndi.video/";
-    ndiRuntimeLink.textContent = "NDI® information";
+    ndiRuntimeLink.textContent = "Info";
   }
 }
 
@@ -277,9 +277,9 @@ function renderOmtStatus(status) {
   const version = String(status?.version || "OMT");
   if (!available) {
     const error = String(status?.error || "Bundled OMT backend not found");
-    const timedOut = /timed out|did not respond/i.test(error);
+    const timedOut = /timed out|did not respond|query is still running/i.test(error);
     omtRuntimeDetail.textContent = timedOut
-      ? "Backend did not respond. OMT devices were skipped for this session."
+      ? "OMT query is taking longer than expected. Try Refresh again shortly."
       : "Bundled backend unavailable. Reinstall the Bridge to restore OMT devices.";
     omtRuntimeDetail.title = error;
     return;

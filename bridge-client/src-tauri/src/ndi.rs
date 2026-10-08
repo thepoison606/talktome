@@ -7,7 +7,7 @@ use std::ptr;
 use std::sync::{
     atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
     mpsc::{sync_channel, SyncSender, TrySendError},
-    Arc, Mutex, OnceLock,
+    Arc, Mutex, OnceLock, TryLockError,
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -44,6 +44,10 @@ const WINDOWS_NDI_RUNTIME_DIRECTORIES: &[&str] = &[
 static NDI_DISCOVERY_LOCK: Mutex<()> = Mutex::new(());
 static NDI_SOURCE_CACHE: OnceLock<Mutex<CachedSources>> = OnceLock::new();
 static NDI_CHANNEL_COUNT_CACHE: OnceLock<Mutex<HashMap<String, u16>>> = OnceLock::new();
+// NDI keeps process-wide state after initialize(). Unloading its DLL after an
+// inventory/status query can crash in native teardown. Retain one initialized
+// API for the process lifetime; a failed load remains retryable.
+static NDI_API: Mutex<Option<Arc<NdiApi>>> = Mutex::new(None);
 
 type NdiInstance = *mut c_void;
 
@@ -160,7 +164,19 @@ pub struct NdiOutputRuntime {
 }
 
 impl NdiApi {
-    fn load() -> Result<Self, String> {
+    fn load() -> Result<Arc<Self>, String> {
+        let mut cached = NDI_API
+            .lock()
+            .map_err(|_| "NDI Runtime lock poisoned".to_string())?;
+        if let Some(api) = cached.as_ref() {
+            return Ok(Arc::clone(api));
+        }
+        let api = Arc::new(Self::load_uncached()?);
+        *cached = Some(Arc::clone(&api));
+        Ok(api)
+    }
+
+    fn load_uncached() -> Result<Self, String> {
         let (library, runtime_path) = load_runtime_library()?;
         unsafe {
             let initialize = load_symbol::<InitializeFn>(&library, b"NDIlib_initialize\0")?;
@@ -545,6 +561,14 @@ fn probe_input_channel_count(
 }
 
 pub fn audio_devices(wait: Duration) -> Vec<AudioDeviceInfo> {
+    audio_devices_impl(wait, true)
+}
+
+pub fn snapshot_devices(wait: Duration) -> Vec<AudioDeviceInfo> {
+    audio_devices_impl(wait, false)
+}
+
+fn audio_devices_impl(wait: Duration, probe_channels: bool) -> Vec<AudioDeviceInfo> {
     let Ok(api) = NdiApi::load() else {
         return Vec::new();
     };
@@ -558,7 +582,11 @@ pub fn audio_devices(wait: Duration) -> Vec<AudioDeviceInfo> {
             let detected_channels = probe_input_channel_count(
                 &api,
                 &source,
-                remaining.min(NDI_CHANNEL_PROBE_PER_SOURCE),
+                if probe_channels {
+                    remaining.min(NDI_CHANNEL_PROBE_PER_SOURCE)
+                } else {
+                    Duration::ZERO
+                },
             );
             if let Some(channels) = detected_channels {
                 cache_input_channel_count(&source.id, channels);
@@ -618,15 +646,22 @@ impl NdiApi {
         &self,
         requested_wait: Duration,
     ) -> Result<Vec<DiscoveredSource>, String> {
-        let _discovery = NDI_DISCOVERY_LOCK
-            .lock()
-            .map_err(|_| "NDI discovery lock poisoned".to_string())?;
         let cache = NDI_SOURCE_CACHE.get_or_init(|| Mutex::new(CachedSources::default()));
-        let cache_is_empty = cache
+        let _discovery = match NDI_DISCOVERY_LOCK.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => {
+                return cache
+                    .lock()
+                    .map(|cache| cache.sources.clone())
+                    .map_err(|_| "NDI source cache lock poisoned".to_string());
+            }
+            Err(TryLockError::Poisoned(_)) => return Err("NDI discovery lock poisoned".to_string()),
+        };
+        let initial_discovery = cache
             .lock()
-            .map(|cache| cache.sources.is_empty())
+            .map(|cache| cache.updated_at.is_none())
             .unwrap_or(true);
-        let wait = if cache_is_empty {
+        let wait = if initial_discovery {
             requested_wait.max(NDI_INITIAL_DISCOVERY_WAIT)
         } else {
             requested_wait
@@ -1070,6 +1105,29 @@ fn rms_milli_db(sum_squares: f64, sample_count: usize) -> i32 {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_discovery_uses_the_cache_without_waiting() {
+        let Ok(api) = NdiApi::load() else {
+            return;
+        };
+        let _guard = NDI_DISCOVERY_LOCK.lock().unwrap();
+        let started = Instant::now();
+        api.discover_resilient(Duration::from_secs(2)).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(200));
+    }
+
+    #[test]
+    fn runtime_stays_loaded_after_the_last_query_handle_is_dropped() {
+        let Ok(api) = NdiApi::load() else {
+            return;
+        };
+        let retained = Arc::downgrade(&api);
+        drop(api);
+        let retained = retained.upgrade().expect("NDI Runtime must remain loaded");
+        assert!(Arc::ptr_eq(&retained, &NdiApi::load().unwrap()));
+        assert!(!retained.version_string().unwrap_or_default().is_empty());
+    }
 
     #[test]
     fn source_ids_are_stable_and_distinct() {

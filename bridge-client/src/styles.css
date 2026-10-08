@@ -184,10 +184,15 @@ h3 {
   gap: 0.5rem;
 }
 
+.server-grid,
+.network-audio-runtime-row {
+  --bridge-name-column-width: max(10.5rem, calc((100% - 1.3rem) / 3.5));
+}
+
 .server-grid {
   display: grid;
   gap: 0.65rem;
-  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.2fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.2fr) var(--bridge-name-column-width);
 }
 
 .server-grid label {
@@ -204,7 +209,7 @@ h3 {
   align-items: center;
   display: grid;
   gap: 0.45rem;
-  grid-template-columns: auto minmax(0, 1fr) calc((100% - 1.3rem) / 3.5);
+  grid-template-columns: auto minmax(0, 1fr) var(--bridge-name-column-width);
   margin-top: 0.65rem;
 }
 
@@ -227,8 +232,12 @@ h3 {
   align-items: stretch;
   display: grid;
   gap: 0.45rem;
-  grid-template-columns: minmax(0, 0.75fr) minmax(0, 1.25fr);
+  grid-template-columns: minmax(0, 1fr) max-content;
   width: 100%;
+}
+
+.network-audio-runtime-actions button {
+  white-space: nowrap;
 }
 
 .network-audio-runtime-actions button,

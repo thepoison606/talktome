@@ -42,14 +42,60 @@ pub struct NetworkAudioScan {
 
 const BACKEND_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 
-// See audio.rs: timed-out native calls stay detached, so never start another
-// probe against that backend until the Bridge process is restarted.
-static NDI_TIMED_OUT: AtomicBool = AtomicBool::new(false);
-static OMT_TIMED_OUT: AtomicBool = AtomicBool::new(false);
+struct BackendState {
+    busy: AtomicBool,
+    devices: Mutex<Vec<AudioDeviceInfo>>,
+}
+
+impl BackendState {
+    const fn new() -> Self {
+        Self {
+            busy: AtomicBool::new(false),
+            devices: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn begin(&'static self) -> Option<BackendQueryGuard> {
+        self.busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| BackendQueryGuard(self))
+    }
+
+    fn cached_devices(&self) -> Vec<AudioDeviceInfo> {
+        self.devices
+            .lock()
+            .map(|devices| devices.clone())
+            .unwrap_or_default()
+    }
+}
+
+struct BackendQueryGuard(&'static BackendState);
+
+impl Drop for BackendQueryGuard {
+    fn drop(&mut self) {
+        self.0.busy.store(false, Ordering::Release);
+    }
+}
+
+// Never overlap a native query with an unfinished worker. A timed-out worker
+// remains detached, but completion releases the backend so Refresh can recover.
+static NDI_BACKEND: BackendState = BackendState::new();
+static OMT_BACKEND: BackendState = BackendState::new();
 
 pub fn audio_devices(wait: Duration) -> NetworkAudioScan {
-    let ndi = spawn_backend_probe("NDI", &NDI_TIMED_OUT, move || ndi::audio_devices(wait));
-    let omt = spawn_backend_probe("OMT", &OMT_TIMED_OUT, move || omt::audio_devices(wait));
+    scan_devices(wait, false)
+}
+
+fn scan_devices(wait: Duration, snapshot: bool) -> NetworkAudioScan {
+    let ndi = spawn_backend_probe("NDI", &NDI_BACKEND, move || {
+        if snapshot {
+            ndi::snapshot_devices(wait)
+        } else {
+            ndi::audio_devices(wait)
+        }
+    });
+    let omt = spawn_backend_probe("OMT", &OMT_BACKEND, move || omt::audio_devices(wait));
     let mut devices = Vec::new();
     let mut warnings = Vec::new();
 
@@ -60,7 +106,7 @@ pub fn audio_devices(wait: Duration) -> NetworkAudioScan {
 }
 
 pub fn audio_device_snapshot(wait: Duration) -> Vec<AudioDeviceSnapshotEntry> {
-    audio_devices(wait)
+    scan_devices(wait, true)
         .devices
         .into_iter()
         .map(|device| AudioDeviceSnapshotEntry {
@@ -74,33 +120,38 @@ pub fn audio_device_snapshot(wait: Duration) -> Vec<AudioDeviceSnapshotEntry> {
 
 struct BackendProbe {
     name: &'static str,
-    timed_out: &'static AtomicBool,
+    state: &'static BackendState,
     started_at: Instant,
     receiver: Option<mpsc::Receiver<Vec<AudioDeviceInfo>>>,
 }
 
 fn spawn_backend_probe(
     name: &'static str,
-    timed_out: &'static AtomicBool,
+    state: &'static BackendState,
     probe: impl FnOnce() -> Vec<AudioDeviceInfo> + Send + 'static,
 ) -> BackendProbe {
-    if timed_out.load(Ordering::Relaxed) {
+    let Some(guard) = state.begin() else {
         return BackendProbe {
             name,
-            timed_out,
+            state,
             started_at: Instant::now(),
             receiver: None,
         };
-    }
+    };
 
     let (sender, receiver) = mpsc::sync_channel(1);
     let started_at = Instant::now();
     thread::spawn(move || {
-        let _ = sender.send(probe());
+        let devices = probe();
+        if let Ok(mut cache) = state.devices.lock() {
+            *cache = devices.clone();
+        }
+        drop(guard);
+        let _ = sender.send(devices);
     });
     BackendProbe {
         name,
-        timed_out,
+        state,
         started_at,
         receiver: Some(receiver),
     }
@@ -114,16 +165,17 @@ fn collect_backend_probe(
 ) {
     let Some(receiver) = probe.receiver else {
         warnings.push(format!(
-            "Skipped {} audio: its backend stopped responding earlier.",
+            "Skipped {} refresh: a backend query is still running. Try Refresh again after it finishes.",
             probe.name
         ));
+        devices.extend(probe.state.cached_devices());
         return;
     };
     let remaining = timeout.saturating_sub(probe.started_at.elapsed());
     match receiver.recv_timeout(remaining) {
         Ok(mut found) => devices.append(&mut found),
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            probe.timed_out.store(true, Ordering::Relaxed);
+            devices.extend(probe.state.cached_devices());
             warnings.push(format!(
                 "Skipped {} audio: its backend did not respond within {} seconds.",
                 probe.name,
@@ -131,7 +183,7 @@ fn collect_backend_probe(
             ));
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            probe.timed_out.store(true, Ordering::Relaxed);
+            devices.extend(probe.state.cached_devices());
             warnings.push(format!(
                 "Skipped {} audio: its backend probe stopped unexpectedly.",
                 probe.name
@@ -141,99 +193,136 @@ fn collect_backend_probe(
 }
 
 pub fn ndi_status(wait: Duration) -> ndi::NdiStatus {
-    if NDI_TIMED_OUT.load(Ordering::Relaxed) {
+    let Some(guard) = NDI_BACKEND.begin() else {
         return ndi::NdiStatus {
             available: false,
             version: None,
             runtime_path: None,
             source_count: 0,
             source_names: Vec::new(),
-            error: Some("NDI backend timed out and was disabled for this Bridge session".to_string()),
+            error: Some(
+                "NDI backend query is still running; try Refresh again after it finishes"
+                    .to_string(),
+            ),
         };
-    }
+    };
     let (sender, receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
-        let _ = sender.send(ndi::status(wait));
+        let status = ndi::status(wait);
+        drop(guard);
+        let _ = sender.send(status);
     });
     match receiver.recv_timeout(BACKEND_PROBE_TIMEOUT) {
         Ok(status) => status,
-        Err(_) => {
-            NDI_TIMED_OUT.store(true, Ordering::Relaxed);
-            ndi::NdiStatus {
-                available: false,
-                version: None,
-                runtime_path: None,
-                source_count: 0,
-                source_names: Vec::new(),
-                error: Some(
-                    "NDI backend timed out and was disabled for this Bridge session".to_string(),
-                ),
-            }
-        }
+        Err(_) => ndi::NdiStatus {
+            available: false,
+            version: None,
+            runtime_path: None,
+            source_count: 0,
+            source_names: Vec::new(),
+            error: Some(
+                "NDI backend query timed out; try Refresh again after it finishes".to_string(),
+            ),
+        },
     }
 }
 
 pub fn omt_status(wait: Duration) -> omt::OmtStatus {
-    if OMT_TIMED_OUT.load(Ordering::Relaxed) {
+    let Some(guard) = OMT_BACKEND.begin() else {
         return omt::OmtStatus {
             available: false,
             version: None,
             runtime_path: None,
             source_count: 0,
             source_names: Vec::new(),
-            error: Some("OMT backend timed out and was disabled for this Bridge session".to_string()),
+            error: Some(
+                "OMT backend query is still running; try Refresh again after it finishes"
+                    .to_string(),
+            ),
         };
-    }
+    };
     let (sender, receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
-        let _ = sender.send(omt::status(wait));
+        let status = omt::status(wait);
+        drop(guard);
+        let _ = sender.send(status);
     });
     match receiver.recv_timeout(BACKEND_PROBE_TIMEOUT) {
         Ok(status) => status,
-        Err(_) => {
-            OMT_TIMED_OUT.store(true, Ordering::Relaxed);
-            omt::OmtStatus {
-                available: false,
-                version: None,
-                runtime_path: None,
-                source_count: 0,
-                source_names: Vec::new(),
-                error: Some(
-                    "OMT backend timed out and was disabled for this Bridge session".to_string(),
-                ),
-            }
-        }
+        Err(_) => omt::OmtStatus {
+            available: false,
+            version: None,
+            runtime_path: None,
+            source_count: 0,
+            source_names: Vec::new(),
+            error: Some(
+                "OMT backend query timed out; try Refresh again after it finishes".to_string(),
+            ),
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_backend_probe, spawn_backend_probe};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use super::{collect_backend_probe, spawn_backend_probe, BackendState};
+    use std::sync::{atomic::Ordering, mpsc};
     use std::time::Duration;
 
-    static TEST_TIMED_OUT: AtomicBool = AtomicBool::new(false);
-
     #[test]
-    fn quarantines_a_backend_that_does_not_answer_in_time() {
-        TEST_TIMED_OUT.store(false, Ordering::Relaxed);
-        let probe = spawn_backend_probe("test", &TEST_TIMED_OUT, || {
-            std::thread::sleep(Duration::from_millis(100));
+    fn blocks_retries_only_until_the_timed_out_worker_finishes() {
+        let state: &'static BackendState = Box::leak(Box::new(BackendState::new()));
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let probe = spawn_backend_probe("test", state, move || {
+            release_rx.recv().unwrap();
             Vec::new()
         });
         let mut devices = Vec::new();
         let mut warnings = Vec::new();
 
-        collect_backend_probe(
-            probe,
-            Duration::from_millis(5),
-            &mut devices,
-            &mut warnings,
-        );
+        collect_backend_probe(probe, Duration::from_millis(5), &mut devices, &mut warnings);
 
         assert!(devices.is_empty());
         assert_eq!(warnings.len(), 1);
-        assert!(TEST_TIMED_OUT.load(Ordering::Relaxed));
+        assert!(state.busy.load(Ordering::Acquire));
+        let overlapping = spawn_backend_probe("test", state, || panic!("must not overlap"));
+        assert!(overlapping.receiver.is_none());
+        release_tx.send(()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while state.busy.load(Ordering::Acquire) {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let retry = spawn_backend_probe("test", state, Vec::new);
+        assert!(retry.receiver.is_some());
+        collect_backend_probe(retry, Duration::from_secs(2), &mut devices, &mut warnings);
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn retains_last_known_devices_while_a_query_is_busy() {
+        let state: &'static BackendState = Box::leak(Box::new(BackendState::new()));
+        state
+            .devices
+            .lock()
+            .unwrap()
+            .push(crate::audio::AudioDeviceInfo {
+                id: "ndi:recv:test".into(),
+                name: "Test source".into(),
+                direction: "input".into(),
+                is_default: false,
+                max_channels: 2,
+                supports_48k: true,
+                supported_configs: Vec::new(),
+                channel_pairs: Vec::new(),
+            });
+        let _guard = state.begin().unwrap();
+        let probe = spawn_backend_probe("test", state, || panic!("must not overlap"));
+        let mut devices = Vec::new();
+        let mut warnings = Vec::new();
+        collect_backend_probe(probe, Duration::ZERO, &mut devices, &mut warnings);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "ndi:recv:test");
+        assert_eq!(warnings.len(), 1);
     }
 }
 
