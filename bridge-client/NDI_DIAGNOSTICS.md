@@ -64,4 +64,4 @@ The backend now permits one outstanding query at a time, retains the last known 
 
 Validation: 14 Rust tests passed in the native backend harness, including timeout recovery, refusal to overlap an unfinished worker, cached device retention and nonblocking concurrent discovery. A concurrent native scan/status run ended with NDI available and no error. Full Bridge compilation checks and three UI regression tests passed. Logs are `backend-tests.log`, `backend-concurrent.log` and `backend-cargo-check.log` under `.cache/run-tools/`.
 
-Test senders were stopped after validation. Source changes remain uncommitted.
+Test senders were stopped after validation.
