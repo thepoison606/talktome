@@ -1,3 +1,8 @@
+const PANEL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4M7 8h4M7 12h2M15 8v4"/></svg>';
+function openUserPanel(userId) {
+  window.open(`/panel?userId=${encodeURIComponent(userId)}`, '_blank', 'noopener');
+}
+
 const adminState = {
   isAuthenticated: false,
   isGlobalAdmin: false,
@@ -1584,7 +1589,7 @@ function renderAdminStatus(payload = {}) {
               <td><span class="status-with-stop">${statusIndicatorHtml({
                 ...user,
                 talkingLabel: formatStatusTalkTargetLabel(user),
-              })}${user.talkLocked ? '<svg class="status-talk-lock-icon" viewBox="0 0 24 24" role="img" aria-label="Talk locked" title="Talk locked"><path d="M7 10V7a5 5 0 0 1 10 0v3"/><rect x="5" y="10" width="14" height="11" rx="2"/></svg>' : ''}${user.online && user.talking && Number.isFinite(userId) ? `<button type="button" class="status-stop-mic" data-stop-transmission-user-id="${userId}" onclick="stopUserTransmission(${userId}, this)" title="Stop transmission" aria-label="Stop transmission for ${escapeHtml(user.name)}"><img src="/images/mute_mic.png" alt="" /></button>` : ''}</span></td>
+              })}${user.talkLocked ? '<svg class="status-talk-lock-icon" viewBox="0 0 24 24" role="img" aria-label="Talk locked" title="Talk locked"><path d="M7 10V7a5 5 0 0 1 10 0v3"/><rect x="5" y="10" width="14" height="11" rx="2"/></svg>' : ''}${Number.isFinite(userId) ? `<button type="button" class="status-panel-button" onclick="openUserPanel(${userId})" title="Open panel" aria-label="Open panel for ${escapeHtml(user.name)}">${PANEL_ICON}</button>` : ''}${user.online && user.talking && Number.isFinite(userId) ? `<button type="button" class="status-stop-mic" data-stop-transmission-user-id="${userId}" onclick="stopUserTransmission(${userId}, this)" title="Stop transmission" aria-label="Stop transmission for ${escapeHtml(user.name)}"><img src="/images/mute_mic.png" alt="" /></button>` : ''}</span></td>
               <td>${userNameHtml}</td>
               ${showProductionColumn ? `<td title="${escapeHtml(productionLabel)}">${escapeHtml(productionLabel)}</td>` : ''}
               <td>${escapeHtml(clientLabel)}</td>
@@ -2657,6 +2662,9 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
     const deleteButton = isSuperadmin
       ? ''
       : `<button type="button" class="small danger" onclick="deleteUser(${user.id})" ${deleteAttrs}>Delete</button>`;
+    const panelButton = !isSuperadmin && !isGuestProfile
+      ? `<button type="button" class="small user-settings-button" onclick="openUserPanel(${user.id})" aria-label="Open panel for ${safeName}" title="Remote control panel"><span>Panel</span>${PANEL_ICON}</button>`
+      : '';
     const audioSettingsButton = !isSuperadmin && !isGuestProfile
       ? `<button type="button" class="small user-settings-button" onclick='openUserAudioSettings(${user.id}, ${JSON.stringify(user.name)})' aria-label="Audio settings for ${safeName}" title="Audio settings">
           <span>Audio</span>
@@ -2770,6 +2778,7 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
           ${loginQrButton}
           <button type="button" class="small warning" onclick='editUser(${user.id}, ${JSON.stringify(user.name)})'>Rename</button>
           <button type="button" class="small warning" onclick='resetPassword(${user.id}, ${JSON.stringify(user.name)})' ${passwordAttrs}>Reset Password</button>
+          ${panelButton}
           ${audioSettingsButton}
           ${adminToggle}
           ${deleteButton}

@@ -282,6 +282,29 @@ function updateUserAudioSettings(userId, settings) {
   return result.changes > 0 ? normalized : null;
 }
 
+function getUserPanelSettings(userId) {
+  const row = db.prepare('SELECT panel_settings FROM users WHERE id = ?').get(userId);
+  try { return JSON.parse(row?.panel_settings || '{}'); } catch { return {}; }
+}
+
+function updateUserPanelSettings(userId, settings) {
+  db.prepare('UPDATE users SET panel_settings = ? WHERE id = ?').run(JSON.stringify(settings), userId);
+}
+
+function mergeUserTargetAudioStates(userId, states = []) {
+  const insert = db.prepare(`
+    INSERT INTO user_target_audio_state (user_id, target_type, target_id, muted, volume, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, target_type, target_id) DO UPDATE SET
+      muted = excluded.muted, volume = excluded.volume, updated_at = excluded.updated_at
+  `);
+  db.transaction(() => {
+    for (const state of normalizeUserTargetAudioStates(states)) {
+      insert.run(Number(userId), state.targetType, state.targetId, state.muted ? 1 : 0, state.volume, new Date().toISOString());
+    }
+  })();
+}
+
 function getBridgeEndpointsForDevice(bridgeDevice) {
   const normalizedBridgeDevice = normalizeBridgeText(bridgeDevice);
   if (!normalizedBridgeDevice) return [];
@@ -956,7 +979,7 @@ function exportDatabaseSnapshot() {
       ORDER BY production_id, user_id, position
     `).all(),
     users: db.prepare(`
-      SELECT id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, login_token_hash, last_online_at, audio_settings
+      SELECT id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, login_token_hash, last_online_at, audio_settings, panel_settings
       FROM users
       ORDER BY id
     `).all(),
@@ -1111,8 +1134,8 @@ function importDatabaseSnapshot(snapshot) {
     }
 
     const insertUser = db.prepare(`
-      INSERT INTO users (id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, login_token_hash, last_online_at, audio_settings)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, login_token_hash, last_online_at, audio_settings, panel_settings)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertConference = db.prepare(`
       INSERT INTO conferences (id, name)
@@ -1230,7 +1253,8 @@ function importDatabaseSnapshot(snapshot) {
         JSON.stringify(normalizeUserAudioSettings(
           typeof row.audio_settings === 'string' ? JSON.parse(row.audio_settings || '{}') : row.audio_settings,
           { partial: true }
-        ))
+        )),
+        JSON.stringify(typeof row.panel_settings === 'string' ? JSON.parse(row.panel_settings || '{}') : row.panel_settings || {})
       );
     });
 
@@ -2297,6 +2321,9 @@ module.exports = {
   getAllUsers,
   getUserById,
   getUserAudioSettings,
+  getUserPanelSettings,
+  updateUserPanelSettings,
+  mergeUserTargetAudioStates,
   updateUserAudioSettings,
   getBridgeEndpointsForDevice,
   getFeedBridgeEndpointsForDevice,

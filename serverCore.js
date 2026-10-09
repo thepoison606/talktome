@@ -163,6 +163,9 @@ const {
   getAllUsers,
   getUserById,
   getUserAudioSettings,
+  getUserPanelSettings,
+  updateUserPanelSettings,
+  mergeUserTargetAudioStates,
   updateUserAudioSettings,
   getBridgeEndpointsForDevice,
   getFeedBridgeEndpointsForDevice,
@@ -5233,6 +5236,8 @@ app.post("/api/v1/bridge/sessions", requireBridgeApiAuth, (req, res) => {
     res.json({
       sessionId: session.id,
       port: session.port,
+      panelSettings: session.peer?.kind === 'user' ? remotePanels.savedSettings(session.peer.userId) : null,
+      targetAudioStates: session.peer?.kind === 'user' ? getUserTargetAudioStates(session.peer.userId) : [],
     });
   } catch (error) {
     res.status(400).json({ error: error?.message || "Failed to create bridge session" });
@@ -5580,6 +5585,7 @@ app.post(
     }
     const payload = req.body || {};
     const commandId = typeof payload.commandId === "string" ? payload.commandId : null;
+    if (payload.report) remotePanels.report(req.bridgePeer, payload.report);
     if (commandId) {
       const result = {
         commandId,
@@ -5591,6 +5597,8 @@ app.post(
         targetType: payload.targetType || null,
         targetId: payload.targetId ?? null,
         reason: payload.reason || null,
+        error: payload.ok ? null : payload.reason || 'Bridge could not apply the change',
+        message: typeof payload.message === 'string' ? payload.message : null,
         at: new Date().toISOString(),
       };
       updateCompanionUserState(req.bridgePeer.userId, {
@@ -6912,6 +6920,8 @@ function queueBridgeControlEvent(session, event, payload = {}) {
     "incoming-talk-state",
     "api-talk-command",
     "api-target-audio-command",
+    "panel-command",
+    "panel-state-request",
     "session-kicked",
   ]);
   if (!relevantEvents.has(event)) return;
@@ -7743,6 +7753,24 @@ function emitUserListToOperators() {
   scheduleAdminStatusBroadcast("peer-list-changed");
 }
 
+const remotePanels = require('./remotePanelControl').installRemotePanelControl({
+  app, io, publicDir, requireAdmin, getAdminSession, getUserById, findUserPeerByUserId,
+  getUserList, getEnabledProductionsForUser, getPrimaryProduction, isUserInProduction, buildOperatorTargetsForUser,
+  getBridgeTargetsForUser, buildIncomingTalkStateForUser, getUserTargetAudioStates,
+  mergeUserTargetAudioStates, getUserPanelSettings, updateUserPanelSettings,
+  getResolvedUserAudioSettings, updateUserAudioSettings, updateProductionTargetOrder, notifyTargetChange,
+  targetAudioChanged(userId) {
+    updateCompanionUserState(userId, { targetAudioStates: getUserTargetAudioStates(userId) }, { reason: 'remote-panel-audio' });
+  },
+  async sendBridgeCommand(peer, command) {
+    const commandId = crypto.randomUUID();
+    const { promise } = registerCompanionPendingCommand({ commandId, userId: peer.userId });
+    peer.socket.emit('panel-command', { ...command, commandId });
+    const result = await Promise.race([promise, new Promise(resolve => setTimeout(() => resolve({ ok: false, error: 'Bridge did not confirm the change' }), 5000))]);
+    return result;
+  },
+});
+
 io.on("connection", (socket) => {
   socket.on("connection-health", (acknowledge) => {
     if (typeof acknowledge === "function") acknowledge(true);
@@ -7846,7 +7874,9 @@ io.on("connection", (socket) => {
     let activeProductionId = null;
     try {
       if (normalizedKind === "user") {
-        activeProductionId = normalizeActiveProductionId(productionId, effectiveId);
+        const panelSettings = getUserPanelSettings(effectiveId);
+        const pendingProductionId = panelSettings.pendingProductionId;
+        activeProductionId = normalizeActiveProductionId(pendingProductionId ?? productionId, effectiveId);
       } else if (normalizedKind === "guest") {
         const guestSettings = resolveGuestLoginSettings(loadRuntimeConfig() || {}, { createProfile: false });
         activeProductionId = normalizeActiveProductionId(productionId, guestSettings.profileUserId);
@@ -7897,6 +7927,11 @@ io.on("connection", (socket) => {
       peer.guestId = null;
       peer.guestProfileUserId = null;
       peer.productionId = activeProductionId;
+      const savedPanelSettings = getUserPanelSettings(effectiveId);
+      if (savedPanelSettings.pendingProductionId) {
+        delete savedPanelSettings.pendingProductionId;
+        updateUserPanelSettings(effectiveId, savedPanelSettings);
+      }
       console.log(`[USER] Registered operator ${effectiveName} (${effectiveId}) on socket ${socket.id}`);
       emitPeerTallyState(peer);
     } else if (normalizedKind === "feed") {
@@ -7993,6 +8028,8 @@ io.on("connection", (socket) => {
         targetAudioStates: normalizedKind === "user" && peer.userId != null
           ? getUserTargetAudioStates(peer.userId)
           : [],
+        panelSettings: normalizedKind === 'user' && peer.userId != null
+          ? remotePanels.savedSettings(peer.userId) : null,
         userAudioSettings: normalizedKind === "user" && peer.userId != null
           && Object.keys(getUserAudioSettings(peer.userId) || {}).length
           ? getResolvedUserAudioSettings(peer.userId)
@@ -8073,13 +8110,18 @@ io.on("connection", (socket) => {
     callback({ ok: true });
   });
 
-  socket.on("target-audio-state-snapshot", ({ reason = "target-audio-state", states = [] } = {}) => {
+  socket.on('panel-client-state', (payload = {}) => {
+    remotePanels.report(peers.get(socket.id), payload);
+  });
+
+  socket.on("target-audio-state-snapshot", ({ reason = "target-audio-state", states = [], revision = 0 } = {}) => {
     const peer = peers.get(socket.id);
     if (!peer || peer.kind !== "user" || peer.userId === null || peer.userId === undefined) {
       return;
     }
 
-    replaceUserTargetAudioStates(peer.userId, states);
+    if (Number(revision) !== remotePanels.savedSettings(peer.userId).revision) return;
+    mergeUserTargetAudioStates(peer.userId, states);
     updateCompanionUserState(peer.userId, {
       userName: peer.name || null,
       targetAudioStates: getUserTargetAudioStates(peer.userId),
@@ -8089,12 +8131,15 @@ io.on("connection", (socket) => {
     });
   });
 
-  socket.on('user-audio-settings-update', ({ settings } = {}, callback = () => {}) => {
+  socket.on('user-audio-settings-update', ({ settings, revision = 0 } = {}, callback = () => {}) => {
     const peer = peers.get(socket.id);
     if (!peer || peer.kind !== 'user' || peer.userId == null) {
       return callback({ ok: false, error: 'Peer not registered' });
     }
     try {
+      if (Number(revision) !== remotePanels.savedSettings(peer.userId).revision) {
+        return callback({ ok: false, error: 'Client settings changed remotely' });
+      }
       const normalized = normalizeUserAudioSettings(settings, { strict: true });
       updateUserAudioSettings(peer.userId, normalized);
       callback({ ok: true, settings: getResolvedUserAudioSettings(peer.userId) });

@@ -2310,6 +2310,11 @@
         #settings-menu .device-selector { grid-template-columns: 1fr; gap: 4px; }
         #settings-menu select { min-height: 40px; font-size: 16px; }
       }
+      .remote-panel-banner { font-size: .8rem; font-weight: 600; color: #fbbf24; }
+      .remote-panel-status { font-size: .75rem; color: #94a3b8; }
+      .remote-panel-status.is-error { color: #fca5a5; }
+      body.remote-panel .session-bar { flex-wrap: wrap; }
+      body.remote-panel .session-slide-hint { display: none; }
     </style>
   </head>
   <body>
@@ -2393,6 +2398,8 @@
               <span id="media-connection-status-label">Connecting</span>
             </span>
           </div>
+          <span id="remote-panel-banner" class="remote-panel-banner" hidden>Remote control - no audio</span>
+          <span id="remote-panel-status" class="remote-panel-status" role="status" aria-live="polite" hidden></span>
           <div id="session-slide-hint" class="session-slide-hint" aria-hidden="true">← Slide to lock</div>
           <div id="target-layer-switcher" class="target-layer-switcher" hidden>
             <button id="target-layer-button" type="button" aria-label="Switch target layer">Layer 1/1</button>
@@ -2821,9 +2828,11 @@
   <script src="/targetIdentity.js"></script>
   <script src="/default-client-settings.js"></script>
   <script src="/userAudioSettings.js"></script>
-  <script src="connectionSounds.js"></script>
-  <script src="connectionHealth.js"></script>
-  <script src="client.js"></script>
+  <script src="/connectionSounds.js"></script>
+  <script src="/connectionHealth.js"></script>
+  <script src="/remotePanelState.js"></script>
+  <script src="/remotePanel.js"></script>
+  <script src="/client.js"></script>
   <script>
     (function () {
       let lastTouchEnd = 0;

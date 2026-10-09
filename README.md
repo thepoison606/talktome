@@ -8,6 +8,7 @@ Local WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
 
 - Browser-based intercom with direct targets, conferences, reply and talk lock.
 - Admin UI for users, feeds, conferences, target order, network config, RTC port range, backups and Guest login.
+- Remote user panels open from Admin Users or Status in a separate browser tab. They use the normal browser interface for talk, locks, receive levels, conference member settings, audio settings, device selection, shortcuts and target ordering, without opening audio on the admin device. Persistent changes also apply after reconnect. Bridge panels support talk and receive controls; Bridge device assignments stay in Admin Users, and browser-specific audio settings are saved for the user's browser sessions.
 - Program-audio feeds with volume and mute controls.
 - Camera tally and remote control through Bitfocus Companion, HTTP API, module and keyboard shortcuts.
 - Bridge Desktop Application to integrate NDI, OMT, hardware intercom systems, audio interfaces and mixing consoles.

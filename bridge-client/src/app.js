@@ -597,12 +597,30 @@ function getManagedOutputAudioState(session, output) {
   const targetKeys = getManagedOutputTargetKeys(output);
   for (const key of targetKeys) {
     const state = session.targetAudioStates.get(key);
-    if (state) return state;
+    if (state) return getManagedPanelOutputState(session, output, state);
   }
-  return {
-    volume: MANAGED_DEFAULT_TARGET_VOLUME,
-    muted: false
-  };
+  return getManagedPanelOutputState(session, output, { volume: MANAGED_DEFAULT_TARGET_VOLUME, muted: false });
+}
+
+function getManagedPanelOutputState(session, output, state) {
+  const storage = session.panelSettings?.storage || {};
+  const conferenceId = output?.appData?.type === 'conference' ? Number(output.appData.id) : null;
+  const sourceUserId = Number(output?.speakerUserId);
+  let memberLevel = 1;
+  let memberMuted = false;
+  if (conferenceId != null && Number.isFinite(sourceUserId)) {
+    try {
+      const excluded = JSON.parse(storage[`conferenceListenExclusions:user:${session.port.userId}`] || '{}');
+      const levels = JSON.parse(storage[`conferenceMemberLevels:user:${session.port.userId}`] || '{}');
+      memberMuted = (excluded[conferenceId] || []).includes(sourceUserId);
+      memberLevel = Math.max(0, Math.min(1, Number(levels[conferenceId]?.[sourceUserId] ?? 1)));
+    } catch {}
+  }
+  let feedStopped = false;
+  if (output?.appData?.type === 'feed') {
+    try { feedStopped = Boolean(JSON.parse(storage[`stoppedFeeds:user:${session.port.userId}`] || '{}')[`feed-${output.appData.id}`]); } catch {}
+  }
+  return { ...state, volume: state.volume * memberLevel, muted: state.muted || memberMuted || feedStopped };
 }
 
 function getManagedRetryDelay(session) {
@@ -1836,6 +1854,7 @@ async function performManagedTalkState(session, { talking, targets, lockActive =
   }
   session.talking = Boolean(talking);
   session.talkSource = talking ? source : null;
+  if (source !== "panel") session.panelBaseTalkState = null;
   if (source !== "level" && session.levelTriggerState) {
     session.levelTriggerState.revision = Number(session.levelTriggerState.revision || 0) + 1;
     session.levelTriggerState.active = false;
@@ -1870,6 +1889,25 @@ function applyManagedTalkState(session, request) {
   return queued;
 }
 
+async function applyManagedCompanionTalkState(session, request) {
+  const panelTargets = [...(session.panelTalkLocks?.values() || []), ...(session.panelTalkInputs?.values() || [])];
+  if (!panelTargets.length) {
+    session.panelBaseTalkState = null;
+    return applyManagedTalkState(session, request);
+  }
+  // Companion owns the underlying external intent. Updating it while a panel
+  // holds Talk must not interrupt that hold or restore a released Companion input.
+  session.panelBaseTalkState = {
+    targets: request.talking ? request.targets : [], lockActive: Boolean(request.lockActive), source: "external",
+  };
+  const base = session.panelBaseTalkState;
+  const targets = [...new Map([...base.targets, ...panelTargets].map(target => [`${target.type}:${target.id}`, target])).values()];
+  return applyManagedTalkState(session, {
+    talking: targets.length > 0, targets, source: "panel",
+    lockActive: Boolean(session.panelTalkLocks?.size) || (base.lockActive && base.targets.length > 0),
+  });
+}
+
 async function handleManagedTalkCommand(session, payload) {
   try {
     if (session.port.kind === "feed") {
@@ -1880,11 +1918,11 @@ async function handleManagedTalkCommand(session, payload) {
       return;
     }
     if (payload.action === "release") {
-      await applyManagedTalkState(session, { talking: false, targets: [] });
+      await applyManagedCompanionTalkState(session, { talking: false, targets: [] });
       await sendManagedCommandResult(session, payload, {
         ok: true,
-        talking: false,
-        lockActive: false
+        talking: session.talking,
+        lockActive: session.lockActive
       });
       return;
     }
@@ -1898,12 +1936,12 @@ async function handleManagedTalkCommand(session, payload) {
       return;
     }
 
-    if (payload.action === "lock-toggle" && session.lockActive) {
-      await applyManagedTalkState(session, { talking: false, targets: [] });
+    if (payload.action === "lock-toggle" && (session.panelBaseTalkState?.lockActive ?? session.lockActive)) {
+      await applyManagedCompanionTalkState(session, { talking: false, targets: [] });
       await sendManagedCommandResult(session, payload, {
         ok: true,
-        talking: false,
-        lockActive: false
+        talking: session.talking,
+        lockActive: session.lockActive
       });
       return;
     }
@@ -1917,13 +1955,13 @@ async function handleManagedTalkCommand(session, payload) {
         return;
       }
       const lockActive = payload.action === "lock-toggle";
-      await applyManagedTalkState(session, { talking: true, targets, lockActive });
+      await applyManagedCompanionTalkState(session, { talking: true, targets, lockActive });
       await sendManagedCommandResult(session, payload, {
         ok: true,
-        talking: true,
-        lockActive,
-        target: targets[0],
-        targets
+        talking: session.talking,
+        lockActive: session.lockActive,
+        target: session.targets[0],
+        targets: session.targets
       });
       return;
     }
@@ -1938,6 +1976,81 @@ async function handleManagedTalkCommand(session, payload) {
       reason: String(error.message || error)
     }).catch(() => {});
     throw error;
+  }
+}
+
+function getManagedPanelReport(session) {
+  return {
+    revision: Number(session.panelSettings?.revision) || 0,
+    storage: session.panelSettings?.storage || {},
+    audioStates: [...session.targetAudioStates.values()].map(({ targetType, targetId, volume, muted }) => ({ targetType, targetId, volume, muted })),
+    runtime: {
+      devices: [], outputSupported: false,
+      talking: session.talking, targets: session.targets || [],
+      lockedTargets: session.lockActive ? session.targets || [] : [],
+    },
+  };
+}
+
+async function handleManagedPanelCommand(session, payload) {
+  try {
+    if (payload.kind !== 'talk') session.panelSettings = payload.panelSettings || session.panelSettings;
+    if (payload.kind === 'target-audio') {
+      const state = normalizeManagedTargetAudioState(payload.audio);
+      if (!state) throw new Error('Invalid audio target');
+      session.targetAudioStates.set(state.key, state);
+      await applyManagedTargetAudioState(session, state);
+    } else if (payload.kind === 'preferences') {
+      if (Object.keys(payload.patch || {}).some(key => key.startsWith('preferredAudio'))) {
+        throw new Error('Bridge audio devices are configured in Admin Users');
+      }
+      for (const output of session.outputs.values()) await applyManagedOutputAudioState(session, output);
+    } else if (payload.kind === 'talk') {
+      if (!(session.panelTalkInputs instanceof Map)) session.panelTalkInputs = new Map();
+      if (!(session.panelTalkLocks instanceof Map)) session.panelTalkLocks = new Map();
+      if (payload.action === 'stop') {
+        session.panelTalkInputs.clear(); session.panelTalkLocks.clear(); session.panelBaseTalkState = null;
+        await applyManagedTalkState(session, { talking: false, targets: [] });
+      } else {
+        const targets = resolveBridgeCommandTargets(session, payload);
+        const target = targets[0];
+        const key = target ? `${target.type}:${target.id}` : '';
+        if (payload.action === 'press' || payload.action === 'lock') {
+          if (!target) throw new Error('Talk target is not available');
+          if (!session.inputReady || !session.producerId) throw new Error('Input device is unavailable');
+          if (!session.panelBaseTalkState) session.panelBaseTalkState = {
+            targets: session.talkSource !== 'panel' && session.talking ? [...session.targets] : [],
+            lockActive: session.lockActive, source: session.talkSource || "external",
+          };
+          if (payload.action === 'press') session.panelTalkInputs.set(payload.inputKey, target);
+          else session.panelTalkLocks.set(key, target);
+        } else if (payload.action === 'release') {
+          if (!session.panelTalkInputs.has(payload.inputKey)) return sendManagedCommandResult(session, payload, { ok: true, report: getManagedPanelReport(session) });
+          session.panelTalkInputs.delete(payload.inputKey);
+          if (session.talkSource !== 'panel') return sendManagedCommandResult(session, payload, { ok: true, report: getManagedPanelReport(session) });
+        } else if (payload.action === 'unlock') {
+          session.panelTalkLocks.delete(key);
+          if (session.panelBaseTalkState) session.panelBaseTalkState.targets = session.panelBaseTalkState.targets.filter(entry => `${entry.type}:${entry.id}` !== key);
+          else if (session.lockActive) await applyManagedTalkState(session, { talking: false, targets: [] });
+        }
+        const base = session.panelBaseTalkState || { targets: [], lockActive: false };
+        const all = new Map([...base.targets, ...session.panelTalkLocks.values(), ...session.panelTalkInputs.values()].map(target => [`${target.type}:${target.id}`, target]));
+        await applyManagedTalkState(session, {
+          talking: all.size > 0, targets: [...all.values()],
+          lockActive: session.panelTalkLocks.size > 0 || (base.lockActive && base.targets.length > 0),
+          source: session.panelTalkInputs.size || session.panelTalkLocks.size ? 'panel' : base.source || 'external',
+        });
+        if (!session.panelTalkInputs.size && !session.panelTalkLocks.size) session.panelBaseTalkState = null;
+      }
+    } else if (payload.kind === 'audio-settings') {
+      return sendManagedCommandResult(session, payload, { ok: true, message: 'Saved for browser client', report: getManagedPanelReport(session) });
+    } else if (payload.kind === 'production') {
+      throw new Error('Bridge routing is configured in Admin Users');
+    }
+    await sendManagedCommandResult(session, payload, { ok: true, report: getManagedPanelReport(session) });
+    renderManagedBridgePorts();
+  } catch (error) {
+    await sendManagedCommandResult(session, payload, { ok: false, reason: error.message, report: getManagedPanelReport(session) });
   }
 }
 
@@ -1960,6 +2073,12 @@ async function handleManagedEvent(session, event) {
       session.replyTarget = payload.state?.replyTarget || null;
       session.addressedNow = payload.state?.addressedNow || [];
       renderManagedBridgePorts();
+      break;
+    case "panel-command":
+      await handleManagedPanelCommand(session, payload);
+      break;
+    case "panel-state-request":
+      await sendManagedCommandResult(session, {}, { ok: true, report: getManagedPanelReport(session) });
       break;
     case "api-talk-command":
       await handleManagedTalkCommand(session, payload);
@@ -2583,6 +2702,11 @@ async function startManagedSession(port, { reuse = false, silentRetry = false, r
       feedId: port.kind === "feed" ? port.feedId : null
     });
     session.sessionId = registered.sessionId;
+    session.panelSettings = registered.panelSettings || { revision: 0, storage: {} };
+    for (const rawState of registered.targetAudioStates || []) {
+      const state = normalizeManagedTargetAudioState(rawState);
+      if (state) session.targetAudioStates.set(state.key, state);
+    }
     recordManagedLifecycle(session, "session-created", `reason=${reason}`);
     await startManagedInputPath(session, { reason });
     if (bridgePortHasPersistentNetworkOutput(port)) {

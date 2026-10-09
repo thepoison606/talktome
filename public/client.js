@@ -1,4 +1,19 @@
-const socket = io({
+const remotePanel = window.TalktomeRemotePanel?.create() || null;
+let clientPanelRevision = 0;
+let applyingClientPanelSettings = false;
+let reportClientPanelState = () => {};
+let clientPanelDevices = [];
+let clientPanelReportTimer = null;
+const clientLocalStorage = window.TalktomeRemotePanelState.createStorage(remotePanel ? null : window.localStorage, (key, value) => {
+  if (applyingClientPanelSettings) return;
+  if (remotePanel) remotePanel.preferenceChanged(key, value);
+  else {
+    clearTimeout(clientPanelReportTimer);
+    clientPanelReportTimer = setTimeout(() => reportClientPanelState(), 120);
+  }
+});
+const clientSessionStorage = remotePanel ? window.TalktomeRemotePanelState.createStorage() : window.sessionStorage;
+const socket = remotePanel?.socket || io({
   reconnection: true,
   reconnectionAttempts: Infinity,
   reconnectionDelay: 500,
@@ -15,7 +30,7 @@ document.addEventListener('visibilitychange', () => {
 for (const event of ['pointerdown', 'touchend', 'click', 'keydown']) {
   // Retry on later gestures too: mobile Safari may interrupt an unlocked context.
   document.addEventListener(event, () => {
-    if (playConnectionSoundsEnabled) void connectionSounds.prepare();
+    if (!remotePanel && playConnectionSoundsEnabled) void connectionSounds.prepare();
   }, { passive: true });
 }
 
@@ -422,7 +437,7 @@ function ensureCustomTargetHotkeysLoaded() {
   if (!storageKey || typeof window === 'undefined') return;
 
   try {
-    const rawValue = window.localStorage?.getItem(storageKey);
+    const rawValue = clientLocalStorage?.getItem(storageKey);
     if (!rawValue) return;
     const parsed = JSON.parse(rawValue);
     if (!parsed || typeof parsed !== 'object') return;
@@ -453,10 +468,10 @@ function persistCustomTargetHotkeys() {
 
   try {
     if (Object.keys(serialized).length === 0) {
-      window.localStorage?.removeItem(storageKey);
+      clientLocalStorage?.removeItem(storageKey);
       return;
     }
-    window.localStorage?.setItem(storageKey, JSON.stringify(serialized));
+    clientLocalStorage?.setItem(storageKey, JSON.stringify(serialized));
   } catch (error) {
     console.warn('Unable to persist custom target hotkeys:', error);
   }
@@ -563,12 +578,13 @@ function appendPlaybackAudioElement(audioEl) {
 }
 
 function supportsFeedDimming() {
+  if (remotePanel) return true;
   return shouldUseFeedPlaybackBus();
 }
 
 if (typeof window !== 'undefined') {
   try {
-    const storedDb = window.localStorage?.getItem(FEED_DUCKING_DB_STORAGE_KEY);
+    const storedDb = clientLocalStorage?.getItem(FEED_DUCKING_DB_STORAGE_KEY);
     if (storedDb !== null) {
       const parsed = parseFloat(storedDb);
       if (!Number.isNaN(parsed)) {
@@ -576,11 +592,11 @@ if (typeof window !== 'undefined') {
         feedDuckingFactor = dbToLinear(feedDuckingDb);
       }
     }
-    const storedSelfDim = window.localStorage?.getItem(FEED_DIM_SELF_STORAGE_KEY);
+    const storedSelfDim = clientLocalStorage?.getItem(FEED_DIM_SELF_STORAGE_KEY);
     if (storedSelfDim !== null) {
       feedDimSelf = storedSelfDim === 'true';
     }
-    const storedIncomingDim = window.localStorage?.getItem(FEED_DIM_INCOMING_STORAGE_KEY);
+    const storedIncomingDim = clientLocalStorage?.getItem(FEED_DIM_INCOMING_STORAGE_KEY);
     if (storedIncomingDim !== null) {
       feedDimIncoming = storedIncomingDim === 'true';
     }
@@ -588,31 +604,31 @@ if (typeof window !== 'undefined') {
       feedDimSelf = false;
       feedDimIncoming = false;
     }
-    const storedFeedInputProcessing = window.localStorage?.getItem(FEED_INPUT_PROCESSING_STORAGE_KEY);
+    const storedFeedInputProcessing = clientLocalStorage?.getItem(FEED_INPUT_PROCESSING_STORAGE_KEY);
     if (storedFeedInputProcessing !== null) {
       feedInputProcessingEnabled = storedFeedInputProcessing === 'true';
     }
-    const storedInputDeviceId = window.localStorage?.getItem(MIC_DEVICE_STORAGE_KEY);
+    const storedInputDeviceId = clientLocalStorage?.getItem(MIC_DEVICE_STORAGE_KEY);
     if (storedInputDeviceId !== null) {
       preferredInputDeviceId = storedInputDeviceId;
     }
-    const storedInputDeviceExplicit = window.localStorage?.getItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY);
+    const storedInputDeviceExplicit = clientLocalStorage?.getItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY);
     if (storedInputDeviceExplicit !== null) {
       preferredInputDeviceExplicit = storedInputDeviceExplicit === 'true';
     }
-    const storedOutputDeviceId = window.localStorage?.getItem(OUTPUT_DEVICE_STORAGE_KEY);
+    const storedOutputDeviceId = clientLocalStorage?.getItem(OUTPUT_DEVICE_STORAGE_KEY);
     if (storedOutputDeviceId !== null) {
       preferredOutputDeviceId = storedOutputDeviceId;
     }
-    const storedFeedPtime = window.localStorage?.getItem(FEED_PTIME_STORAGE_KEY);
+    const storedFeedPtime = clientLocalStorage?.getItem(FEED_PTIME_STORAGE_KEY);
     if (storedFeedPtime !== null) {
       const parsedFeedPtime = parseInt(storedFeedPtime, 10);
       if (!Number.isNaN(parsedFeedPtime)) {
         feedPtimeMs = clampFeedPtimeMs(parsedFeedPtime);
       }
     }
-    const storedProcessingExplicit = window.localStorage?.getItem(AUDIO_PROCESSING_EXPLICIT_STORAGE_KEY);
-    const storedProcessing = window.localStorage?.getItem(AUDIO_PROCESSING_STORAGE_KEY);
+    const storedProcessingExplicit = clientLocalStorage?.getItem(AUDIO_PROCESSING_EXPLICIT_STORAGE_KEY);
+    const storedProcessing = clientLocalStorage?.getItem(AUDIO_PROCESSING_STORAGE_KEY);
     if (storedProcessingExplicit !== null && storedProcessing !== null) {
       audioProcessingEnabled = storedProcessing === 'true';
     } else if (hasServerDefaultClientSetting('audioAutoProcessing')) {
@@ -627,19 +643,19 @@ if (typeof window !== 'undefined') {
         audioProcessingEnabled = false;
       }
     }
-    const storedConnectionSounds = window.localStorage?.getItem(CONNECTION_SOUNDS_STORAGE_KEY);
+    const storedConnectionSounds = clientLocalStorage?.getItem(CONNECTION_SOUNDS_STORAGE_KEY);
     if (storedConnectionSounds !== null) {
       playConnectionSoundsEnabled = storedConnectionSounds === 'true';
     }
-    const storedLeftHandMode = window.localStorage?.getItem(LEFT_HAND_MODE_STORAGE_KEY);
+    const storedLeftHandMode = clientLocalStorage?.getItem(LEFT_HAND_MODE_STORAGE_KEY);
     if (storedLeftHandMode !== null) {
       leftHandModeEnabled = storedLeftHandMode === 'true';
     }
-    const storedLockMultipleTargets = window.localStorage?.getItem(LOCK_MULTIPLE_TARGETS_STORAGE_KEY);
+    const storedLockMultipleTargets = clientLocalStorage?.getItem(LOCK_MULTIPLE_TARGETS_STORAGE_KEY);
     if (storedLockMultipleTargets !== null) {
       lockMultipleTargetsEnabled = storedLockMultipleTargets === 'true';
     }
-    const storedInputGainDb = window.localStorage?.getItem(FEED_INPUT_GAIN_DB_STORAGE_KEY);
+    const storedInputGainDb = clientLocalStorage?.getItem(FEED_INPUT_GAIN_DB_STORAGE_KEY);
     if (storedInputGainDb !== null) {
       const parsedGainDb = parseFloat(storedInputGainDb);
       if (!Number.isNaN(parsedGainDb)) {
@@ -647,7 +663,7 @@ if (typeof window !== 'undefined') {
         feedInputGainLinear = dbToLinear(feedInputGainDb);
       }
     }
-    const storedUserGainDb = window.localStorage?.getItem(USER_INPUT_GAIN_DB_STORAGE_KEY);
+    const storedUserGainDb = clientLocalStorage?.getItem(USER_INPUT_GAIN_DB_STORAGE_KEY);
     if (storedUserGainDb !== null) {
       const parsedUserGainDb = parseFloat(storedUserGainDb);
       if (!Number.isNaN(parsedUserGainDb)) {
@@ -655,15 +671,15 @@ if (typeof window !== 'undefined') {
         userInputGainLinear = dbToLinear(userInputGainDb);
       }
     }
-    const storedVoiceTriggerEnabled = window.localStorage?.getItem(VOICE_TRIGGER_ENABLED_STORAGE_KEY);
+    const storedVoiceTriggerEnabled = clientLocalStorage?.getItem(VOICE_TRIGGER_ENABLED_STORAGE_KEY);
     if (storedVoiceTriggerEnabled !== null) {
       voiceTriggerEnabled = storedVoiceTriggerEnabled === 'true';
     }
-    const storedVoiceTriggerTarget = window.localStorage?.getItem(VOICE_TRIGGER_TARGET_STORAGE_KEY);
+    const storedVoiceTriggerTarget = clientLocalStorage?.getItem(VOICE_TRIGGER_TARGET_STORAGE_KEY);
     if (storedVoiceTriggerTarget !== null) {
       voiceTriggerTargetIdentity = String(storedVoiceTriggerTarget || '').trim();
     }
-    const storedVoiceTriggerThreshold = window.localStorage?.getItem(VOICE_TRIGGER_THRESHOLD_DB_STORAGE_KEY);
+    const storedVoiceTriggerThreshold = clientLocalStorage?.getItem(VOICE_TRIGGER_THRESHOLD_DB_STORAGE_KEY);
     if (storedVoiceTriggerThreshold !== null) {
       const parsedVoiceTriggerThreshold = parseFloat(storedVoiceTriggerThreshold);
       if (!Number.isNaN(parsedVoiceTriggerThreshold)) {
@@ -1197,6 +1213,7 @@ async function resumeAudioContextIfNeeded(ctx, { label = 'AudioContext', onRunni
 }
 
 function ensureAudioContext() {
+  if (remotePanel) return null;
   if (sharedAudioContext && sharedAudioContext.state !== 'closed') {
     return sharedAudioContext;
   }
@@ -1513,8 +1530,8 @@ function setAudioProcessingEnabled(enabled, { persist = true, updateUI = true, r
 
   if (persist && typeof window !== 'undefined') {
     try {
-      window.localStorage?.setItem(AUDIO_PROCESSING_STORAGE_KEY, String(applied));
-      window.localStorage?.setItem(AUDIO_PROCESSING_EXPLICIT_STORAGE_KEY, 'true');
+      clientLocalStorage?.setItem(AUDIO_PROCESSING_STORAGE_KEY, String(applied));
+      clientLocalStorage?.setItem(AUDIO_PROCESSING_EXPLICIT_STORAGE_KEY, 'true');
     } catch (err) {
       console.warn('Unable to persist audio processing preference:', err);
     }
@@ -1544,7 +1561,7 @@ function setPlayConnectionSounds(enabled, { persist = true } = {}) {
   if (connectionSoundsToggle) connectionSoundsToggle.checked = playConnectionSoundsEnabled;
   if (persist && typeof window !== 'undefined') {
     try {
-      window.localStorage?.setItem(CONNECTION_SOUNDS_STORAGE_KEY, String(playConnectionSoundsEnabled));
+      clientLocalStorage?.setItem(CONNECTION_SOUNDS_STORAGE_KEY, String(playConnectionSoundsEnabled));
     } catch (err) {
       console.warn('Unable to persist connection sounds preference:', err);
     }
@@ -1588,7 +1605,7 @@ function setFeedInputProcessingEnabled(enabled, { persist = true } = {}) {
 
   if (persist && typeof window !== 'undefined') {
     try {
-      window.localStorage?.setItem(FEED_INPUT_PROCESSING_STORAGE_KEY, String(feedInputProcessingEnabled));
+      clientLocalStorage?.setItem(FEED_INPUT_PROCESSING_STORAGE_KEY, String(feedInputProcessingEnabled));
     } catch (err) {
       console.warn('Unable to persist feed input processing preference:', err);
     }
@@ -1616,7 +1633,7 @@ function setFeedPtimeMs(value, { persist = true } = {}) {
 
   if (persist && typeof window !== 'undefined') {
     try {
-      window.localStorage?.setItem(FEED_PTIME_STORAGE_KEY, String(feedPtimeMs));
+      clientLocalStorage?.setItem(FEED_PTIME_STORAGE_KEY, String(feedPtimeMs));
     } catch (err) {
       console.warn('Unable to persist feed ptime preference:', err);
     }
@@ -1632,7 +1649,7 @@ function setFeedInputGainDb(dbValue, { persist = true, apply = true } = {}) {
 
   if (persist && typeof window !== 'undefined') {
     try {
-      window.localStorage?.setItem(FEED_INPUT_GAIN_DB_STORAGE_KEY, String(clamped));
+      clientLocalStorage?.setItem(FEED_INPUT_GAIN_DB_STORAGE_KEY, String(clamped));
     } catch (err) {
       console.warn('Unable to persist feed input gain:', err);
     }
@@ -2003,11 +2020,11 @@ function setPreferredInputDeviceId(deviceId, { persist = true, explicit = prefer
   preferredInputDeviceExplicit = Boolean(normalized && explicit);
   if (persist) {
     if (preferredInputDeviceExplicit) {
-      localStorage.setItem(MIC_DEVICE_STORAGE_KEY, normalized);
-      localStorage.setItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY, 'true');
+      clientLocalStorage.setItem(MIC_DEVICE_STORAGE_KEY, normalized);
+      clientLocalStorage.setItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY, 'true');
     } else {
-      localStorage.removeItem(MIC_DEVICE_STORAGE_KEY);
-      localStorage.removeItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY);
+      clientLocalStorage.removeItem(MIC_DEVICE_STORAGE_KEY);
+      clientLocalStorage.removeItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY);
     }
   }
   syncManagedInputSelects(normalized);
@@ -2017,9 +2034,9 @@ function persistPreferredOutputDeviceId(deviceId) {
   const normalized = deviceId || '';
   preferredOutputDeviceId = normalized;
   if (normalized) {
-    localStorage.setItem(OUTPUT_DEVICE_STORAGE_KEY, normalized);
+    clientLocalStorage.setItem(OUTPUT_DEVICE_STORAGE_KEY, normalized);
   } else {
-    localStorage.removeItem(OUTPUT_DEVICE_STORAGE_KEY);
+    clientLocalStorage.removeItem(OUTPUT_DEVICE_STORAGE_KEY);
   }
 }
 
@@ -2066,6 +2083,7 @@ function getCurrentAudioConstraints() {
 }
 
 async function requestInitialMicrophoneAccess({ reason = 'startup' } = {}) {
+  if (remotePanel) return null;
   if (initialMicAccessRequested) return null;
   if (session.kind === 'guest' && !isGuestSessionActive()) return null;
   if (!navigator.mediaDevices?.getUserMedia) return null;
@@ -2100,6 +2118,7 @@ async function requestInitialMicrophoneAccess({ reason = 'startup' } = {}) {
 }
 
 async function startInputMonitor() {
+  if (remotePanel) return null;
   if (!settingsMenuOpen) return null;
   if (settingsMonitorPromise) {
     return settingsMonitorPromise;
@@ -2293,7 +2312,7 @@ function setUserInputGainDb(dbValue, { persist = true, apply = true } = {}) {
 
   if (persist && typeof window !== 'undefined') {
     try {
-      window.localStorage?.setItem(USER_INPUT_GAIN_DB_STORAGE_KEY, String(clamped));
+      clientLocalStorage?.setItem(USER_INPUT_GAIN_DB_STORAGE_KEY, String(clamped));
     } catch (err) {
       console.warn('Unable to persist user input gain:', err);
     }
@@ -2780,7 +2799,7 @@ function getStoredVolume(key, defaultValue = defaultVolume) {
   };
 
   try {
-    const v = sessionStorage.getItem(key);
+    const v = clientSessionStorage.getItem(key);
     if (v !== null) {
       const normalized = normalizeVolume(v, defaultValue);
       volumeMemoryStore.set(key, normalized);
@@ -2808,7 +2827,7 @@ function storeVolume(key, value) {
   );
   volumeMemoryStore.set(key, normalized);
   try {
-    sessionStorage.setItem(key, String(normalized));
+    clientSessionStorage.setItem(key, String(normalized));
   } catch (error) {
     if (!warnedVolumeStorageWrite) {
       warnedVolumeStorageWrite = true;
@@ -2818,7 +2837,10 @@ function storeVolume(key, value) {
 }
 
 async function updateDeviceList() {
+  if (remotePanel) return;
   const devices = await navigator.mediaDevices.enumerateDevices();
+  clientPanelDevices = devices.map(({ kind, deviceId, label }) => ({ kind, deviceId, label }));
+  setTimeout(() => reportClientPanelState(), 0);
   const inputs  = devices.filter(d => d.kind === "audioinput");
   const outputs = devices.filter(d => d.kind === "audiooutput");
 
@@ -2851,8 +2873,8 @@ async function updateDeviceList() {
       } else {
         preferredInputDeviceExplicit = false;
         try {
-          localStorage.removeItem(MIC_DEVICE_STORAGE_KEY);
-          localStorage.removeItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY);
+          clientLocalStorage.removeItem(MIC_DEVICE_STORAGE_KEY);
+          clientLocalStorage.removeItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY);
         } catch {}
         preferredInputDeviceId = desiredDeviceId;
         syncManagedInputSelects(desiredDeviceId);
@@ -2982,6 +3004,7 @@ function buildRelaxedAudioConstraints(audioConstraints, { dropDeviceId = false }
 }
 
 async function ensureMicTrack(audioConstraints, selectedDeviceId) {
+  if (remotePanel) throw new Error('Remote control has no local audio');
   if (micTrack && micTrack.readyState === 'live') {
     if (!selectedDeviceId || selectedDeviceId === micDeviceId) {
       if (micCleanupTimer) {
@@ -3094,6 +3117,7 @@ async function warmReceiveAudioSession(reason = 'receive-audio-session') {
 }
 
 async function primeVoiceProcessingMode() {
+  if (remotePanel) return;
   if (!isiOS) return;
   if (micPrimed) return;
   if (micPrimingPromise) return micPrimingPromise;
@@ -3161,7 +3185,7 @@ function currentQualityKey() {
   const fromSelect = qualitySelect?.value;
   if (fromSelect && QUALITY_PROFILES[fromSelect]) return fromSelect;
 
-  const stored = localStorage.getItem('audioQualityProfile');
+  const stored = clientLocalStorage.getItem('audioQualityProfile');
   if (stored && QUALITY_PROFILES[stored]) return stored;
 
   const serverDefault = serverDefaultClientSettings.audioProfile;
@@ -3351,7 +3375,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     if (persist && typeof window !== 'undefined') {
       try {
-        window.localStorage?.setItem(LEFT_HAND_MODE_STORAGE_KEY, String(leftHandModeEnabled));
+        clientLocalStorage?.setItem(LEFT_HAND_MODE_STORAGE_KEY, String(leftHandModeEnabled));
       } catch (error) {
         console.warn('Unable to persist left-hand mode:', error);
       }
@@ -3372,7 +3396,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (persist && typeof window !== 'undefined') {
       try {
-        window.localStorage?.setItem(LOCK_MULTIPLE_TARGETS_STORAGE_KEY, String(lockMultipleTargetsEnabled));
+        clientLocalStorage?.setItem(LOCK_MULTIPLE_TARGETS_STORAGE_KEY, String(lockMultipleTargetsEnabled));
       } catch (error) {
         console.warn('Unable to persist multiple-target lock mode:', error);
       }
@@ -3400,7 +3424,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setLockMultipleTargets(lockMultipleTargetsToggle.checked);
   });
 
-  const storedQuality = localStorage.getItem('audioQualityProfile');
+  const storedQuality = clientLocalStorage.getItem('audioQualityProfile');
   const defaultQuality = QUALITY_PROFILES[serverDefaultClientSettings.audioProfile]
     ? serverDefaultClientSettings.audioProfile
     : 'ultra-low';
@@ -3416,7 +3440,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!QUALITY_PROFILES[selected]) {
         qualitySelect.value = 'ultra-low';
       }
-      localStorage.setItem('audioQualityProfile', qualitySelect.value);
+      clientLocalStorage.setItem('audioQualityProfile', qualitySelect.value);
       persistUserAudioSettingsHandler();
       cleanupMicTrack();
       if (voiceTriggerEnabled) {
@@ -3435,7 +3459,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (persist && typeof window !== 'undefined') {
       try {
-        window.localStorage?.setItem(FEED_DUCKING_DB_STORAGE_KEY, String(clamped));
+        clientLocalStorage?.setItem(FEED_DUCKING_DB_STORAGE_KEY, String(clamped));
       } catch (err) {
         console.warn('Unable to persist feed dim level:', err);
       }
@@ -3464,7 +3488,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (persist && typeof window !== 'undefined') {
       try {
-        window.localStorage?.setItem(FEED_DIM_SELF_STORAGE_KEY, String(enabled));
+        clientLocalStorage?.setItem(FEED_DIM_SELF_STORAGE_KEY, String(enabled));
       } catch (err) {
         console.warn('Unable to persist self dim preference:', err);
       }
@@ -3490,7 +3514,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (persist && typeof window !== 'undefined') {
       try {
-        window.localStorage?.setItem(FEED_DIM_INCOMING_STORAGE_KEY, String(enabled));
+        clientLocalStorage?.setItem(FEED_DIM_INCOMING_STORAGE_KEY, String(enabled));
       } catch (err) {
         console.warn('Unable to persist incoming dim preference:', err);
       }
@@ -3509,12 +3533,13 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   updateDeviceList().catch(err => console.error("updateDeviceList failed:", err));
-  navigator.mediaDevices.addEventListener("devicechange", () =>
+  if (!remotePanel) navigator.mediaDevices?.addEventListener("devicechange", () =>
       updateDeviceList().catch(err => console.error(err))
   );
 
   const handleInputDeviceSelectionChange = (selected) => {
     setPreferredInputDeviceId(selected, { persist: true, explicit: Boolean(selected) });
+    if (remotePanel) return;
     if (session.kind === 'feed') {
       const wasStreaming = feedStreaming;
       if (feedStreaming) {
@@ -3602,6 +3627,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderMediaConnectionStatus() {
+    if (remotePanel) {
+      if (mediaConnectionStatusLabelEl) mediaConnectionStatusLabelEl.textContent = 'No audio';
+      return;
+    }
     if (!mediaConnectionStatusEl || !mediaConnectionStatusLabelEl) return;
 
     const states = [mediaConnectionState.send, mediaConnectionState.receive];
@@ -3825,15 +3854,15 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function clearStoredPersistentIdentity() {
-    localStorage.removeItem("userId");
-    localStorage.removeItem(FEED_ID_STORAGE_KEY);
-    localStorage.removeItem("userName");
-    localStorage.removeItem(IDENTITY_KIND_KEY);
+    clientLocalStorage.removeItem("userId");
+    clientLocalStorage.removeItem(FEED_ID_STORAGE_KEY);
+    clientLocalStorage.removeItem("userName");
+    clientLocalStorage.removeItem(IDENTITY_KIND_KEY);
   }
 
   function loadStoredGuestSession() {
     try {
-      const raw = sessionStorage.getItem(GUEST_SESSION_STORAGE_KEY);
+      const raw = clientSessionStorage.getItem(GUEST_SESSION_STORAGE_KEY);
       if (!raw) return null;
       const parsed = JSON.parse(raw);
       const guestId = String(parsed?.guestId || '').trim();
@@ -3860,7 +3889,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function persistGuestSession(nextSession) {
     if (!nextSession || nextSession.kind !== 'guest') return;
     try {
-      sessionStorage.setItem(GUEST_SESSION_STORAGE_KEY, JSON.stringify({
+      clientSessionStorage.setItem(GUEST_SESSION_STORAGE_KEY, JSON.stringify({
         guestId: nextSession.guestId,
         guestProfileUserId: nextSession.guestProfileUserId,
         productionId: nextSession.productionId,
@@ -3875,7 +3904,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function clearStoredGuestSession() {
     try {
-      sessionStorage.removeItem(GUEST_SESSION_STORAGE_KEY);
+      clientSessionStorage.removeItem(GUEST_SESSION_STORAGE_KEY);
     } catch {}
   }
 
@@ -4195,7 +4224,7 @@ let cachedOperatorTargets = null;
     setArrangeTargetsMessage('Loading…');
     try {
       const productionQuery = productionId ? `?productionId=${encodeURIComponent(productionId)}` : '';
-      const targets = await fetchJSON(`/users/${encodeURIComponent(userId)}/targets${productionQuery}`);
+      const targets = remotePanel ? remotePanel.state.targets : await fetchJSON(`/users/${encodeURIComponent(userId)}/targets${productionQuery}`);
       if (generation !== arrangeTargetsLoadGeneration || activeSettingsView !== 'arrange'
         || session.userId !== userId || session.productionId !== productionId) return false;
       arrangeTargetsDraft = Array.isArray(targets) ? targets.map((target) => ({ ...target })) : [];
@@ -4227,6 +4256,13 @@ let cachedOperatorTargets = null;
     setArrangeTargetsMessage('Saving…');
     let refreshOnFinish = false;
     try {
+      if (remotePanel) {
+        const result = await remotePanel.command({ kind: 'order', items: submitted.map(({ targetType, targetId }) => ({ targetType, targetId })) });
+        if (!result.ok) throw new Error(result.error || 'Could not save target order');
+        arrangeTargetsSaved = submitted;
+        setArrangeTargetsMessage('Saved');
+        return;
+      }
       const response = await fetch('/api/v1/client/targets/order', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -4308,7 +4344,7 @@ let cachedOperatorTargets = null;
     if (!storageKey) return;
 
     try {
-      const parsed = JSON.parse(window.localStorage?.getItem(storageKey) || '{}');
+      const parsed = JSON.parse(clientLocalStorage?.getItem(storageKey) || '{}');
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
       Object.entries(parsed).forEach(([conferenceId, userIds]) => {
         const numericConferenceId = Number(conferenceId);
@@ -4339,7 +4375,7 @@ let cachedOperatorTargets = null;
     });
 
     try {
-      window.localStorage?.setItem(storageKey, JSON.stringify(serialized));
+      clientLocalStorage?.setItem(storageKey, JSON.stringify(serialized));
     } catch (error) {
       console.warn('Failed to save conference member listen preferences:', error);
     }
@@ -4354,7 +4390,7 @@ let cachedOperatorTargets = null;
     if (!storageKey) return;
 
     try {
-      const parsed = JSON.parse(window.localStorage?.getItem(storageKey) || '{}');
+      const parsed = JSON.parse(clientLocalStorage?.getItem(storageKey) || '{}');
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
       Object.entries(parsed).forEach(([conferenceId, rawLevels]) => {
         const numericConferenceId = Number(conferenceId);
@@ -4398,7 +4434,7 @@ let cachedOperatorTargets = null;
     });
 
     try {
-      window.localStorage?.setItem(storageKey, JSON.stringify(serialized));
+      clientLocalStorage?.setItem(storageKey, JSON.stringify(serialized));
     } catch (error) {
       console.warn('Failed to save conference member levels:', error);
     }
@@ -4595,10 +4631,10 @@ let cachedOperatorTargets = null;
       }
     });
     try {
-      for (let i = sessionStorage.length - 1; i >= 0; i -= 1) {
-        const key = sessionStorage.key(i);
+      for (let i = clientSessionStorage.length - 1; i >= 0; i -= 1) {
+        const key = clientSessionStorage.key(i);
         if (key && TARGET_AUDIO_VOLUME_STORAGE_PREFIXES.some(prefix => key.startsWith(prefix))) {
-          sessionStorage.removeItem(key);
+          clientSessionStorage.removeItem(key);
         }
       }
     } catch (error) {
@@ -4682,6 +4718,11 @@ let cachedOperatorTargets = null;
 
   async function applyOutputDeviceSelection(deviceId, { persist = true, sync = true, requestPermission = false } = {}) {
     const normalized = deviceId || '';
+    if (remotePanel) {
+      if (persist) persistPreferredOutputDeviceId(normalized);
+      if (sync) syncManagedOutputSelects(normalized);
+      return true;
+    }
     if (!supportsAudioOutputSelection()) {
       if (sync) syncManagedOutputSelects('');
       if (persist) persistPreferredOutputDeviceId('');
@@ -4835,6 +4876,8 @@ let cachedOperatorTargets = null;
   }
 
   function emitPttState(reason, overrides = {}) {
+    if (remotePanel) return;
+    setTimeout(() => reportClientPanelState(), 0);
     if (!isOperatorSession()) return;
     if (!socket.connected) return;
     const state = getCurrentPttState(overrides);
@@ -4845,6 +4888,7 @@ let cachedOperatorTargets = null;
   }
 
   function emitTalkTargetsUpdated(reason, targets = currentTargets) {
+    if (remotePanel) return;
     if (!isOperatorSession()) return;
     if (!socket.connected) return;
     socket.emit('talk-targets-updated', {
@@ -5234,6 +5278,9 @@ let cachedOperatorTargets = null;
     });
 
     updateFeedReceptionUi(targetKey);
+    if (!applyingClientPanelSettings && session.userId) {
+      clientLocalStorage.setItem(`stoppedFeeds:user:${session.userId}`, JSON.stringify(Object.fromEntries([...stoppedFeedKeys].map(key => [key, true]))));
+    }
     if (isOperatorSession()) {
       applyFeedDucking();
     }
@@ -5626,6 +5673,9 @@ let cachedOperatorTargets = null;
     if (targetKey.startsWith('feed-') && isOperatorSession()) {
       applyFeedDucking();
     }
+    if (syncServer && remotePanel && !remotePanel.applying && persistedState) {
+      remotePanel.command({ kind: 'target-audio', targetType: persistedState.targetType, targetId: persistedState.targetId, volume: clamped });
+    }
     if (syncServer) emitTargetAudioStateSnapshot('target-audio-volume');
     return clamped;
   }
@@ -5817,7 +5867,7 @@ let cachedOperatorTargets = null;
 
   function getConfiguredMainButtonIdentity() {
     const key = getMainButtonStorageKey();
-    try { return key ? localStorage.getItem(key) || '' : ''; } catch { return ''; }
+    try { return key ? clientLocalStorage.getItem(key) || '' : ''; } catch { return ''; }
   }
 
   function getMainButtonTarget() {
@@ -5851,8 +5901,8 @@ let cachedOperatorTargets = null;
     const key = getMainButtonStorageKey();
     try {
       if (key) {
-        if (event.target.value) localStorage.setItem(key, event.target.value);
-        else localStorage.removeItem(key);
+        if (event.target.value) clientLocalStorage.setItem(key, event.target.value);
+        else clientLocalStorage.removeItem(key);
       }
     } catch {}
     updateReplyButtonState();
@@ -6180,7 +6230,7 @@ let cachedOperatorTargets = null;
         qualitySelect.disabled = true;
       } else {
         qualitySelect.disabled = false;
-        const storedQuality = localStorage.getItem('audioQualityProfile');
+        const storedQuality = clientLocalStorage.getItem('audioQualityProfile');
         if (storedQuality && QUALITY_PROFILES[storedQuality]) {
           qualitySelect.value = storedQuality;
         }
@@ -6440,6 +6490,7 @@ let cachedOperatorTargets = null;
   }
 
   async function ensureMediaInitialized() {
+    if (remotePanel) return;
     if (mediaInitialized) return;
     if (initializingMediaPromise) {
       return initializingMediaPromise;
@@ -6499,6 +6550,7 @@ let cachedOperatorTargets = null;
   }
 
   function initializeMediaIfPossible() {
+    if (remotePanel) return;
     shouldInitializeAfterConnect = true;
     if (socket.connected) {
       ensureMediaInitialized().catch(err => {
@@ -6512,10 +6564,10 @@ let cachedOperatorTargets = null;
   }
 
   function clearStoredIdentity() {
-    localStorage.removeItem("userId");
-    localStorage.removeItem(FEED_ID_STORAGE_KEY);
-    localStorage.removeItem("userName");
-    localStorage.removeItem(IDENTITY_KIND_KEY);
+    clientLocalStorage.removeItem("userId");
+    clientLocalStorage.removeItem(FEED_ID_STORAGE_KEY);
+    clientLocalStorage.removeItem("userName");
+    clientLocalStorage.removeItem(IDENTITY_KIND_KEY);
     clearStoredGuestSession();
     clearStoredTargetAudioPreferences();
   }
@@ -6599,6 +6651,7 @@ let cachedOperatorTargets = null;
   }
 
   async function hardLogoutAndReload(message = null, { silent = false, notifyServer = true } = {}) {
+    if (remotePanel) { socket.disconnect(); window.close(); return; }
     sessionResetInProgress = true;
     suppressLogoutBeacon = !notifyServer;
     try {
@@ -6775,6 +6828,7 @@ let cachedOperatorTargets = null;
   }
 
   async function recoverConnectedSession(reason = 'socket-connect') {
+    if (remotePanel) return;
     if (reconnectRecoveryPromise) return reconnectRecoveryPromise;
 
     const generation = connectionGeneration;
@@ -6814,6 +6868,7 @@ let cachedOperatorTargets = null;
             return false;
           }
           if (session.kind === 'user') {
+            await applyClientPanelSettings(registration.panelSettings);
             applyPersistedTargetAudioStates(registration.targetAudioStates || []);
             if (registration.userAudioSettings) applyUserAudioSettings(registration.userAudioSettings);
             else persistUserAudioSettingsHandler();
@@ -6870,6 +6925,7 @@ let cachedOperatorTargets = null;
   }
 
   function requestSessionRecovery(reason = 'client-lifecycle') {
+    if (remotePanel) return;
     if (sessionResetInProgress || !session?.name) return;
     if (!socket.connected) {
       socket.connect();
@@ -6933,7 +6989,7 @@ let cachedOperatorTargets = null;
 
     if (preferStored) {
       const storageKey = getActiveProductionStorageKey(identity);
-      const storedId = storageKey ? localStorage.getItem(storageKey) : null;
+      const storedId = storageKey ? clientLocalStorage.getItem(storageKey) : null;
       if (storedId === DEFAULT_PRODUCTION_STORAGE_VALUE) return Promise.resolve(productions[0]);
       const stored = productions.find((production) => String(production.id) === String(storedId));
       if (stored) return Promise.resolve(stored);
@@ -6985,8 +7041,8 @@ let cachedOperatorTargets = null;
   function persistActiveProduction(identity, production) {
     const storageKey = getActiveProductionStorageKey(identity);
     if (!storageKey) return;
-    if (production?.id) localStorage.setItem(storageKey, String(production.id));
-    else localStorage.setItem(storageKey, DEFAULT_PRODUCTION_STORAGE_VALUE);
+    if (production?.id) clientLocalStorage.setItem(storageKey, String(production.id));
+    else clientLocalStorage.setItem(storageKey, DEFAULT_PRODUCTION_STORAGE_VALUE);
   }
 
   function applyRegisteredProductionState(targetSession, registration) {
@@ -7090,23 +7146,24 @@ let cachedOperatorTargets = null;
     shouldStartFeedWhenReady = kind === 'feed';
 
     if (kind === 'user') {
+      await applyClientPanelSettings(reg.panelSettings);
       applyPersistedTargetAudioStates(reg.targetAudioStates || []);
       if (reg.userAudioSettings) applyUserAudioSettings(reg.userAudioSettings);
       else persistUserAudioSettingsHandler();
     }
 
     clearStoredGuestSession();
-    localStorage.setItem("userName", user.name);
-    localStorage.setItem(IDENTITY_KIND_KEY, kind);
+    clientLocalStorage.setItem("userName", user.name);
+    clientLocalStorage.setItem(IDENTITY_KIND_KEY, kind);
     if (kind === 'user') {
-      localStorage.setItem("userId", session.userId);
+      clientLocalStorage.setItem("userId", session.userId);
       persistActiveProduction(user, (session.productions || []).find((item) => (
         String(item.id) === String(session.productionId)
       )) || null);
-      localStorage.removeItem(FEED_ID_STORAGE_KEY);
+      clientLocalStorage.removeItem(FEED_ID_STORAGE_KEY);
     } else {
-      localStorage.setItem(FEED_ID_STORAGE_KEY, session.feedId);
-      localStorage.removeItem("userId");
+      clientLocalStorage.setItem(FEED_ID_STORAGE_KEY, session.feedId);
+      clientLocalStorage.removeItem("userId");
     }
 
     loginContainer.style.display = "none";
@@ -7120,9 +7177,11 @@ let cachedOperatorTargets = null;
     return true;
   }
 
-  productionSessionSelect?.addEventListener('change', async () => {
+  async function changeActiveProduction(selectedValue) {
     if (!isOperatorSession()) return;
-    const selectedValue = productionSessionSelect.value;
+    if (remotePanel && !remotePanel.applying) {
+      return remotePanel.command({ kind: 'production', productionId: Number(selectedValue) });
+    }
     const production = (session.productions || []).find((item) => String(item.id) === String(selectedValue));
     if (!production) return;
     const nextProductionId = String(production.id);
@@ -7146,7 +7205,10 @@ let cachedOperatorTargets = null;
     if (session.kind === 'guest') persistGuestSession(session);
     applyProductionSessionUI();
     await renderTargetList(cachedUsers);
-  });
+    reportClientPanelState();
+    return result;
+  }
+  productionSessionSelect?.addEventListener('change', () => changeActiveProduction(productionSessionSelect.value));
 
   function consumeLoginTokenFromHash() {
     const hash = window.location.hash;
@@ -7168,10 +7230,10 @@ let cachedOperatorTargets = null;
   const guestLoginRequested = consumeGuestLoginIntentFromHash();
 
   function clearStoredCredentialIdentity() {
-    localStorage.removeItem("userId");
-    localStorage.removeItem(FEED_ID_STORAGE_KEY);
-    localStorage.removeItem("userName");
-    localStorage.removeItem(IDENTITY_KIND_KEY);
+    clientLocalStorage.removeItem("userId");
+    clientLocalStorage.removeItem(FEED_ID_STORAGE_KEY);
+    clientLocalStorage.removeItem("userName");
+    clientLocalStorage.removeItem(IDENTITY_KIND_KEY);
   }
 
   async function fetchLoginIdentity(url, options = {}) {
@@ -7202,6 +7264,20 @@ let cachedOperatorTargets = null;
   }
 
   async function bootstrapLogin() {
+    if (remotePanel) {
+      await loadLoginOptions();
+      document.body.classList.add('remote-panel');
+      document.getElementById('remote-panel-banner').hidden = false;
+      document.getElementById('remote-panel-status').hidden = false;
+      loginContainer.style.display = 'none';
+      intercomApp.style.display = 'flex';
+      document.getElementById('logout-btn').textContent = 'Close panel';
+      let renderQueue = Promise.resolve();
+      remotePanel.start(state => {
+        renderQueue = renderQueue.catch(console.error).then(() => applyRemotePanelState(state));
+      });
+      return;
+    }
     await loadLoginOptions();
 
     if (guestLoginRequested) {
@@ -7396,6 +7472,207 @@ let cachedOperatorTargets = null;
     }
   });
 
+
+  function remoteTarget(target) {
+    if (target?.type === 'guest') return { targetType: 'reply' };
+    if (target?.type === 'user') {
+      const user = cachedUsers.find(user => String(user.socketId) === String(target.id) || String(user.userId) === String(target.id));
+      return { targetType: 'user', targetId: Number(user?.userId ?? target.id) };
+    }
+    return { targetType: target?.type || 'reply', targetId: target?.id ?? null };
+  }
+
+  function collectClientPanelReport() {
+    const meter = document.getElementById('user-meter-bar');
+    return {
+      revision: clientPanelRevision,
+      storage: window.TalktomeRemotePanelState.collectStorage(clientLocalStorage, session.userId),
+      runtime: {
+        devices: clientPanelDevices, inputDeviceId: preferredInputDeviceId,
+        outputDeviceId: preferredOutputDeviceId, outputSupported: supportsAudioOutputSelection(),
+        ...getCurrentPttState(), lockedTargets: getActiveTalkLockTargets(),
+        micLevel: document.getElementById('user-meter-value')?.textContent || '-inf dB',
+        micMeterWidth: parseFloat(meter?.style.width) || 0,
+      },
+    };
+  }
+
+  reportClientPanelState = () => {
+    if (remotePanel || applyingClientPanelSettings || !socket.connected || session.kind !== 'user' || !session.userId) return;
+    socket.emit('panel-client-state', collectClientPanelReport());
+  };
+  socket.on('panel-state-request', reportClientPanelState);
+
+  async function applyClientPanelSettings(settings, { verifyDevices = false } = {}) {
+    if (!settings || typeof settings !== 'object') return;
+    clientPanelRevision = Number(settings.revision) || 0;
+    const storage = window.TalktomeRemotePanelState.normalizeStorage(settings.storage || {}, session.userId);
+    // The first connection imports existing device-local preferences.
+    if (!clientPanelRevision && !Object.keys(storage).length && !remotePanel) return;
+    const previousApplying = applyingClientPanelSettings;
+    applyingClientPanelSettings = true;
+    try {
+      const previousInput = getSelectedDeviceId();
+      const previousOutput = preferredOutputDeviceId;
+      for (const key of Object.keys(window.TalktomeRemotePanelState.collectStorage(clientLocalStorage, session.userId))) {
+        if (!(key in storage)) clientLocalStorage.removeItem(key);
+      }
+      for (const [key, value] of Object.entries(storage)) {
+        if (value !== null) clientLocalStorage.setItem(key, value);
+      }
+      loadedConferenceListenExclusionsKey = null;
+      loadedConferenceMemberLevelsKey = null;
+      ensureConferenceListenExclusionsLoaded();
+      ensureConferenceMemberLevelsLoaded();
+      loadedTargetHotkeyStorageKey = null;
+      ensureCustomTargetHotkeysLoaded();
+      const nextInput = clientLocalStorage.getItem(MIC_DEVICE_STORAGE_KEY) || '';
+      const nextExplicit = Boolean(nextInput && clientLocalStorage.getItem(MIC_DEVICE_EXPLICIT_STORAGE_KEY) === 'true');
+      if (nextExplicit || preferredInputDeviceExplicit) preferredInputDeviceId = nextInput;
+      preferredInputDeviceExplicit = nextExplicit;
+      preferredOutputDeviceId = clientLocalStorage.getItem(OUTPUT_DEVICE_STORAGE_KEY) || '';
+      syncManagedInputSelects(preferredInputDeviceId);
+      syncManagedOutputSelects(preferredOutputDeviceId);
+      if (!remotePanel && previousInput !== getSelectedDeviceId()) {
+        cleanupMicTrack();
+        if (voiceTriggerEnabled) startVoiceTriggerMonitoring();
+      }
+      if (!remotePanel && supportsAudioOutputSelection() && previousOutput !== preferredOutputDeviceId) {
+        const applied = await applyOutputDeviceSelection(preferredOutputDeviceId, { persist: false, requestPermission: false });
+        if (!applied && preferredOutputDeviceId && verifyDevices) throw new Error('Unable to select the output device on the client');
+      }
+      const stopped = JSON.parse(clientLocalStorage.getItem(`stoppedFeeds:user:${session.userId}`) || '{}');
+      for (const target of cachedOperatorTargets || []) {
+        if (target.targetType === 'feed') setFeedReceptionStopped(`feed-${target.targetId}`, Boolean(stopped[`feed-${target.targetId}`]));
+      }
+      audioElements.forEach(entry => {
+        if (entry.type === 'conference') applyConferenceMemberListenPreference(Number(String(entry.key).replace('conf-', '')), entry.sourceUserId);
+      });
+      refreshTargetHotkeyUi(cachedUsers);
+      updateMainButtonOptions();
+      const openConferenceId = conferenceMembersModal && !conferenceMembersModal.hidden ? conferenceMembersModal.dataset.conferenceId : null;
+      const conference = (cachedOperatorTargets || []).find(target => target.targetType === 'conference' && String(target.targetId) === String(openConferenceId));
+      if (conference) renderConferenceMembersModal(conference, cachedUsers);
+    } finally { applyingClientPanelSettings = previousApplying; }
+  }
+
+  let remoteLayoutSignature = null;
+  let remoteSettingsSignature = null;
+  let remoteDeviceSignature = null;
+  async function applyRemotePanelState(state) {
+    await remotePanel.apply(async () => {
+      session = {
+        kind: 'user', userId: String(state.userId), feedId: null, name: state.name,
+        productionId: state.productionId == null ? null : String(state.productionId),
+        productionName: state.productionName, productions: state.productions,
+      };
+      document.title = `${state.name} · Remote panel · Talktome`;
+      setSessionDisplay(state.name);
+      applyProductionSessionUI();
+      applySessionUI();
+      cachedUsers = state.users;
+      latestServerUsers = state.users;
+      const signature = JSON.stringify([state.productionId, state.targets, state.users]);
+      if (signature !== remoteLayoutSignature) {
+        remoteLayoutSignature = signature;
+        await renderTargetList(cachedUsers);
+      }
+      const settingsSignature = JSON.stringify([state.productionId, state.panelSettings, state.settings, state.targetAudioStates]);
+      if (!remotePanel.busy && (remotePanel.needsRefresh || settingsSignature !== remoteSettingsSignature)) {
+        remoteSettingsSignature = settingsSignature;
+        remotePanel.needsRefresh = false;
+        await applyClientPanelSettings(state.panelSettings);
+        applyUserAudioSettings(state.settings);
+        applyPersistedTargetAudioStates(state.targetAudioStates);
+      }
+      const runtime = state.runtime;
+      const devices = runtime?.devices || [];
+      const selectedInput = runtime?.inputDeviceId || clientLocalStorage.getItem(MIC_DEVICE_STORAGE_KEY) || '';
+      const selectedOutput = runtime?.outputDeviceId || clientLocalStorage.getItem(OUTPUT_DEVICE_STORAGE_KEY) || '';
+      const deviceSignature = JSON.stringify([devices, selectedInput, selectedOutput, runtime?.outputSupported]);
+      if (!remotePanel.busy && deviceSignature !== remoteDeviceSignature) {
+        remoteDeviceSignature = deviceSignature;
+        for (const [select, kind, value, defaultLabel] of [[inputSelect, 'audioinput', selectedInput, 'System default'], [outputSelect, 'audiooutput', selectedOutput, 'System default']]) {
+          if (!select) continue;
+          const options = [new Option(defaultLabel, '')];
+          for (const device of devices.filter(device => device.kind === kind && device.deviceId && (kind !== 'audiooutput' || !['default', 'communications'].includes(device.deviceId)))) {
+            options.push(new Option(device.label || device.deviceId, device.deviceId));
+          }
+          if (value && !options.some(option => option.value === value)) options.push(new Option('Saved device (currently unavailable)', value));
+          select.replaceChildren(...options);
+          select.value = value;
+          select.disabled = state.connectionType === 'bridge' || (kind === 'audiooutput' && state.online && !runtime?.outputSupported);
+          select.title = state.connectionType === 'bridge' ? 'Bridge audio devices are configured in Admin Users' : '';
+        }
+      }
+      if (outputDeviceSelector) outputDeviceSelector.hidden = false;
+      incomingTalkState = normalizeIncomingTalkState(state.incomingTalkState);
+      applyIncomingTalkState();
+      for (const entry of activeTalkLocks.values()) setTalkButtonLocked(entry.button, false);
+      activeTalkLocks.clear();
+      for (const target of runtime?.lockedTargets || []) {
+        const liveTarget = resolveLiveTalkTarget(target);
+        const button = findTalkButtonForTarget(liveTarget);
+        if (button) { activeTalkLocks.set(getTalkTargetIdentity(liveTarget), { target: liveTarget, button }); setTalkButtonLocked(button, true); }
+      }
+      isTalking = Boolean(runtime?.talking);
+      setCurrentTalkTargets((runtime?.targets || []).map(resolveLiveTalkTarget).filter(Boolean));
+      document.querySelectorAll('#targets-list .talk-btn').forEach(button => { button.disabled ||= !state.online; });
+      document.querySelectorAll('#targets-list .volume-slider, #targets-list .mute-btn').forEach(control => { control.disabled = false; });
+      updateReplyButtonState();
+      if (!state.online) btnReply.disabled = true;
+      const micLevel = document.getElementById('user-meter-value');
+      if (micLevel) micLevel.textContent = runtime?.micLevel || '-inf dB';
+      const micBar = document.getElementById('user-meter-bar');
+      if (micBar) micBar.style.width = `${runtime?.micMeterWidth || 0}%`;
+    });
+  }
+
+  socket.on('panel-command', async (command = {}, acknowledge = () => {}) => {
+    if (remotePanel || session.kind !== 'user') return acknowledge({ ok: false, error: 'User client is not ready' });
+    try {
+      if (command.kind !== 'talk') await applyClientPanelSettings(command.panelSettings, { verifyDevices: command.kind === 'preferences' });
+      if (command.kind === 'target-audio') {
+        applyPersistedTargetAudioStates([command.audio], { replace: false });
+      } else if (command.kind === 'audio-settings') {
+        applyUserAudioSettings(command.settings);
+      } else if (command.kind === 'production') {
+        const result = await changeActiveProduction(String(command.productionId));
+        if (!result?.ok) throw new Error(result?.error || 'Unable to change production');
+      } else if (command.kind === 'order') {
+        await renderTargetList(cachedUsers);
+      } else if (command.kind === 'talk') {
+        const event = { preventDefault() {}, talkInputKey: command.inputKey };
+        if (command.action === 'release') {
+          // Releasing a panel input must not release an unrelated local input.
+          if (activeTalkPointers.has(command.inputKey)) handleStopTalking(event);
+        } else if (command.action === 'stop') {
+          handleStopTalking({ preventDefault() {}, currentTarget: null });
+        } else {
+          const target = resolveApiTalkTarget(command.targetType, command.targetId);
+          if (!target) throw new Error('Talk target is not available');
+          const button = findTalkButtonForTarget(target);
+          if (command.action === 'press') {
+            if (hasActiveTalkLocks() && !lockMultipleTargetsEnabled && !isTalkTargetLocked(target)) {
+              suspendActiveLockState();
+              handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
+            }
+            await handleTalk(event, target);
+            if (!isTalking && !producer) throw new Error('Unable to start the client microphone');
+          } else if (command.action === 'lock') {
+            activateTalkLock(target, button);
+            await handleTalk({ preventDefault() {} }, target);
+          } else if (command.action === 'unlock') {
+            removeTalkLock(target);
+          }
+        }
+      }
+      const report = collectClientPanelReport();
+      acknowledge({ ok: true, report });
+      reportClientPanelState();
+    } catch (error) { acknowledge({ ok: false, error: error.message, report: collectClientPanelReport() }); }
+  });
+
   // Signaling Events
   const connectionHealth = createConnectionHealth(socket, (interrupted) => {
     mediaConnectionState.heartbeatInterrupted = interrupted;
@@ -7411,7 +7688,7 @@ let cachedOperatorTargets = null;
     setSignalingConnectionState('connected');
     connectionHealth.start();
     lastConnectedSocketId = socket.id;
-    await recoverConnectedSession('socket-connect');
+    if (!remotePanel) await recoverConnectedSession('socket-connect');
   });
 
   socket.on("session-kicked", () => {
@@ -7422,6 +7699,11 @@ let cachedOperatorTargets = null;
 
   socket.on("disconnect", (reason) => {
     connectionHealth.stop();
+    if (remotePanel) {
+      remotePanel.heldInputs.clear();
+      document.querySelectorAll('.talk-btn, #reply').forEach(button => { button.disabled = true; });
+      return;
+    }
     console.log("Disconnected from server:", reason);
     if (!sessionResetInProgress && session.name && reason !== 'io client disconnect') {
       connectionSounds.disconnected();
@@ -7861,11 +8143,13 @@ function advanceTargetLayer() {
 }
 
 function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
+  if (remotePanel || applyingClientPanelSettings) return;
   if (session.kind !== 'user') return;
   if (!socket.connected) return;
     socket.emit('target-audio-state-snapshot', {
       reason,
       states: collectVisibleTargetAudioStates(),
+      revision: clientPanelRevision,
     });
   }
 
@@ -8282,6 +8566,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   async function startVoiceTriggerMonitoring() {
+    if (remotePanel) return;
     if (!voiceTriggerEnabled || !isOperatorSession() || session.kind === 'feed') {
       stopVoiceTriggerMonitoring();
       return;
@@ -8415,7 +8700,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     }
     if (persist && typeof window !== 'undefined') {
       try {
-        window.localStorage?.setItem(VOICE_TRIGGER_ENABLED_STORAGE_KEY, String(voiceTriggerEnabled));
+        clientLocalStorage?.setItem(VOICE_TRIGGER_ENABLED_STORAGE_KEY, String(voiceTriggerEnabled));
       } catch (err) {
         console.warn('Unable to persist level trigger state:', err);
       }
@@ -8437,9 +8722,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     if (persist && typeof window !== 'undefined') {
       try {
         if (voiceTriggerTargetIdentity) {
-          window.localStorage?.setItem(VOICE_TRIGGER_TARGET_STORAGE_KEY, voiceTriggerTargetIdentity);
+          clientLocalStorage?.setItem(VOICE_TRIGGER_TARGET_STORAGE_KEY, voiceTriggerTargetIdentity);
         } else {
-          window.localStorage?.removeItem(VOICE_TRIGGER_TARGET_STORAGE_KEY);
+          clientLocalStorage?.removeItem(VOICE_TRIGGER_TARGET_STORAGE_KEY);
         }
       } catch (err) {
         console.warn('Unable to persist level trigger target:', err);
@@ -8457,7 +8742,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     updateVoiceTriggerThresholdUI();
     if (persist && typeof window !== 'undefined') {
       try {
-        window.localStorage?.setItem(VOICE_TRIGGER_THRESHOLD_DB_STORAGE_KEY, String(voiceTriggerThresholdDb));
+        clientLocalStorage?.setItem(VOICE_TRIGGER_THRESHOLD_DB_STORAGE_KEY, String(voiceTriggerThresholdDb));
       } catch (err) {
         console.warn('Unable to persist level trigger threshold:', err);
       }
@@ -8484,10 +8769,11 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   let userAudioSettingsSaveTimer = null;
   persistUserAudioSettingsHandler = () => {
-    if (session.kind !== 'user' || !socket.connected) return;
+    if (session.kind !== 'user' || !socket.connected || applyingClientPanelSettings || remotePanel?.applying) return;
     clearTimeout(userAudioSettingsSaveTimer);
     userAudioSettingsSaveTimer = setTimeout(() => {
-      socket.emit('user-audio-settings-update', { settings: currentUserAudioSettings() }, (result = {}) => {
+      if (remotePanel) { remotePanel.command({ kind: 'audio-settings', settings: currentUserAudioSettings() }); return; }
+      socket.emit('user-audio-settings-update', { settings: currentUserAudioSettings(), revision: clientPanelRevision }, (result = {}) => {
         if (!result.ok) console.warn('Unable to save user audio settings:', result.error);
       });
     }, 120);
@@ -8983,7 +9269,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
         const normalizedTarget = { type: 'user', id: currentSocketId };
 
-        if (hasActiveTalkLocks()) {
+        if (!remotePanel && hasActiveTalkLocks()) {
           if (isTalkTargetLocked(normalizedTarget)) {
             li.classList.remove('ptt-pressing');
             if (lockMultipleTargetsEnabled) {
@@ -9103,7 +9389,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
               }
               return;
             }
-            if (hasActiveTalkLocks() && !lockMultipleTargetsEnabled) {
+            if (!remotePanel && hasActiveTalkLocks() && !lockMultipleTargetsEnabled) {
               suspendActiveLockState();
               handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
               rowPttGestureActive = true;
@@ -9453,7 +9739,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       const productionQuery = session.productionId
         ? `?productionId=${encodeURIComponent(session.productionId)}`
         : '';
-      targets = session.kind === 'guest'
+      targets = remotePanel ? remotePanel.state?.targets || [] : session.kind === 'guest'
         ? await fetchJSON(`/guest/targets${productionQuery}`)
         : await fetchJSON(`/users/${dbUserId}/targets?includeMemberships=1${session.productionId ? `&productionId=${encodeURIComponent(session.productionId)}` : ''}`);
     } catch (err) {
@@ -9650,7 +9936,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
         const normalizedTarget = { type: 'conference', id };
 
-        if (hasActiveTalkLocks()) {
+        if (!remotePanel && hasActiveTalkLocks()) {
           if (isTalkTargetLocked(normalizedTarget)) {
             li.classList.remove('ptt-pressing');
             if (lockMultipleTargetsEnabled) {
@@ -9738,7 +10024,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
               }
               return;
             }
-            if (hasActiveTalkLocks() && !lockMultipleTargetsEnabled) {
+            if (!remotePanel && hasActiveTalkLocks() && !lockMultipleTargetsEnabled) {
               suspendActiveLockState();
               handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
               rowPttGestureActive = true;
@@ -10654,6 +10940,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   // Initialize MediaSoup
   async function initializeMediaSoup() {
+    if (remotePanel) return;
     try {
       console.log("=== Starting MediaSoup initialization ===");
 
@@ -11293,6 +11580,12 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   function setMuteState(rawId) {
     const key = toKey(rawId);
+    if (remotePanel && !remotePanel.applying) {
+      const targetEl = document.getElementById(key);
+      const muted = !mutedPeers.has(key);
+      remotePanel.command({ kind: 'target-audio', targetType: targetEl.dataset.type, targetId: Number(targetEl.dataset.id), muted });
+      return muted;
+    }
     const targetEl = document.getElementById(key);
     const persistedTargetType = targetEl?.dataset?.type || null;
     const persistedTargetId = Number(targetEl?.dataset?.id);
@@ -11397,6 +11690,10 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   function activateTalkLock(target, button) {
+    if (remotePanel) {
+      remotePanel.command({ kind: 'talk', action: 'lock', ...remoteTarget(target) });
+      return;
+    }
     if (!isOperatorSession()) return;
     if (!target || !button) return;
     const normalizedTarget = normalizePttTarget(target);
@@ -11479,6 +11776,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   }
 
   function removeTalkLock(target) {
+    if (remotePanel) { remotePanel.command({ kind: 'talk', action: 'unlock', ...remoteTarget(target) }); return true; }
     const identity = getTalkTargetIdentity(target);
     const entry = identity ? activeTalkLocks.get(identity) : null;
     if (!entry) return false;
@@ -11556,6 +11854,18 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     }
 
     const inputKey = getTalkInputKey(e);
+    if (remotePanel) {
+      if (!remotePanel.state?.online) return;
+      if (isTalkTargetLocked(normalizedTarget)) {
+        remotePanel.command({ kind: 'talk', action: 'unlock', ...remoteTarget(normalizedTarget) });
+        return;
+      }
+      const key = String(inputKey ?? 'main');
+      remotePanel.heldInputs.set(key, normalizedTarget);
+      const result = await remotePanel.command({ kind: 'talk', action: 'press', ...remoteTarget(normalizedTarget), inputKey: key });
+      if (!result.ok) remotePanel.heldInputs.delete(key);
+      return;
+    }
     if (inputKey !== null) {
       addPressedTalkPointer(inputKey, normalizedTarget);
     } else {
@@ -11794,6 +12104,20 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   function handleStopTalking(e) {
     e.preventDefault();
+    if (remotePanel) {
+      if (remotePanel.applying && !e.isTrusted && e.pointerId == null && !e.talkInputKey) return;
+      const key = getTalkInputKey(e);
+      if (key !== null && remotePanel.heldInputs.has(String(key))) {
+        remotePanel.heldInputs.delete(String(key));
+        remotePanel.command({ kind: 'talk', action: 'release', inputKey: String(key) });
+      } else if (e.currentTarget && isTalkButtonLocked(e.currentTarget)) {
+        const entry = getActiveTalkLockEntries().find(entry => entry.button === e.currentTarget);
+        if (entry) remotePanel.command({ kind: 'talk', action: 'unlock', ...remoteTarget(entry.target) });
+      } else if (key === null) {
+        remotePanel.command({ kind: 'talk', action: 'stop' });
+      }
+      return;
+    }
     if (!isOperatorSession()) return;
     const shouldRestoreSuspendedLock = Boolean(suspendedLockState) && !e?.suppressLockRestore;
     const inputKey = getTalkInputKey(e);
@@ -11901,6 +12225,14 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   // Safety stop so PTT can't get stuck on iOS/background transitions.
   function stopTalkingSafely({ respectLock = false, pointerId = null } = {}) {
+    if (remotePanel) {
+      for (const key of [...remotePanel.heldInputs.keys()]) {
+        if (pointerId !== null && String(pointerId) !== key) continue;
+        remotePanel.heldInputs.delete(key);
+        remotePanel.command({ kind: 'talk', action: 'release', inputKey: key });
+      }
+      return;
+    }
     if (!isOperatorSession()) return;
     // An idle warm producer is already paused; unrelated pointer releases need no stop.
     if ((!producer || producer.closed || producer.paused)

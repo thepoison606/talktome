@@ -423,6 +423,7 @@ ensureColumn("users", "is_guest_profile", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("users", "login_token_hash", "TEXT");
 ensureColumn("users", "last_online_at", "TEXT");
 ensureColumn("users", "audio_settings", "TEXT NOT NULL DEFAULT '{}'");
+ensureColumn("users", "panel_settings", "TEXT NOT NULL DEFAULT '{}'");
 ensureColumn("feeds", "login_token_hash", "TEXT");
 ensureColumn("user_bridge_endpoints", "trigger_mode", "TEXT NOT NULL DEFAULT 'external'");
 ensureColumn("user_bridge_endpoints", "trigger_target_type", "TEXT NOT NULL DEFAULT ''");

@@ -9,7 +9,7 @@ function setup() {
   const context = vm.createContext({
     session: { kind: 'user', productionId: '1' },
     getOperatorProfileUserId: () => 7,
-    localStorage: { getItem: key => storage.get(key) },
+    clientLocalStorage: { getItem: key => storage.get(key) },
     lastTarget: { type: 'user', id: 9, label: 'Reply user' },
     buildTalkTargetDescriptors: () => [
       { kind: 'reply', identity: 'reply' },
@@ -59,6 +59,6 @@ test('main button choice is scoped by profile and production', () => {
 
 test('unavailable browser storage preserves reply mode', () => {
   const { context } = setup();
-  context.localStorage.getItem = () => { throw new Error('denied'); };
+  context.clientLocalStorage.getItem = () => { throw new Error('denied'); };
   assert.equal(context.getMainButtonTarget().id, 9);
 });
