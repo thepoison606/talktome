@@ -29,6 +29,7 @@ import type {
 } from '../protocol/types';
 
 export type SignalingHandlers = {
+  onApiTalkCommand?: (command: unknown) => Promise<PanelCommandResult>;
   onPanelCommand?: (command: unknown) => Promise<PanelCommandResult>;
   onPanelStateRequest?: () => void;
   onUserAudioSettingsUpdated?: (settings: unknown) => void;
@@ -393,6 +394,21 @@ export class SignalingClient {
   }
 
   private bindPersistentHandlers(socket: Socket): void {
+    socket.on('api-talk-command', async (command = {}) => {
+      let result: PanelCommandResult;
+      try {
+        result = this.handlers.onApiTalkCommand
+          ? await this.handlers.onApiTalkCommand(command)
+          : { ok: false, error: 'Mobile session is not ready.' };
+      } catch (error) {
+        result = { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+      if (this.socket === socket && socket.connected) socket.emit('api-talk-command-result', {
+        commandId: command.commandId ?? null,
+        action: command.action, targetType: command.targetType, targetId: command.targetId,
+        ok: result.ok, reason: result.ok ? null : result.error,
+      });
+    });
     socket.on('connect', () => {
       if (this.socket !== socket || this.awaitingInitialConnect) return;
       this.handlers.onStateChange?.({ status: 'connected', socketId: socket.id });

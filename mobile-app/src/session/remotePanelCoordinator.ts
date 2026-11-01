@@ -214,6 +214,32 @@ export class RemotePanelCoordinator {
     }
   }
 
+  handleCompanionTalk(value: unknown): Promise<PanelCommandResult> {
+    try {
+      if (!value || typeof value !== 'object') throw new Error('Invalid Companion command.');
+      const raw = value as Record<string, unknown>;
+      if (!['press', 'release', 'lock-toggle'].includes(String(raw.action))) throw new Error('Unsupported Companion talk action.');
+      const targetType = raw.targetType ?? 'conference';
+      // Keep independent Companion buttons separate from local and panel holds.
+      // Legacy modules without an input key use a stable per-target identity.
+      const key = typeof raw.inputKey === 'string' && raw.inputKey.trim()
+        ? raw.inputKey.trim() : `${targetType}:${targetType === 'reply' ? '' : raw.targetId}`;
+      const command = parsePanelCommand({ kind: 'talk', action: raw.action === 'lock-toggle' ? 'lock' : raw.action,
+        targetType, targetId: raw.targetId, inputKey: `panel:companion:${key}` });
+      if (raw.action !== 'lock-toggle') return this.handleCommand(command);
+      const epoch = this.epoch;
+      const execute = () => {
+        if (command.kind !== 'talk') throw new Error('Invalid Companion talk command.');
+        const target = this.resolveTalkTarget(command);
+        const action = this.host.state().lockedTargetKeys.includes(talkTargetIdentity(target)) ? 'unlock' : 'lock';
+        return this.execute({ ...command, action }, epoch);
+      };
+      const result = this.queue.catch(() => {}).then(execute).catch(error => ({ ok: false as const, error: message(error) }));
+      this.queue = result;
+      return result;
+    } catch (error) { return Promise.resolve({ ok: false, error: message(error) }); }
+  }
+
   handleCommand(value: unknown): Promise<PanelCommandResult> {
     let command: PanelCommand;
     try { command = parsePanelCommand(value); }

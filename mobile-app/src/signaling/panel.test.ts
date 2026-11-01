@@ -14,6 +14,18 @@ function fixture() {
 const report: PanelClientReport = { revision: 1, storage: {}, audioStates: [], runtime: { devices: [], inputDeviceId: '', outputDeviceId: '', outputSupported: false, talking: false, targets: [], lockedTargets: [] } };
 
 describe('mobile panel signaling', () => {
+  it('handles Companion API talk events and returns their command result reliably', async () => {
+    const f = fixture();
+    const command = { commandId: 'companion-1', action: 'press', targetType: 'user', targetId: 9 };
+    f.client.handlers.onApiTalkCommand = vi.fn(async () => ({ ok: true }));
+    await f.listeners.get('api-talk-command')!(command);
+    expect(f.client.handlers.onApiTalkCommand).toHaveBeenCalledWith(command);
+    expect(f.socket.emit).toHaveBeenCalledWith('api-talk-command-result', { ...command, ok: true, reason: null });
+    f.client.handlers.onApiTalkCommand = async () => { throw new Error('Microphone unavailable'); };
+    await f.listeners.get('api-talk-command')!(command);
+    expect(f.socket.emit).toHaveBeenLastCalledWith('api-talk-command-result', expect.objectContaining({ commandId: 'companion-1', ok: false, reason: 'Microphone unavailable' }));
+  });
+
   it('queues both diagnostic reports on polling while connected, and skips outages', () => {
     const f = fixture();
     const device = { batteryPercent: 15, charging: true, networkType: 'wifi' };

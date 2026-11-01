@@ -852,6 +852,7 @@ export class SessionController {
   private bindSignaling(signaling: SignalingClient): void {
     signaling.handlers = {
       onPanelCommand: command => this.remotePanel.handleCommand(command),
+      onApiTalkCommand: command => this.remotePanel.handleCompanionTalk(command),
       onPanelStateRequest: () => this.remotePanel.publish(),
       onUserAudioSettingsUpdated: settings => {
         void this.remotePanel.handleCommand({ kind: 'audio-settings', settings }).then(result => {

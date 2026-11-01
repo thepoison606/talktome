@@ -44,6 +44,35 @@ function fixture() {
 }
 
 describe('native remote panel', () => {
+  it('handles independent Companion holds, legacy Reply and lock toggles', async () => {
+    const f = fixture(); await f.register();
+    for (const inputKey of ['button-a', 'button-b']) {
+      expect(await f.panel.handleCompanionTalk({ action: 'press', targetType: 'user', targetId: 9, inputKey })).toMatchObject({ ok: true });
+      expect(f.host.press).toHaveBeenCalledWith(`panel:companion:${inputKey}`, user);
+    }
+    await f.panel.handleCompanionTalk({ action: 'release', targetType: 'user', targetId: 9, inputKey: 'button-a' });
+    expect(f.host.release).toHaveBeenCalledWith('panel:companion:button-a');
+    expect(f.host.stopTalk).not.toHaveBeenCalled();
+    await f.panel.handleCompanionTalk({ action: 'press', targetType: 'reply' });
+    await f.panel.handleCompanionTalk({ action: 'release', targetType: 'reply' });
+    expect(f.host.press).toHaveBeenCalledWith('panel:companion:reply:', guest);
+    expect(f.host.release).toHaveBeenCalledWith('panel:companion:reply:');
+    f.host.lock = vi.fn(async () => f.update({ lockedTargetKeys: ['user-9'] }));
+    await Promise.all([1, 2].map(() => f.panel.handleCompanionTalk({ action: 'lock-toggle', targetType: 'user', targetId: 9 })));
+    expect(f.host.lock).toHaveBeenCalledOnce(); expect(f.host.unlock).toHaveBeenCalledWith(user);
+    expect(await f.panel.handleCompanionTalk({ action: 'press', targetType: 'user', targetId: 999 })).toMatchObject({ ok: false });
+  });
+
+  it('cancels a Companion press released while microphone startup is pending', async () => {
+    const f = fixture(); await f.register();
+    let finish!: () => void;
+    f.host.press = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    const pending = f.panel.handleCompanionTalk({ action: 'press', targetType: 'user', targetId: 9, inputKey: 'a' });
+    await vi.waitFor(() => expect(f.host.press).toHaveBeenCalled());
+    expect(await f.panel.handleCompanionTalk({ action: 'release', targetType: 'user', targetId: 9, inputKey: 'a' })).toMatchObject({ ok: true });
+    expect(f.host.release).toHaveBeenCalledWith('panel:companion:a'); finish(); await pending;
+  });
+
   it('restores server audio, conference, feed, main-button settings before reporting', async () => {
     const f = fixture();
     const storage = { 'conferenceListenExclusions:user:1': '{"2":[9]}', 'conferenceMemberLevels:user:1': '{"2":{"9":0.3}}', 'stoppedFeeds:user:1': '{"feed-4":true}', 'mainButtonTarget:user:1:7': 'conference-2', 'targetHotkeys:1:production:8': '{"user-9":"KeyA"}', 'mainButtonTarget:user:99:7': 'user-9' };
