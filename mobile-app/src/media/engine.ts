@@ -33,6 +33,7 @@ import {
   type ConsumerPriorityContext,
 } from './consumerBudget';
 import { STANDARD_OPUS, talkGumConstraints, type OpusProfile } from './opus';
+import { summarizeNetworkReports, type MediaNetworkStats } from './networkStats';
 
 type RemoteConsumer = {
   producer: ActiveProducer;
@@ -70,6 +71,14 @@ export class MediaEngine {
   private work: Promise<void> = Promise.resolve();
 
   constructor(private readonly signaling: SignalingClient) {}
+
+  async networkStats(): Promise<MediaNetworkStats> {
+    const generation = this.mediaGeneration;
+    const transports = [this.sendTransport, this.recvTransport].filter((transport): transport is Transport => Boolean(transport && !transport.closed));
+    const reports = await Promise.allSettled(transports.map(transport => transport.getStats()));
+    if (generation !== this.mediaGeneration) return { roundTripMs: null, packetLossPercent: null };
+    return summarizeNetworkReports(reports.flatMap(report => report.status === 'fulfilled' ? [report.value] : []));
+  }
 
   setIceOverride(servers: IceServer[]): void {
     this.iceOverride = servers;

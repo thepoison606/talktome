@@ -14,6 +14,17 @@ function fixture() {
 const report: PanelClientReport = { revision: 1, storage: {}, audioStates: [], runtime: { devices: [], inputDeviceId: '', outputDeviceId: '', outputSupported: false, talking: false, targets: [], lockedTargets: [] } };
 
 describe('mobile panel signaling', () => {
+  it('reports current device and WebRTC stats without queuing stale reports during outages', () => {
+    const f = fixture();
+    const device = { batteryPercent: 15, charging: true, networkType: 'wifi' };
+    const stats = { roundTripMs: 12, packetLossPercent: 0.5 };
+    f.client.reportDeviceStatus(device); f.client.reportMediaNetworkStats(stats);
+    expect(f.socket.volatile.emit).toHaveBeenCalledWith('client-device-status', device);
+    expect(f.socket.volatile.emit).toHaveBeenCalledWith('media-network-stats', stats);
+    f.socket.connected = false; f.socket.volatile.emit.mockClear();
+    f.client.reportDeviceStatus(device); f.client.reportMediaNetworkStats(stats);
+    expect(f.socket.volatile.emit).not.toHaveBeenCalled();
+  });
   it('acknowledges only after native application completes, including its state report', async () => {
     const f = fixture(); let finish!: () => void;
     f.client.handlers.onPanelCommand = () => new Promise(resolve => { finish = () => resolve({ ok: true, report }); });

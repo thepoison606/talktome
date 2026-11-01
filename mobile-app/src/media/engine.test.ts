@@ -25,6 +25,22 @@ function fixture() {
 beforeEach(() => { mocks.getUserMedia.mockReset(); });
 
 describe('native panel media lifecycle', () => {
+  it('keeps available receive stats when the other transport fails', async () => {
+    const f = fixture();
+    Object.assign(f.transport, { getStats: vi.fn().mockRejectedValue(new Error('Closed transport')) });
+    (f.engine as unknown as { recvTransport: unknown }).recvTransport = {
+      getStats: async () => new Map([['candidate', { type: 'candidate-pair', selected: true, currentRoundTripTime: 0.024 }]]),
+    };
+    expect(await f.engine.networkStats()).toMatchObject({ roundTripMs: 24, packetLossPercent: null });
+  });
+
+  it('discards network stats collected from a superseded media session', async () => {
+    const f = fixture(); let finish!: (value: unknown) => void;
+    Object.assign(f.transport, { getStats: () => new Promise(resolve => { finish = resolve; }) });
+    const pending = f.engine.networkStats(); await f.engine.stop();
+    finish(new Map([['candidate', { type: 'candidate-pair', selected: true, currentRoundTripTime: 0.024 }]]));
+    expect(await pending).toEqual({ roundTripMs: null, packetLossPercent: null });
+  });
   it('shares one microphone acquisition between concurrent talk inputs', async () => {
     const f = fixture(); await Promise.all([f.engine.startTalking([target]), f.engine.startTalking([target])]);
     expect(mocks.getUserMedia).toHaveBeenCalledOnce(); expect(f.transport.produce).toHaveBeenCalledOnce();

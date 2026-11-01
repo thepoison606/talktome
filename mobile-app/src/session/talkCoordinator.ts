@@ -14,7 +14,7 @@ import type { SessionController } from './sessionController';
 
 /** Press/lock/release talk, the main button, and conference listen. */
 export class TalkCoordinator {
-  private localHolds = new Set<string>();
+  private localHolds = new Map<string, { target: TalkTarget }>();
   private remoteHolds = new Map<string, { target: TalkTarget }>();
   private generation = 0;
 
@@ -24,12 +24,14 @@ export class TalkCoordinator {
     return canTalkToTarget(target, useSessionStore.getState().peers);
   }
 
-  async pressTalk(target: TalkTarget): Promise<void> {
+  async pressTalk(target: TalkTarget, inputKey = talkTargetIdentity(target)): Promise<void> {
     if (!this.canTalkTo(target) || !this.c.media) {
       useSessionStore.setState({ error: !this.c.media ? 'Media is not ready.' : target.type === 'user' ? 'This target is currently offline.' : 'This target is listen-only.' });
       return;
     }
+    if (this.localHolds.has(inputKey)) return;
     const generation = this.generation;
+    const hold = { target };
     try {
       const state = useSessionStore.getState();
       if (state.talkLocked && this.isLocked(target) && this.c.overrideFrom === null) {
@@ -37,11 +39,10 @@ export class TalkCoordinator {
         else await this.unlockTalk();
         return;
       }
-      const key = talkTargetIdentity(target);
-      this.localHolds.add(key);
-      await this.startHold(target, () => this.localHolds.has(key));
+      this.localHolds.set(inputKey, hold);
+      await this.startHold(target, () => this.localHolds.get(inputKey) === hold);
     } catch (error) {
-      if (generation === this.generation) this.failTalk(error);
+      if (generation === this.generation && this.localHolds.get(inputKey) === hold) this.failTalk(error);
     }
   }
 
@@ -127,7 +128,7 @@ export class TalkCoordinator {
 
   private hasHold(target: TalkTarget): boolean {
     const key = talkTargetIdentity(target);
-    return this.localHolds.has(key) || [...this.remoteHolds.values()].some(hold => talkTargetIdentity(hold.target) === key);
+    return [...this.localHolds.values(), ...this.remoteHolds.values()].some(hold => talkTargetIdentity(hold.target) === key);
   }
 
   private isLocked(target: TalkTarget): boolean {
@@ -166,11 +167,13 @@ export class TalkCoordinator {
     }
   }
 
-  async releaseTalk(target?: TalkTarget): Promise<void> {
-    if (target) {
-      this.localHolds.delete(talkTargetIdentity(target));
-      if (this.hasHold(target)) return;
-      await this.finishRelease(target);
+  async releaseTalk(target?: TalkTarget, inputKey?: string): Promise<void> {
+    if (target || inputKey != null) {
+      const key = inputKey ?? talkTargetIdentity(target!);
+      const heldTarget = this.localHolds.get(key)?.target;
+      this.localHolds.delete(key);
+      if (!heldTarget || this.hasHold(heldTarget)) return;
+      await this.finishRelease(heldTarget);
     } else {
       this.localHolds.clear();
       for (const current of [...this.c.talkingTargets]) {
