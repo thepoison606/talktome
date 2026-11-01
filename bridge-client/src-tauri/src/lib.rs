@@ -138,6 +138,7 @@ struct BridgeAnnouncePayload<'a> {
     bridge_id: Option<&'a str>,
     bridge_name: &'a str,
     platform: &'a str,
+    client_version: String,
     inventory: &'a AudioInventory,
 }
 
@@ -378,6 +379,11 @@ fn get_bridge_status() -> BridgeStatus {
 }
 
 #[tauri::command]
+fn get_bridge_app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+#[tauri::command]
 fn suppress_window_focus_hide(
     milliseconds: Option<u64>,
     guard: tauri::State<'_, WindowFocusGuard>,
@@ -436,6 +442,7 @@ fn resize_main_window_to_content(app: AppHandle, height: f64) -> Result<(), Stri
 
 #[tauri::command]
 async fn announce_bridge(
+    app: AppHandle,
     server_url: String,
     api_key: String,
     bridge_id: Option<String>,
@@ -463,6 +470,7 @@ async fn announce_bridge(
         bridge_id,
         bridge_name,
         platform: bridge_client_platform(),
+        client_version: app.package_info().version.to_string(),
         inventory: &inventory,
     };
 
@@ -1075,6 +1083,7 @@ pub fn run() {
             get_autostart_enabled,
             get_bridge_media_status,
             get_bridge_status,
+            get_bridge_app_version,
             get_ndi_status,
             get_omt_status,
             ensure_bridge_output_endpoint,
