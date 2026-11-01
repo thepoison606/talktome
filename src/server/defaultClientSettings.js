@@ -10,8 +10,10 @@ const BUILTIN_DEFAULT_CLIENT_SETTINGS = Object.freeze({
   playConnectionSounds: true,
   showIncomingLevels: false,
   leftHandMode: false,
+  bigMainButton: false,
   lockMultipleTargets: false,
   allowTargetRearrange: true,
+  allowTargetAddRemove: false,
 });
 
 const DEFAULT_CLIENT_SETTING_KEYS = Object.freeze(Object.keys(BUILTIN_DEFAULT_CLIENT_SETTINGS));

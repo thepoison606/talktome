@@ -172,6 +172,16 @@ h3 {
   margin-top: 0.25rem;
 }
 
+.bridge-app-version {
+  color: #b6bec8;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  padding-top: 0.1rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+  user-select: text;
+}
+
 .registration-controls {
   align-items: center;
   display: flex;

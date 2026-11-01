@@ -179,6 +179,7 @@ const AUDIO_PROCESSING_EXPLICIT_STORAGE_KEY = 'audioProcessingEnabledExplicit';
 const CONNECTION_SOUNDS_STORAGE_KEY = 'playConnectionSounds';
 const INCOMING_LEVELS_STORAGE_KEY = 'showIncomingLevels';
 const LEFT_HAND_MODE_STORAGE_KEY = 'leftHandModeEnabled';
+const BIG_MAIN_BUTTON_STORAGE_KEY = 'bigMainButtonEnabled';
 const LOCK_MULTIPLE_TARGETS_STORAGE_KEY = 'lockMultipleTargetsEnabled';
 const FEED_INPUT_GAIN_DB_STORAGE_KEY = 'feedInputGainDb';
 const MIC_DEVICE_STORAGE_KEY = 'preferredAudioInputDeviceId';
@@ -336,15 +337,18 @@ let lockMultipleTargetsEnabled = hasServerDefaultClientSetting('lockMultipleTarg
   ? serverDefaultClientSettings.lockMultipleTargets === true
   : false;
 let allowTargetRearrange = false;
+let allowTargetAddRemove = false;
+function canEditTargets() { return canArrangeTargets() || (session.kind === 'user' && allowTargetAddRemove); }
 
 function canArrangeTargets() {
   return session.kind === 'user' && (Boolean(remotePanel) || allowTargetRearrange);
 }
 
-function applyTargetRearrangePermission(allowed) {
+function applyTargetRearrangePermission(allowed, addRemove = false) {
   allowTargetRearrange = allowed === true;
-  if (arrangeTargetsOpenButton) arrangeTargetsOpenButton.hidden = !canArrangeTargets();
-  if (!canArrangeTargets() && activeSettingsView === 'arrange') setActiveSettingsView('main');
+  allowTargetAddRemove = addRemove === true;
+  if (arrangeTargetsOpenButton) arrangeTargetsOpenButton.hidden = !canEditTargets();
+  if (!canEditTargets() && activeSettingsView === 'arrange') setActiveSettingsView('main');
 }
 let feedInputProcessingEnabled = false;
 let feedPtimeMs = DEFAULT_FEED_PTIME_MS;
@@ -750,6 +754,8 @@ let sendTransport = null;
 let recvTransport = null;
 let producer = null;
 let mediaNetworkStatsTimer = null;
+let deviceStatusReporter = null;
+let readActiveAudioOutput = async () => null;
 let mediaNetworkStatsReportInFlight = false;
 let collectMediaConsumerNetworkStats = async () => [];
 
@@ -891,11 +897,21 @@ async function reportMediaNetworkStats() {
 
 function startMediaNetworkStatsReporting() {
   if (mediaNetworkStatsTimer) return;
+  if (!remotePanel) {
+    deviceStatusReporter?.stop();
+    deviceStatusReporter = window.TalktomeClientDeviceStatus.createReporter({
+      socket,
+      isActive: () => isOperatorSession() || session.kind === 'feed',
+      readOutput: () => readActiveAudioOutput(),
+    });
+  }
   reportMediaNetworkStats();
   mediaNetworkStatsTimer = window.setInterval(reportMediaNetworkStats, MEDIA_NETWORK_STATS_INTERVAL_MS);
 }
 
 function stopMediaNetworkStatsReporting() {
+  deviceStatusReporter?.stop();
+  deviceStatusReporter = null;
   if (!mediaNetworkStatsTimer) return;
   window.clearInterval(mediaNetworkStatsTimer);
   mediaNetworkStatsTimer = null;
@@ -2239,7 +2255,7 @@ function handleSettingsMenuClosed() {
 }
 
 function setActiveSettingsView(nextView = 'main') {
-  const resolvedView = nextView === 'shortcuts' || (nextView === 'arrange' && canArrangeTargets()) ? nextView : 'main';
+  const resolvedView = nextView === 'shortcuts' || (nextView === 'arrange' && canEditTargets()) ? nextView : 'main';
   if (resolvedView === activeSettingsView && settingsMainView && settingsShortcutsView && settingsArrangeView) {
     return;
   }
@@ -3201,6 +3217,30 @@ document.addEventListener("DOMContentLoaded", () => {
   console.log("DOM loaded, initializing...");
   document.body?.classList.toggle('feed-dim-unsupported', !supportsFeedDimming());
 
+  let viewportLayoutFrame = null;
+  const syncVisibleViewport = () => {
+    if (viewportLayoutFrame !== null) return;
+    viewportLayoutFrame = window.requestAnimationFrame(() => {
+      viewportLayoutFrame = null;
+      const viewport = window.visualViewport;
+      if (!viewport || viewport.scale === 1) {
+        const height = viewport?.height ?? window.innerHeight;
+        document.documentElement.style.setProperty('--app-viewport-height', `${height}px`);
+        schedulePttButtonSizing();
+        updateTargetLayerControls();
+      }
+    });
+  };
+  syncVisibleViewport();
+  window.addEventListener('resize', syncVisibleViewport, { passive: true });
+  window.visualViewport?.addEventListener('resize', syncVisibleViewport, { passive: true });
+  if (typeof ResizeObserver === 'function') {
+    const layoutObserver = new ResizeObserver(syncVisibleViewport);
+    for (const element of [document.getElementById('targets-list'), document.querySelector('.session-bar')]) {
+      if (element) layoutObserver.observe(element);
+    }
+  }
+
   inputSelect  = document.getElementById("input-select");
   feedInputSelect = document.getElementById("feed-input-select");
   outputDeviceSelector = document.getElementById("output-device-selector");
@@ -3412,6 +3452,32 @@ document.addEventListener("DOMContentLoaded", () => {
   setLeftHandMode(leftHandModeEnabled, { persist: false });
   leftHandModeToggle?.addEventListener('change', () => {
     setLeftHandMode(leftHandModeToggle.checked);
+  });
+
+  const bigMainButtonToggle = document.getElementById('toggle-big-main-button');
+  function setBigMainButton(enabled, { persist = true } = {}) {
+    document.body.classList.toggle('big-main-button', enabled);
+    if (bigMainButtonToggle) bigMainButtonToggle.checked = enabled;
+    if (persist) {
+      try {
+        clientLocalStorage.setItem(BIG_MAIN_BUTTON_STORAGE_KEY, String(enabled));
+      } catch (error) {
+        console.warn('Unable to persist main button size:', error);
+      }
+    }
+    window.requestAnimationFrame(() => {
+      schedulePttButtonSizing();
+      updateTargetLayerControls();
+    });
+  }
+  let bigMainButtonEnabled = serverDefaultClientSettings.bigMainButton === true;
+  try {
+    const storedBigMainButton = clientLocalStorage.getItem(BIG_MAIN_BUTTON_STORAGE_KEY);
+    if (storedBigMainButton !== null) bigMainButtonEnabled = storedBigMainButton === 'true';
+  } catch {}
+  setBigMainButton(bigMainButtonEnabled, { persist: false });
+  bigMainButtonToggle?.addEventListener('change', () => {
+    setBigMainButton(bigMainButtonToggle.checked);
   });
 
   function setLockMultipleTargets(value, { persist = true } = {}) {
@@ -3811,6 +3877,21 @@ document.addEventListener("DOMContentLoaded", () => {
   const conferenceLabels = new Map();
 
   const audioElements = new Map();
+  readActiveAudioOutput = async () => {
+    // Read the sinks actually used by Web Audio/media, not the saved preference.
+    const sinks = new Set();
+    if (sharedAudioContext?.state !== 'closed' && typeof sharedAudioContext?.sinkId === 'string') sinks.add(sharedAudioContext.sinkId);
+    for (const audio of [remotePlaybackBus?.audio, ...Array.from(audioElements.values(), entry => entry.audio)]) {
+      if (audio && typeof audio.sinkId === 'string') sinks.add(audio.sinkId);
+    }
+    if (!sinks.size) return null;
+    if (sinks.size > 1) return { kind: 'other', label: 'Multiple outputs' };
+    const sinkId = [...sinks][0];
+    const devices = await navigator.mediaDevices?.enumerateDevices?.() || [];
+    const output = devices.find(device => device.kind === 'audiooutput' && device.deviceId === (sinkId || 'default'));
+    if (output?.label) return { kind: 'other', label: output.label };
+    return sinkId === '' ? { kind: 'other', label: 'System default' } : null;
+  };
   const audioEntryMap = new WeakMap();
   const confAudioElements = new Map();
   const feedAudioElements = new Map();
@@ -4156,6 +4237,8 @@ let cachedUsers = [];
 let latestServerUsers = [];
 let cachedOperatorTargets = null;
   const arrangeTargetsList = document.getElementById('arrange-targets-list');
+  const addTargetsButton = document.getElementById('edit-targets-add');
+  const addTargetsList = document.getElementById('edit-targets-available');
   const arrangeTargetsEmpty = document.getElementById('arrange-targets-empty');
   const arrangeTargetsMessage = document.getElementById('arrange-targets-message');
   let arrangeTargetsDraft = [];
@@ -4176,6 +4259,7 @@ let cachedOperatorTargets = null;
   function renderArrangeTargets() {
     if (!arrangeTargetsList || !arrangeTargetsEmpty) return;
     arrangeTargetsList.replaceChildren();
+    if (addTargetsButton) { addTargetsButton.hidden = !allowTargetAddRemove || Boolean(remotePanel); addTargetsButton.disabled = arrangeTargetsSaving; }
     arrangeTargetsEmpty.hidden = arrangeTargetsDraft.length > 0;
 
     arrangeTargetsDraft.forEach((target, index) => {
@@ -4189,6 +4273,7 @@ let cachedOperatorTargets = null;
       handle.type = 'button';
       handle.className = 'arrange-targets__handle';
       handle.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>';
+      handle.hidden = !canArrangeTargets();
       handle.setAttribute('aria-label', `Reorder ${name}. Drag or use the up and down arrow keys.`);
       handle.addEventListener('keydown', (event) => {
         if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
@@ -4208,9 +4293,64 @@ let cachedOperatorTargets = null;
       type.textContent = kind;
       identity.append(label, type);
       row.append(handle, identity);
+      if (allowTargetAddRemove && !remotePanel) {
+        const remove = document.createElement('button');
+        remove.type = 'button'; remove.className = 'edit-targets__remove';
+        remove.setAttribute('aria-label', `Remove ${name}`); remove.title = `Remove ${name}`;
+        remove.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>';
+        remove.disabled = arrangeTargetsSaving;
+        remove.addEventListener('click', () => changeSelectedTarget('remove', target));
+        row.append(remove);
+      }
       arrangeTargetsList.appendChild(row);
     });
+    updateArrangeTargetsBusy();
   }
+
+  function updateArrangeTargetsBusy() {
+    // Keep the existing nodes (and menu height) while a request is pending.
+    // In particular, do not remove a touch target before Safari finishes it.
+    if (addTargetsButton) addTargetsButton.disabled = arrangeTargetsSaving;
+    arrangeTargetsList?.querySelectorAll('button').forEach(button => { button.disabled = arrangeTargetsSaving; });
+    addTargetsList?.querySelectorAll('button').forEach(button => { button.disabled = arrangeTargetsSaving; });
+  }
+
+  async function changeSelectedTarget(action, target) {
+    if (!allowTargetAddRemove || remotePanel || arrangeTargetsSaving) return;
+    const productionId = session.productionId, userId = session.userId;
+    arrangeTargetsSaving = true;
+    clearArrangeTargetsDrag(); updateArrangeTargetsBusy(); setArrangeTargetsMessage('Saving…');
+    try {
+      const response = await fetch('/api/v1/client/targets/selection', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productionId, action, targetType: target.targetType, targetId: Number(target.targetId) }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Could not edit targets');
+      if (session.userId === userId && session.productionId === productionId) await loadArrangeTargets();
+    } catch (error) { setArrangeTargetsMessage(error.message, true); }
+    finally { arrangeTargetsSaving = false; renderArrangeTargets(); }
+  }
+
+  addTargetsButton?.addEventListener('click', async () => {
+    if (!allowTargetAddRemove || arrangeTargetsSaving || remotePanel) return;
+    if (!addTargetsList.hidden) { addTargetsList.hidden = true; return; }
+    const userId = session.userId, productionId = session.productionId;
+    setArrangeTargetsMessage('Loading…');
+    try {
+      const available = await fetchJSON(`/api/v1/client/targets/available?productionId=${encodeURIComponent(productionId ?? '')}`);
+      if (!allowTargetAddRemove || session.userId !== userId || session.productionId !== productionId || activeSettingsView !== 'arrange') return;
+      addTargetsList.replaceChildren();
+      const selected = new Set(arrangeTargetsDraft.map(t => `${t.targetType}:${t.targetId}`));
+      for (const target of available.filter(t => !selected.has(`${t.targetType}:${t.targetId}`))) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'settings-nav-button';
+        button.textContent = `＋ ${target.name} · ${target.targetType === 'conference' ? 'Conference' : target.targetType === 'feed' ? 'Feed' : 'User'}`;
+        button.addEventListener('click', () => changeSelectedTarget('add', target)); addTargetsList.append(button);
+      }
+      addTargetsList.hidden = false;
+      setArrangeTargetsMessage(addTargetsList.children.length ? '' : 'All available targets are already added.');
+    } catch (error) { setArrangeTargetsMessage(error.message, true); }
+  });
 
   function clearArrangeTargetsDrag() {
     if (!arrangeTargetsDrag) return;
@@ -4303,16 +4443,22 @@ let cachedOperatorTargets = null;
   });
 
   async function loadArrangeTargets() {
-    if (!canArrangeTargets() || !session.userId) return;
+    if (!canEditTargets() || !session.userId) return;
     clearArrangeTargetsDrag();
     const generation = ++arrangeTargetsLoadGeneration;
     const userId = session.userId;
     const productionId = session.productionId;
-    arrangeTargetsDraft = [];
-    arrangeTargetsSaved = [];
-    arrangeTargetsForUserId = null;
-    arrangeTargetsForProductionId = null;
-    renderArrangeTargets();
+    const sameContext = arrangeTargetsForUserId === userId && arrangeTargetsForProductionId === productionId;
+    // A refresh must not collapse the menu to its header while fetching. Only
+    // clear immediately when switching users/productions, to avoid stale scope.
+    if (!sameContext) {
+      arrangeTargetsDraft = [];
+      arrangeTargetsSaved = [];
+      arrangeTargetsForUserId = null;
+      arrangeTargetsForProductionId = null;
+      if (addTargetsList) addTargetsList.hidden = true;
+      renderArrangeTargets();
+    }
     setArrangeTargetsMessage('Loading…');
     try {
       const productionQuery = productionId ? `?productionId=${encodeURIComponent(productionId)}` : '';
@@ -4323,6 +4469,7 @@ let cachedOperatorTargets = null;
       arrangeTargetsSaved = arrangeTargetsDraft.map((target) => ({ ...target }));
       arrangeTargetsForUserId = userId;
       arrangeTargetsForProductionId = productionId;
+      if (addTargetsList) addTargetsList.hidden = true;
       renderArrangeTargets();
       setArrangeTargetsMessage();
       return true;
@@ -6294,9 +6441,9 @@ let cachedOperatorTargets = null;
       shortcutSettingsOpenButton.hidden = !isOperator;
     }
     if (arrangeTargetsOpenButton) {
-      arrangeTargetsOpenButton.hidden = !canArrangeTargets();
+      arrangeTargetsOpenButton.hidden = !canEditTargets();
     }
-    if (!canArrangeTargets() && activeSettingsView === 'arrange') {
+    if (!canEditTargets() && activeSettingsView === 'arrange') {
       setActiveSettingsView('main');
     }
 
@@ -6966,7 +7113,7 @@ let cachedOperatorTargets = null;
             return false;
           }
           if (session.kind === 'user') {
-            applyTargetRearrangePermission(registration.allowTargetRearrange);
+            applyTargetRearrangePermission(registration.allowTargetRearrange, registration.allowTargetAddRemove);
             await applyClientPanelSettings(registration.panelSettings);
             applyPersistedTargetAudioStates(registration.targetAudioStates || []);
             if (registration.userAudioSettings) applyUserAudioSettings(registration.userAudioSettings);
@@ -7245,7 +7392,7 @@ let cachedOperatorTargets = null;
     shouldStartFeedWhenReady = kind === 'feed';
 
     if (kind === 'user') {
-      applyTargetRearrangePermission(reg.allowTargetRearrange);
+      applyTargetRearrangePermission(reg.allowTargetRearrange, reg.allowTargetAddRemove);
       await applyClientPanelSettings(reg.panelSettings);
       applyPersistedTargetAudioStates(reg.targetAudioStates || []);
       if (reg.userAudioSettings) applyUserAudioSettings(reg.userAudioSettings);
@@ -8132,31 +8279,31 @@ function getDynamicTargetLayerSize(list, targetEls) {
     return null;
   }
 
-  const hasFinePointer = typeof window.matchMedia === 'function'
-    ? window.matchMedia('(pointer: fine)').matches
-    : false;
-  if (!hasFinePointer) {
-    return null;
+  // Measure natural, non-shrinking rows, including targets on other pages.
+  // Otherwise a shorter last page can change its own page size, or Safari's
+  // smaller visible viewport can squeeze every row instead of paginating.
+  const hiddenTargets = targetEls.filter((targetEl) => targetEl.classList.contains('layer-hidden'));
+  hiddenTargets.forEach((targetEl) => targetEl.classList.remove('layer-hidden'));
+  let fullItemHeight = 0;
+  try {
+    for (const targetEl of targetEls) {
+      const rect = targetEl.getBoundingClientRect();
+      const styles = window.getComputedStyle(targetEl);
+      const marginTop = parseFloat(styles.marginTop || '0');
+      const marginBottom = parseFloat(styles.marginBottom || '0');
+      fullItemHeight = Math.max(fullItemHeight, rect.height + marginTop + marginBottom);
+    }
+  } finally {
+    hiddenTargets.forEach((targetEl) => targetEl.classList.add('layer-hidden'));
   }
-
-  const probeTarget = targetEls.find((targetEl) => targetEl.getBoundingClientRect().height > 0) || null;
-  if (!probeTarget) {
-    return null;
-  }
-
-  const rect = probeTarget.getBoundingClientRect();
-  const styles = window.getComputedStyle(probeTarget);
-  const marginTop = parseFloat(styles.marginTop || '0');
-  const marginBottom = parseFloat(styles.marginBottom || '0');
-  const fullItemHeight = rect.height + marginTop + marginBottom;
+  const gap = parseFloat(window.getComputedStyle(list).rowGap) || 0;
   const availableHeight = list.clientHeight;
 
   if (!Number.isFinite(fullItemHeight) || fullItemHeight <= 0 || !Number.isFinite(availableHeight) || availableHeight <= 0) {
     return null;
   }
 
-  const fittedCount = Math.floor(availableHeight / fullItemHeight);
-  return fittedCount > 0 ? fittedCount : null;
+  return Math.max(1, Math.floor((availableHeight + gap) / (fullItemHeight + gap)));
 }
 
 function getTargetLayerSize(list, targetEls) {
@@ -8165,7 +8312,9 @@ function getTargetLayerSize(list, targetEls) {
   if (!Number.isFinite(dynamicLayerSize)) {
     return baseLayerSize;
   }
-  return Math.max(baseLayerSize, dynamicLayerSize);
+  return isPhoneLandscapeViewport()
+    ? Math.min(baseLayerSize, dynamicLayerSize)
+    : dynamicLayerSize;
 }
 
 function updateTargetLayerControls() {
@@ -8918,8 +9067,8 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     if (session.kind === 'user') applyUserAudioSettings(settings);
   });
 
-  socket.on('target-rearrange-permission-updated', ({ allowed } = {}) => {
-    if (session.kind === 'user') applyTargetRearrangePermission(allowed);
+  socket.on('target-rearrange-permission-updated', ({ allowed, allowTargetAddRemove: addRemove } = {}) => {
+    if (session.kind === 'user') { applyTargetRearrangePermission(allowed, addRemove); if (activeSettingsView === 'arrange') loadArrangeTargets(); }
   });
 
   restartVoiceTriggerMonitorHandler = () => {

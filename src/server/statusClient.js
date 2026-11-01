@@ -6,6 +6,17 @@ const REGISTERED_CLIENT_LABELS = Object.freeze({
   "headless": "Headless",
 });
 
+function normalizeClientVersion(value) {
+  if (typeof value !== 'string') return null;
+  const version = value.trim();
+  return /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(version) ? version : null;
+}
+
+function normalizeClientBuild(value) {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) value = String(value);
+  return typeof value === 'string' && /^[0-9][0-9.]{0,31}$/.test(value.trim()) ? value.trim() : null;
+}
+
 function normalizeRegisteredClientType(value) {
   const type = typeof value === "string" ? value.trim().toLowerCase() : "";
   return Object.hasOwn(REGISTERED_CLIENT_LABELS, type) ? type : null;
@@ -42,4 +53,4 @@ function statusRemoteAddress(socket, access) {
   }, access);
 }
 
-module.exports = { normalizeRegisteredClientType, describeStatusClient, statusRemoteAddress };
+module.exports = { normalizeRegisteredClientType, normalizeClientVersion, normalizeClientBuild, describeStatusClient, statusRemoteAddress };

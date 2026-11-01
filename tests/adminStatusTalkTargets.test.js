@@ -31,11 +31,14 @@ test('admin status exposes and conditionally renders the active production', () 
   assert.match(server, /multipleProductionsEnabled,/);
   assert.match(admin, /const showProductionColumn = payload\.multipleProductionsEnabled === true/);
   assert.match(admin, /user\.activeProduction\?\.name/);
-  assert.match(adminHtml, /data-status-production-column hidden>Production<\/th>/);
+  assert.match(adminHtml, /<th data-status-production-column data-sort-key="Production" hidden>/);
 });
 
 test('status tables reserve less space for short names than detailed client data', () => {
-  assert.match(adminHtml, /\.status-col--status \{ width: 20%; \}/);
+  const width = name => Number(adminHtml.match(new RegExp(`^      \\.status-col--${name} \\{ width: ([\\d.]+)%; \\}`, 'm'))?.[1]);
+  assert.ok(width('name') < width('client'));
+  assert.ok(width('version') < width('client'));
+  assert.ok(width('battery') < width('version'));
   assert.equal((adminHtml.match(/<col class="status-col--status">\s*<col class="status-col--name">/g) || []).length, 4);
   assert.equal((adminHtml.match(/class="status-col--production" data-status-production-column hidden/g) || []).length, 4);
   assert.match(admin, /document\.querySelectorAll\('#status-section \.status-table'\)/);

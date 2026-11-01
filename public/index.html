@@ -17,6 +17,7 @@
         touch-action: manipulation;
         height: 100%;
         overflow: hidden;
+        overscroll-behavior: none;
         background-color: #0b1120;
       }
 
@@ -28,6 +29,9 @@
       }
 
       body {
+        position: fixed;
+        inset: 0;
+        height: var(--app-viewport-height, 100dvh);
         font-family: sans-serif;
         margin: 0;
         padding: 0;
@@ -70,7 +74,7 @@
         width: calc(100% - 1rem);
         margin: 0.5rem auto; /* center horizontally */
         height: calc(100vh - 1rem);
-        height: calc(100dvh - 1rem);
+        height: calc(var(--app-viewport-height, 100dvh) - 1rem);
         display: flex;
         flex-direction: column;
         overflow: hidden;
@@ -315,9 +319,11 @@
         margin: 0;
         line-height: 1;
         border-radius: 10px;
-        border: 1px solid rgba(148, 163, 184, 0.25);
-        background-color: rgba(30, 41, 59, 0.7);
-        transition: background-color 0.2s ease, border-color 0.2s ease;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        -webkit-tap-highlight-color: transparent;
+        transition: opacity 0.15s ease;
       }
 
       .settings-trigger:focus-visible {
@@ -326,20 +332,25 @@
       }
 
       .settings-trigger:hover {
-        background-color: rgba(30, 41, 59, 0.9);
+        background: transparent;
+        opacity: 0.85;
       }
 
       .settings-trigger:active {
-        background-color: rgba(51, 65, 85, 0.95);
+        background: transparent;
+        opacity: 0.65;
       }
 
       .settings-icon {
-        font-size: 1.2rem;
+        width: 1.35rem;
+        height: 1.35rem;
         color: #cbd5f5;
-        display: inline-block;
-        transform: rotate(90deg);
-        font-weight: 700;
+        display: block;
+        flex-shrink: 0;
       }
+      .settings-icon--close { display: none; }
+      .settings-trigger[aria-expanded="true"] .settings-icon--gear { display: none; }
+      .settings-trigger[aria-expanded="true"] .settings-icon--close { display: block; }
 
       .settings-body {
         position: absolute;
@@ -545,7 +556,7 @@
 
       .arrange-targets__row {
         display: grid;
-        grid-template-columns: 2.4rem minmax(0, 1fr);
+        grid-template-columns: auto minmax(0, 1fr) auto;
         align-items: center;
         gap: 0.5rem;
         padding: 0.45rem 0.6rem;
@@ -555,6 +566,11 @@
         position: relative;
       }
 
+      .edit-targets__remove { background: none; border: 0; color: #f87171; cursor: pointer; padding: .5rem; display: grid; place-items: center; }
+      #edit-targets-available[hidden] { display: none; }
+      #edit-targets-available { margin-bottom: .75rem; }
+      #edit-targets-add { justify-self: end; font-size: 1.5rem; min-width: 2.4rem; }
+      .arrange-targets__row > .shortcut-settings__target { grid-column: 2; }
       .arrange-targets__kind {
         color: #94a3b8;
         font-size: 0.75rem;
@@ -568,6 +584,7 @@
         font-weight: 600;
       }
 
+      .arrange-targets__handle[hidden] { display: none; }
       .arrange-targets__handle {
         appearance: none;
         display: grid;
@@ -1027,7 +1044,7 @@
           width: calc(100% - 0.5rem);
           margin: 0.25rem auto;
           height: calc(100vh - 0.5rem);
-          height: calc(100dvh - 0.5rem);
+          height: calc(var(--app-viewport-height, 100dvh) - 0.5rem);
         }
 
         #targets-list {
@@ -1067,6 +1084,7 @@
         --target-row-pad-y: 1.05rem;
         --target-row-pad-x: 0.6rem;
         display: grid;
+        flex-shrink: 0;
         grid-template-columns: auto 1fr auto;
         grid-template-areas: "icon info actions";
         align-items: stretch;
@@ -1670,7 +1688,7 @@
         flex: 1 1 auto;
         min-height: 0;
         flex-direction: column;
-        padding-bottom: calc(var(--reply-bar-height, 6rem) + env(safe-area-inset-bottom));
+        padding-bottom: 0;
         background: #0b1120;
       }
 
@@ -2142,6 +2160,10 @@
       }
 
       .reply-bar {
+        /* Keep the button in the same viewport-constrained layout as targets.
+           Safari can move a fixed bottom bar behind its changing browser UI. */
+        position: static;
+        flex: 0 0 auto;
         height: calc(var(--reply-bar-height) + env(safe-area-inset-bottom));
         padding: 0.4rem 1rem calc(0.4rem + env(safe-area-inset-bottom));
         align-items: center;
@@ -2152,10 +2174,31 @@
         margin: 0;
       }
 
+      body.big-main-button {
+        --reply-bar-height: 8rem;
+      }
+
+      body.big-main-button .reply-bar #reply {
+        width: min(100%, 42rem);
+        height: 100%;
+        min-height: 0;
+        border-radius: 16px;
+        font-size: 1.625rem;
+      }
+
       @media (orientation: landscape) and (pointer: coarse) and (max-height: 520px) {
         :root {
           --phone-landscape-reply-width: clamp(9.375rem, 26vw, 13.75rem);
           --phone-landscape-target-gap: 0.375rem;
+        }
+
+        body.big-main-button {
+          --phone-landscape-reply-width: clamp(11rem, 30vw, 16rem);
+        }
+
+        body.big-main-button .reply-bar #reply {
+          width: 100%;
+          font-size: 1.25rem;
         }
 
         #intercom-app[style*="flex"] {
@@ -2210,7 +2253,7 @@
           --target-row-pad-y: 0.55rem;
           --target-row-pad-x: 0.38rem;
           --ptt-btn-size: clamp(3.25rem, 17vh, 5.5rem);
-          flex: 0 1 calc((100% - (var(--phone-landscape-target-gap) * 3)) / 4);
+          flex: 0 0 auto;
           margin: 0;
           min-height: 0;
           border-radius: 16px;
@@ -2434,12 +2477,16 @@
           <button
             type="button"
             class="settings-trigger"
-            aria-label="Application menu"
+            aria-label="Open settings"
             aria-expanded="false"
             aria-haspopup="true"
             aria-controls="settings-menu"
           >
-            <span class="settings-icon" aria-hidden="true">&#8942;</span>
+            <svg class="settings-icon settings-icon--gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polygon points="8.94,4.61 9.92,2.22 14.08,2.22 15.06,4.61 15.06,4.61 17.45,3.61 20.39,6.55 19.39,8.94 19.39,8.94 21.78,9.92 21.78,14.08 19.39,15.06 19.39,15.06 20.39,17.45 17.45,20.39 15.06,19.39 15.06,19.39 14.08,21.78 9.92,21.78 8.94,19.39 8.94,19.39 6.55,20.39 3.61,17.45 4.61,15.06 4.61,15.06 2.22,14.08 2.22,9.92 4.61,8.94 4.61,8.94 3.61,6.55 6.55,3.61 8.94,4.61"/>
+              <circle cx="12" cy="12" r="3.2"/>
+            </svg>
+            <svg class="settings-icon settings-icon--close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
           </button>
           <button id="feed-logout-btn" type="button" class="logout-btn feed-session-logout">Logout</button>
           <div class="settings-body" id="settings-menu" hidden>
@@ -2584,6 +2631,13 @@
                 </select>
               </div>
               <div class="processing-options">
+                <label class="settings-switch" title="Makes the main talk button larger and easier to press.">
+                  <input type="checkbox" id="toggle-big-main-button" role="switch" />
+                  <span class="settings-switch__track" aria-hidden="true"></span>
+                  <span>Big main button</span>
+                </label>
+              </div>
+              <div class="processing-options processing-options--close-to-previous">
                 <label class="settings-switch">
                   <input type="checkbox" id="toggle-left-hand-mode" role="switch" />
                   <span class="settings-switch__track" aria-hidden="true"></span>
@@ -2609,7 +2663,7 @@
                 <span class="settings-nav-button__arrow" aria-hidden="true">&#8250;</span>
               </button>
               <button type="button" class="settings-nav-button feed-optional" id="arrange-targets-open" hidden>
-                <span class="settings-nav-button__title">Arrange targets</span>
+                <span class="settings-nav-button__title">Edit targets</span>
                 <span class="settings-nav-button__arrow" aria-hidden="true">&#8250;</span>
               </button>
               </section>
@@ -2634,8 +2688,10 @@
             <div class="settings-view" id="settings-arrange-view" hidden>
               <div class="settings-subheader settings-subheader--plain">
                 <button type="button" class="settings-back-button" id="arrange-targets-back">Back</button>
-                <span class="settings-subheader__title">Arrange targets</span>
+                <span class="settings-subheader__title">Edit targets</span>
+                <button type="button" id="edit-targets-add" class="settings-back-button" aria-label="Add targets" title="Add targets" hidden><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 4v16M4 12h16"/></svg></button>
               </div>
+              <div id="edit-targets-available" class="arrange-targets__list" aria-label="Available targets" hidden></div>
               <div class="arrange-targets__list" id="arrange-targets-list"></div>
               <div class="shortcut-settings__empty" id="arrange-targets-empty" hidden>No targets available.</div>
               <span class="arrange-targets__message" id="arrange-targets-message" role="status" aria-live="polite" hidden></span>
@@ -2814,6 +2870,7 @@
           settingsBody.hidden = false;
           positionSettings();
           settingsTrigger.setAttribute("aria-expanded", "true");
+          settingsTrigger.setAttribute("aria-label", "Close settings");
           window.__talktomeOpenSettings?.();
         };
 
@@ -2824,6 +2881,7 @@
           settingsPanel.classList.remove("is-open");
           settingsBody.hidden = true;
           settingsTrigger.setAttribute("aria-expanded", "false");
+          settingsTrigger.setAttribute("aria-label", "Open settings");
           window.__talktomeCloseSettings?.();
         };
 
@@ -2867,6 +2925,7 @@
   <script src="/remotePanel.js"></script>
   <script src="/incomingAudioLevels.js"></script>
   <script src="/audioMeter.js"></script>
+  <script src="/clientDeviceStatus.js"></script>
   <script src="/client.js"></script>
   <script>
     (function () {

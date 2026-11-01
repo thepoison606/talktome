@@ -5,6 +5,12 @@ function canUserRearrangeTargets(user, defaultSettings = {}) {
     : Boolean(user.allow_target_rearrange);
 }
 
+function canUserAddRemoveTargets(user, defaultSettings = {}) {
+  if (!user || user.is_superadmin || user.is_guest_profile) return false;
+  return user.allow_target_add_remove == null
+    ? defaultSettings?.allowTargetAddRemove === true : Boolean(user.allow_target_add_remove);
+}
+
 function validateCompleteTargetOrder(items, availableTargets) {
   if (!Array.isArray(items)) {
     const error = new Error('items array required');
@@ -40,4 +46,4 @@ function validateCompleteTargetOrder(items, availableTargets) {
   return normalized;
 }
 
-module.exports = { canUserRearrangeTargets, validateCompleteTargetOrder };
+module.exports = { canUserAddRemoveTargets, canUserRearrangeTargets, validateCompleteTargetOrder };

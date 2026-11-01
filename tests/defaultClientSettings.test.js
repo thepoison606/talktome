@@ -13,6 +13,15 @@ test("resolves built-in client defaults when no server settings exist", () => {
   assert.deepEqual(resolveDefaultClientSettings(null), BUILTIN_DEFAULT_CLIENT_SETTINGS);
   assert.equal(resolveDefaultClientSettings(null).showIncomingLevels, false);
   assert.equal(resolveDefaultClientSettings(null).allowTargetRearrange, true);
+  assert.equal(resolveDefaultClientSettings(null).bigMainButton, false);
+});
+
+test("big main button is a validated, serializable server default", () => {
+  assert.equal(resolveDefaultClientSettings({ bigMainButton: true }).bigMainButton, true);
+  assert.equal(resolveDefaultClientSettings({ bigMainButton: false }).bigMainButton, false);
+  assert.throws(() => normalizeConfiguredDefaultClientSettings({ bigMainButton: 'true' }, { strict: true }), /Invalid boolean value/);
+  assert.equal(serializeDefaultClientSettingsScript({ bigMainButton: true }),
+    'window.TALKTOME_DEFAULT_CLIENT_SETTINGS = {"bigMainButton":true};\n');
 });
 
 test("keeps only valid configured client defaults", () => {

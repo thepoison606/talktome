@@ -1,8 +1,4 @@
 const PANEL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4M7 8h4M7 12h2M15 8v4"/></svg>';
-function openUserPanel(userId) {
-  window.open(`/panel?userId=${encodeURIComponent(userId)}`, '_blank', 'noopener');
-}
-
 const adminState = {
   isAuthenticated: false,
   isGlobalAdmin: false,
@@ -128,7 +124,9 @@ const defaultClientAudioProcessing = document.getElementById('default-client-aud
 const defaultClientConnectionSounds = document.getElementById('default-client-connection-sounds');
 const defaultClientIncomingLevels = document.getElementById('default-client-incoming-levels');
 const defaultClientLeftHand = document.getElementById('default-client-left-hand');
+const defaultClientBigMainButton = document.getElementById('default-client-big-main-button');
 const defaultClientLockMultiple = document.getElementById('default-client-lock-multiple');
+const defaultClientAllowTargetAddRemove = document.getElementById('default-client-allow-target-add-remove');
 const defaultClientAllowTargetRearrange = document.getElementById('default-client-allow-target-rearrange');
 const adminImageLightbox = document.getElementById('admin-image-lightbox');
 const adminImageLightboxClose = document.getElementById('admin-image-lightbox-close');
@@ -1511,6 +1509,7 @@ function statusSortValue(row, key) {
     case 'Address': return row.remoteAddress || '';
     case 'RTT': return Number(row.networkStats?.roundTripMs) || 0;
     case 'Loss': return Number(row.networkStats?.packetLossPercent) || 0;
+    case 'Connected':
     case 'Connected since': return Date.parse(row.connectedAt) || 0;
     case 'Last seen': return row.online ? Number.MAX_SAFE_INTEGER : Date.parse(row.lastOnlineAt || row.lastSeenAt) || 0;
     default: return '';
@@ -1531,7 +1530,7 @@ function sortStatusRows(rows, body, fallback) {
     header.dataset.sortKey = key;
     header.setAttribute('aria-sort', preference?.key === key
       ? preference.direction === 1 ? 'ascending' : 'descending' : 'none');
-    if (header.querySelector('button')) return;
+    if (header.querySelector('.status-sort-button')) return;
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'status-sort-button';
@@ -1546,7 +1545,9 @@ function sortStatusRows(rows, body, fallback) {
       }
       renderAdminStatus(latestAdminStatus);
     });
-    header.replaceChildren(button);
+    const label = header.querySelector('[data-status-sort-label]');
+    if (label) label.replaceWith(button);
+    else header.replaceChildren(button);
   });
 }
 
@@ -1560,11 +1561,29 @@ function setStatusUserFilterOpen(open, { restoreFocus = false } = {}) {
   if (!statusUserFilterPanel || !statusUserFilterToggle) return;
   statusUserFilterPanel.hidden = !open;
   statusUserFilterToggle.setAttribute('aria-expanded', String(open));
-  if (open) statusUserFilterPanel.querySelector('[aria-checked="true"]')?.focus();
+  if (open) {
+    statusUserFilterPanel.style.maxHeight = '';
+    const rect = statusUserFilterToggle.getBoundingClientRect();
+    const panel = statusUserFilterPanel.getBoundingClientRect();
+    const below = window.innerHeight - rect.bottom - 14;
+    const above = rect.top - 14;
+    const upward = panel.height > below && above > below;
+    const height = Math.min(panel.height, Math.max(80, upward ? above : below));
+    statusUserFilterPanel.style.maxHeight = `${Math.max(80, upward ? above : below)}px`;
+    statusUserFilterPanel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - panel.width - 8))}px`;
+    statusUserFilterPanel.style.top = `${upward ? Math.max(8, rect.top - height - 6) : rect.bottom + 6}px`;
+    statusUserFilterPanel.querySelector('[aria-checked="true"]')?.focus();
+  }
   else if (restoreFocus) statusUserFilterToggle.focus();
 }
 
 function syncStatusUserFilters(payload) {
+  const filterAnchor = document.getElementById(window.matchMedia('(max-width: 768px)').matches
+    ? 'status-user-filter-mobile-anchor' : 'status-user-filter-header-anchor');
+  if (filterAnchor && statusUserControls && statusUserControls.parentElement !== filterAnchor) {
+    setStatusUserFilterOpen(false);
+    filterAnchor.append(statusUserControls);
+  }
   const enabled = payload.multipleProductionsEnabled === true;
   const productions = enabled && Array.isArray(payload.productions) ? payload.productions : [];
   const selected = productions.find((production) => String(production.id) === statusUserFilters.productionId);
@@ -1588,6 +1607,36 @@ function syncStatusUserFilters(payload) {
     statusUserFilterToggle.title = label;
   }
   if (!enabled) setStatusUserFilterOpen(false);
+}
+
+function formatStatusClientVersion(client) {
+  const version = client.clientVersion ? `v${client.clientVersion}` : '-';
+  const build = client.clientBuild ? ` (${client.clientBuild})` : '';
+  return version + build;
+}
+
+function formatStatusAudioOutput(status) {
+  const output = status?.audioOutput;
+  if (!output?.label) return '-';
+  const kind = { speaker: 'Speaker', receiver: 'Earpiece', bluetooth: 'Bluetooth', wired: 'Headset', usb: 'USB' }[output.kind];
+  return kind && !output.label.toLowerCase().includes(kind.toLowerCase()) ? `${kind} · ${output.label}` : output.label;
+}
+
+function formatStatusNetwork(status) {
+  return { wifi: 'Wi-Fi', cellular: 'Cellular', ethernet: 'Ethernet', vpn: 'VPN', bluetooth: 'Bluetooth', none: 'Offline', other: 'Other' }[status?.networkType] || '-';
+}
+
+function statusBatteryHtml(status) {
+  const percent = status?.batteryPercent;
+  const known = typeof percent === 'number' && Number.isFinite(percent) && percent >= 0 && percent <= 100;
+  if (!known && status?.charging == null) return '-';
+  const charging = status?.charging === true;
+  const warning = known && !charging ? percent <= 10 ? ' is-critical' : percent <= 20 ? ' is-low' : '' : '';
+  const label = known ? `${Math.round(percent)}%` : '-';
+  const title = `${label}${charging ? ' · Charging' : status?.charging === false ? ' · Not charging' : ''}`;
+  const fill = known ? `<rect x="3" y="4" width="${14 * percent / 100}" height="6" rx="1" fill="currentColor"/>` : '';
+  const bolt = '<path d="M12 1 7 7h4l-1 6 6-7h-4l1-5Z" fill="currentColor"/>';
+  return `<span class="status-battery${warning}" title="${title}" aria-label="Battery ${title}"><svg viewBox="0 0 24 14" aria-hidden="true"><rect x="1" y="2" width="18" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M21 5v4" stroke="currentColor" stroke-width="2"/>${charging ? bolt : fill}</svg><span>${label}</span></span>`;
 }
 
 function renderAdminStatus(payload = {}) {
@@ -1652,19 +1701,23 @@ function renderAdminStatus(payload = {}) {
               <td><span class="status-with-stop">${statusIndicatorHtml({
                 ...user,
                 talkingLabel: formatStatusTalkTargetLabel(user),
-              })}${user.talkLocked ? '<svg class="status-talk-lock-icon" viewBox="0 0 24 24" role="img" aria-label="Talk locked" title="Talk locked"><path d="M7 10V7a5 5 0 0 1 10 0v3"/><rect x="5" y="10" width="14" height="11" rx="2"/></svg>' : ''}${Number.isFinite(userId) ? `<button type="button" class="status-panel-button" onclick="openUserPanel(${userId})" title="Open panel" aria-label="Open panel for ${escapeHtml(user.name)}">${PANEL_ICON}</button>` : ''}${user.online && user.talking && Number.isFinite(userId) ? `<button type="button" class="status-stop-mic" data-stop-transmission-user-id="${userId}" onclick="stopUserTransmission(${userId}, this)" title="Stop transmission" aria-label="Stop transmission for ${escapeHtml(user.name)}"><img src="/images/mute_mic.png" alt="" /></button>` : ''}</span></td>
+              })}${user.talkLocked ? '<svg class="status-talk-lock-icon" viewBox="0 0 24 24" role="img" aria-label="Talk locked" title="Talk locked"><path d="M7 10V7a5 5 0 0 1 10 0v3"/><rect x="5" y="10" width="14" height="11" rx="2"/></svg>' : ''}${Number.isFinite(userId) ? `<a class="status-panel-button user-panel-link" href="/panel?userId=${encodeURIComponent(userId)}" target="_blank" rel="noopener" title="Open panel" aria-label="Open panel for ${escapeHtml(user.name)}">${PANEL_ICON}</a>` : ''}${user.online && user.talking && Number.isFinite(userId) ? `<button type="button" class="status-stop-mic" data-stop-transmission-user-id="${userId}" onclick="stopUserTransmission(${userId}, this)" title="Stop transmission" aria-label="Stop transmission for ${escapeHtml(user.name)}"><img src="/images/mute_mic.png" alt="" /></button>` : ''}</span></td>
               <td>${userNameHtml}</td>
               ${showProductionColumn ? `<td title="${escapeHtml(productionLabel)}">${escapeHtml(productionLabel)}</td>` : ''}
-              <td>${escapeHtml(clientLabel)}</td>
-              <td>${escapeHtml(user.remoteAddress || '-')}</td>
-              <td title="${user.connectionType === 'bridge' ? 'Bridge API request round-trip time' : 'WebRTC round-trip time from this browser'}">${formatStatusLatency(user.networkStats)}</td>
-              <td title="${user.connectionType === 'bridge' ? 'Input RTP packet loss from Bridge to server' : 'WebRTC audio packet loss reported by this browser'}">${formatStatusPacketLoss(user.networkStats)}</td>
+              <td class="status-client" title="${escapeHtml(clientLabel)}">${escapeHtml(clientLabel)}</td>
+              <td class="status-client-version" title="${escapeHtml(formatStatusClientVersion(user))}">${escapeHtml(formatStatusClientVersion(user))}</td>
+              <td class="status-device" title="${escapeHtml(formatStatusAudioOutput(user.deviceStatus))}">${escapeHtml(formatStatusAudioOutput(user.deviceStatus))}</td>
+              <td class="status-device status-battery-cell">${statusBatteryHtml(user.deviceStatus)}</td>
+              <td class="status-device">${escapeHtml(formatStatusNetwork(user.deviceStatus))}</td>
+              <td title="${escapeHtml(user.remoteAddress || '-')}">${escapeHtml(user.remoteAddress || '-')}</td>
+              <td title="${user.connectionType === 'bridge' ? 'Bridge API request round-trip time' : 'WebRTC round-trip time reported by this client'}">${formatStatusLatency(user.networkStats)}</td>
+              <td title="${user.connectionType === 'bridge' ? 'Input RTP packet loss from Bridge to server' : 'WebRTC audio packet loss reported by this client'}">${formatStatusPacketLoss(user.networkStats)}</td>
               <td>${user.online ? statusTimeHtml(user.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
               <td>${user.online ? 'Now' : statusTimeHtml(user.lastOnlineAt)}</td>
             </tr>
           `;
         }).join('')
-      : `<tr><td colspan="${showProductionColumn ? 9 : 8}" class="status-empty">${userFilterActive ? 'No users match your filters.' : 'No users configured.'}</td></tr>`;
+      : `<tr><td colspan="${showProductionColumn ? 13 : 12}" class="status-empty">${userFilterActive ? 'No users match your filters.' : 'No users configured.'}</td></tr>`;
   }
 
   if (statusFeedsBody) {
@@ -1680,16 +1733,20 @@ function renderAdminStatus(payload = {}) {
               <td>${statusIndicatorHtml(feed)}</td>
               <td><span class="status-primary">${escapeHtml(feed.name)}</span></td>
               ${showProductionColumn ? '<td class="status-production-spacer" aria-hidden="true"></td>' : ''}
-              <td>${escapeHtml(clientLabel)}</td>
-              <td>${escapeHtml(feed.remoteAddress || '-')}</td>
-              <td title="${feed.connectionType === 'bridge' ? 'Bridge API request round-trip time' : 'WebRTC round-trip time from this browser'}">${formatStatusLatency(feed.networkStats)}</td>
-              <td title="${feed.connectionType === 'bridge' ? 'Input RTP packet loss from Bridge to server' : 'WebRTC audio packet loss reported by this browser'}">${formatStatusPacketLoss(feed.networkStats)}</td>
+              <td class="status-client" title="${escapeHtml(clientLabel)}">${escapeHtml(clientLabel)}</td>
+              <td class="status-client-version" title="${escapeHtml(formatStatusClientVersion(feed))}">${escapeHtml(formatStatusClientVersion(feed))}</td>
+              <td class="status-device" title="${escapeHtml(formatStatusAudioOutput(feed.deviceStatus))}">${escapeHtml(formatStatusAudioOutput(feed.deviceStatus))}</td>
+              <td class="status-device status-battery-cell">${statusBatteryHtml(feed.deviceStatus)}</td>
+              <td class="status-device">${escapeHtml(formatStatusNetwork(feed.deviceStatus))}</td>
+              <td title="${escapeHtml(feed.remoteAddress || '-')}">${escapeHtml(feed.remoteAddress || '-')}</td>
+              <td title="${feed.connectionType === 'bridge' ? 'Bridge API request round-trip time' : 'WebRTC round-trip time reported by this client'}">${formatStatusLatency(feed.networkStats)}</td>
+              <td title="${feed.connectionType === 'bridge' ? 'Input RTP packet loss from Bridge to server' : 'WebRTC audio packet loss reported by this client'}">${formatStatusPacketLoss(feed.networkStats)}</td>
               <td>${feed.online ? statusTimeHtml(feed.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
               <td>${feed.online ? 'Now' : statusTimeHtml(feed.lastSeenAt, { empty: 'Never' })}</td>
             </tr>
           `;
         }).join('')
-      : `<tr><td colspan="${showProductionColumn ? 9 : 8}" class="status-empty">No feeds configured.</td></tr>`;
+      : `<tr><td colspan="${showProductionColumn ? 13 : 12}" class="status-empty">No feeds configured.</td></tr>`;
   }
 
   if (statusBridgesBody) {
@@ -1705,15 +1762,19 @@ function renderAdminStatus(payload = {}) {
               })}</td>
               <td><span class="status-primary">${escapeHtml(bridge.name)}</span></td>
               ${showProductionColumn ? '<td class="status-production-spacer" aria-hidden="true"></td>' : ''}
-              <td>${escapeHtml(bridge.client || 'Bridge')}</td>
-              <td>${escapeHtml(bridge.remoteAddress || '-')}</td>
+              <td class="status-client" title="${escapeHtml(bridge.client || 'Bridge')}">${escapeHtml(bridge.client || 'Bridge')}</td>
+              <td class="status-client-version" title="${escapeHtml(formatStatusClientVersion(bridge))}">${escapeHtml(formatStatusClientVersion(bridge))}</td>
+              <td class="status-device" title="${escapeHtml(formatStatusAudioOutput(bridge.deviceStatus))}">${escapeHtml(formatStatusAudioOutput(bridge.deviceStatus))}</td>
+              <td class="status-device status-battery-cell">${statusBatteryHtml(bridge.deviceStatus)}</td>
+              <td class="status-device">${escapeHtml(formatStatusNetwork(bridge.deviceStatus))}</td>
+              <td title="${escapeHtml(bridge.remoteAddress || '-')}">${escapeHtml(bridge.remoteAddress || '-')}</td>
               <td title="Average Bridge API request round-trip time across active ports">${formatStatusLatency(bridge.networkStats)}</td>
               <td title="Input RTP packet loss from Bridge to server across active ports">${formatStatusPacketLoss(bridge.networkStats)}</td>
               <td>${bridge.online ? statusTimeHtml(bridge.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
               <td>${bridge.online ? 'Now' : statusTimeHtml(bridge.lastSeenAt)}</td>
             </tr>
           `).join('')
-      : `<tr><td colspan="${showProductionColumn ? 9 : 8}" class="status-empty">No bridge announced.</td></tr>`;
+      : `<tr><td colspan="${showProductionColumn ? 13 : 12}" class="status-empty">No bridge announced.</td></tr>`;
   }
 
   if (statusCompanionsBody) {
@@ -1730,8 +1791,12 @@ function renderAdminStatus(payload = {}) {
               <td>${statusIndicatorHtml({ online: companion.online, onlineLabel: 'Online', offlineLabel: 'Stale' })}</td>
               <td><span class="status-primary">${escapeHtml(companion.name)}</span></td>
               ${showProductionColumn ? '<td class="status-production-spacer" aria-hidden="true"></td>' : ''}
-              <td>${escapeHtml(companion.client || '-')}</td>
-              <td>${escapeHtml(companion.remoteAddress || '-')}</td>
+              <td class="status-client" title="${escapeHtml(companion.client || '-')}">${escapeHtml(companion.client || '-')}</td>
+              <td class="status-client-version">-</td>
+              <td class="status-device">-</td>
+              <td class="status-device status-battery-cell">-</td>
+              <td class="status-device">-</td>
+              <td title="${escapeHtml(companion.remoteAddress || '-')}">${escapeHtml(companion.remoteAddress || '-')}</td>
               <td>-</td>
               <td>-</td>
               <td>${connectedSince}</td>
@@ -1739,7 +1804,7 @@ function renderAdminStatus(payload = {}) {
             </tr>
           `;
         }).join('')
-      : `<tr><td colspan="${showProductionColumn ? 9 : 8}" class="status-empty">No Companion instance connected.</td></tr>`;
+      : `<tr><td colspan="${showProductionColumn ? 13 : 12}" class="status-empty">No Companion instance connected.</td></tr>`;
   }
 
   setStatusText('status-version', `Server version ${payload.appVersion || 'unknown'}`);
@@ -2028,12 +2093,31 @@ statusUserControls?.addEventListener('focusout', (event) => {
 document.addEventListener('pointerdown', (event) => {
   if (!statusUserControls?.contains(event.target)) setStatusUserFilterOpen(false);
 });
+document.addEventListener('scroll', (event) => {
+  if (!statusUserFilterPanel?.contains(event.target)) setStatusUserFilterOpen(false);
+}, true);
+window.addEventListener('resize', () => {
+  setStatusUserFilterOpen(false);
+  if (latestAdminStatus) syncStatusUserFilters(latestAdminStatus);
+});
 
 for (const kind of ['users', 'conferences', 'feeds']) {
   const config = getEntityMasterDetailConfig(kind);
-  config?.picker?.addEventListener('click', (event) => {
+  config?.picker?.addEventListener('click', async (event) => {
     const button = event.target.closest(`[data-entity-kind="${kind}"][data-entity-select]`);
-    if (button) selectAdminEntity(kind, button.dataset.entitySelect);
+    if (!button) return;
+    const selectedId = Number(button.dataset.entitySelect);
+    await selectAdminEntity(kind, selectedId);
+    if (kind === 'users') {
+      window.requestAnimationFrame(() => {
+        if (entityMasterDetailState[kind].selectedId !== selectedId) return;
+        const details = config.detailList?.querySelector('[data-entity-id]:not([hidden])');
+        details?.scrollIntoView({
+          behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+          block: 'start',
+        });
+      });
+    }
   });
   bindEntitySearch(config?.search, config?.clear, (query) => {
     entityMasterDetailState[kind].query = query;
@@ -2736,6 +2820,27 @@ async function saveUserTargetRearrange(userId, toggle) {
   }
 }
 
+async function saveUserTargetAddRemove(userId, toggle) {
+  const allowed = toggle.checked;
+  toggle.disabled = true;
+  try {
+    const response = await authedFetch(`/admin/users/${userId}/target-add-remove`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allowTargetAddRemove: allowed }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || 'Failed to save target add/remove permission');
+    toggle.checked = payload.allowTargetAddRemove;
+    showMessage('✅ Target add/remove permission saved', 'success', 'users');
+  } catch (error) {
+    toggle.checked = !allowed;
+    showMessage(`❌ ${error.message}`, 'error', 'users');
+  } finally {
+    toggle.disabled = false;
+  }
+}
+
 async function renderUserList(users, conferences, feeds, bridges = currentBridgeRegistry) {
   currentBridgeRegistry = Array.isArray(bridges) ? bridges : [];
   targetAssignmentsByUser.clear();
@@ -2783,7 +2888,7 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
       ? ''
       : `<button type="button" class="small danger" onclick="deleteUser(${user.id})" ${deleteAttrs}>Delete</button>`;
     const panelButton = !isSuperadmin && !isGuestProfile
-      ? `<button type="button" class="small user-settings-button" onclick="openUserPanel(${user.id})" aria-label="Open panel for ${safeName}" title="Remote control panel"><span>Panel</span>${PANEL_ICON}</button>`
+      ? `<a class="small user-settings-button user-panel-link" href="/panel?userId=${encodeURIComponent(user.id)}" target="_blank" rel="noopener" aria-label="Open panel for ${safeName}" title="Remote control panel"><span>Panel</span>${PANEL_ICON}</a>`
       : '';
     const audioSettingsButton = !isSuperadmin && !isGuestProfile
       ? `<button type="button" class="small user-settings-button" onclick='openUserAudioSettings(${user.id}, ${JSON.stringify(user.name)})' aria-label="Audio settings for ${safeName}" title="Audio settings">
@@ -2878,6 +2983,11 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
               <input type="checkbox" role="switch" onchange="saveUserTargetRearrange(${user.id}, this)" ${user.allowTargetRearrange ? 'checked' : ''} ${isGuestProfile ? 'disabled' : ''}>
               <span class="admin-switch__track" aria-hidden="true"></span>
               <span>Allow target rearrange</span>
+            </label>
+            <label class="admin-switch" title="Allow this user to add or remove targets in their production">
+              <input type="checkbox" role="switch" onchange="saveUserTargetAddRemove(${user.id}, this)" ${user.allowTargetAddRemove ? 'checked' : ''} ${isGuestProfile ? 'disabled' : ''}>
+              <span class="admin-switch__track" aria-hidden="true"></span>
+              <span>Allow target add/remove</span>
             </label>
           </div>
           ${multipleProductionsEnabled ? '' : `<ul id="user-targets-${user.id}"></ul>`}
@@ -3267,8 +3377,10 @@ async function loadDefaultClientSettings() {
   if (defaultClientConnectionSounds) defaultClientConnectionSounds.checked = settings.playConnectionSounds !== false;
   if (defaultClientIncomingLevels) defaultClientIncomingLevels.checked = settings.showIncomingLevels === true;
   if (defaultClientLeftHand) defaultClientLeftHand.checked = settings.leftHandMode === true;
+  if (defaultClientBigMainButton) defaultClientBigMainButton.checked = settings.bigMainButton === true;
   if (defaultClientLockMultiple) defaultClientLockMultiple.checked = settings.lockMultipleTargets === true;
   if (defaultClientAllowTargetRearrange) defaultClientAllowTargetRearrange.checked = settings.allowTargetRearrange !== false;
+  if (defaultClientAllowTargetAddRemove) defaultClientAllowTargetAddRemove.checked = settings.allowTargetAddRemove === true;
   return payload;
 }
 
@@ -4558,8 +4670,10 @@ if (defaultClientSettingsForm) {
       playConnectionSounds: Boolean(defaultClientConnectionSounds?.checked),
       showIncomingLevels: Boolean(defaultClientIncomingLevels?.checked),
       leftHandMode: Boolean(defaultClientLeftHand?.checked),
+      bigMainButton: Boolean(defaultClientBigMainButton?.checked),
       lockMultipleTargets: Boolean(defaultClientLockMultiple?.checked),
       allowTargetRearrange: Boolean(defaultClientAllowTargetRearrange?.checked),
+      allowTargetAddRemove: Boolean(defaultClientAllowTargetAddRemove?.checked),
     };
 
     if (submitButton) submitButton.disabled = true;

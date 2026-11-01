@@ -17,7 +17,8 @@ const {
   normalizeAutomaticBackupSettings,
   createAutomaticConfigBackup,
 } = require("./automaticConfigBackup");
-const { normalizeRegisteredClientType, describeStatusClient, statusRemoteAddress } = require("./statusClient");
+const { normalizeRegisteredClientType, normalizeClientVersion, normalizeClientBuild, describeStatusClient, statusRemoteAddress } = require("./statusClient");
+const { getFreshClientDeviceStatus, recordClientDeviceStatus } = require('./clientDeviceStatus');
 const { resetPeerMediaTransportStatus, updatePeerMediaTransportStatus, describePeerMediaStatus } = require("./mediaStatus");
 const { buildGuestLoginUrl, buildLoginUrl, buildMediaNetworkQrTargets, normalizeConnectUrl, selectAdminQrUrl } = require("./qrConnectUrl");
 const { buildWebRtcListenInfos, resolveClientIceConfig } = require("./webrtcConfig");
@@ -46,7 +47,7 @@ const {
   serializeDefaultClientSettingsScript,
 } = require("./defaultClientSettings");
 const { stopPeerTransmission } = require("./transmissionControl");
-const { canUserRearrangeTargets, validateCompleteTargetOrder } = require("./targetOrdering");
+const { canUserAddRemoveTargets, canUserRearrangeTargets, validateCompleteTargetOrder } = require("./targetOrdering");
 const { resolveActiveProductionSelection } = require("./productionSelection");
 const { createTallyStateStore, normalizeTallyBus } = require("./tallyState");
 const {
@@ -170,6 +171,7 @@ const {
   mergeUserTargetAudioStates,
   updateUserAudioSettings,
   updateUserTargetRearrangePermission,
+  updateUserTargetAddRemovePermission,
   getBridgeEndpointsForDevice,
   getBridgePortAudioLevels,
   updateBridgePortAudioLevel,
@@ -203,6 +205,8 @@ const {
   setProductionConferenceListenOnly,
   removeProductionConferenceMembership,
   getProductionTargets,
+  getAvailableProductionTargets,
+  editProductionTarget,
   getBridgeTargetsForUser,
   addProductionTarget,
   removeProductionTarget,
@@ -1436,6 +1440,7 @@ function serializeBridgeRegistryEntry(entry, now = Date.now()) {
     id: entry.id,
     name: entry.name,
     platform: entry.platform || "unknown",
+    clientVersion: entry.clientVersion || null,
     host: entry.inventory.host,
     inventory: entry.inventory,
     connectedAt: entry.firstSeenAtIso || entry.lastSeenAtIso,
@@ -2760,6 +2765,7 @@ app.get("/users", requireAdmin, (req, res) => {
   res.json(getAllUsers().map(user => ({
     ...user,
     allowTargetRearrange: canUserRearrangeTargets(user, defaults),
+    allowTargetAddRemove: canUserAddRemoveTargets(user, defaults),
   })));
 });
 
@@ -2770,6 +2776,7 @@ function isTargetRearrangeAllowed(user) {
 function emitTargetRearrangePermission(user) {
   findUserPeerByUserId(user.id)?.peer?.socket?.emit('target-rearrange-permission-updated', {
     allowed: isTargetRearrangeAllowed(user),
+    allowTargetAddRemove: isTargetAddRemoveAllowed(user),
   });
 }
 
@@ -2784,6 +2791,21 @@ app.put('/admin/users/:id/target-rearrange', requireAdmin, (req, res) => {
   const updated = getUserById(user.id);
   emitTargetRearrangePermission(updated);
   res.json({ ok: true, allowTargetRearrange: isTargetRearrangeAllowed(updated) });
+});
+
+function isTargetAddRemoveAllowed(user) {
+  return canUserAddRemoveTargets(user, (loadRuntimeConfig() || {}).defaultClientSettings);
+}
+
+app.put('/admin/users/:id/target-add-remove', requireAdmin, (req, res) => {
+  const user = getUserById(req.params.id);
+  if (!user || user.is_superadmin || user.is_guest_profile) return res.status(404).json({ error: 'User not found' });
+  const allowed = req.body?.allowTargetAddRemove;
+  if (allowed !== null && typeof allowed !== 'boolean') return res.status(400).json({ error: 'allowTargetAddRemove must be boolean or null' });
+  updateUserTargetAddRemovePermission(user.id, allowed);
+  const updated = getUserById(user.id);
+  emitTargetRearrangePermission(updated);
+  res.json({ ok: true, allowTargetAddRemove: isTargetAddRemoveAllowed(updated) });
 });
 
 function getResolvedUserAudioSettings(userId) {
@@ -2892,6 +2914,41 @@ app.get('/users/:id/targets', (req, res) => {
   } catch (err) {
     res.status(err?.statusCode || 500).json({ error: err.message });
   }
+});
+
+function clientTargetEditor(req, res, productionValue) {
+  const session = getBrowserSession(req)?.session;
+  if (session?.kind !== 'user') { res.status(401).json({ error: 'User login required' }); return null; }
+  const userId = Number(session.userId);
+  if (!isTargetAddRemoveAllowed(getUserById(userId))) {
+    res.status(403).json({ error: 'User cannot add or remove targets' }); return null;
+  }
+  const productionId = areMultipleProductionsEnabled() ? Number(productionValue) : Number(getPrimaryProduction()?.id);
+  if (!Number.isSafeInteger(productionId) || productionId < 1) { res.status(400).json({ error: 'Select a production first' }); return null; }
+  if (!isUserInProduction(userId, productionId)) {
+    res.status(403).json({ error: 'User is not a member of this production' }); return null;
+  }
+  return { userId, productionId };
+}
+
+app.get('/api/v1/client/targets/available', (req, res) => {
+  const editor = clientTargetEditor(req, res, req.query?.productionId);
+  if (!editor) return;
+  res.json(getAvailableProductionTargets(editor.userId, editor.productionId));
+});
+
+app.put('/api/v1/client/targets/selection', (req, res) => {
+  const editor = clientTargetEditor(req, res, req.body?.productionId);
+  if (!editor) return;
+  const { action, targetType, targetId } = req.body || {};
+  if (!['add', 'remove'].includes(action) || !['user', 'conference', 'feed'].includes(targetType)
+    || !Number.isSafeInteger(targetId) || targetId < 1) return res.status(400).json({ error: 'Invalid target change' });
+  try {
+    editProductionTarget(editor.productionId, editor.userId, targetType, targetId, action);
+    notifyTargetChange(editor.userId);
+    if (targetType === 'conference') notifyConferenceMembersChanged(targetId);
+    res.json({ ok: true });
+  } catch (error) { res.status(400).json({ error: error.message || 'Could not edit targets' }); }
 });
 
 app.put('/api/v1/client/targets/order', (req, res) => {
@@ -3501,12 +3558,12 @@ function normalizeBridgePlatform(value) {
 
 function describeBridgeStatusClient(platform, host) {
   const normalizedPlatform = normalizeBridgePlatform(platform);
-  if (normalizedPlatform === "macos") return "macOS Bridge";
+  if (normalizedPlatform === "macos") return "mac Bridge";
   if (normalizedPlatform === "windows") return "Win Bridge";
   if (normalizedPlatform === "linux") return "Linux Bridge";
 
   const normalizedHost = String(host || "").toLowerCase();
-  if (normalizedHost.includes("coreaudio")) return "macOS Bridge";
+  if (normalizedHost.includes("coreaudio")) return "mac Bridge";
   if (normalizedHost.includes("wasapi") || normalizedHost.includes("asio")) return "Win Bridge";
   if (normalizedHost.includes("alsa") || normalizedHost.includes("pulse") || normalizedHost.includes("jack")) {
     return "Linux Bridge";
@@ -3570,8 +3627,8 @@ const BROWSER_MEDIA_STATS_STALE_MS = 15_000;
 const BRIDGE_NETWORK_STATS_STALE_MS = 30_000;
 
 function normalizeBrowserMediaStats(payload = {}) {
-  const roundTripMs = Number(payload?.roundTripMs);
-  const packetLossPercent = Number(payload?.packetLossPercent);
+  const roundTripMs = payload?.roundTripMs == null || payload.roundTripMs === '' ? NaN : Number(payload.roundTripMs);
+  const packetLossPercent = payload?.packetLossPercent == null || payload.packetLossPercent === '' ? NaN : Number(payload.packetLossPercent);
   const normalized = {};
 
   if (Number.isFinite(roundTripMs) && roundTripMs >= 0 && roundTripMs <= 60_000) {
@@ -3874,6 +3931,9 @@ function buildAdminStatusSnapshot() {
         connectionType: online ? (isBridge ? "bridge" : "browser") : null,
         configuredAsBridge: Boolean(user.bridge_enabled),
         bridgeName: bridge?.name || (isBridge ? peer.bridgeId : null),
+        clientVersion: online ? (isBridge ? bridge?.clientVersion : peer.clientVersion) || null : null,
+        clientBuild: online && !isBridge ? peer.clientBuild || null : null,
+        deviceStatus: online && !isBridge ? getFreshClientDeviceStatus(peer, now) : null,
         connectedAt: online ? statusIsoTimestamp(peer.connectedAt) : null,
         lastOnlineAt: user.last_online_at || null,
         client: online
@@ -3908,6 +3968,9 @@ function buildAdminStatusSnapshot() {
       connectionType: online ? (isBridge ? "bridge" : "browser") : null,
       configuredAsBridge: Boolean(feed.bridge_enabled),
       bridgeName: bridge?.name || (isBridge ? peer.bridgeId : null),
+      clientVersion: online ? (isBridge ? bridge?.clientVersion : peer.clientVersion) || null : null,
+      clientBuild: online && !isBridge ? peer.clientBuild || null : null,
+      deviceStatus: online && !isBridge ? getFreshClientDeviceStatus(peer, now) : null,
       connectedAt: online ? statusIsoTimestamp(peer.connectedAt) : null,
       lastSeenAt: online ? statusIsoTimestamp(peer.lastSeenAt || peer.connectedAt) : null,
       client: online
@@ -3928,6 +3991,7 @@ function buildAdminStatusSnapshot() {
       id: bridge.id,
       name: bridge.name,
       platform: bridge.platform,
+      clientVersion: bridge.clientVersion,
       host: bridge.host,
       online: !bridge.stale,
       stale: bridge.stale,
@@ -5132,6 +5196,7 @@ app.post("/api/v1/bridge/announce", requireBridgeApiAuth, (req, res) => {
     id,
     name,
     platform,
+    clientVersion: normalizeClientVersion(body.clientVersion),
     inventory,
     remoteAddress,
     token: bridgeToken,
@@ -7716,6 +7781,12 @@ io.on("connection", (socket) => {
   // Emit lists
   socket.emit("conference-list", getAllConferences());
 
+  socket.on('client-device-status', (payload) => {
+    if (recordClientDeviceStatus(peers.get(socket.id), payload)) {
+      scheduleAdminStatusBroadcast('client-device-status-updated');
+    }
+  });
+
   socket.on("media-network-stats", (payload = {}) => {
     const peer = peers.get(socket.id);
     if (!peer || peer.isBridgePeer || (peer.kind !== "user" && peer.kind !== "feed")) return;
@@ -7747,7 +7818,7 @@ io.on("connection", (socket) => {
     );
   });
 
-  socket.on("register-user", ({ id, name, kind = "user", force = false, guestProfileUserId = null, productionId = null, clientType = null } = {}, callback) => {
+  socket.on("register-user", ({ id, name, kind = "user", force = false, guestProfileUserId = null, productionId = null, clientType = null, clientVersion = null, clientBuild = null } = {}, callback) => {
     const peer = peers.get(socket.id);
     if (!peer) {
       if (typeof callback === "function") callback({ error: "Peer not registered" });
@@ -7910,6 +7981,8 @@ io.on("connection", (socket) => {
 
     peer.connectedAt = Date.now();
     peer.clientType = normalizeRegisteredClientType(clientType);
+    peer.clientVersion = normalizeClientVersion(clientVersion);
+    peer.clientBuild = normalizeClientBuild(clientBuild);
     emitUserListToOperators();
 
     if (normalizedKind === "user" && peer.userId !== null && peer.userId !== undefined) {
@@ -7942,6 +8015,7 @@ io.on("connection", (socket) => {
       callback({
         ok: true,
         allowTargetRearrange: normalizedKind === 'user' && isTargetRearrangeAllowed(getUserById(peer.userId)),
+        allowTargetAddRemove: normalizedKind === 'user' && isTargetAddRemoveAllowed(getUserById(peer.userId)),
         productionId: peer.productionId ?? null,
         productions: profileUserId == null
           ? []

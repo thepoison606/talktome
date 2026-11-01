@@ -220,6 +220,7 @@ function getAllUsers() {
       users.is_guest_profile,
       users.last_online_at,
       users.allow_target_rearrange,
+      users.allow_target_add_remove,
       COALESCE(user_bridge_endpoints.enabled, 0) AS bridge_enabled,
       COALESCE(user_bridge_endpoints.bridge_device, '') AS bridge_device,
       COALESCE(user_bridge_endpoints.input_device, '') AS bridge_input_device,
@@ -250,6 +251,7 @@ function getUserById(id) {
       users.is_guest_profile,
       users.last_online_at,
       users.allow_target_rearrange,
+      users.allow_target_add_remove,
       COALESCE(user_bridge_endpoints.enabled, 0) AS bridge_enabled,
       COALESCE(user_bridge_endpoints.bridge_device, '') AS bridge_device,
       COALESCE(user_bridge_endpoints.input_device, '') AS bridge_input_device,
@@ -274,6 +276,12 @@ function updateUserTargetRearrangePermission(userId, allowed) {
     throw new Error('allowTargetRearrange must be boolean or null');
   }
   return db.prepare('UPDATE users SET allow_target_rearrange = ? WHERE id = ?')
+    .run(allowed === null ? null : allowed ? 1 : 0, userId).changes > 0;
+}
+
+function updateUserTargetAddRemovePermission(userId, allowed) {
+  if (allowed !== null && typeof allowed !== 'boolean') throw new Error('allowTargetAddRemove must be boolean or null');
+  return db.prepare('UPDATE users SET allow_target_add_remove = ? WHERE id = ?')
     .run(allowed === null ? null : allowed ? 1 : 0, userId).changes > 0;
 }
 
@@ -864,6 +872,31 @@ function getProductionTargets(userId, productionId) {
   }));
 }
 
+function getAvailableProductionTargets(userId, productionId) {
+  if (!isUserInProduction(userId, productionId)) throw new Error('User is not a member of this production');
+  const memberships = new Map(getProductionConferencesForUser(userId, productionId).map(c => [Number(c.id), c]));
+  return [
+    ...getProductionMembers(productionId).filter(u => !u.is_guest_profile && Number(u.id) !== Number(userId))
+      .map(u => ({ targetType: 'user', targetId: Number(u.id), name: u.name, canTalk: true })),
+    ...getProductionConferences(productionId).map(c => ({ targetType: 'conference', targetId: Number(c.id), name: c.name,
+      canTalk: memberships.get(Number(c.id))?.canTalk ?? true })),
+    ...getProductionFeeds(productionId).map(f => ({ targetType: 'feed', targetId: Number(f.id), name: f.name, canTalk: false })),
+  ];
+}
+
+function editProductionTarget(productionId, userId, targetType, targetId, action) {
+  return db.transaction(() => {
+    const available = getAvailableProductionTargets(userId, productionId);
+    if (!available.some(t => t.targetType === targetType && t.targetId === Number(targetId))) throw new Error('Target is not available in this production');
+    const exists = getProductionTargets(userId, productionId).some(t => t.targetType === targetType && t.targetId === Number(targetId));
+    if (action === 'add') {
+      if (!exists) addProductionTarget(productionId, userId, targetType, targetId);
+    } else if (action === 'remove') {
+      if (exists) removeProductionTarget(productionId, userId, targetType, targetId);
+    } else throw new Error('Invalid target action');
+  })();
+}
+
 function getBridgeTargetsForUser(userId) {
   const targets = getProductionsForUser(userId)
     .flatMap((production) => getProductionTargets(userId, production.id));
@@ -1016,7 +1049,7 @@ function exportDatabaseSnapshot() {
       ORDER BY production_id, user_id, position
     `).all(),
     users: db.prepare(`
-      SELECT id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, login_token_hash, last_online_at, audio_settings, panel_settings, allow_target_rearrange
+      SELECT id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, login_token_hash, last_online_at, audio_settings, panel_settings, allow_target_rearrange, allow_target_add_remove
       FROM users
       ORDER BY id
     `).all(),
@@ -1162,8 +1195,8 @@ function importDatabaseSnapshot(snapshot) {
     }
 
     const insertUser = db.prepare(`
-      INSERT INTO users (id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, login_token_hash, last_online_at, audio_settings, panel_settings, allow_target_rearrange)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (id, name, password, is_admin, is_superadmin, admin_must_change, is_guest_profile, login_token_hash, last_online_at, audio_settings, panel_settings, allow_target_rearrange, allow_target_add_remove)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertConference = db.prepare(`
       INSERT INTO conferences (id, name)
@@ -1275,7 +1308,8 @@ function importDatabaseSnapshot(snapshot) {
           { partial: true }
         )),
         JSON.stringify(typeof row.panel_settings === 'string' ? JSON.parse(row.panel_settings || '{}') : row.panel_settings || {}),
-        row.allow_target_rearrange == null ? null : row.allow_target_rearrange ? 1 : 0
+        row.allow_target_rearrange == null ? null : row.allow_target_rearrange ? 1 : 0,
+        row.allow_target_add_remove == null ? null : row.allow_target_add_remove ? 1 : 0
       );
     });
 
@@ -2290,6 +2324,7 @@ module.exports = {
   mergeUserTargetAudioStates,
   updateUserAudioSettings,
   updateUserTargetRearrangePermission,
+  updateUserTargetAddRemovePermission,
   getBridgeEndpointsForDevice,
   getBridgePortAudioLevels,
   updateBridgePortAudioLevel,
@@ -2326,6 +2361,8 @@ module.exports = {
   setProductionConferenceListenOnly,
   removeProductionConferenceMembership,
   getProductionTargets,
+  getAvailableProductionTargets,
+  editProductionTarget,
   getBridgeTargetsForUser,
   getPrimaryProductionTargets,
   addProductionTarget,

@@ -172,6 +172,7 @@ test('admin snapshots expose user/feed media health while preserving signaling o
     findUserPeerByUserId: id => id === 1 ? { peer } : null,
     findFeedPeerByFeedId: () => ({ peer: feed }), getPeerActiveTalkTargets: () => [],
     normalizeRuntimeTalkTargets: () => [], getFreshBrowserMediaStats: () => null,
+    getFreshClientDeviceStatus: () => null,
     statusIsoTimestamp: () => null, describeStatusClient: () => 'Browser', statusRemoteAddress: () => '127.0.0.1',
     describePeerMediaStatus, companionUserState: new Map(), getBridgeRegistrySnapshot: () => [],
     companionNamespace: null, peers: new Map([['user', peer], ['feed', feed]]),

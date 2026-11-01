@@ -29,6 +29,17 @@ const audioScanStatus = document.getElementById("audio-scan-status");
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
 
+async function loadBridgeAppVersion() {
+  if (!invoke) return;
+  try {
+    const version = await invoke('get_bridge_app_version');
+    const label = document.getElementById('bridge-app-version');
+    if (label && typeof version === 'string' && version) label.textContent = `v${version}`;
+  } catch (error) {
+    console.warn('Unable to read Bridge version:', error);
+  }
+}
+
 const STORAGE_KEYS = {
   serverUrl: "talktome:bridge-server-url",
   apiKey: "talktome:bridge-api-key",
@@ -4179,6 +4190,7 @@ window.addEventListener("beforeunload", () => {
 });
 
 loadBridgeSettings();
+loadBridgeAppVersion();
 installWindowFocusSuppressionForControls();
 installBridgeWindowAutoResize();
 loadAutostartState();

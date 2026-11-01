@@ -152,6 +152,8 @@
         color: #fcd34d;
         line-height: 1.4;
       }
+      a.user-panel-link { text-decoration: none; line-height: normal; }
+      a.user-panel-link:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
       .user-settings-button { gap: 0.4rem; }
       .user-settings-button svg { width: 1.05rem; height: 1.05rem; display: block; }
 
@@ -599,7 +601,8 @@
         box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
       }
 
-      button {
+      button,
+      a.user-panel-link {
         min-height: var(--control-height);
         display: inline-flex;
         align-items: center;
@@ -615,7 +618,8 @@
         box-shadow: none;
       }
 
-      button:hover {
+      button:hover,
+      a.user-panel-link:hover {
         background: var(--primary-dark);
       }
 
@@ -625,7 +629,8 @@
         transform: none;
       }
 
-      button.small {
+      button.small,
+      a.user-panel-link.small {
         min-height: 0;
         padding: 0.4rem 0.75rem;
         font-size: 0.8rem;
@@ -1082,7 +1087,7 @@
         display: flex;
         align-items: center;
         justify-content: flex-end;
-        grid-column: 1 / -1;
+        grid-column: 2;
         min-height: 2.2rem;
       }
 
@@ -2814,14 +2819,14 @@
       .status-summary {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
-        margin-bottom: 1.4rem;
+        margin-bottom: 0.8rem;
         border-top: 1px solid var(--border);
         border-bottom: 1px solid var(--border);
       }
 
       .status-summary__item {
         min-width: 0;
-        padding: 0.8rem 1rem;
+        padding: 0.45rem 1rem;
         border-right: 1px solid var(--border);
       }
 
@@ -2831,7 +2836,7 @@
 
       .status-summary__label {
         display: block;
-        margin-bottom: 0.2rem;
+        margin-bottom: 0.1rem;
         color: var(--muted);
         font-size: 0.72rem;
         font-weight: 700;
@@ -2859,7 +2864,7 @@
         align-items: baseline;
         justify-content: space-between;
         gap: 1rem;
-        margin: 0 0 0.55rem;
+        margin: 0 0 0.2rem;
       }
 
       .status-group__heading h3 {
@@ -2885,14 +2890,20 @@
         min-width: 0;
       }
 
-      .status-users-controls {
+      .status-users-controls,
+      .status-production-heading {
         display: inline-flex;
+        align-items: center;
+        gap: 0.15rem;
+        white-space: nowrap;
       }
 
+      .status-table th { white-space: nowrap; }
+
       button.status-user-filter-toggle {
-        width: 1.8rem;
-        min-width: 1.8rem;
-        height: 1.8rem;
+        width: 1.2rem;
+        min-width: 1.2rem;
+        height: 1.2rem;
         min-height: 0;
         padding: 0;
         border: 1px solid transparent;
@@ -2919,9 +2930,9 @@
       }
 
       .status-user-filter-panel {
-        position: absolute;
-        top: calc(100% + 0.45rem);
-        left: 0;
+        position: fixed;
+        text-transform: none;
+        white-space: normal;
         z-index: 20;
         width: max-content;
         max-width: min(20rem, calc(100vw - 2rem));
@@ -2979,6 +2990,12 @@
         white-space: nowrap;
       }
 
+      #status-section-body,
+      .status-group,
+      .status-table-wrap {
+        min-width: 0;
+      }
+
       .status-table-wrap {
         max-width: 100%;
         overflow-x: auto;
@@ -2986,37 +3003,49 @@
 
       .status-table {
         width: 100%;
-        min-width: 59.5rem;
+        min-width: 0;
         table-layout: fixed;
         border-collapse: collapse;
         font-size: 0.84rem;
       }
 
-      .status-table.status-table--with-production {
-        min-width: 67.5rem;
-      }
+      .status-col--status { width: 15%; }
+      .status-col--name { width: 11.5%; }
+      .status-col--production { width: 8%; }
+      .status-col--client { width: 15%; }
+      .status-col--version { width: 7.5%; }
+      .status-col--output { width: 8.5%; }
+      .status-col--battery { width: 6%; }
+      .status-col--network { width: 6%; }
+      .status-col--address { width: 8%; }
+      .status-col--rtt { width: 4%; }
+      .status-col--loss { width: 4%; }
+      .status-col--connected { width: 7.5%; }
+      .status-col--last-seen { width: 7%; }
 
-      .status-col--status { width: 20%; }
-      .status-col--name { width: 10%; }
-      .status-col--production { width: 10%; }
-      .status-col--client { width: 16%; }
-      .status-col--address { width: 16%; }
-      .status-col--rtt { width: 7%; }
-      .status-col--loss { width: 7%; }
-      .status-col--connected { width: 12%; }
-      .status-col--last-seen { width: 12%; }
+      .status-table--with-production .status-col--status { width: 14%; }
+      .status-table--with-production .status-col--name { width: 9.5%; }
+      .status-table--with-production .status-col--production { width: 9%; }
+      .status-table--with-production .status-col--client { width: 12%; }
+      .status-table--with-production .status-col--version { width: 7%; }
+      .status-table--with-production .status-col--output { width: 8%; }
+      .status-table--with-production .status-col--battery { width: 6%; }
+      .status-table--with-production .status-col--network { width: 6%; }
+      .status-table--with-production .status-col--address { width: 8%; }
+      .status-table--with-production .status-col--rtt { width: 4%; }
+      .status-table--with-production .status-col--loss { width: 4%; }
+      .status-table--with-production .status-col--connected { width: 6.5%; }
+      .status-table--with-production .status-col--last-seen { width: 6%; }
 
-      .status-table--with-production .status-col--name { width: 9%; }
-      .status-table--with-production .status-col--client { width: 14%; }
-      .status-table--with-production .status-col--address { width: 14%; }
-      .status-table--with-production .status-col--rtt { width: 6%; }
-      .status-table--with-production .status-col--loss { width: 6%; }
-      .status-table--with-production .status-col--connected { width: 10.5%; }
-      .status-table--with-production .status-col--last-seen { width: 10.5%; }
+      .status-table :is(.status-client, .status-client-version, .status-device) { white-space: nowrap; }
+      .status-battery { display: inline-flex; align-items: center; vertical-align: middle; gap: 0.25rem; line-height: 1; white-space: nowrap; }
+      .status-battery svg { width: 22px; height: 14px; flex: 0 0 auto; }
+      .status-battery.is-low { color: var(--accent); }
+      .status-battery.is-critical { color: var(--danger); }
 
       .status-table th,
       .status-table td {
-        padding: 0.62rem 0.7rem;
+        padding: 0.62rem 0.35rem;
         text-align: left;
         vertical-align: middle;
         border-bottom: 1px solid var(--border);
@@ -3242,6 +3271,7 @@
         }
 
         .default-client-settings-actions {
+          grid-column: 1 / -1;
           justify-content: stretch;
         }
 
@@ -3385,19 +3415,27 @@
         .status-table td:nth-child(1)::before { content: 'Status'; }
         .status-table td:nth-child(2)::before { content: 'Name'; }
         .status-table td:nth-child(3)::before { content: 'Client'; }
-        .status-table td:nth-child(4)::before { content: 'Address'; }
-        .status-table td:nth-child(5)::before { content: 'RTT'; }
-        .status-table td:nth-child(6)::before { content: 'Loss'; }
-        .status-table td:nth-child(7)::before { content: 'Connected since'; }
-        .status-table td:nth-child(8)::before { content: 'Last seen'; }
+        .status-table td:nth-child(4)::before { content: 'Version'; }
+        .status-table td:nth-child(5)::before { content: 'Audio output'; }
+        .status-table td:nth-child(6)::before { content: 'BATT'; }
+        .status-table td:nth-child(7)::before { content: 'Network'; }
+        .status-table td:nth-child(8)::before { content: 'Address'; }
+        .status-table td:nth-child(9)::before { content: 'RTT'; }
+        .status-table td:nth-child(10)::before { content: 'Loss'; }
+        .status-table td:nth-child(11)::before { content: 'Connected'; }
+        .status-table td:nth-child(12)::before { content: 'Last seen'; }
 
         .status-table--with-production td:nth-child(3)::before { content: 'Production'; }
         .status-table--with-production td:nth-child(4)::before { content: 'Client'; }
-        .status-table--with-production td:nth-child(5)::before { content: 'Address'; }
-        .status-table--with-production td:nth-child(6)::before { content: 'RTT'; }
-        .status-table--with-production td:nth-child(7)::before { content: 'Loss'; }
-        .status-table--with-production td:nth-child(8)::before { content: 'Connected since'; }
-        .status-table--with-production td:nth-child(9)::before { content: 'Last seen'; }
+        .status-table--with-production td:nth-child(5)::before { content: 'Version'; }
+        .status-table--with-production td:nth-child(6)::before { content: 'Audio output'; }
+        .status-table--with-production td:nth-child(7)::before { content: 'BATT'; }
+        .status-table--with-production td:nth-child(8)::before { content: 'Network'; }
+        .status-table--with-production td:nth-child(9)::before { content: 'Address'; }
+        .status-table--with-production td:nth-child(10)::before { content: 'RTT'; }
+        .status-table--with-production td:nth-child(11)::before { content: 'Loss'; }
+        .status-table--with-production td:nth-child(12)::before { content: 'Connected'; }
+        .status-table--with-production td:nth-child(13)::before { content: 'Last seen'; }
 
         .status-table--with-production .status-production-spacer {
           display: none;
@@ -3417,7 +3455,7 @@
         }
 
         .status-summary__item {
-          padding: 0.65rem 0.55rem;
+          padding: 0.45rem 0.55rem;
         }
 
         .status-summary__item:nth-child(3n) {
@@ -3470,7 +3508,8 @@
           max-width: 100%;
         }
 
-        button.small {
+        button.small,
+        a.user-panel-link.small {
           width: fit-content;
         }
 
@@ -3569,7 +3608,7 @@
           padding-bottom: 0;
         }
 
-        .list-item-header > .inline-controls > button {
+        .list-item-header > .inline-controls > :is(button, a.user-panel-link) {
           flex: 1 1 auto;
           width: auto;
           min-width: max-content;
@@ -3702,25 +3741,31 @@
           padding: 0.6rem;
         }
 
-        .list-item-header > .inline-controls > button {
+        .list-item-header > .inline-controls > :is(button, a.user-panel-link) {
           flex-basis: calc(50% - 0.25rem);
           min-width: 0;
         }
       }
       .status-with-stop { position: relative; display: flex; align-items: center; gap: 6px; }
-      .status-with-stop:has(.status-stop-mic) { padding-right: 36px; }
-      .status-with-stop .status-indicator { min-width: 0; }
+      .status-with-stop .status-indicator { min-width: 0; flex: 1; }
       .status-talk-lock-icon { width: 15px; height: 15px; flex: 0 0 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
       .status-table .status-sort-button { display: inline; min-height: 0; background: none; border: 0; padding: 0; border-radius: 0; color: inherit; font: inherit; text-transform: inherit; text-align: left; cursor: pointer; box-shadow: none; }
       .status-table .status-sort-button:hover,
       .status-table .status-stop-mic:hover { background: transparent; transform: none; box-shadow: none; }
       th[aria-sort="ascending"] .status-sort-button::after { content: ' ↑'; }
       th[aria-sort="descending"] .status-sort-button::after { content: ' ↓'; }
-      .status-table .status-panel-button { position: absolute; right: 0; top: 50%; margin-top: -15px; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; min-height: 0; padding: 5px; background: transparent; border: 0; box-shadow: none; }
+      .status-table .status-panel-button { position: absolute; right: 0; top: 50%; margin-top: -13px; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; min-height: 0; padding: 3px; background: transparent; border: 0; box-shadow: none; }
       .status-table .status-panel-button svg { width: 20px; height: 20px; }
       .status-table .status-panel-button:hover { background: transparent; transform: none; box-shadow: none; }
-      .status-table .status-with-stop { padding-right: 64px; }
-      .status-table .status-stop-mic { position: absolute; right: 32px; top: 50%; margin-top: -15px; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; min-height: 0; padding: 5px; background: transparent; border: 0; box-shadow: none; }
+      .status-table .status-with-stop { padding-right: 26px; }
+      .status-table .status-with-stop:has(.status-stop-mic) { padding-right: 52px; }
+      @media (min-width: 769px) {
+        .status-table td { white-space: nowrap; }
+        .status-table td:first-child { padding-right: 0.25rem; }
+        .status-table :is(th, td):nth-child(2) { padding-left: 0.4rem; }
+        .status-table :is(th.status-battery-cell, td.status-battery-cell) { padding-inline: 0.4rem; }
+      }
+      .status-table .status-stop-mic { position: absolute; right: 26px; top: 50%; margin-top: -13px; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; min-height: 0; padding: 3px; background: transparent; border: 0; box-shadow: none; }
       .status-stop-mic img { width: 18px; height: 18px; object-fit: contain; filter: brightness(0) invert(1); }
     </style>
   </head>
@@ -3826,12 +3871,7 @@
             <div class="status-group__heading status-group__heading--users">
               <div class="status-users-title">
                 <h3>Users</h3>
-                <div id="status-users-controls" class="status-users-controls">
-                  <button id="status-user-filter-toggle" type="button" class="status-user-filter-toggle" aria-label="Filter users by production" title="Filter by production" aria-haspopup="menu" aria-expanded="false" aria-controls="status-user-filter-panel" hidden>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4h18l-7 8v7l-4 2v-9Z"/></svg>
-                  </button>
-                  <div id="status-user-filter-panel" class="status-user-filter-panel" role="menu" aria-label="Filter users by production" hidden></div>
-                </div>
+                <span id="status-user-filter-mobile-anchor"></span>
               </div>
               <span id="status-users-count" class="status-group__count"></span>
             </div>
@@ -3842,6 +3882,10 @@
                   <col class="status-col--name">
                   <col class="status-col--production" data-status-production-column hidden>
                   <col class="status-col--client">
+                  <col class="status-col--version">
+                  <col class="status-col--output">
+                  <col class="status-col--battery">
+                  <col class="status-col--network">
                   <col class="status-col--address">
                   <col class="status-col--rtt">
                   <col class="status-col--loss">
@@ -3852,17 +3896,33 @@
                   <tr>
                     <th>Status</th>
                     <th>Name</th>
-                    <th data-status-production-column hidden>Production</th>
+                    <th data-status-production-column data-sort-key="Production" hidden>
+                      <span class="status-production-heading">
+                        <span data-status-sort-label>Production</span>
+                        <span id="status-user-filter-header-anchor">
+                          <span id="status-users-controls" class="status-users-controls">
+                            <button id="status-user-filter-toggle" type="button" class="status-user-filter-toggle" aria-label="Filter users by production" title="Filter by production" aria-haspopup="menu" aria-expanded="false" aria-controls="status-user-filter-panel" hidden>
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4h18l-7 8v7l-4 2v-9Z"/></svg>
+                            </button>
+                            <span id="status-user-filter-panel" class="status-user-filter-panel" role="menu" aria-label="Filter users by production" hidden></span>
+                          </span>
+                        </span>
+                      </span>
+                    </th>
                     <th>Client</th>
+                    <th title="Application version; mobile build number in parentheses">Version</th>
+                    <th>Audio output</th>
+                    <th class="status-battery-cell" title="Battery">BATT</th>
+                    <th>Network</th>
                     <th>Address</th>
                     <th title="Browser: WebRTC round-trip time. Bridge: API request round-trip time.">RTT</th>
                     <th title="Browser: WebRTC audio packet loss. Bridge: input RTP packet loss to the server.">Loss</th>
-                    <th>Connected since</th>
+                    <th>Connected</th>
                     <th>Last seen</th>
                   </tr>
                 </thead>
                 <tbody id="status-users-body">
-                  <tr><td colspan="8" class="status-empty">Loading status...</td></tr>
+                  <tr><td colspan="12" class="status-empty">Loading status...</td></tr>
                 </tbody>
               </table>
             </div>
@@ -3880,6 +3940,10 @@
                   <col class="status-col--name">
                   <col class="status-col--production" data-status-production-column hidden>
                   <col class="status-col--client">
+                  <col class="status-col--version">
+                  <col class="status-col--output">
+                  <col class="status-col--battery">
+                  <col class="status-col--network">
                   <col class="status-col--address">
                   <col class="status-col--rtt">
                   <col class="status-col--loss">
@@ -3892,10 +3956,14 @@
                     <th>Name</th>
                     <th data-status-production-column aria-hidden="true" hidden></th>
                     <th>Client</th>
+                    <th title="Application version; mobile build number in parentheses">Version</th>
+                    <th>Audio output</th>
+                    <th class="status-battery-cell" title="Battery">BATT</th>
+                    <th>Network</th>
                     <th>Address</th>
                     <th title="Browser: WebRTC round-trip time. Bridge: API request round-trip time.">RTT</th>
                     <th title="Browser: WebRTC audio packet loss. Bridge: input RTP packet loss to the server.">Loss</th>
-                    <th>Connected since</th>
+                    <th>Connected</th>
                     <th>Last seen</th>
                   </tr>
                 </thead>
@@ -3918,6 +3986,10 @@
                   <col class="status-col--name">
                   <col class="status-col--production" data-status-production-column hidden>
                   <col class="status-col--client">
+                  <col class="status-col--version">
+                  <col class="status-col--output">
+                  <col class="status-col--battery">
+                  <col class="status-col--network">
                   <col class="status-col--address">
                   <col class="status-col--rtt">
                   <col class="status-col--loss">
@@ -3930,10 +4002,14 @@
                     <th>Name</th>
                     <th data-status-production-column aria-hidden="true" hidden></th>
                     <th>Client</th>
+                    <th title="Application version; mobile build number in parentheses">Version</th>
+                    <th>Audio output</th>
+                    <th class="status-battery-cell" title="Battery">BATT</th>
+                    <th>Network</th>
                     <th>Address</th>
                     <th title="Bridge API request round-trip time across active ports">RTT</th>
                     <th title="Input RTP packet loss from Bridge to server across active ports">Loss</th>
-                    <th>Connected since</th>
+                    <th>Connected</th>
                     <th>Last seen</th>
                   </tr>
                 </thead>
@@ -3956,6 +4032,10 @@
                   <col class="status-col--name">
                   <col class="status-col--production" data-status-production-column hidden>
                   <col class="status-col--client">
+                  <col class="status-col--version">
+                  <col class="status-col--output">
+                  <col class="status-col--battery">
+                  <col class="status-col--network">
                   <col class="status-col--address">
                   <col class="status-col--rtt">
                   <col class="status-col--loss">
@@ -3968,10 +4048,14 @@
                     <th>Name</th>
                     <th data-status-production-column aria-hidden="true" hidden></th>
                     <th>Client</th>
+                    <th title="Application version; mobile build number in parentheses">Version</th>
+                    <th>Audio output</th>
+                    <th class="status-battery-cell" title="Battery">BATT</th>
+                    <th>Network</th>
                     <th>Address</th>
                     <th title="WebRTC round-trip time between this browser and the server">RTT</th>
                     <th title="Audio packet loss, cumulative since the current WebRTC transport connected">Loss</th>
-                    <th>Connected since</th>
+                    <th>Connected</th>
                     <th>Last seen</th>
                   </tr>
                 </thead>
@@ -4539,6 +4623,13 @@
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
                   </label>
+                  <label class="default-client-setting-toggle" title="Make the main talk button larger until the client saves its own preference.">
+                    <span>Big main button</span>
+                    <span class="admin-switch">
+                      <input type="checkbox" id="default-client-big-main-button" role="switch" />
+                      <span class="admin-switch__track" aria-hidden="true"></span>
+                    </span>
+                  </label>
                   <label
                     class="default-client-setting-toggle"
                     title="Keep locked targets active while temporarily talking to or locking additional targets."
@@ -4556,9 +4647,16 @@
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
                   </label>
-                </div>
-                <div class="default-client-settings-actions">
-                  <button type="submit">Save</button>
+                  <label class="default-client-setting-toggle" title="Allow users to add or remove targets in their production. Can be overridden per user.">
+                    <span>Allow target add/remove</span>
+                    <span class="admin-switch">
+                      <input type="checkbox" id="default-client-allow-target-add-remove" role="switch" />
+                      <span class="admin-switch__track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <div class="default-client-settings-actions">
+                    <button type="submit">Save</button>
+                  </div>
                 </div>
               </form>
             </section>
