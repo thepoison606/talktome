@@ -479,6 +479,9 @@ pub fn list() -> Result<()> {
 struct PressedKey {
     role: Role,
     since: Instant,
+    /// Mini volume / member layer: the press was on the already selected
+    /// target or member, so a short tap closes the layer.
+    reselect: bool,
 }
 
 fn publish_disconnected(bus: &Bus, id: usize, error: Option<String>) {
@@ -563,9 +566,9 @@ fn menu_label(page: MenuPage) -> &'static str {
     }
 }
 
-fn key_item_count(snapshot: &Snapshot, state: &DeckState) -> usize {
+fn key_item_count(geometry: &Geometry, snapshot: &Snapshot, state: &DeckState) -> usize {
     if let Some(menu) = state.menu {
-        menu_item_count(snapshot, menu)
+        menu_item_count(geometry, snapshot, menu)
     } else if state.member_layer {
         state
             .member_conference
@@ -741,13 +744,15 @@ async fn run_device(
     loop {
         let mut relayout = false;
         let mut pending_updates: Vec<DeviceStateUpdate> = Vec::new();
+        // Wake for every held dial whose hold does something (open or leave
+        // the member mix), decided the same way as the action below.
         let member_hold_at = pressed_encoders
             .iter()
             .filter(|(encoder, _)| {
-                matches!(
+                dial_hold_action(
+                    state.member_layer,
                     bound_encoder(&geometry, &state, &snapshot, **encoder),
-                    Some(BoundEncoder::Target(TargetKey::Conference(_)))
-                )
+                ) != DialHold::Nothing
             })
             .map(|(_, since)| *since + MEMBER_HOLD)
             .min();
@@ -840,7 +845,24 @@ async fn run_device(
                         continue;
                     };
                     let role = spec.role;
-                    pressed.insert(key, PressedKey { role, since: now });
+                    let reselect = layout::volume_in_menu(&geometry)
+                        && match role {
+                            Role::Target(target) => {
+                                state.volume_layer && state.selected == Some(target)
+                            }
+                            Role::Member { user_id, .. } => {
+                                state.member_layer && state.member_selected == Some(user_id)
+                            }
+                            _ => false,
+                        };
+                    pressed.insert(
+                        key,
+                        PressedKey {
+                            role,
+                            since: now,
+                            reselect,
+                        },
+                    );
                     match role {
                         Role::Status => {}
                         Role::Reply => {
@@ -896,14 +918,17 @@ async fn run_device(
                             relayout = true;
                         }
                         Role::NextPage => {
-                            let pages = page_count(&geometry, key_item_count(&snapshot, &state));
+                            let pages =
+                                page_count(&geometry, key_item_count(&geometry, &snapshot, &state));
                             cycle_page(state.key_page_mut(), pages, true);
                             state.touch_layer();
                             relayout = true;
                         }
                         Role::NextEncoderPage => {
-                            let pages =
-                                encoder_page_count(&geometry, key_item_count(&snapshot, &state));
+                            let pages = encoder_page_count(
+                                &geometry,
+                                key_item_count(&geometry, &snapshot, &state),
+                            );
                             cycle_page(&mut state.encoder_page, pages, true);
                             if state.member_layer {
                                 state.touch_member_layer();
@@ -1020,8 +1045,10 @@ async fn run_device(
                     match press.role {
                         Role::Status => {
                             if held >= STATUS_HOLD {
-                                let pages =
-                                    page_count(&geometry, key_item_count(&snapshot, &state));
+                                let pages = page_count(
+                                    &geometry,
+                                    key_item_count(&geometry, &snapshot, &state),
+                                );
                                 cycle_page(state.key_page_mut(), pages, true);
                                 state.touch_layer();
                             } else if state.menu.is_some() {
@@ -1044,6 +1071,9 @@ async fn run_device(
                             if state.volume_layer {
                                 if held >= MUTE_HOLD {
                                     let _ = bus.commands.send(Command::MuteToggle(target)).await;
+                                } else if press.reselect {
+                                    state.close_volume_layer();
+                                    relayout = true;
                                 }
                             } else if target.can_talk() {
                                 let _ = bus
@@ -1068,6 +1098,9 @@ async fn run_device(
                                     })
                                     .await;
                                 state.touch_member_layer();
+                            } else if press.reselect {
+                                state.close_member_layer();
+                                relayout = true;
                             }
                         }
                         Role::VolumeToggle if volume_toggle_defers_to_release(&geometry) => {
@@ -1159,7 +1192,8 @@ async fn run_device(
                     }
                 }
                 DeviceStateUpdate::TouchPointDown(point) => {
-                    let pages = page_count(&geometry, key_item_count(&snapshot, &state)).max(1);
+                    let pages =
+                        page_count(&geometry, key_item_count(&geometry, &snapshot, &state)).max(1);
                     cycle_page(state.key_page_mut(), pages, point != 0);
                     state.touch_layer();
                     relayout = true;
@@ -1172,14 +1206,22 @@ async fn run_device(
                         y1 < y0
                     };
                     if geometry.encoders_follow_bottom_row()
-                        || encoder_page_count(&geometry, key_item_count(&snapshot, &state)) <= 1
+                        || encoder_page_count(
+                            &geometry,
+                            key_item_count(&geometry, &snapshot, &state),
+                        ) <= 1
                     {
-                        let pages = page_count(&geometry, key_item_count(&snapshot, &state)).max(1);
+                        let pages =
+                            page_count(&geometry, key_item_count(&geometry, &snapshot, &state))
+                                .max(1);
                         cycle_page(state.key_page_mut(), pages, forward);
                         state.touch_layer();
                     } else {
-                        let pages =
-                            encoder_page_count(&geometry, key_item_count(&snapshot, &state)).max(1);
+                        let pages = encoder_page_count(
+                            &geometry,
+                            key_item_count(&geometry, &snapshot, &state),
+                        )
+                        .max(1);
                         cycle_page(&mut state.encoder_page, pages, forward);
                         if state.member_layer {
                             state.touch_member_layer();
@@ -1552,9 +1594,9 @@ fn publish_deck_view(
         touchpoints: geometry.touchpoints,
         key_size: key_size.0,
         page: state.key_page(),
-        pages: page_count(geometry, key_item_count(snapshot, state)),
+        pages: page_count(geometry, key_item_count(geometry, snapshot, state)),
         encoder_page: state.encoder_page,
-        encoder_pages: encoder_page_count(geometry, key_item_count(snapshot, state)),
+        encoder_pages: encoder_page_count(geometry, key_item_count(geometry, snapshot, state)),
         volume_layer: state.volume_layer,
         member_layer: state.member_layer,
         menu: state.menu.map(|page| menu_label(page).to_string()),
@@ -1705,7 +1747,7 @@ fn strip_arrows(geometry: &Geometry, state: &DeckState, snapshot: &Snapshot) -> 
     if geometry.encoders == 0 {
         return StripArrows::default();
     }
-    let items = key_item_count(snapshot, state);
+    let items = key_item_count(geometry, snapshot, state);
     let dial_pages = encoder_page_count(geometry, items);
     let (page, pages) = if geometry.encoders_follow_bottom_row() || dial_pages <= 1 {
         (state.key_page(), page_count(geometry, items))

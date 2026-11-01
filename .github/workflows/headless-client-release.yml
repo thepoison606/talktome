@@ -5,12 +5,18 @@ env:
 
 on:
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Version to build and upload to a draft (for example 1.5.10); empty uses Git version'
+        required: false
+        type: string
+      source_ref:
+        description: 'Optional source tag or commit to build with this workflow revision'
+        required: false
+        type: string
   push:
     branches:
       - "main"
-      # Forks whose default branch follows upstream (no headless client)
-      # build from these branches instead.
-      - "headless-*"
     tags:
       - "v*"
     paths:
@@ -39,30 +45,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.source_ref || github.ref }}
           fetch-depth: 0
 
       - name: Resolve version from Git tags
         id: build-version
         shell: bash
-        run: |
-          if node scripts/resolve-build-version.js --github-output "$GITHUB_OUTPUT"; then
-            exit 0
-          fi
-          # No v* tag reachable (e.g. a fresh fork): fall back to a development
-          # version so pushes to main still produce packages. Releases always
-          # come from tags and use the shared resolver above.
-          count="$(git rev-list --count HEAD)"
-          sha="$(git rev-parse --short=8 HEAD)"
-          version="0.0.0-dev.${count}"
-          {
-            echo "version=v${version}"
-            echo "app_version=${version}"
-            echo "safe_version=v${version}-${sha}"
-            echo "base_version=0.0.0"
-            echo "is_release=false"
-            echo "git_sha=${sha}"
-          } >> "$GITHUB_OUTPUT"
-          echo "No release tag found; using development version ${version}"
+        env:
+          TALKTOME_BUILD_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_version || '' }}
+        run: node scripts/resolve-build-version.js --github-output "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.deb_arch }} package
@@ -119,6 +110,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.source_ref || github.ref }}
           fetch-depth: 0
 
       - name: Install Rust
@@ -255,7 +247,7 @@ jobs:
 
   release:
     name: Upload packages to draft release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_version != '')
     needs: [version, build]
     runs-on: ubuntu-latest
 
@@ -275,7 +267,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.version.outputs.version }}
         run: |
           for file in packages/*.deb; do
-            bash scripts/upload-release-asset.sh "$GITHUB_REF_NAME" "$file" "$GITHUB_REF_NAME - macOS + Windows"
+            bash scripts/upload-release-asset.sh "$RELEASE_TAG" "$file" "$RELEASE_TAG - macOS + Windows"
           done

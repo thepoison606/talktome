@@ -40,9 +40,7 @@ as root is fine; the service needs group-write on that directory so the web UI
 can save the admin password and settings (it writes `<instance>.toml.tmp` then
 renames). The packaged unit also sets `ReadWritePaths=/etc/talktome-headless`
 because `ProtectSystem=strict` would otherwise make `/etc` read-only
-(`saving the password failed: … Read-only file system`). After upgrading, a
-manual drop-in with that path is no longer needed; `systemctl daemon-reload`
-and restart the instance.
+(`saving the password failed: … Read-only file system`).
 
 Minimum content: the server URL, the user's name and password and (for a
 self-signed server certificate) `tls.ca_file`, `tls.fingerprint_sha256` or
@@ -77,34 +75,20 @@ create `cam2.toml`, give it its own user, audio devices and GPIO lines, and
 start `talktome-headless@cam2`. When more than one Stream Deck is attached,
 bind each instance with `streamdeck.serial`.
 
-`GET http://127.0.0.1:<health.port>/healthz` returns `200` while the client
-is registered and both media transports are connected, otherwise `503`.
+With `health.port` set (off by default), `GET http://<health.bind>:<health.port>/healthz`
+(`health.bind` defaults to `127.0.0.1`) returns `200` while the client is
+registered with both media transports connected, its audio devices are open
+and the server heartbeat answers; otherwise `503`.
 
 ### Service exits 216/GROUP
 
-`Failed to determine supplementary groups` / `status=216/GROUP` happens
-**before** the binary or `default.toml` is read. systemd is looking up a
-group named in `SupplementaryGroups=` that this machine does not have —
-almost always `gpio`. The instance name `default` is fine; this is not a
-bad config. Current packages do not list those groups on the unit.
-
-Until you upgrade, clear the stale list (membership in `/etc/group` still
-applies):
-
-```bash
-sudo mkdir -p /etc/systemd/system/talktome-headless@.service.d
-sudo tee /etc/systemd/system/talktome-headless@.service.d/groups.conf >/dev/null <<'EOF'
-[Service]
-SupplementaryGroups=
-EOF
-sudo systemctl daemon-reload
-sudo systemctl reset-failed talktome-headless@default
-sudo systemctl start talktome-headless@default
-```
-
-`getent group audio plugdev gpio` shows which of those names exist. Do not
-`addgroup gpio` just to silence this unless you actually have GPIO devices
-and udev rules that use that group.
+`Failed to determine supplementary groups` / `status=216/GROUP` means a
+drop-in names a group in `SupplementaryGroups=` that this machine does not
+have (usually `gpio`); it happens before the configuration is read. The
+packaged unit does not set that option: the package adds the service user
+to `audio`, `plugdev` and `gpio` where those groups exist. Remove the
+drop-in (or set `SupplementaryGroups=` empty), then `systemctl
+daemon-reload`. `getent group audio plugdev gpio` shows which groups exist.
 
 ## Web interface
 
@@ -150,9 +134,9 @@ On a wide screen the Remote Control destinations fill a wrapping grid like the
 web client so you do not have to zoom out; Settings sections sit two-across until
 one is opened. Phones keep a single column.
 
-## Testing without hardware (OrbStack VM, CI, a board with no deck)
+## Testing without hardware (VM, CI, a board with no deck)
 
-A USB Stream Deck does not pass through an OrbStack Linux VM. Use a dummy
+A USB Stream Deck is often not passed through to a Linux VM. Use a dummy
 deck of a chosen type, then operate it from the **Stream Deck** tab (or
 write input lines for scripts):
 
@@ -177,11 +161,11 @@ append lines such as `down 3` / `up 3` to `$TALKTOME_SURFACE_MOCK_DIR/streamdeck
 
 With no Talktome server (so no live targets), the Remote Control tab and
 mock decks can still show destinations using
-`TALKTOME_DEMO_TARGETS=adi,beni,conference:News,feed:Virus` and
+`TALKTOME_DEMO_TARGETS=alice,bob,conference:News,feed:PGM` and
 `TALKTOME_DEMO_REPLY=News`. Those names are paint-only and disappear as
 soon as the client receives real targets.
 
-The VM also has no USB headset. Capture a 440 Hz sine instead of a
+Without a USB headset, capture a 440 Hz sine instead of a
 microphone, and optionally write the mix to a WAV file:
 
 ```toml
@@ -193,7 +177,7 @@ output_device = "wav:/tmp/heard.wav"  # skip if Pulse/ALSA playback works
 `talktome-headless --instance default dev send-tone --target conference:1`
 sends that sine to a target for 10 s using the running account.
 
-GPIO lines from the example config (`GPIO17`, …) do not exist in OrbStack.
+GPIO lines from the example config (`GPIO17`, …) do not exist in a VM.
 Turn GPIO off (`gpio.enabled = false`) or you will see `GPIO line "GPIO27"
 not found on any chip`.
 
@@ -233,12 +217,18 @@ When **this client** sits on a mobile network, set `audio.network =
 150 ms buffer (`jitter_start_ms`) instead of learning the link first, may
 drop only to 60 ms once 10 s of arrivals look calm, and can grow to
 600 ms; the client sends 20 ms frames with FEC (`profile = "standard"`).
-The preset only fills values the file leaves out; the Settings switch
-writes all four, and each stays editable. `audio.device_period_ms` (default 10) is the ALSA period; the
+The preset only fills values the file leaves out. The example configuration
+sets all four explicitly, so in a copied file either use the Settings switch
+(it writes all four, each stays editable) or delete `profile`,
+`jitter_start_ms`, `jitter_min_ms` and `jitter_max_ms` together with setting
+`network = "mobile"`; a leftover `jitter_max_ms = 120` would make the
+mobile start depth fail validation.
+
+`audio.device_period_ms` (default 10) is the ALSA period; the
 device buffer is two of those. `0` keeps the driver default, which on
 many cards is several times larger.
 
-On a NanoPi NEO Core LTS, leave the period at 10 ms. A single
+On small ARM boards (for example a NanoPi NEO Core LTS), leave the period at 10 ms. A single
 `audio-xrun` is one missed period; the stream stays open. If those
 warnings keep coming, the log shows `audio-period-rejected` or
 `audio-stream-error`, or the audio crackles, raise the period (20) and
@@ -260,15 +250,19 @@ server-side mute. The conference fader still scales the whole conference.
   outline.
 - The top row is the command row: **status** (user name and production) at
   the left, **VOL** next to it, **NEXT** (when there are more targets than
-  keys) one left of **Reply**, and **Reply** at the far right. Reply shows
-  the conference (or target) being talked to, not the caller name.
+  keys) one left of **Reply**, and **Reply** at the far right. Reply names
+  the conference (or target) it talks to, with the last caller underneath.
+  The Mini (three columns) shows status, **NEXT** and Reply; its **VOLUME**
+  is a menu entry instead. While the server connection is lost, the status
+  key shows the device's local IP.
   While the microphone is live (any key, a GPIO input, VOX, a talk lock
   or the remote panel), Reply turns red and reads **MIC ON** with the
   target being talked to, or "N targets".
 - **Tap status to open the menu.** The deck switches to a page of its own
   with three entries side by side on the row under the status key, all in the
   menu colour: **CHANGE PRODUCTION** and **INFO** open another screen,
-  **CLEAR / locks** acts at once.
+  **CLEAR / locks** acts at once. On the Mini **VOLUME** comes first and NEXT
+  pages to INFO.
   - **CHANGE PRODUCTION** lists your productions. The active one is highlighted
     ("current"). Tap another production to switch to it: talking stops,
     the targets of the new production load, and the choice is saved as
@@ -289,18 +283,21 @@ server-side mute. The conference fader still scales the whole conference.
   command row; when there are fewer targets than keys, the empty keys are at
   the bottom. Hold to talk,
   tap to toggle a talk lock (purple with a lock badge). Feeds cannot be talked
-  to; pressing a feed toggles its mute.
-- `VOL` opens the volume layer: mute / − / + occupy the command row (on a
-  Neo the whole top row becomes VOL, MUTE, −, +) and **targets do not
-  move**. Tap a target to select it. Steps use `streamdeck.volume_step_db`
+  to; pressing a feed toggles its mute. Pressing a listen-only conference
+  shows **LISTEN ONLY** on that key instead.
+- `VOL` opens the volume layer: the command row becomes **VOL, MUTE, −, +**
+  from the left (status is hidden) and **targets do not move**. On the Mini
+  it is **−, +, NEXT**: open it from MENU → VOLUME, close it by tapping the
+  selected target again or let it time out. Tap a target to select it; holding a target 600 ms toggles
+  its mute. Steps use `streamdeck.volume_step_db`
   (default 3 dB). With more targets than keys, **NEXT** pages them: it
-  takes Reply's key on an MK.2 and MUTE's key on a Neo / Stream Deck +
-  (hold a target to mute it there). The layer closes after
+  takes Reply's key on an MK.2 and MUTE's key on a Neo / Stream Deck +.
+  The layer closes after
   `streamdeck.volume_layer_timeout_s`; paging keeps it open.
 - Conference **member mix** uses the same overlay pattern. **MEMBERS** is
   added on decks that still have a free command-row cell (MK.2, Original,
-  XL, Plus XL). Neo / Mini / Plus open the layer with a **long-press on
-  VOL**; Stream Deck + / + XL also open it with a **long-press on a
+  XL, Plus XL). Neo and Plus open the layer with a **long-press on VOL**,
+  the Mini with a long-press on MENU → **VOLUME**; Stream Deck + / + XL also open it with a **long-press on a
   conference dial** (1 s), and a long-press on any dial leaves it again.
   Target keys then show that conference's members (select, MUTE/HEAR,
   − / +). The layer is exclusive with volume and uses the same timeout.
@@ -313,8 +310,8 @@ server-side mute. The conference fader still scales the whole conference.
   dial pages on the + XL. No arrow means everything fits on one page.
 - The strip segment above a dial greys out like its key when that user
   (or conference member) is offline, bar included; a muted one keeps its
-  red bar.
-  The web UI shows which target each dial currently controls.
+  red bar. Tapping a segment toggles that dial's mute. The web UI shows
+  which target each dial currently controls.
 - Neo: the two touch points switch key pages.
 - Pedal: right = reply; left and middle are assignable (see **Pedal layout
   JSON** below).
@@ -490,7 +487,8 @@ A rotary firmware only needs to write lines such as:
 {"op":"release","target":"user:4","id":14}
 ```
 
-`id` is echoed on `ack` so the panel can match replies. Talk presses are
+An `ack` is only sent for commands that carry an `id`, and echoes it so
+the panel can match replies. Talk presses are
 attributed as `socket:<client>` so they do not steal a Stream Deck hold on
 the same target.
 
@@ -545,10 +543,13 @@ cargo test
 
 The version comes from Git tags through `scripts/resolve-build-version.js`
 (`TALKTOME_BUILD_VERSION`); `Cargo.toml` intentionally stays at `0.0.0`.
-`cargo install cargo-deb` once, then `scripts/build-deb.sh` builds the package
-for the host (or `scripts/build-deb.sh aarch64-unknown-linux-gnu` with a
-multiarch cross toolchain, see the comments in the script). The
-`Headless Client Builds` GitHub workflow (`.github/workflows/headless-client-release.yml`)
+`cargo install cargo-deb` once, then `headless-client/scripts/build-deb.sh`
+builds the package for the host (or `… build-deb.sh aarch64-unknown-linux-gnu`
+with a multiarch cross toolchain, see the comments in the script).
+
+Pull requests run the **Headless client** job in `Pull Request Checks`
+(`cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`). The
+`Headless Client Builds` workflow (`.github/workflows/headless-client-release.yml`)
 builds arm64, armhf and amd64 packages inside Debian Bookworm containers so
-they run on Bookworm and Trixie, and attaches them to the draft release for
-every `v*` tag.
+they run on Bookworm and Trixie, smoke-tests them, and attaches them to the
+draft release for every `v*` tag (or a manual run with a release version).

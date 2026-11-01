@@ -866,7 +866,7 @@ mod tests {
         let mut snapshot = Snapshot::initial("ui", "ueli");
         snapshot.connection = ConnectionState::Ready;
         snapshot.audio_ok = true;
-        snapshot.production = Some("SRF News".into());
+        snapshot.production = Some("News Desk".into());
         snapshot.targets = ["adi", "beni", "oli", "andy", "jan", "kenny"]
             .into_iter()
             .enumerate()
@@ -984,7 +984,7 @@ mod tests {
         };
         let keys = layout(&neo, &snapshot, &DeckState::default(), &options);
         assert_eq!(keys[0].appearance.title, "ueli");
-        assert_eq!(keys[0].appearance.subtitle, "SRF News");
+        assert_eq!(keys[0].appearance.subtitle, "News Desk");
         assert_eq!(keys[1].role, Role::VolumeToggle);
         assert_eq!(keys[3].role, Role::Reply);
         assert_eq!(keys[3].appearance.subtitle, "News");
@@ -1055,7 +1055,7 @@ mod tests {
         let mut offline = snapshot.clone();
         offline.connection = crate::state::ConnectionState::Disconnected;
         let offline_state = DeckState {
-            local_ip: Some("192.168.79.72".into()),
+            local_ip: Some("192.0.2.10".into()),
             ..DeckState::default()
         };
         let keys = layout(&mk2, &offline, &offline_state, &options);
@@ -1063,7 +1063,7 @@ mod tests {
             .save(dir.join("talktome-layout-mk2-offline.png"))
             .unwrap();
         let mut menu_snapshot = snapshot.clone();
-        menu_snapshot.productions = ["SRF News", "Sport", "Meteo"]
+        menu_snapshot.productions = ["News Desk", "Sport", "Meteo"]
             .into_iter()
             .map(|name| crate::state::ProductionInfo {
                 id: name.to_lowercase(),

@@ -197,11 +197,25 @@ pub enum MenuPage {
 }
 
 /// Root menu entries, in key order; they sit together on the target keys.
-const MENU_ENTRIES: [Role; 3] = [
-    Role::Menu(MenuPage::Productions),
-    Role::ClearLocks,
-    Role::Menu(MenuPage::Info),
-];
+/// A 3-column deck keeps NEXT in its command row, so VOLUME moves in here.
+fn menu_entries(geometry: &Geometry) -> Vec<Role> {
+    let mut entries = Vec::with_capacity(4);
+    if volume_in_menu(geometry) {
+        entries.push(Role::VolumeToggle);
+    }
+    entries.extend([
+        Role::Menu(MenuPage::Productions),
+        Role::ClearLocks,
+        Role::Menu(MenuPage::Info),
+    ]);
+    entries
+}
+
+/// Stream Deck Mini: three command keys hold status, NEXT and Reply, so VOL
+/// lives in the menu and the volume layer shows − / + / NEXT.
+pub fn volume_in_menu(geometry: &Geometry) -> bool {
+    geometry.visual && geometry.cols < 4
+}
 
 /// What a Stream Deck + / + XL encoder currently controls.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -401,6 +415,7 @@ impl DeckState {
             return;
         }
         self.close_member_layer();
+        self.close_menu();
         self.volume_layer = true;
         self.touch_volume_layer();
         if self.selected.is_none() {
@@ -434,6 +449,7 @@ impl DeckState {
                 .member_selected
                 .is_some_and(|id| members.iter().any(|member| member.user_id == id));
         self.close_volume_layer();
+        self.close_menu();
         self.member_layer = true;
         self.member_conference = Some(conference);
         if !keep_selection {
@@ -464,7 +480,7 @@ impl DeckState {
         let encoder_pages = encoder_page_count(geometry, encoder_count);
         self.encoder_page = self.encoder_page.min(encoder_pages.saturating_sub(1));
         if let Some(menu) = self.menu {
-            let menu_pages = page_count(geometry, menu_item_count(snapshot, menu));
+            let menu_pages = page_count(geometry, menu_item_count(geometry, snapshot, menu));
             self.menu_page = self.menu_page.min(menu_pages.saturating_sub(1));
         }
     }
@@ -615,9 +631,9 @@ pub fn page_members<'a>(
 }
 
 /// Number of keys a menu page lists.
-pub fn menu_item_count(snapshot: &Snapshot, menu: MenuPage) -> usize {
+pub fn menu_item_count(geometry: &Geometry, snapshot: &Snapshot, menu: MenuPage) -> usize {
     match menu {
-        MenuPage::Root => MENU_ENTRIES.len(),
+        MenuPage::Root => menu_entries(geometry).len(),
         MenuPage::Productions => snapshot.productions.len(),
         MenuPage::Info => info_lines(snapshot, None).len(),
     }
@@ -707,7 +723,10 @@ fn layer_page_counts(
     state: &DeckState,
 ) -> (usize, usize) {
     if let Some(menu) = state.menu {
-        (page_count(geometry, menu_item_count(snapshot, menu)), 1)
+        (
+            page_count(geometry, menu_item_count(geometry, snapshot, menu)),
+            1,
+        )
     } else if state.member_layer {
         let count = state
             .member_conference
@@ -741,6 +760,13 @@ fn command_roles(
     let idle_pagers = |row: &mut [Option<Role>]| {
         row[0] = Some(Role::Status);
         row[cols - 1] = Some(Role::Reply);
+        if volume_in_menu(geometry) {
+            // Mini: status, NEXT, Reply; VOL is a menu entry.
+            if key_pages > 1 && cols > 2 {
+                row[1] = Some(Role::NextPage);
+            }
+            return;
+        }
         if cols > 1 {
             row[1] = Some(Role::VolumeToggle);
         }
@@ -748,16 +774,12 @@ fn command_roles(
         if key_pages > 1 && cursor > 1 {
             row[cursor] = Some(Role::NextPage);
             cursor = cursor.saturating_sub(1);
-        } else if key_pages > 1 && cursor == 1 {
-            row[1] = Some(Role::NextPage);
         }
         // Decks with dials have a touch strip: a swipe pages the dials, so a
         // DIALS key would only take a command cell.
         let dial_key = encoder_pages > 1 && !has_touch_strip(geometry);
         if dial_key && cursor > 1 {
             row[cursor] = Some(Role::NextEncoderPage);
-        } else if dial_key && cursor == 1 && row[1] != Some(Role::NextPage) {
-            row[1] = Some(Role::NextEncoderPage);
         }
         if has_members_command_key(geometry) {
             if let Some(index) = row.iter().position(|cell| cell.is_none()) {
@@ -767,6 +789,18 @@ fn command_roles(
     };
 
     let overlay = |row: &mut [Option<Role>], toggle: Role| {
+        // Mini: − / + / NEXT. The layer closes on its timeout or when the
+        // selected target or member is tapped again; holding one mutes it.
+        if volume_in_menu(geometry) {
+            row[0] = Some(Role::VolumeDown);
+            if cols > 1 {
+                row[1] = Some(Role::VolumeUp);
+            }
+            if key_pages > 1 && cols > 2 {
+                row[2] = Some(Role::NextPage);
+            }
+            return;
+        }
         let controls = [toggle, Role::MuteSelected, Role::VolumeDown, Role::VolumeUp];
         for (index, role) in controls.iter().enumerate() {
             if index < cols {
@@ -787,9 +821,7 @@ fn command_roles(
         // (holding a target or member still mutes it).
         if key_pages > 1 && !row.contains(&Some(Role::NextPage)) {
             let slot = if cols > 4 { cols - 1 } else { 1 };
-            if slot < cols {
-                row[slot] = Some(Role::NextPage);
-            }
+            row[slot] = Some(Role::NextPage);
         }
     };
 
@@ -1297,13 +1329,20 @@ pub fn layout(
         slot.appearance = appearance_for_role(role, snapshot, state, key_pages, encoder_pages);
     }
     if state.menu == Some(MenuPage::Root) {
-        let shown = page_items(geometry, state, &MENU_ENTRIES);
+        let entries = menu_entries(geometry);
+        let shown = page_items(geometry, state, &entries);
         let slots = occupied_target_slots(geometry, shown.len());
         for (slot, (_, role)) in slots.iter().zip(shown.iter()) {
             if let Some(key) = keys.get_mut(*slot as usize) {
                 key.role = **role;
-                key.appearance =
-                    appearance_for_role(**role, snapshot, state, key_pages, encoder_pages);
+                key.appearance = if **role == Role::VolumeToggle {
+                    // VOLUME as a menu entry looks like the other entries.
+                    let mut a = Appearance::simple("VOLUME", palette::MENU);
+                    a.subtitle = "hold: members".into();
+                    a
+                } else {
+                    appearance_for_role(**role, snapshot, state, key_pages, encoder_pages)
+                };
             }
         }
     } else if state.menu == Some(MenuPage::Info) {
@@ -1802,11 +1841,11 @@ mod tests {
         assert_eq!(keys[0].appearance.title, "Cam 1");
         assert_eq!(keys[0].appearance.subtitle, "no IP");
         let state = DeckState {
-            local_ip: Some("192.168.79.72".into()),
+            local_ip: Some("192.0.2.10".into()),
             ..DeckState::default()
         };
         let keys = layout(&geometry("neo"), &snapshot, &state, &options());
-        assert_eq!(keys[0].appearance.subtitle, "192.168.79.72");
+        assert_eq!(keys[0].appearance.subtitle, "192.0.2.10");
         assert_eq!(keys[0].appearance.background, palette::STATUS_BAD);
         snapshot.on_air = true;
         let keys = layout(
@@ -1821,7 +1860,7 @@ mod tests {
     #[test]
     fn status_shows_production_when_ready() {
         let mut snapshot = snapshot(1);
-        snapshot.production = Some("SRF News".into());
+        snapshot.production = Some("News Desk".into());
         let keys = layout(
             &geometry("neo"),
             &snapshot,
@@ -1829,7 +1868,7 @@ mod tests {
             &options(),
         );
         assert_eq!(keys[0].appearance.title, "Cam 1");
-        assert_eq!(keys[0].appearance.subtitle, "SRF News");
+        assert_eq!(keys[0].appearance.subtitle, "News Desk");
     }
 
     fn with_productions(count: usize) -> Snapshot {
@@ -1890,7 +1929,7 @@ mod tests {
         let snapshot = with_productions(2);
         let mut state = DeckState::default();
         state.open_menu(MenuPage::Root);
-        for name in ["mini", "neo", "plus"] {
+        for name in ["neo", "plus"] {
             let keys = layout(&geometry(name), &snapshot, &state, &options());
             let entries = keys
                 .iter()
@@ -1899,6 +1938,23 @@ mod tests {
             assert_eq!(entries, 3, "{name}");
             assert!(!keys.iter().any(|key| key.role == Role::NextPage), "{name}");
         }
+        // Mini: VOLUME joins the menu, so four entries page with NEXT.
+        let mini = geometry("mini");
+        let keys = layout(&mini, &snapshot, &state, &options());
+        assert_eq!(keys[2].role, Role::NextPage);
+        assert_eq!(
+            [keys[3].role, keys[4].role, keys[5].role],
+            [
+                Role::VolumeToggle,
+                Role::Menu(MenuPage::Productions),
+                Role::ClearLocks
+            ]
+        );
+        assert_eq!(keys[3].appearance.title, "VOLUME");
+        assert_eq!(keys[3].appearance.background, palette::MENU);
+        *state.key_page_mut() = 1;
+        let keys = layout(&mini, &snapshot, &state, &options());
+        assert_eq!(keys[3].role, Role::Menu(MenuPage::Info));
     }
 
     #[test]
@@ -2005,7 +2061,7 @@ mod tests {
     }
 
     #[test]
-    fn paging_sits_left_of_reply() {
+    fn mini_pages_with_next_left_of_reply() {
         let geometry = geometry("mini");
         let mut state = DeckState::default();
         let snapshot = snapshot(7);
@@ -2121,6 +2177,34 @@ mod tests {
         assert_eq!(keys[6].role, Role::Target(TargetKey::Feed(11)));
         assert_eq!(keys[7].role, Role::Empty);
         assert_eq!(keys[10].role, Role::Empty);
+    }
+
+    #[test]
+    fn mini_moves_vol_into_the_menu() {
+        // Command row: status, NEXT (only when paging is needed), Reply.
+        let keys = roles("mini", 5, &DeckState::default());
+        assert_eq!(&keys[..3], [Role::Status, Role::NextPage, Role::Reply]);
+        assert!(!keys.contains(&Role::VolumeToggle));
+        let keys = roles("mini", 3, &DeckState::default());
+        assert_eq!(&keys[..3], [Role::Status, Role::Empty, Role::Reply]);
+        // Volume layer: − / + / NEXT; tapping the selected target closes it.
+        let volume = DeckState {
+            volume_layer: true,
+            selected: Some(TargetKey::User(0)),
+            ..DeckState::default()
+        };
+        let keys = roles("mini", 5, &volume);
+        assert_eq!(
+            &keys[..3],
+            [Role::VolumeDown, Role::VolumeUp, Role::NextPage]
+        );
+        let keys = roles("mini", 3, &volume);
+        assert_eq!(&keys[..3], [Role::VolumeDown, Role::VolumeUp, Role::Empty]);
+        // Opening the volume layer from the menu leaves the menu.
+        let mut state = DeckState::default();
+        state.open_menu(MenuPage::Root);
+        state.toggle_volume_layer(&snapshot(5));
+        assert!(state.volume_layer && state.menu.is_none());
     }
 
     #[test]

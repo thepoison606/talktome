@@ -137,10 +137,10 @@ enabled = true
 tally = { line = "GPIO17", active_low = false }
 talking = { line = "GPIO27" }
 # Preview (PRV) tally — green in the web client. Omit if the camera has no preview GPI.
-# tally_preview = { line = "GPIO23" }
+# tally_preview = { line = "GPIO5" }
 # incoming = { line = "GPIO18" }
 # connected = { line = "GPIO25" }
-# Status light: short flash each second = running but not registered,
+# Status light: 100 ms flash then 2 s dark = running but not registered,
 # 1 s on / 1 s off = registered with an error (no media / audio / heartbeat),
 # steady on = media OK, off = client not running.
 # status = { line = "GPIO24" }

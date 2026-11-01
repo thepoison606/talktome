@@ -151,6 +151,41 @@ jobs:
       - name: Test Rust
         run: cargo test --locked --manifest-path server-app/src-tauri/Cargo.toml --lib
 
+  headless-client:
+    name: Headless client
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: headless-client
+
+      - name: Install Linux build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          cmake
+          pkg-config
+          libasound2-dev
+          libudev-dev
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path headless-client/Cargo.toml --check
+
+      - name: Lint
+        run: cargo clippy --locked --manifest-path headless-client/Cargo.toml --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --manifest-path headless-client/Cargo.toml
+
   mobile-app:
     name: Mobile app
     runs-on: ubuntu-latest

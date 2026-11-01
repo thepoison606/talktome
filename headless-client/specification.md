@@ -115,30 +115,45 @@ headless-client/
   build.rs                         # embeds the build version (§14.3)
   specification.md                 # this document
   README.md                        # install / run / configure
+  assets/{disconnected,reconnected}.wav  # connection cues (web client mp3s, as WAV)
   src/
-    main.rs                        # CLI (clap): --instance, --config, --check-config, --version
+    main.rs                        # CLI (clap): --instance, --config, subcommands
+    run.rs                         # wires session, audio, surfaces, web, health
     config.rs                      # schema, JSON/TOML loading, env overrides, validation
+    state.rs                       # shared snapshot, commands and status views
+    talk.rs                        # target model, hold/lock/reply, Companion commands, audio state
+    tls.rs                         # rustls client config (CA file, pinned fingerprint, insecure)
+    devtools.rs                    # `dev send-tone` / `dev record`
+    health.rs                      # sd_notify + watchdog, /healthz, structured logging
     signalling/
       socketio.rs                  # minimal Socket.IO v4 / Engine.IO v4 client (WebSocket, rustls)
       session.rs                   # login, register-user, reconnect, conflict policy, event routing
+      http.rs                      # REST: login, targets, productions, server version
+      panel.rs                     # admin remote panel commands and audio settings
+      alerts.rs                    # connection-loss / reconnect cues
     rtc/
       mod.rs                       # transports lifecycle, produce/consume, recovery
       remote_sdp.rs                # mediasoup params -> SDP for webrtc-rs
+      sdp.rs                       # local SDP parsing
       ortc.rs                      # local SDP -> rtpParameters / rtpCapabilities
+      types.rs                     # mediasoup / protocol types
+      ice_addr.rs                  # hostname ICE candidates -> literal IPs
+      turn_bridge.rs               # local UDP TURN facade for turns:/TCP servers
     audio/
-      capture.rs playback.rs       # cpal (ALSA) streams, device selection, hot-plug recovery
+      io.rs                        # cpal (ALSA) capture/playback, devices, tone / wav, recovery
+      processing.rs                # sonora AEC3 / NS / AGC2
+      resample.rs                  # device-rate resampling (rubato)
       codec.rs                     # Opus encode/decode (libopus, static)
       jitter.rs                    # per-consumer adaptive jitter buffer
       mixer.rs                     # per-source gain/mute/dim, sum to output
       vox.rs                       # level trigger (RMS, hysteresis, hang)
-    talk.rs                        # target model, hold/lock/reply, Companion commands, audio state
+      cues.rs                      # connection cue playback
     surfaces/
       mod.rs                       # Surface trait + event bus
       streamdeck/{mod,layout,render}.rs
       gpio.rs
       local_api.rs                 # JSON-lines Unix/TCP control socket
       mock.rs                      # test backends (PNG keys / in-memory lines)
-    health.rs                      # sd_notify + watchdog, /healthz, structured logging
     web/                           # admin web interface (axum): auth, status, config, deck view
       mod.rs auth.rs config_api.rs
       assets/{index.html,style.css,app.js}
@@ -149,8 +164,10 @@ headless-client/
     config.example.toml
   examples/
     socket_panel.py                # display + rotary integration example
+  scripts/
+    build-deb.sh                   # local cargo-deb build (host or cross target)
   debian/
-    postinst prerm                 # system user, groups, udev reload
+    postinst prerm postrm          # system user, groups, udev reload; purge removes /etc/talktome-headless
 ```
 
 Crates: `tokio`, `webrtc` (webrtc-rs), `tokio-tungstenite` + `rustls`,
@@ -469,7 +486,7 @@ written to WAV by the second instance (289 packets for a 6 s tone; the first
 ## 7. Audio pipeline
 
 - **Devices**: `cpal` on ALSA; `audio.input_device` / `audio.output_device`
-  are ALSA names as listed by `talktome-headless --list-audio-devices`
+  are ALSA names as listed by `talktome-headless list-audio-devices`
   (e.g. `plughw:CARD=Headset,DEV=0`). A Pi's headphone jack has no input;
   a USB headset or USB audio interface is expected.
   `audio.device_period_ms` (default 10, `0` = driver default) is requested
@@ -498,8 +515,9 @@ written to WAV by the second instance (289 packets for a 6 s tone; the first
   start/min/max with 150/60/600 ms and `profile = "standard"` where the
   file leaves them out. So a link that stalls and then bursts
   (mobile networks) keeps the burst instead of losing it. A late packet is
-  bridged with up to 100 ms of Opus concealment before the stream goes
-  quiet and re-primes. Excess depth is shed gradually: quiet 2.5 ms
+  bridged with up to five frames of Opus concealment (25 ms at the web
+  client's 5 ms frames, 100 ms at 20 ms) before the stream goes quiet and
+  re-primes. Excess depth is shed gradually: quiet 2.5 ms
   stretches first, otherwise one sample in 100 (one in 25 when far too
   deep). Only a depth beyond the maximum plus four frames is cut, with a
   5 ms crossfade.
@@ -635,21 +653,27 @@ Every command is answered with the matching `-result` event carrying the
   user is in `plugdev`.
 - **Rendering**: `image` + `ab_glyph`; font from `streamdeck.font_path`
   (default `/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`, package
-  dependency `fonts-dejavu-core`). Keys use the web client's colours: dark
-  grey idle, purple (`#8b5cf6`) while talking, darker purple with a lock
-  glyph when locked, green (`#22c55e`) pulsing while that target addresses
-  us or we hear them (blinks purple/green when both), grey-dim when the
-  target is offline, red speaker glyph when muted, volume shown as a bar.
-  Brightness from
-  `streamdeck.brightness` (default 60) with `streamdeck.idle_dim_s`.
+  dependency `fonts-dejavu-core`). Keys use the web client's colours. Intercom keys (targets, members,
+  Reply) are filled cards: dark grey idle, purple (`#8b5cf6`) while talking,
+  darker purple with a lock badge when locked, green (`#22c55e`) blinking
+  while that target addresses us and steady while we only hear it (purple /
+  green blink when both), a dimmed card when the target is offline, a red
+  tint plus a mute badge when muted. Function keys (status, VOL, MEMBERS,
+  NEXT, MUTE, − / +) are hollow: page-dark with a light outline, blue while
+  active, cyan inside the menu. A volume bar appears on feeds and in the
+  volume layer, not on talk keys or on decks with dials.
+  Brightness from `streamdeck.brightness` (default 60).
 - **Layout** (auto from the production target order on visual decks; Pedal
   left/middle overridable in `streamdeck.layout` / `pedal_left` /
   `pedal_target`):
   - The **top row** is the command row: status (connection, user name,
     production, "ON AIR" / "PREVIEW" when tally is on) at the left, **VOL** next to it,
     a **NEXT** key immediately left of Reply when paging is needed, and
-    **Reply** at the far right. Reply shows the conference being talked to
-    (same as the web client), not the caller.
+    **Reply** at the far right. Reply names the conference it talks to
+    (same as the web client), with the last caller underneath. The Mini
+    (3 columns) shows status, **NEXT** and Reply; its **VOLUME** is a menu
+    entry (root menu, first entry; a long press opens the member layer). With the server connection
+    lost, the status key shows the device's local IP.
     While the microphone is live (any key, a GPIO input, VOX, a talk lock
     or the remote panel), Reply turns red and reads **MIC ON** with the
     target being talked to, or "N targets". The status subtitle is the
@@ -660,10 +684,9 @@ Every command is answered with the matching `-result` event carrying the
     command row holds only status and **NEXT** when a page does not fit;
     every other key is blank. Status reads **MENU / close** on the root and
     **PRODUCTION / back** or **INFO / back** on a sub-page; a tap goes up one
-    level. The root lists three entries on the target keys (starting on the
+    level. The root lists three entries (four on the Mini, with VOLUME first) on the target keys (starting on the
     row under the command row, left to right: **CHANGE PRODUCTION**,
-    **CLEAR / locks**, **INFO**), so it fits every visual deck down to the
-    Mini. They use the status key's menu colour; CHANGE PRODUCTION and INFO
+    **CLEAR / locks**, **INFO**); the Mini pages its four entries with NEXT. They use the status key's menu colour; CHANGE PRODUCTION and INFO
     open another screen.
     - **CHANGE PRODUCTION** opens the production page. It lists the user's
       productions (`GET /users/:id/productions`, refreshed after
@@ -684,16 +707,18 @@ Every command is answered with the matching `-result` event carrying the
   - Remaining keys: targets in **left-to-right, top-to-bottom** order like
     the web client. Targets start on the row right under the command row;
     with fewer targets than keys the empty keys stay at the bottom. Feeds show
-    name + volume; press toggles mute.
-  - **Volume on models without enough command-row space**: **VOL** toggles
-    the volume layer. Mute / − / + are placed on the command row between
-    VOL and Reply, overlaying status/paging/reply only when the row is too
-    short (Neo: VOL, MUTE, −, +). Target keys never move. Tap a target to
+    name + volume; press toggles mute. Pressing a listen-only conference
+    shows **LISTEN ONLY** on that key instead.
+  - **Volume layer**: **VOL** toggles it. The command row becomes **VOL,
+    MUTE, −, +** from the left (status is hidden). Target keys never move.
+    On the Mini the row is **−, +, NEXT**; the layer closes on its timeout
+    or when the selected target (or member) is tapped again. Tap a target to
     select it; `streamdeck.volume_step_db` (default 3 dB; legacy
     `volume_step` 0–1 values become 3 dB); hold a target 600 ms toggles
     mute. With more targets than keys the layer keeps a **NEXT** key: where
     the controls cover the idle NEXT cell, Reply gives way (MK.2, Original),
     or MUTE on 4-column decks (Neo, Plus); the member layer does the same.
+    The Mini keeps NEXT in its third cell.
     The layer times out after `streamdeck.volume_layer_timeout_s` (8 s);
     paging restarts the timer.
   - **Conference members**: a shared **member layer** lists the people in a
@@ -704,8 +729,9 @@ Every command is answered with the matching `-result` event carrying the
     - **MK.2 / Original / XL / Plus XL**: a **MEMBERS** key occupies the first
       free command-row cell (after Status, VOL, paging, Reply). Tap to enter
       or leave the layer.
-    - **Neo / Mini / Plus**: no spare command key. **Hold VOL 600 ms** to open
-      the member layer; a short tap still opens volume.
+    - **Neo / Plus**: no spare command key. **Hold VOL 600 ms** to open
+      the member layer; a short tap still opens volume. On the **Mini** the
+      same holds for the **VOLUME** menu entry.
     - **Stream Deck + / + XL**: **hold a conference dial 1 s** to open that
       conference's member layer (a short press still mutes). In the member
       layer, dials mix the visible members; a short press mutes that member,
@@ -719,7 +745,11 @@ Every command is answered with the matching `-result` event carrying the
     be mixed.
   - **Strip page arrows** (+ and + XL): a small arrow at the right edge of
     the strip when a next page exists, at the left edge when a previous one
-    does, for whatever the swipe pages (keys on the +, dials on the + XL). The web UI labels each dial with its current target.
+    does, for whatever the swipe pages (keys on the +, dials on the + XL).
+  - **Strip segments** follow their key: a muted target or member stays
+    grey even while audio arrives (red bar, MUTED), an offline one greys
+    out with a grey bar; tapping a segment toggles that dial's mute. The
+    web UI labels each dial with its current target.
   - **Neo** touch points act as previous/next **key** page.
   - **Pedal**: three foot switches. Right is always **Reply** and cannot be
     remapped. Left and middle are pinned with `streamdeck.layout` (JSON
@@ -728,8 +758,9 @@ Every command is answered with the matching `-result` event carrying the
     - Values are `user:<id>`, `conference:<id>` (alias `conf:<id>`), or
       `feed:<id>` — the same ids as GPIO / VOX.
     - `"0"` is the left switch, `"1"` the middle. Layout JSON wins over the
-      dedicated fields when both are set. Missing or unparsable values leave
-      that switch empty.
+      dedicated fields when both are set. A missing or unparsable layout
+      value falls back to `pedal_left` / `pedal_target`; with neither, the
+      switch stays empty.
     - Extra indexes (`"2"`, `"5"`, …) are stored but ignored. Visual decks
       (MK.2, XL, Neo, Plus, Mini, …) never apply this map: their keys stay
       in automatic target order.
@@ -780,7 +811,7 @@ Every command is answered with the matching `-result` event carrying the
   `volume_up`, `volume_down`. After the lines are requested, the **current
   level** is sampled so an already-held (typically inverted) button starts
   talking immediately instead of waiting for the next edge. Edge events are
-  debounced in software (`debounce_ms`, default 20) in addition to the
+  debounced in software (one window for all inputs: the largest `debounce_ms`, default 20) in addition to the
   kernel debounce where available. Talk/lock to an offline **user** is
   ignored.
 - GPIO-only instances (the two-instances-per-Pi case) simply omit the
@@ -791,8 +822,10 @@ Every command is answered with the matching `-result` event carrying the
   requested (typically "already used by talktome-headless@<other>", read
   from the kernel's line info) is marked on that output/input in the status
   view and summarised in the GPIO error; the remaining lines keep working.
-- A `mock` GPIO backend (env `TALKTOME_GPIO_BACKEND=mock`) writes line
-  states to a file and reads input events from a FIFO for tests.
+- A mock GPIO backend (env `TALKTOME_MOCK_GPIO=1`) writes line states to
+  `<dir>/gpio-outputs.json` and polls `<line> press|release` lines appended
+  to `<dir>/gpio-inputs`, where `<dir>` is `TALKTOME_SURFACE_MOCK_DIR`
+  (default: the temporary directory).
 
 ---
 
@@ -827,7 +860,8 @@ remote/Companion HTTP (that still goes through the Talktome server).
   `member-volume` / `member-volume-db` / `member-volume-step` / `ping` /
   `get`. Talk is attributed as `InputSource::Companion("socket:<client>")`
   so it does not release a Stream Deck or GPIO hold on the same target.
-  Optional `id` is echoed on `ack` / `pong`. Unknown ops and bad targets
+  An `ack` is only sent for commands that carry an `id`, which it echoes
+  (as does `pong`). Unknown ops and bad targets
   return `{ "op": "error", "error": "…" }`.
 - **Example**: `examples/socket_panel.py` (packaged under
   `/usr/share/talktome-headless/examples/`) paints a text display from
@@ -861,12 +895,13 @@ values (e.g. `TALKTOME_USER_PASSWORD`), which is also how the systemd
              "auto_processing": false,
              "dim_db": -15, "dim_feeds_while_speaking": false,
              "dim_when_addressed": true,
+             "play_connection_sounds": true, "stream_delay_ms": null,
              "network": "lan", "jitter_start_ms": 20,
              "jitter_min_ms": 20, "jitter_max_ms": 400, "reopen_ms": 2000,
-             "default_volume_db": 0 },
+             "default_volume": 0.9, "default_volume_db": null },
   "vox": { "enabled": false, "target": "conference:1", "threshold_db": -32, "hang_ms": 600 },
   "talk": { "tap_ms": 250, "lock_multiple": false, "main_target": null },
-  "ice": { "servers": null, "transport_policy": null },   // null = use the server's
+  "ice": { "servers": null, "transport_policy": null, "ipv6": false },   // null = use the server's
   "network": { "ice_disconnect_grace_ms": 4000 },
   "streamdeck": { "enabled": true, "serial": null, "mock": null, "brightness": 60,
                   "font_path": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -884,15 +919,17 @@ values (e.g. `TALKTOME_USER_PASSWORD`), which is also how the systemd
             "target_outputs": [ { "line": "GPIO18", "target": "conference:1", "when": "receiving" } ] },
   "socket": { "enabled": true, "path": null, "tcp": null },  // Unix JSONL; tcp is loopback-only
   "web": { "enabled": true, "bind": "0.0.0.0", "port": 8080, "password": "admin" },
-  "health": { "port": null },               // optional /healthz listener
-  "log": { "level": "info", "format": "auto" } // auto = JSON when under systemd
+  "health": { "port": null, "bind": "127.0.0.1" },  // optional /healthz listener
+  "log": { "level": "info", "format": "auto" }, // auto = JSON unless stderr is a terminal
+  "state_dir": null                          // default: $STATE_DIRECTORY or /var/lib/talktome-headless/<instance>
 }
 ```
 
-`talktome-headless --check-config` validates a file and prints the
+`talktome-headless check-config` validates a file and prints the
 effective configuration with the password redacted.
-`--list-audio-devices`, `--list-streamdecks` and `--list-gpio` help with
-provisioning.
+`list-audio-devices`, `list-streamdecks` and `list-gpio` help with
+provisioning; `dev send-tone` and `dev record` test audio with the
+configured account.
 
 ---
 
@@ -902,7 +939,7 @@ provisioning.
 
 ```ini
 [Unit]
-Description=Talktome headless client (%i)
+Description=Talktome headless intercom client (%i)
 After=network-online.target sound.target
 Wants=network-online.target
 
@@ -914,49 +951,59 @@ WatchdogSec=30
 Restart=always
 RestartSec=2
 User=talktome-headless
+Group=talktome-headless
 StateDirectory=talktome-headless/%i
+StateDirectoryMode=0750
+RuntimeDirectory=talktome-headless/%i
 ReadWritePaths=/etc/talktome-headless
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=false
+Nice=-5
 ```
 
+`RuntimeDirectory=` provides the control socket path (§11.1).
 `ProtectSystem=strict` remounts `/etc` read-only. The web UI persists the
 admin password and settings by writing `/etc/talktome-headless/<instance>.toml.tmp`
 and renaming it over the live file, so `ReadWritePaths=/etc/talktome-headless`
 is required. `postinst` creates that directory as `0770 root:talktome-headless`
 so the service user can create the temp file (group `r-x` / `0750` is not
-enough). A drop-in with only `ReadWritePaths=` is enough on an already
-installed unit until the package is upgraded.
+enough).
 
-Do **not** set `SupplementaryGroups=audio plugdev gpio` on the unit.
+The unit does **not** set `SupplementaryGroups=audio plugdev gpio`:
 systemd looks those names up at spawn time and exits `216/GROUP`
 (`Failed to determine supplementary groups: No such file or directory`)
 if any of them is missing — usually `gpio` on Debian/Ubuntu that is not
 Raspberry Pi OS. `User=` already applies the groups recorded for
 `talktome-headless` in the user database; `postinst` adds that user to
-`audio`, `plugdev` and `gpio` only when those groups exist. A drop-in
-that assigns `SupplementaryGroups=` (empty) clears a stale vendor list
-until the package is upgraded.
+`audio`, `plugdev` and `gpio` only when those groups exist.
 
 - `sd_notify(READY=1)` after the config is loaded and surfaces are open;
   `WATCHDOG=1` from the main loop while signalling and audio tasks are
   alive; `STATUS=` mirrors the connection state for `systemctl status`.
-- Optional `GET /healthz` on `health.port` (127.0.0.1): `200` when
-  registered and both transports are connected, else `503` with a JSON
-  body describing the failing component.
-- Logging via `tracing`; JSON lines when stdout is the journal, human
-  format on a TTY. Event names: `client-start`, `login`, `login-failed`,
-  `socket-connected`, `socket-disconnected`, `registered`,
-  `registration-conflict`, `registration-error`, `session-kicked`,
-  `transport-connected`, `ice-state`, `media-recovery`, `producer-created`,
-  `consumer-created`, `consumer-closed`, `talk-start`, `talk-stop`,
-  `lock-on`, `lock-off`, `incoming`, `tally`, `audio-device-lost`,
+- Optional `GET /healthz` on `health.bind:health.port` (default bind
+  `127.0.0.1`, off until a port is set): `200` when registered with both
+  transports connected, the audio devices open and the server heartbeat
+  answering, else `503` with a JSON body describing the failing component.
+- Logging via `tracing`; JSON lines unless stderr is a terminal (`log.format
+  = "auto"`), human format on a TTY. Event names include: `client-start`,
+  `client-stop`, `login`, `login-failed`, `socket-connected`,
+  `socket-disconnected`, `registered`, `registration-conflict`,
+  `registration-error`, `session-kicked`, `transports-created`,
+  `transport-state`, `ice-state`, `media-recovery`, `producer-created`,
+  `consumer-created`, `consumer-track`, `incoming-stream`,
+  `consumer-closed`, `targets-loaded`, `production-changed`, `talk-start`,
+  `talk-stop`, `incoming`, `tally`, `audio-device-lost`,
   `audio-device-restored`, `streamdeck-connected`,
   `streamdeck-disconnected`, `gpio-input`, `socket-listening`,
-  `socket-connected`, `companion-command`,
-  `client-error`.
+  `companion-command`.
 
 ### 13.1 Web interface
 
@@ -1010,7 +1057,7 @@ home-screen bookmarks.
   systemd the process exits 0 and `Restart=always` starts it again, otherwise
   the binary re-executes itself with the same arguments. `Save & restart`
   chains both.
-- The API (`/api/session`, `/api/login`, `/api/status`, `/api/config`,
+- The API (`/api/session`, `/api/login`, `/api/logout`, `/api/status`, `/api/config`,
   `/api/config/audio-devices`, `/api/streamdeck`, `/api/streamdeck/key/{n}`,
   `/api/streamdeck/{device}/key/{n}`, `/api/streamdeck/input`, `/api/talk`, `/api/audio`, `/api/password`,
   `/api/restart`) is JSON and can be scripted with the session cookie.
@@ -1024,15 +1071,19 @@ home-screen bookmarks.
 ### 14.1 Debian package
 
 `cargo-deb` with `[package.metadata.deb]`: package `talktome-headless`,
-section `sound`, depends auto-detected (`libasound2`, `libudev1`, `libc6`)
-plus `fonts-dejavu-core`, `adduser`; recommends `alsa-utils`. Assets:
-`/usr/bin/talktome-headless`, `/lib/systemd/system/talktome-headless@.service`,
+section `sound`, depends listed explicitly so cross-built packages need no
+`dpkg-shlibdeps` (`libc6 (>= 2.34)`, `libasound2t64 | libasound2`,
+`libudev1`, `adduser`, `fonts-dejavu-core`); recommends `alsa-utils`.
+Assets: `/usr/bin/talktome-headless`,
+`/lib/systemd/system/talktome-headless@.service`,
 `/lib/udev/rules.d/60-talktome-streamdeck.rules`,
-`/usr/share/doc/talktome-headless/config.example.{json,toml}`, README.
+`/usr/share/talktome-headless/config.example.{json,toml}` and
+`/usr/share/talktome-headless/examples/socket_panel.py`.
 `postinst` creates system user `talktome-headless` (groups `audio`,
 `plugdev`, `gpio` when they exist), creates `/etc/talktome-headless/` as
 `0770 root:talktome-headless` so the service can rewrite instance configs,
-reloads udev rules; `prerm` stops running instances.
+reloads udev rules; `prerm` stops running instances; `postrm purge`
+removes `/etc/talktome-headless` including configs and passwords.
 
 ### 14.2 Targets
 
@@ -1057,17 +1108,18 @@ derived as: release `1.2.5` → `1.2.5`; development `1.2.5-dev.3` →
 
 ### 14.4 Workflows
 
-- `.github/workflows/ci.yml` gains a `headless-client` job: `cargo fmt
-  --check`, `cargo clippy -D warnings`, `cargo test`, and `cargo deb` for
-  amd64 as a packaging smoke test.
+- `.github/workflows/ci.yml` (Pull Request Checks) has a `headless-client`
+  job: `cargo fmt --check`, `cargo clippy --locked -D warnings`,
+  `cargo test --locked`.
 - `.github/workflows/headless-client-release.yml` (modelled on
   `bridge-client-release.yml`): version job → build matrix
   `amd64 | arm64 | armhf` in `debian:bookworm` → `cargo deb --target …
   --deb-version …` → upload artifacts → install smoke test of the arm64 deb
-  on `ubuntu-24.04-arm` in a `debian:bookworm` container and of the amd64
-  deb in `debian:trixie` (`apt-get install ./…deb`, `--version`,
-  `--check-config` on the example) → on tags, upload to the draft release
-  with `scripts/upload-release-asset.sh`.
+  on `ubuntu-24.04-arm` in `debian:bookworm` and `debian:trixie` containers
+  and of the amd64 deb in `debian:trixie` (`apt-get install ./…deb`, `--version`,
+  `check-config` on the example) → on tags, or a manual run with
+  `release_version`, upload to the draft release with
+  `scripts/upload-release-asset.sh`. Manual runs also accept `source_ref`.
 
 ---
 
