@@ -51,6 +51,8 @@ export type SessionUiState = {
   addingProfile: boolean;
   openLoginScanner: boolean;
   operatorReady: boolean;
+  allowTargetRearrange: boolean;
+  allowTargetAddRemove: boolean;
   targets: TalkTarget[];
   talkingTargetKeys: string[];
   lockedTargetKeys: string[];
@@ -148,6 +150,8 @@ export const initialState: SessionUiState = {
   addingProfile: false,
   openLoginScanner: false,
   operatorReady: false,
+  allowTargetRearrange: true,
+  allowTargetAddRemove: false,
   targets: [],
   talkingTargetKeys: [],
   lockedTargetKeys: [],

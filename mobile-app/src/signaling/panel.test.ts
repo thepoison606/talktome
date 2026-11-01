@@ -14,6 +14,14 @@ function fixture() {
 const report: PanelClientReport = { revision: 1, storage: {}, audioStates: [], runtime: { devices: [], inputDeviceId: '', outputDeviceId: '', outputSupported: false, talking: false, targets: [], lockedTargets: [] } };
 
 describe('mobile panel signaling', () => {
+  it('applies target editing permission changes during a connected session', () => {
+    const f = fixture(); f.client.handlers.onTargetEditPermissions = vi.fn();
+    f.listeners.get('target-rearrange-permission-updated')!({ allowed: false, allowTargetAddRemove: true });
+    expect(f.client.handlers.onTargetEditPermissions).toHaveBeenLastCalledWith({ allowTargetRearrange: false, allowTargetAddRemove: true });
+    f.listeners.get('target-rearrange-permission-updated')!({ allowed: true });
+    expect(f.client.handlers.onTargetEditPermissions).toHaveBeenLastCalledWith({ allowTargetRearrange: true, allowTargetAddRemove: false });
+  });
+
   it('dispatches Companion volume/mute and acknowledges results on their own event', async () => {
     const f = fixture();
     const command = { commandId: 'audio-1', action: 'volume-up', targetType: 'feed', targetId: 4, step: 0.1 };

@@ -172,6 +172,23 @@ export class ApiClient {
     return payload.map(talkTargetFromResponse);
   }
 
+  async fetchAvailableTargets(productionId: number | null): Promise<TalkTarget[]> {
+    const query = productionId == null ? '' : `?productionId=${productionId}`;
+    const response = await this.http.request(`/api/v1/client/targets/available${query}`);
+    if (!response.ok) throw await this.serverError(response);
+    const payload = await readJson<TalkTargetResponse[]>(response);
+    if (!Array.isArray(payload)) throw new ApiClientError('The response could not be decoded.');
+    return payload.map(talkTargetFromResponse);
+  }
+
+  async editTargetSelection(productionId: number | null, action: 'add' | 'remove', targetType: string, targetId: number): Promise<void> {
+    const response = await this.http.request('/api/v1/client/targets/selection', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productionId, action, targetType, targetId }),
+    });
+    if (!response.ok) throw await this.serverError(response);
+  }
+
   /** TalkToMe 1.5.8. The list must be the complete current target set. */
   async saveTargetOrder(
     productionId: number | null,

@@ -56,9 +56,10 @@ type HeaderProps = {
   backLabel?: string;
   onBack?: () => void;
   onDone?: () => void;
+  onAdd?: () => void;
 };
 
-export function SettingsHeader({ title, backLabel = 'Settings', onBack, onDone }: HeaderProps) {
+export function SettingsHeader({ title, backLabel = 'Settings', onBack, onDone, onAdd }: HeaderProps) {
   const styles = useSettingsStyles();
   const { width, height } = useWindowDimensions();
   const compact = isCompactOperatorScreen(width, height);
@@ -78,7 +79,11 @@ export function SettingsHeader({ title, backLabel = 'Settings', onBack, onDone }
           {title}
         </Text>
       ) : null}
-      {onDone ? (
+      {onAdd ? (
+        <Pressable onPress={onAdd} accessibilityRole="button" accessibilityLabel="Add targets" hitSlop={8}>
+          <Text style={[styles.done, { fontSize: 26 }]}>＋</Text>
+        </Pressable>
+      ) : onDone ? (
         <Pressable onPress={onDone} accessibilityRole="button">
           <Text style={styles.done}>Done</Text>
         </Pressable>

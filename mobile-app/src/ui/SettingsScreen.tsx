@@ -40,6 +40,7 @@ import {
   useSettingsTheme,
 } from './settingsChrome';
 import { settingsPalette, settingsScheme } from './settingsTheme';
+import { TrashIcon } from './icons';
 import { VolumeSlider } from './VolumeSlider';
 import { IosSystemRoutePicker, iosSystemRoutePickerAvailable } from './IosSystemRoutePicker';
 
@@ -49,6 +50,7 @@ type SettingsPage =
   | { kind: 'layout' }
   | { kind: 'main-button' }
   | { kind: 'arrange' }
+  | { kind: 'add-targets' }
   | { kind: 'audio' }
   | { kind: 'ptt' }
   | { kind: 'watch-targets' }
@@ -121,6 +123,7 @@ export function SessionSheet({ onClose }: { onClose: () => void }) {
     onOpenLayout: () => push({ kind: 'layout' }),
     onOpenMainButton: () => push({ kind: 'main-button' }),
     onOpenArrange: () => push({ kind: 'arrange' }),
+    onOpenAddTargets: () => push({ kind: 'add-targets' }),
     onOpenAudio: () => push({ kind: 'audio' }),
     onOpenAccessories: () => push({ kind: 'ptt' }),
     onOpenWatchTargets: () => push({ kind: 'watch-targets' }),
@@ -246,6 +249,7 @@ function SettingsSheet({
   onOpenLayout,
   onOpenMainButton,
   onOpenArrange,
+  onOpenAddTargets,
   onOpenAudio,
   onOpenAccessories,
   onOpenWatchTargets,
@@ -264,6 +268,7 @@ function SettingsSheet({
   onOpenLayout: () => void;
   onOpenMainButton: () => void;
   onOpenArrange: () => void;
+  onOpenAddTargets: () => void;
   onOpenAudio: () => void;
   onOpenAccessories: () => void;
   onOpenWatchTargets: () => void;
@@ -283,6 +288,7 @@ function SettingsSheet({
         backLabel={header.backLabel}
         onBack={onBack}
         onDone={onClose}
+        onAdd={page.kind === 'arrange' && store.identity?.kind === 'user' && store.allowTargetAddRemove ? onOpenAddTargets : undefined}
       />
 
       <ScrollView scrollEnabled={scrollEnabled} style={styles.scroll} contentContainerStyle={styles.body}>
@@ -303,6 +309,7 @@ function SettingsSheet({
         ) : null}
         {page.kind === 'main-button' ? <MainButtonSettingsPage /> : null}
         {page.kind === 'arrange' ? <ArrangeTargetsPage /> : null}
+        {page.kind === 'add-targets' ? <AddTargetsPage /> : null}
         {page.kind === 'audio' ? <AudioSettingsPage onDimSliding={onDimSliding} /> : null}
 
         {page.kind === 'ptt' ? (
@@ -337,7 +344,9 @@ function headerForPage(page: SettingsPage, deviceName?: string): { title: string
     case 'main-button':
       return { title: 'Main button target', backLabel: 'Layout' };
     case 'arrange':
-      return { title: 'Arrange targets', backLabel: 'Layout' };
+      return { title: 'Edit targets', backLabel: 'Layout' };
+    case 'add-targets':
+      return { title: 'Add targets', backLabel: 'Edit targets' };
     case 'audio':
       return { title: 'Audio', backLabel: 'Session' };
     case 'ptt':
@@ -368,7 +377,7 @@ function LayoutSettingsPage({
     replyTarget: store.replyTarget,
     canTalk: (target) => session.canTalkTo(target),
   });
-  const canArrange = store.identity?.kind === 'user';
+  const canArrange = store.identity?.kind === 'user' && (store.allowTargetRearrange || store.allowTargetAddRemove);
 
   return (
     <>
@@ -397,7 +406,7 @@ function LayoutSettingsPage({
           compact="Taller bottom button. Off until you turn it on."
         />
         {canArrange ? (
-          <SettingsNavRow label="Arrange targets" onPress={onOpenArrange} />
+          <SettingsNavRow label="Edit targets" onPress={onOpenArrange} />
         ) : null}
         <SettingsSwitchRow
           label="Lock multiple targets"
@@ -505,11 +514,14 @@ function OrderArrow({
 function ArrangeTargetsPage() {
   const targets = useSessionStore((state) => state.targets);
   const styles = useSettingsStyles();
+  const { palette } = useSettingsTheme();
+  const allowReorder = useSessionStore(state => state.allowTargetRearrange);
+  const allowAddRemove = useSessionStore(state => state.allowTargetAddRemove);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
 
   const move = async (index: number, delta: number) => {
-    if (busy) {
+    if (busy || !allowReorder) {
       return;
     }
     const next = moveTargetOrder(targets, index, index + delta);
@@ -526,6 +538,14 @@ function ArrangeTargetsPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const remove = async (target: TalkTarget) => {
+    if (busy || !allowAddRemove) return;
+    setBusy(true); setMessage('Saving…');
+    try { await session.editTargetSelection(target, 'remove'); setMessage('Saved'); }
+    catch (error) { setMessage(error instanceof Error ? error.message : 'Could not remove target'); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -548,18 +568,22 @@ function ArrangeTargetsPage() {
                 <Text style={styles.orderKind}>{arrangeKind(target)}</Text>
               </View>
               <View style={styles.orderButtons}>
-                <OrderArrow
+                {allowReorder ? <OrderArrow
                   direction="up"
                   label={`Move ${target.label} up`}
                   disabled={busy || index === 0}
                   onPress={() => void move(index, -1)}
-                />
-                <OrderArrow
+                /> : null}
+                {allowReorder ? <OrderArrow
                   direction="down"
                   label={`Move ${target.label} down`}
                   disabled={busy || index === targets.length - 1}
                   onPress={() => void move(index, 1)}
-                />
+                /> : null}
+                {allowAddRemove ? <Pressable style={styles.orderButton} accessibilityRole="button"
+                  accessibilityLabel={`Remove ${target.label}`} disabled={busy} onPress={() => void remove(target)}>
+                  <TrashIcon color={palette.danger} />
+                </Pressable> : null}
               </View>
             </View>
           ))}
@@ -567,11 +591,43 @@ function ArrangeTargetsPage() {
       )}
       {message ? <SettingsFootnote>{message}</SettingsFootnote> : null}
       <SettingsHint
-        full="Saves this order on the server, the same list the web client stores. Up and down avoid dragging inside a scrolling page."
-        compact="Saves the same target order as the web client."
+        full="Changes are saved for this production and are shared with the web client."
+        compact="Changes are saved for this production."
       />
     </>
   );
+}
+
+function AddTargetsPage() {
+  const productionId = useSessionStore(state => state.productionId);
+  const profileId = useSessionStore(state => state.activeProfileId);
+  const allowed = useSessionStore(state => state.allowTargetAddRemove);
+  const targets = useSessionStore(state => state.targets);
+  const [available, setAvailable] = useState<TalkTarget[]>([]);
+  const [message, setMessage] = useState('Loading…');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let active = true; setAvailable([]);
+    if (!allowed) { setMessage('This account cannot add or remove targets.'); return; }
+    setMessage('Loading…');
+    void session.availableTargets().then(items => { if (active) { setAvailable(items); setMessage(''); } })
+      .catch(error => { if (active) setMessage(error instanceof Error ? error.message : 'Could not load targets'); });
+    return () => { active = false; };
+  }, [productionId, profileId, allowed]);
+  const selected = new Set(targets.map(talkTargetIdentity));
+  const choices = allowed ? available.filter(target => !selected.has(talkTargetIdentity(target))) : [];
+  const add = async (target: TalkTarget) => {
+    if (busy || !allowed) return;
+    setBusy(true); setMessage('Saving…');
+    try { await session.editTargetSelection(target, 'add'); setMessage('Added'); }
+    catch (error) { setMessage(error instanceof Error ? error.message : 'Could not add target'); }
+    finally { setBusy(false); }
+  };
+  return <>
+    <SettingsSection>{choices.map(target => <SettingsActionRow key={talkTargetIdentity(target)}
+      label={`＋ ${target.label} · ${arrangeKind(target)}`} disabled={busy} onPress={() => void add(target)} />)}</SettingsSection>
+    {message ? <SettingsFootnote>{message}</SettingsFootnote> : choices.length === 0 ? <SettingsFootnote>All available targets are already added.</SettingsFootnote> : null}
+  </>;
 }
 
 function AudioSettingsPage({ onDimSliding }: { onDimSliding: (active: boolean) => void }) {

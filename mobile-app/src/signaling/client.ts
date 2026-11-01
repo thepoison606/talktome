@@ -32,6 +32,7 @@ export type SignalingHandlers = {
   onApiTalkCommand?: (command: unknown) => Promise<PanelCommandResult>;
   onApiTargetAudioCommand?: (command: unknown) => Promise<PanelCommandResult>;
   onPanelCommand?: (command: unknown) => Promise<PanelCommandResult>;
+  onTargetEditPermissions?: (permissions: { allowTargetRearrange: boolean; allowTargetAddRemove: boolean }) => void;
   onPanelStateRequest?: () => void;
   onUserAudioSettingsUpdated?: (settings: unknown) => void;
   onStateChange?: (state: SignalingConnectionState) => void;
@@ -413,6 +414,9 @@ export class SignalingClient {
     });
     bindApiCommand('api-talk-command', 'onApiTalkCommand');
     bindApiCommand('api-target-audio-command', 'onApiTargetAudioCommand');
+    socket.on('target-rearrange-permission-updated', ({ allowed, allowTargetAddRemove } = {}) => {
+      this.handlers.onTargetEditPermissions?.({ allowTargetRearrange: allowed === true, allowTargetAddRemove: allowTargetAddRemove === true });
+    });
     socket.on('connect', () => {
       if (this.socket !== socket || this.awaitingInitialConnect) return;
       this.handlers.onStateChange?.({ status: 'connected', socketId: socket.id });

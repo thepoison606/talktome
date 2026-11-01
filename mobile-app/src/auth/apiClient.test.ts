@@ -33,6 +33,28 @@ function clientWith(fetchImpl: typeof fetch, cookies: CookieMap = {}) {
 }
 
 describe('ApiClient', () => {
+  it('loads the production target catalog and sends scoped add/remove changes', async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const { client } = clientWith(mockFetch((url, init) => {
+      calls.push({ url, init });
+      if (url.includes('/available')) return jsonResponse(200, [{ targetType: 'feed', targetId: 4, name: 'Program', canTalk: false }]);
+      return jsonResponse(200, { ok: true });
+    }));
+    expect(await client.fetchAvailableTargets(7)).toEqual([expect.objectContaining({ type: 'feed', id: 4, label: 'Program', canTalk: false })]);
+    expect(calls[0]!.url).toBe('https://intercom.local/api/v1/client/targets/available?productionId=7');
+    for (const action of ['add', 'remove'] as const) {
+      await client.editTargetSelection(7, action, 'feed', 4);
+      expect(calls.at(-1)!.url).toBe('https://intercom.local/api/v1/client/targets/selection');
+      expect(JSON.parse(String(calls.at(-1)!.init?.body))).toEqual({ productionId: 7, action, targetType: 'feed', targetId: 4 });
+    }
+  });
+
+  it('surfaces permission rejection instead of silently adding a target', async () => {
+    const { client } = clientWith(mockFetch(() => jsonResponse(403, { error: 'User cannot add or remove targets' })));
+    await expect(client.fetchAvailableTargets(7)).rejects.toMatchObject({ statusCode: 403 });
+    await expect(client.editTargetSelection(7, 'add', 'user', 2)).rejects.toMatchObject({ statusCode: 403 });
+  });
+
   it('posts credentials to /login and stores the session cookie', async () => {
     const { client, getCookies } = clientWith(
       mockFetch(async (url, init) => {

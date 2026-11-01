@@ -15,6 +15,7 @@ import type { MediaEngine } from '../media/engine';
 import {
   EMPTY_CAMERA_TALLY,
   parseProductions,
+  talkTargetIdentity,
   type ActiveProducer,
   type OperatorIdentity,
   type Production,
@@ -851,6 +852,7 @@ export class SessionController {
 
   private bindSignaling(signaling: SignalingClient): void {
     signaling.handlers = {
+      onTargetEditPermissions: permissions => useSessionStore.setState(permissions),
       onPanelCommand: command => this.remotePanel.handleCommand(command),
       onApiTalkCommand: command => this.remotePanel.handleCompanionTalk(command),
       onApiTargetAudioCommand: command => this.remotePanel.handleCompanionAudio(command),
@@ -1021,6 +1023,7 @@ export class SessionController {
         await this.logout('Could not re-register after reconnect.');
         return;
       }
+      useSessionStore.setState({ allowTargetRearrange: register.allowTargetRearrange !== false, allowTargetAddRemove: register.allowTargetAddRemove === true });
       if (parsePanelSettings(register.panelSettings)) {
         const productions = Array.isArray(register.productions) ? parseProductions(register.productions) : useSessionStore.getState().productions;
         const productionId = positiveId(register.productionId);
@@ -1212,6 +1215,7 @@ export class SessionController {
       throw new Error(message);
     }
 
+    useSessionStore.setState({ allowTargetRearrange: register.allowTargetRearrange !== false, allowTargetAddRemove: register.allowTargetAddRemove === true });
     const panelSettings = parsePanelSettings(register.panelSettings);
     if (panelSettings && Array.isArray(register.productions)) productions = parseProductions(register.productions);
     this.lastSocketId = signaling.socketId;
@@ -1336,6 +1340,19 @@ export class SessionController {
 
   async lockMainButton(): Promise<void> {
     await this.talk.lockMainButton();
+  }
+
+  async availableTargets(): Promise<TalkTarget[]> {
+    return this.requireApi().fetchAvailableTargets(useSessionStore.getState().productionId);
+  }
+
+  async editTargetSelection(target: TalkTarget, action: 'add' | 'remove'): Promise<void> {
+    const state = useSessionStore.getState();
+    if (state.identity?.kind !== 'user' || !state.allowTargetAddRemove) throw new Error('This account cannot add or remove targets.');
+    const profileId = state.activeProfileId, productionId = state.productionId;
+    if (action === 'remove' && state.talkingTargetKeys.includes(talkTargetIdentity(target))) await this.talk.unlockTalk();
+    await this.requireApi().editTargetSelection(productionId, action, target.type, Number(target.id));
+    if (profileId === useSessionStore.getState().activeProfileId && productionId === useSessionStore.getState().productionId) await this.mediaCoordinator.refreshTargets();
   }
 
   async saveTargetOrder(next: TalkTarget[]): Promise<void> {
