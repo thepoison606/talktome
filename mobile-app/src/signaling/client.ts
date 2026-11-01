@@ -120,11 +120,14 @@ export class SignalingClient {
   handlers: SignalingHandlers = {};
 
   reportDeviceStatus(status: unknown): void {
-    if (this.socket?.connected) this.socket.volatile.emit('client-device-status', status);
+    // Native sessions use HTTP polling. Volatile back-to-back emits drop the
+    // second report while the first POST is in flight. Queue both only while
+    // connected; the guard still prevents collecting reports during outages.
+    if (this.socket?.connected) this.socket.emit('client-device-status', status);
   }
 
   reportMediaNetworkStats(stats: unknown): void {
-    if (this.socket?.connected) this.socket.volatile.emit('media-network-stats', stats);
+    if (this.socket?.connected) this.socket.emit('media-network-stats', stats);
   }
 
   constructor(
