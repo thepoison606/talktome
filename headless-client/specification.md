@@ -536,7 +536,14 @@ written to WAV by the second instance (289 packets for a 6 s tone; the first
   event `audio-xrun`) is left to cpal, which prepares the same stream and
   continues. Any other stream error, or a device that disappears, drops
   that direction and retries every `audio.reopen_ms` (default 2000);
-  surfaces show "no audio device".
+  surfaces show "no audio device". A stream whose callback has not run
+  for 2 s is treated as hung (`audio-stream-stalled`), closed and reopened
+  at once; ALSA can keep a stream RUNNING without calling back or
+  reporting an error.
+- **Health log**: every 5 minutes `audio-health` logs, per direction, the
+  device, callback count and peak (dBFS), plus mixer sources, sources with
+  a packet in the last 500 ms, packets delivered to a stream and packets
+  for an unknown consumer in that interval.
 - **Processing** (`audio.auto_processing`, default off; same boolean as
   browser `audioAutoProcessing`): in-process sonora (WebRTC M145 APM) at
   10 ms / 48 kHz — high-pass, Wiener NS, AGC2, and AEC3 when **both**
@@ -1001,7 +1008,8 @@ Raspberry Pi OS. `User=` already applies the groups recorded for
   `consumer-created`, `consumer-track`, `incoming-stream`,
   `consumer-closed`, `targets-loaded`, `production-changed`, `talk-start`,
   `talk-stop`, `incoming`, `tally`, `audio-device-lost`,
-  `audio-device-restored`, `streamdeck-connected`,
+  `audio-device-restored`, `audio-stream-stalled`, `audio-health`,
+  `streamdeck-connected`,
   `streamdeck-disconnected`, `gpio-input`, `socket-listening`,
   `companion-command`.
 

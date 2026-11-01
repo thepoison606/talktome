@@ -1,7 +1,7 @@
 //! Owns the cpal capture and playback streams on a dedicated thread, reopens
 //! devices when they fail or disappear and reports their status.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
 use tokio::sync::{mpsc, watch};
 
 use super::codec::SAMPLE_RATE;
-use super::mixer::Mixer;
+use super::mixer::{Mixer, MixerHealth};
 use super::processing::{ProcessingControl, Processor};
 use super::resample::{FromInternal, ToInternal};
 use super::{device_label, device_pcm_id, find_device};
@@ -256,6 +256,7 @@ fn run_supervisor(
     let processor = Arc::new(Mutex::new(Processor::new(processing.clone())));
     let mut virtual_threads = Vec::new();
     let mut last_error = None;
+    let mut health = HealthLog::new(Instant::now());
 
     if let Some(frequency) = tone_frequency(&config.input_device) {
         tracing::info!(event = "audio-capture-open", device = "tone", frequency);
@@ -305,6 +306,36 @@ fn run_supervisor(
                 playback = None;
                 next_attempt = now + reopen;
             }
+        }
+
+        // ALSA can keep a stream RUNNING without calling back and without an
+        // error (seen with USB cards). Close and reopen it right away.
+        if let Some(open) = capture.as_mut() {
+            let (callbacks, peak) = open.poll(now);
+            health.capture.add(callbacks, peak);
+            if let Some(silent) = open.stalled(now) {
+                tracing::warn!(event = "audio-stream-stalled", direction = "capture", device = %open.name, silent_ms = silent.as_millis() as u64);
+                capture = None;
+                next_attempt = now;
+            }
+        }
+        if let Some(open) = playback.as_mut() {
+            let (callbacks, peak) = open.poll(now);
+            health.playback.add(callbacks, peak);
+            if let Some(silent) = open.stalled(now) {
+                tracing::warn!(event = "audio-stream-stalled", direction = "playback", device = %open.name, silent_ms = silent.as_millis() as u64);
+                playback = None;
+                next_attempt = now;
+            }
+        }
+        if health.due(now) {
+            let mixer_health = mixer.lock().map(|m| m.health()).unwrap_or_default();
+            health.log(
+                now,
+                capture.as_ref().map(|c| c.name.as_str()),
+                playback.as_ref().map(|p| p.name.as_str()),
+                mixer_health,
+            );
         }
 
         if now >= next_attempt {
@@ -384,10 +415,141 @@ fn run_supervisor(
     }
 }
 
+/// A stream whose callback has not run for this long is treated as hung.
+const STALL_AFTER: Duration = Duration::from_secs(2);
+/// Interval of the `audio-health` log line.
+const HEALTH_EVERY: Duration = Duration::from_secs(300);
+
+/// Callback progress of one stream, written by its callback.
+#[derive(Default)]
+struct StreamActivity {
+    callbacks: AtomicU64,
+    /// Highest absolute sample since the last poll, as `f32` bits. For
+    /// non-negative floats the bit pattern orders like the value.
+    peak: AtomicU32,
+}
+
+impl StreamActivity {
+    fn note(&self, samples: &[f32]) {
+        let peak = samples.iter().fold(0f32, |peak, s| peak.max(s.abs()));
+        self.callbacks.fetch_add(1, Ordering::Relaxed);
+        if peak.is_finite() {
+            self.peak.fetch_max(peak.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Takes the callback count and peak since the last call.
+    fn take(&self) -> (u64, f32) {
+        let callbacks = self.callbacks.swap(0, Ordering::Relaxed);
+        let peak = f32::from_bits(self.peak.swap(0, Ordering::Relaxed));
+        (callbacks, peak)
+    }
+}
+
 struct OpenStream {
     name: String,
     failed: Arc<AtomicBool>,
+    activity: Arc<StreamActivity>,
+    /// Last time the callback was seen running (opening counts).
+    progress_at: Instant,
     _stream: Stream,
+}
+
+impl OpenStream {
+    fn poll(&mut self, now: Instant) -> (u64, f32) {
+        let (callbacks, peak) = self.activity.take();
+        if callbacks > 0 {
+            self.progress_at = now;
+        }
+        (callbacks, peak)
+    }
+
+    /// How long the callback has been silent, once that reaches `STALL_AFTER`.
+    fn stalled(&self, now: Instant) -> Option<Duration> {
+        stalled_for(self.progress_at, now)
+    }
+}
+
+fn stalled_for(progress_at: Instant, now: Instant) -> Option<Duration> {
+    let silent = now.saturating_duration_since(progress_at);
+    (silent >= STALL_AFTER).then_some(silent)
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct DirectionHealth {
+    callbacks: u64,
+    peak: f32,
+}
+
+impl DirectionHealth {
+    fn add(&mut self, callbacks: u64, peak: f32) {
+        self.callbacks += callbacks;
+        self.peak = self.peak.max(peak);
+    }
+}
+
+/// Accumulates audio activity for the periodic `audio-health` line, so a
+/// silent output can be told apart from missing input after the fact.
+struct HealthLog {
+    since: Instant,
+    capture: DirectionHealth,
+    playback: DirectionHealth,
+    /// Mixer counters at the previous line, for the deltas.
+    mixer: MixerHealth,
+}
+
+impl HealthLog {
+    fn new(now: Instant) -> Self {
+        Self {
+            since: now,
+            capture: DirectionHealth::default(),
+            playback: DirectionHealth::default(),
+            mixer: MixerHealth::default(),
+        }
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.since) >= HEALTH_EVERY
+    }
+
+    fn log(
+        &mut self,
+        now: Instant,
+        capture: Option<&str>,
+        playback: Option<&str>,
+        mixer: MixerHealth,
+    ) {
+        tracing::info!(
+            event = "audio-health",
+            playback = playback.unwrap_or("-"),
+            playback_callbacks = self.playback.callbacks,
+            playback_peak_dbfs = peak_dbfs(self.playback.peak),
+            capture = capture.unwrap_or("-"),
+            capture_callbacks = self.capture.callbacks,
+            capture_peak_dbfs = peak_dbfs(self.capture.peak),
+            sources = mixer.sources,
+            active_sources = mixer.active_sources,
+            packets = mixer
+                .packets_matched
+                .saturating_sub(self.mixer.packets_matched),
+            unmatched_packets = mixer
+                .packets_unmatched
+                .saturating_sub(self.mixer.packets_unmatched),
+        );
+        *self = Self {
+            mixer,
+            ..Self::new(now)
+        };
+    }
+}
+
+/// Peak as whole dBFS; silence reads -120.
+fn peak_dbfs(peak: f32) -> i32 {
+    if peak <= 1e-6 {
+        -120
+    } else {
+        (20.0 * peak.log10()).round() as i32
+    }
 }
 
 fn pick_device(
@@ -525,10 +687,12 @@ fn build_capture_stream(
     control: &Arc<ProcessingControl>,
     frames: &mpsc::Sender<Vec<f32>>,
     failed: &Arc<AtomicBool>,
+    activity: &Arc<StreamActivity>,
 ) -> Result<Stream> {
     let processor = Arc::clone(processor);
     let control = Arc::clone(control);
     let frames = frames.clone();
+    let activity = Arc::clone(activity);
     let error_flag = Arc::clone(failed);
     let err_fn = move |error: cpal::Error| {
         note_stream_error("capture", error, &error_flag);
@@ -548,6 +712,7 @@ fn build_capture_stream(
             let sum: f32 = frame.iter().sum();
             mono.push(sum / channels as f32);
         }
+        activity.note(&mono);
         converted.clear();
         if resampler.process(&mono, &mut converted).is_err() {
             return;
@@ -606,8 +771,10 @@ fn build_playback_stream(
     processor: &Arc<Mutex<Processor>>,
     control: &Arc<ProcessingControl>,
     failed: &Arc<AtomicBool>,
+    activity: &Arc<StreamActivity>,
 ) -> Result<Stream> {
     let mixer = Arc::clone(mixer);
+    let activity = Arc::clone(activity);
     let processor = Arc::clone(processor);
     let control = Arc::clone(control);
     let error_flag = Arc::clone(failed);
@@ -640,6 +807,7 @@ fn build_playback_stream(
                 processor.analyze_render(&far_end);
             }
         }
+        activity.note(&mono);
         for (index, frame) in out.chunks_mut(channels.max(1)).enumerate() {
             let sample = mono.get(index).copied().unwrap_or(0.0);
             for slot in frame.iter_mut() {
@@ -695,6 +863,7 @@ fn open_capture(
     let format = supported.sample_format();
     let stream_config: StreamConfig = supported.into();
     let failed = Arc::new(AtomicBool::new(false));
+    let activity = Arc::new(StreamActivity::default());
     let period_ms = config.device_period_ms;
     let stream = open_stream_with_period("capture", period_ms, stream_config, |stream_config| {
         build_capture_stream(
@@ -708,6 +877,7 @@ fn open_capture(
             &control,
             &frames,
             &failed,
+            &activity,
         )
     })?;
     stream.play().context("starting capture stream")?;
@@ -722,6 +892,8 @@ fn open_capture(
     Ok(OpenStream {
         name,
         failed,
+        activity,
+        progress_at: Instant::now(),
         _stream: stream,
     })
 }
@@ -741,6 +913,7 @@ fn open_playback(
     let format = supported.sample_format();
     let stream_config: StreamConfig = supported.into();
     let failed = Arc::new(AtomicBool::new(false));
+    let activity = Arc::new(StreamActivity::default());
     let period_ms = config.device_period_ms;
     let stream = open_stream_with_period("playback", period_ms, stream_config, |stream_config| {
         build_playback_stream(
@@ -753,6 +926,7 @@ fn open_playback(
             &processor,
             &control,
             &failed,
+            &activity,
         )
     })?;
     stream.play().context("starting playback stream")?;
@@ -767,6 +941,8 @@ fn open_playback(
     Ok(OpenStream {
         name,
         failed,
+        activity,
+        progress_at: Instant::now(),
         _stream: stream,
     })
 }
@@ -775,7 +951,41 @@ fn open_playback(
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{note_stream_error, requested_buffer_size, tone_frequency, wav_sink_path};
+    use std::time::{Duration, Instant};
+
+    use super::{
+        note_stream_error, peak_dbfs, requested_buffer_size, stalled_for, tone_frequency,
+        wav_sink_path, StreamActivity,
+    };
+
+    #[test]
+    fn a_stream_without_callbacks_counts_as_stalled_after_two_seconds() {
+        let opened = Instant::now();
+        assert_eq!(
+            stalled_for(opened, opened + Duration::from_millis(1_900)),
+            None
+        );
+        assert_eq!(
+            stalled_for(opened, opened + Duration::from_millis(2_250)),
+            Some(Duration::from_millis(2_250))
+        );
+    }
+
+    #[test]
+    fn activity_reports_callbacks_and_peak_once() {
+        let activity = StreamActivity::default();
+        activity.note(&[0.1, -0.5, 0.2]);
+        activity.note(&[0.25]);
+        assert_eq!(activity.take(), (2, 0.5));
+        assert_eq!(activity.take(), (0, 0.0));
+    }
+
+    #[test]
+    fn peak_reads_as_dbfs() {
+        assert_eq!(peak_dbfs(0.0), -120);
+        assert_eq!(peak_dbfs(1.0), 0);
+        assert_eq!(peak_dbfs(0.1), -20);
+    }
 
     #[test]
     fn xrun_stays_open_and_other_errors_reopen() {

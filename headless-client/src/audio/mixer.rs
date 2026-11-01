@@ -72,6 +72,20 @@ pub struct Mixer {
     pub output_peak: f32,
     /// One-shot connection cue mixed on top of the intercom bus.
     cue: VecDeque<f32>,
+    /// Packets handed to a known stream, and packets for a consumer the
+    /// mixer has no stream for (counted for the health log).
+    packets_matched: u64,
+    packets_unmatched: u64,
+}
+
+/// Counters for the periodic `audio-health` log line.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct MixerHealth {
+    pub sources: usize,
+    /// Sources that received a packet in the last 500 ms.
+    pub active_sources: usize,
+    pub packets_matched: u64,
+    pub packets_unmatched: u64,
 }
 
 impl Mixer {
@@ -98,6 +112,8 @@ impl Mixer {
             jitter_max_ms,
             output_peak: 0.0,
             cue: VecDeque::new(),
+            packets_matched: 0,
+            packets_unmatched: 0,
         }
     }
 
@@ -178,10 +194,14 @@ impl Mixer {
     pub fn push_packet(&mut self, consumer_id: &str, seq: u16, payload: &[u8]) -> Result<bool> {
         match self.sources.get_mut(consumer_id) {
             Some(source) => {
+                self.packets_matched += 1;
                 source.buffer.push(seq, payload)?;
                 Ok(true)
             }
-            None => Ok(false),
+            None => {
+                self.packets_unmatched += 1;
+                Ok(false)
+            }
         }
     }
 
@@ -269,6 +289,19 @@ impl Mixer {
         keys
     }
 
+    pub fn health(&self) -> MixerHealth {
+        MixerHealth {
+            sources: self.sources.len(),
+            active_sources: self
+                .sources
+                .values()
+                .filter(|s| s.buffer.last_packet().elapsed() < Duration::from_millis(500))
+                .count(),
+            packets_matched: self.packets_matched,
+            packets_unmatched: self.packets_unmatched,
+        }
+    }
+
     /// Sum of per-stream jitter/PLC counters, for the status page.
     pub fn receive_stats(&self) -> StreamStats {
         let mut total = StreamStats::default();
@@ -344,6 +377,9 @@ mod tests {
             mixer.push_packet("f1", i as u16, p).unwrap();
         }
         assert!(!mixer.push_packet("nope", 0, &conf[0]).unwrap());
+        let health = mixer.health();
+        assert_eq!((health.sources, health.active_sources), (2, 2));
+        assert_eq!(health.packets_unmatched, 1);
 
         let mut out = vec![0f32; 960];
         mixer.render(&mut out);

@@ -235,6 +235,13 @@ warnings keep coming, the log shows `audio-period-rejected` or
 set `audio.profile` to `low` or `standard`. A faster host on a quiet LAN
 can try `device_period_ms = 5` and `jitter_min_ms = 10`.
 
+A stream whose callback stops running for 2 s without an error (seen with
+USB cards) is closed and reopened; the log shows `audio-stream-stalled`.
+Every 5 minutes an `audio-health` line records playback and capture
+callbacks and peak level, the number of incoming streams and the packets
+received. If the output goes quiet, that line shows whether the device
+stopped, the server stopped sending, or the audio arrived but was silent.
+
 ## Conference member mix
 
 Like the web client, each conference card has **Members**: hear/mute and a
