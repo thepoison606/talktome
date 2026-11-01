@@ -44,6 +44,28 @@ function fixture() {
 }
 
 describe('native remote panel', () => {
+  it('applies queued Companion volume and mute changes to users, conferences and feeds', async () => {
+    const f = fixture(); await f.register();
+    for (const target of [user, conference, feed]) {
+      const command = { targetType: target.type, targetId: target.id };
+      const key = `${target.type}-${target.id}`;
+      f.update({ audioPreferences: { ...f.state().audioPreferences, [key]: { volume: 0.5, muted: true } } });
+      await Promise.all([1, 2, 3].map(() => f.panel.handleCompanionAudio({ ...command, action: 'volume-up', step: 0.1 })));
+      expect(f.state().audioPreferences[key]!.volume).toBeCloseTo(0.8);
+      expect(f.state().audioPreferences[key]!.muted).toBe(true);
+      await f.panel.handleCompanionAudio({ ...command, action: 'volume-up', step: 1 });
+      expect(f.state().audioPreferences[key]!.volume).toBe(1);
+      await f.panel.handleCompanionAudio({ ...command, action: 'volume-down', step: 1 });
+      expect(f.state().audioPreferences[key]!.volume).toBe(0);
+      await Promise.all([1, 2].map(() => f.panel.handleCompanionAudio({ ...command, action: 'mute-toggle' })));
+      expect(f.state().audioPreferences[key]).toEqual({ volume: 0, muted: true });
+      await f.panel.handleCompanionAudio({ ...command, action: 'mute-toggle' });
+      expect(f.state().audioPreferences[key]).toEqual({ volume: 0, muted: false });
+    }
+    expect(await f.panel.handleCompanionAudio({ action: 'mute-toggle', targetType: 'user', targetId: 999 })).toMatchObject({ ok: false });
+    expect(await f.panel.handleCompanionAudio({ action: 'bad', targetType: 'feed', targetId: 4 })).toMatchObject({ ok: false });
+  });
+
   it('handles independent Companion holds, legacy Reply and lock toggles', async () => {
     const f = fixture(); await f.register();
     for (const inputKey of ['button-a', 'button-b']) {

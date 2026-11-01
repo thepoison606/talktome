@@ -30,6 +30,7 @@ import type {
 
 export type SignalingHandlers = {
   onApiTalkCommand?: (command: unknown) => Promise<PanelCommandResult>;
+  onApiTargetAudioCommand?: (command: unknown) => Promise<PanelCommandResult>;
   onPanelCommand?: (command: unknown) => Promise<PanelCommandResult>;
   onPanelStateRequest?: () => void;
   onUserAudioSettingsUpdated?: (settings: unknown) => void;
@@ -394,21 +395,24 @@ export class SignalingClient {
   }
 
   private bindPersistentHandlers(socket: Socket): void {
-    socket.on('api-talk-command', async (command = {}) => {
+    const bindApiCommand = (event: string, handler: 'onApiTalkCommand' | 'onApiTargetAudioCommand') => socket.on(event, async (value: unknown = {}) => {
+      const command = value && typeof value === 'object' ? value as Record<string, unknown> : {};
       let result: PanelCommandResult;
       try {
-        result = this.handlers.onApiTalkCommand
-          ? await this.handlers.onApiTalkCommand(command)
+        result = this.handlers[handler]
+          ? await this.handlers[handler]!(command)
           : { ok: false, error: 'Mobile session is not ready.' };
       } catch (error) {
         result = { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
-      if (this.socket === socket && socket.connected) socket.emit('api-talk-command-result', {
+      if (this.socket === socket && socket.connected) socket.emit(`${event}-result`, {
         commandId: command.commandId ?? null,
         action: command.action, targetType: command.targetType, targetId: command.targetId,
         ok: result.ok, reason: result.ok ? null : result.error,
       });
     });
+    bindApiCommand('api-talk-command', 'onApiTalkCommand');
+    bindApiCommand('api-target-audio-command', 'onApiTargetAudioCommand');
     socket.on('connect', () => {
       if (this.socket !== socket || this.awaitingInitialConnect) return;
       this.handlers.onStateChange?.({ status: 'connected', socketId: socket.id });

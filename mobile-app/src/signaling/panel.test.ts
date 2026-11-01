@@ -14,6 +14,20 @@ function fixture() {
 const report: PanelClientReport = { revision: 1, storage: {}, audioStates: [], runtime: { devices: [], inputDeviceId: '', outputDeviceId: '', outputSupported: false, talking: false, targets: [], lockedTargets: [] } };
 
 describe('mobile panel signaling', () => {
+  it('dispatches Companion volume/mute and acknowledges results on their own event', async () => {
+    const f = fixture();
+    const command = { commandId: 'audio-1', action: 'volume-up', targetType: 'feed', targetId: 4, step: 0.1 };
+    f.client.handlers.onApiTargetAudioCommand = vi.fn(async () => ({ ok: true }));
+    await f.listeners.get('api-target-audio-command')!(command);
+    expect(f.client.handlers.onApiTargetAudioCommand).toHaveBeenCalledWith(command);
+    expect(f.socket.emit).toHaveBeenCalledWith('api-target-audio-command-result', {
+      commandId: 'audio-1', action: 'volume-up', targetType: 'feed', targetId: 4, ok: true, reason: null,
+    });
+    f.client.handlers.onApiTargetAudioCommand = async () => ({ ok: false, error: 'Audio target is not assigned.' });
+    await f.listeners.get('api-target-audio-command')!(command);
+    expect(f.socket.emit).toHaveBeenLastCalledWith('api-target-audio-command-result', expect.objectContaining({ ok: false, reason: 'Audio target is not assigned.' }));
+  });
+
   it('handles Companion API talk events and returns their command result reliably', async () => {
     const f = fixture();
     const command = { commandId: 'companion-1', action: 'press', targetType: 'user', targetId: 9 };

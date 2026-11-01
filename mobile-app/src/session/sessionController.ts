@@ -853,6 +853,7 @@ export class SessionController {
     signaling.handlers = {
       onPanelCommand: command => this.remotePanel.handleCommand(command),
       onApiTalkCommand: command => this.remotePanel.handleCompanionTalk(command),
+      onApiTargetAudioCommand: command => this.remotePanel.handleCompanionAudio(command),
       onPanelStateRequest: () => this.remotePanel.publish(),
       onUserAudioSettingsUpdated: settings => {
         void this.remotePanel.handleCommand({ kind: 'audio-settings', settings }).then(result => {

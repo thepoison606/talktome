@@ -214,6 +214,33 @@ export class RemotePanelCoordinator {
     }
   }
 
+  handleCompanionAudio(value: unknown): Promise<PanelCommandResult> {
+    const raw = asRecord(value);
+    if (!raw || !['volume-up', 'volume-down', 'mute-toggle'].includes(String(raw.action))) {
+      return Promise.resolve({ ok: false, error: 'Unsupported Companion audio action.' });
+    }
+    const targetType = raw.targetType ?? 'conference';
+    const targetId = positiveId(raw.targetId);
+    if (!['user', 'conference', 'feed'].includes(String(targetType)) || targetId === null) {
+      return Promise.resolve({ ok: false, error: 'Invalid Companion audio target.' });
+    }
+    const epoch = this.epoch;
+    const execute = () => {
+      // Resolve relative changes inside the command queue, so rapid encoder
+      // turns and mute toggles always use the previous command's new value.
+      const current = this.host.state().audioPreferences[`${targetType}-${targetId}`] ?? defaultAudioPreference();
+      const step = typeof raw.step === 'number' && Number.isFinite(raw.step) ? Math.max(0.01, Math.min(1, raw.step)) : 0.1;
+      const audio = parsePanelAudioState({ targetType, targetId,
+        volume: raw.action === 'mute-toggle' ? current.volume : Math.max(0, Math.min(1, current.volume + (raw.action === 'volume-up' ? step : -step))),
+        muted: raw.action === 'mute-toggle' ? !current.muted : current.muted });
+      if (!audio) return { ok: false as const, error: 'Invalid Companion audio target.' };
+      return this.execute({ kind: 'target-audio', audio }, epoch);
+    };
+    const result = this.queue.catch(() => {}).then(execute);
+    this.queue = result;
+    return result;
+  }
+
   handleCompanionTalk(value: unknown): Promise<PanelCommandResult> {
     try {
       if (!value || typeof value !== 'object') throw new Error('Invalid Companion command.');
