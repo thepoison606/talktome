@@ -11,6 +11,7 @@ import { SocketEvent } from '../protocol/events';
 import { parseActiveProducer, parseActiveProducers } from '../protocol/producers';
 import { parseProductionId, parseProductions, type Production } from '../protocol/productions';
 import { parseCameraTally, type CameraTallyState } from '../protocol/tally';
+import type { NativeClientVersion } from '../protocol/clientVersion';
 import { normalizeTalkTargets } from '../protocol/talkTargets';
 import type {
   ActiveProducer,
@@ -97,6 +98,7 @@ export function registerUserPayload(
   force = false,
   productionId?: number | null,
   platform?: string,
+  version?: NativeClientVersion,
 ) {
   return {
     id: String(identity.kind === 'guest' ? (identity.guestId ?? identity.id) : identity.id),
@@ -106,6 +108,7 @@ export function registerUserPayload(
     productionId: productionId ?? null,
     force,
     clientType: platform === 'ios' ? 'ios-app' : platform === 'android' ? 'android-app' : null,
+    ...(version ?? {}),
   };
 }
 
@@ -116,10 +119,19 @@ export class SignalingClient {
   private cancelConnect: (() => void) | null = null;
   handlers: SignalingHandlers = {};
 
+  reportDeviceStatus(status: unknown): void {
+    if (this.socket?.connected) this.socket.volatile.emit('client-device-status', status);
+  }
+
+  reportMediaNetworkStats(stats: unknown): void {
+    if (this.socket?.connected) this.socket.volatile.emit('media-network-stats', stats);
+  }
+
   constructor(
     private readonly baseUrl: string,
     private readonly getCookies: () => CookieMap,
     private readonly platform: string,
+    private readonly version: NativeClientVersion = { clientVersion: null, clientBuild: null },
   ) {}
 
   get socketId(): string | undefined {
@@ -225,7 +237,7 @@ export class SignalingClient {
   ): Promise<RegisterUserResponse> {
     return this.emitAck<RegisterUserResponse>(
       SocketEvent.registerUser,
-      registerUserPayload(identity, force, productionId, this.platform),
+      registerUserPayload(identity, force, productionId, this.platform, this.version),
     );
   }
 

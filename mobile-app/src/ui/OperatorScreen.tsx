@@ -17,7 +17,7 @@ import { ConferenceMembersModal } from './ConferenceMembersModal';
 import { AudioRouteButton, AudioRouteMenu } from './AudioRouteButton';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
 import { ChevronIcon, LockIcon, ReplyArrowIcon, WalkieTalkieIcon } from './icons';
-import { HoldToTalk } from './HoldToTalk';
+import { endTalkTouches, HoldToTalk, moveTalkTouches } from './HoldToTalk';
 import {
   chunkTargets,
   COLLAPSED_HEADER_HEIGHT,
@@ -161,9 +161,9 @@ export function OperatorScreen() {
       disabled={!mainTarget}
       locked={mainLocked}
       leftHanded={store.leftHanded}
-      onPress={() => void session.pressMainButton()}
-      onLock={() => void session.lockMainButton()}
-      onRelease={() => void session.releaseTalk()}
+      onPress={(inputKey) => { if (mainTarget) void session.pressTalk(mainTarget, inputKey); }}
+      onLock={() => { if (mainTarget) void session.lockTalk(mainTarget); }}
+      onRelease={(inputKey) => void session.releaseTalk(undefined, inputKey)}
       style={[
         styles.reply,
         replyBeside && styles.replyLandscape,
@@ -201,11 +201,14 @@ export function OperatorScreen() {
             />
           )}
           <Text
-            numberOfLines={2}
+            numberOfLines={replyBeside ? 3 : 2}
+            adjustsFontSizeToFit
+            minimumFontScale={0.8}
             style={[
               styles.replyText,
-              replyBeside && styles.replyTextLandscape,
               store.bigMainButton && styles.replyTextBig,
+              replyBeside && styles.replyTextLandscape,
+              replyBeside && store.bigMainButton && styles.replyTextBigLandscape,
               !mainTarget && styles.replyMuted,
             ]}
           >
@@ -221,6 +224,9 @@ export function OperatorScreen() {
 
   return (
     <View
+      onTouchMove={(event) => moveTalkTouches(event.nativeEvent.changedTouches)}
+      onTouchEnd={(event) => endTalkTouches(event.nativeEvent.changedTouches)}
+      onTouchCancel={(event) => endTalkTouches(event.nativeEvent.changedTouches)}
       onLayout={(event) => {
         const next = event.nativeEvent.layout;
         setMeasured((current) =>
@@ -336,6 +342,7 @@ export function OperatorScreen() {
                     <TargetRow
                       target={target}
                       compact={compact || replyBeside}
+                      compactLabel={layout.columns > 1 && width / layout.columns < 400}
                       volumeReadout={compact}
                       height={layout.cardHeight}
                       edgeTalkAffordance={!replyBeside && store.edgeTalkAffordance}
@@ -612,6 +619,7 @@ const styles = StyleSheet.create({
   },
   replyTitleLandscape: {
     flexDirection: 'column',
+    width: '100%',
   },
   replyText: {
     color: colors.text,
@@ -622,6 +630,10 @@ const styles = StyleSheet.create({
   replyTextLandscape: {
     fontSize: 14,
     textAlign: 'center',
+    width: '100%',
+  },
+  replyTextBigLandscape: {
+    fontSize: 18,
   },
   replyTextBig: {
     fontSize: 26,

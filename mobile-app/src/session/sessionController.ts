@@ -47,6 +47,9 @@ import {
   type OperatorAudioSettings,
 } from './operatorAudio';
 import type { ServerClientDefaults } from '../protocol/clientDefaults';
+import { readNativeClientVersion } from '../protocol/clientVersion';
+import { readNativeDeviceStatus } from '../protocol/deviceStatus';
+import { createClientStatusReporter } from './clientStatusReporter';
 import {
   loadProfileBundle,
   passwordForProfile,
@@ -115,6 +118,8 @@ export class SessionController {
   serverClientDefaults: ServerClientDefaults = {};
   operatorAudioOverrides: Partial<OperatorAudioSettings> = {};
   private leftHandedExplicit = false;
+  private bigMainButtonExplicit = false;
+  private clientStatusReporter: ReturnType<typeof createClientStatusReporter> | null = null;
   private lockMultipleTargetsExplicit = false;
 
   readonly talk = new TalkCoordinator(this);
@@ -175,6 +180,7 @@ export class SessionController {
     ]);
     this.operatorAudioOverrides = operatorAudioOverrides;
     this.leftHandedExplicit = typeof bundle.leftHanded === 'boolean';
+    this.bigMainButtonExplicit = typeof bundle.bigMainButton === 'boolean';
     this.lockMultipleTargetsExplicit = typeof bundle.lockMultipleTargets === 'boolean';
     const last = bundle.profiles.find((item) => item.id === bundle.lastProfileId) ?? bundle.profiles[0] ?? null;
     useSessionStore.setState({
@@ -636,6 +642,8 @@ export class SessionController {
   }
 
   private async teardownSession(): Promise<void> {
+    this.clientStatusReporter?.stop();
+    this.clientStatusReporter = null;
     this.sessionEnding = true;
     this.remotePanel.reset();
     this.stopServerHeartbeat();
@@ -781,7 +789,7 @@ export class SessionController {
       edgeTalkAffordance: state.edgeTalkAffordance,
       mainButtonTargets: state.mainButtonTargets,
       watchTargetSelections: state.watchTargetSelections,
-      bigMainButton: state.bigMainButton,
+      bigMainButton: this.bigMainButtonExplicit ? state.bigMainButton : undefined,
     };
   }
 
@@ -801,6 +809,7 @@ export class SessionController {
   }
 
   setBigMainButton(bigMainButton: boolean): void {
+    this.bigMainButtonExplicit = true;
     useSessionStore.setState({ bigMainButton });
     this.persistLayout();
   }
@@ -1156,9 +1165,11 @@ export class SessionController {
   }
 
   private async finishIdentity(identity: OperatorIdentity, force: boolean): Promise<boolean> {
+    this.clientStatusReporter?.stop();
+    this.clientStatusReporter = null;
     const parsed = parseServerAddress(useSessionStore.getState().serverAddress);
     this.signaling?.disconnect();
-    const signaling = new SignalingClient(parsed.baseUrl, () => this.cookies, Platform.OS);
+    const signaling = new SignalingClient(parsed.baseUrl, () => this.cookies, Platform.OS, readNativeClientVersion());
     this.signaling = signaling;
     this.bindSignaling(signaling);
 
@@ -1215,23 +1226,35 @@ export class SessionController {
     });
 
     await this.remotePanel.restoreRegistration(register);
+    if (this.signaling !== signaling) return false;
+    this.clientStatusReporter = createClientStatusReporter({
+      connected: () => this.signaling === signaling && signaling.connected,
+      collect: async () => {
+        const media = this.media;
+        const [deviceStatus, stats] = await Promise.all([
+          readNativeDeviceStatus(),
+          media?.networkStats().catch(() => null) ?? Promise.resolve(null),
+        ]);
+        return { deviceStatus, stats: media === this.media ? stats : null };
+      },
+      publish: (value) => {
+        const report = value as { deviceStatus: unknown; stats: unknown };
+        signaling.reportDeviceStatus(report.deviceStatus);
+        if (report.stats) signaling.reportMediaNetworkStats(report.stats);
+      },
+    });
     const serverSelectedProduction = panelSettings?.storage[`activeProduction:${identity.id}`]
       ? productions.find(item => item.id === positiveId(register.productionId)) : undefined;
 
     if (productions.length > 0) {
-      if (panelSettings?.storage[`activeProduction:${identity.id}`] && !serverSelectedProduction) {
-        await this.mediaCoordinator.enterOperator(null);
-        this.announceConnectionRecovery();
-        return true;
-      }
       const remembered = serverSelectedProduction ?? productions.find((item) => item.id === rememberedProductionId);
       if (remembered) {
         await this.mediaCoordinator.enterOperator(remembered);
         this.announceConnectionRecovery();
         return true;
       }
-      if (rememberedProductionId == null && rememberedProductionName?.trim().toLowerCase() === 'default') {
-        await this.mediaCoordinator.enterOperator(null);
+      if (productions.length === 1 || (rememberedProductionId == null && rememberedProductionName?.trim().toLowerCase() === 'default')) {
+        await this.mediaCoordinator.enterOperator(productions[0]!);
         this.announceConnectionRecovery();
         return true;
       }
@@ -1268,6 +1291,9 @@ export class SessionController {
     if (!this.leftHandedExplicit && typeof defaults.leftHandMode === 'boolean') {
       useSessionStore.setState({ leftHanded: defaults.leftHandMode });
     }
+    if (!this.bigMainButtonExplicit) {
+      useSessionStore.setState({ bigMainButton: defaults.bigMainButton === true });
+    }
     if (!this.lockMultipleTargetsExplicit && typeof defaults.lockMultipleTargets === 'boolean') {
       useSessionStore.setState({ lockMultipleTargets: defaults.lockMultipleTargets });
     }
@@ -1278,16 +1304,16 @@ export class SessionController {
     return this.talk.canTalkTo(target);
   }
 
-  async pressTalk(target: TalkTarget): Promise<void> {
-    await this.talk.pressTalk(target);
+  async pressTalk(target: TalkTarget, inputKey?: string): Promise<void> {
+    await this.talk.pressTalk(target, inputKey);
   }
 
   async lockTalk(target: TalkTarget): Promise<void> {
     await this.talk.lockTalk(target);
   }
 
-  async releaseTalk(target?: TalkTarget): Promise<void> {
-    await this.talk.releaseTalk(target);
+  async releaseTalk(target?: TalkTarget, inputKey?: string): Promise<void> {
+    await this.talk.releaseTalk(target, inputKey);
   }
 
   async pressReply(): Promise<void> {

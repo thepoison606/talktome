@@ -99,6 +99,7 @@ const config: ExpoConfig = {
     ],
     './plugins/withTalkToMeBle',
     './plugins/withTalkToMeOrientation',
+    './plugins/withTalkToMeMultiTouch',
     './plugins/withTalkToMePresence',
     './plugins/withTalkToMeXcodeWarnings',
     './plugins/withTalkToMeScenes',

@@ -7,9 +7,15 @@ The app includes:
 
 - Server/account profiles, guest login, production selection and QR login links.
 - WebRTC talk/listen, per-target volume and mute, Reply and locked talk buttons.
+  Hold several target buttons at once to address them together; releasing one
+  button leaves the others active. Main/Reply and target cards own separate holds.
 - Server remote-panel control and synchronized operator preferences.
 - Live speaker names on conference cards, including listen-only conferences.
 - Automatic reconnect with cancellation of superseded connection attempts.
+- Admin Status diagnostics: installed app version/build, active audio output, battery
+  percentage/charging state, network type, and WebRTC RTT/audio packet loss. Diagnostics
+  are sent to the selected Talktome server while connected; unavailable values stay empty.
+  Battery and network reporting require a native rebuild after installing these modules.
 - Background audio, the native iOS audio route picker and Android foreground service.
   iOS owns the selected output; saved choices from the former app menu are ignored.
 - BLE push-to-talk accessories, including PTT-Z01 and Herda HB980-Plus profiles.

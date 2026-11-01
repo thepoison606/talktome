@@ -12,7 +12,7 @@ export type PanelSettings = {
   pendingProductionId?: number;
 };
 
-export type PanelAudioSettings = Required<ServerClientDefaults> & {
+export type PanelAudioSettings = Required<Omit<ServerClientDefaults, 'bigMainButton'>> & {
   userInputGainDb: number;
   voiceTriggerEnabled: boolean;
   voiceTriggerTarget: string;

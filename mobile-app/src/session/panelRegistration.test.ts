@@ -44,17 +44,31 @@ beforeEach(() => {
   useSessionStore.setState({ ...initialState, serverAddress: 'https://example.test', activeProfileId: 'profile', productionId: 7, productionName: 'Studio', productions: [{ id: 7, name: 'Studio' }, { id: 8, name: 'Field' }] });
   mocks.registration = { ok: true, productionId: 8, productions: [{ id: 7, name: 'Studio' }, { id: 8, name: 'Field' }], panelSettings: { revision: 2, storage: { 'activeProduction:1': '8' } }, userAudioSettings: PANEL_AUDIO_DEFAULTS };
 });
-afterEach(() => { controllers.splice(0).forEach(c => c.remotePanel.reset()); });
+afterEach(() => { controllers.splice(0).forEach(c => {
+  c.remotePanel.reset();
+  (c as unknown as { clientStatusReporter: { stop(): void } | null }).clientStatusReporter?.stop();
+}); });
 const identity: OperatorIdentity = { kind: 'user', id: 1, name: 'Me', productions: [{ id: 7, name: 'Studio' }, { id: 8, name: 'Field' }] };
-function fixture() {
+function fixture({ serverDefaults = false } = {}) {
   const c = new SessionController(); controllers.push(c);
   vi.spyOn(c, 'persistCurrentProfile').mockResolvedValue();
   const internal = c as unknown as { finishIdentity(identity: OperatorIdentity, force: boolean): Promise<boolean>; refreshServerClientDefaults(): Promise<void>; handleReconnect(): Promise<void> };
-  vi.spyOn(internal, 'refreshServerClientDefaults').mockResolvedValue();
+  if (!serverDefaults) vi.spyOn(internal, 'refreshServerClientDefaults').mockResolvedValue();
   return { c, internal };
 }
 
 describe('panel registration in the native session', () => {
+  it('inherits the big main button default until the user explicitly changes it', async () => {
+    const { c, internal } = fixture({ serverDefaults: true });
+    c.api = { defaultClientSettings: async () => ({ bigMainButton: true }) } as unknown as NonNullable<typeof c.api>;
+    vi.spyOn(c as unknown as { persistLayout(): void }, 'persistLayout').mockImplementation(() => {});
+    await internal.refreshServerClientDefaults();
+    expect(useSessionStore.getState().bigMainButton).toBe(true);
+    c.setBigMainButton(false);
+    await internal.refreshServerClientDefaults();
+    expect(useSessionStore.getState().bigMainButton).toBe(false);
+  });
+
   it('honors the production selected remotely while the phone was offline', async () => {
     const { internal } = fixture(); await internal.finishIdentity(identity, false);
     expect(mocks.entered).toHaveBeenCalledWith({ id: 8, name: 'Field' });
@@ -70,6 +84,27 @@ describe('panel registration in the native session', () => {
     mocks.registration = { ...mocks.registration, productionId: 1, productions: [{ id: 1, name: 'Default' }], panelSettings: { revision: 3, storage: { 'activeProduction:1': '1' } } };
     const { internal } = fixture(); await internal.finishIdentity(identity, false);
     expect(mocks.entered).toHaveBeenCalledWith({ id: 1, name: 'Default' });
+  });
+
+  it('enters the only assigned production without offering an unassigned Default', async () => {
+    mocks.registration = { ok: true, productions: [{ id: 9, name: 'AppReview' }], panelSettings: { revision: 3, storage: {} } };
+    const { internal } = fixture(); await internal.finishIdentity(identity, false);
+    expect(mocks.entered).toHaveBeenCalledWith({ id: 9, name: 'AppReview' });
+  });
+
+  it('does not restore an unassigned production from stale panel settings', async () => {
+    useSessionStore.setState({ productionId: 99, productionName: 'Removed' });
+    mocks.registration = { ...mocks.registration, productionId: 99, panelSettings: { revision: 3, storage: { 'activeProduction:1': '99' } } };
+    const { internal } = fixture(); await internal.finishIdentity(identity, false);
+    expect(mocks.entered).not.toHaveBeenCalled();
+    expect(useSessionStore.getState().status).toBe('choose-production');
+  });
+
+  it('maps a remembered legacy Default to an assigned production', async () => {
+    useSessionStore.setState({ productionId: null, productionName: 'Default' });
+    mocks.registration = { ok: true };
+    const { internal } = fixture(); await internal.finishIdentity(identity, false);
+    expect(mocks.entered).toHaveBeenCalledWith({ id: 7, name: 'Studio' });
   });
 
   it('stops old media before restoring settings and re-announces the server-selected production on reconnect', async () => {

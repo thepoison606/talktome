@@ -123,14 +123,14 @@ jobs:
             });
           ')"
           mkdir -p dist
-          NAME="TalkToMe-${LABEL}-android.apk"
+          NAME="talktome-${LABEL}-android.apk"
           cp "$SRC" "dist/${NAME}"
           echo "path=${GITHUB_WORKSPACE}/mobile-app/dist/${NAME}" >> "$GITHUB_OUTPUT"
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
           echo "Staged ${NAME}"
       - uses: actions/upload-artifact@v6
         with:
-          name: TalkToMe-android
+          name: talktome-android
           path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
           retention-days: 90

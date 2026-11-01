@@ -3,17 +3,20 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_PRODUCTION, parseProductionId, parseProductions, productionChoices, resolveProduction, visibleProductionName } from './productions';
 
 describe('productionChoices', () => {
-  it('offers a synthetic Default first when the server does not announce one', () => {
+  it('offers only assigned productions when Default is not assigned', () => {
     expect(
       productionChoices([
         { id: 2, name: 'Test-von-Adi' },
         { id: 1, name: 'Studio' },
       ]),
     ).toEqual([
-      DEFAULT_PRODUCTION,
       { id: 2, name: 'Test-von-Adi' },
       { id: 1, name: 'Studio' },
     ]);
+  });
+
+  it('retains implicit Default for legacy servers without a production list', () => {
+    expect(productionChoices([])).toEqual([DEFAULT_PRODUCTION]);
   });
 
   it('does not double Default when the server announces one', () => {

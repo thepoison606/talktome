@@ -17,6 +17,7 @@ export type ServerClientDefaults = {
   audioAutoProcessing?: boolean;
   playConnectionSounds?: boolean;
   leftHandMode?: boolean;
+  bigMainButton?: boolean;
   lockMultipleTargets?: boolean;
 };
 
@@ -26,6 +27,7 @@ const BOOLEAN_KEYS = [
   'audioAutoProcessing',
   'playConnectionSounds',
   'leftHandMode',
+  'bigMainButton',
   'lockMultipleTargets',
 ] as const;
 

@@ -31,6 +31,7 @@ import { VolumeRing } from './VolumeRing';
 type Props = {
   target: TalkTarget;
   compact?: boolean;
+  compactLabel?: boolean;
   volumeReadout?: boolean;
   height?: number;
   edgeTalkAffordance?: boolean;
@@ -40,6 +41,7 @@ type Props = {
 export function TargetRow({
   target,
   compact = false,
+  compactLabel = false,
   volumeReadout = false,
   height,
   edgeTalkAffordance = false,
@@ -123,7 +125,12 @@ export function TargetRow({
     <View style={styles.identity} pointerEvents="none">
       <View style={styles.nameRow}>
         {locked ? <LockIcon color={colors.text} size={14} /> : null}
-        <Text style={[styles.label, dimmed && styles.dimText]} numberOfLines={1}>
+        <Text
+          style={[styles.label, compactLabel && styles.labelCompact, dimmed && styles.dimText]}
+          numberOfLines={1}
+          adjustsFontSizeToFit
+          minimumFontScale={0.85}
+        >
           {target.label}
         </Text>
       </View>
@@ -141,9 +148,9 @@ export function TargetRow({
           disabled={!canTalk}
           locked={locked}
           leftHanded={leftHanded}
-          onPress={() => void session.pressTalk(target)}
+          onPress={(inputKey) => void session.pressTalk(target, inputKey)}
           onLock={() => void session.lockTalk(target)}
-          onRelease={() => void session.releaseTalk(target)}
+          onRelease={(inputKey) => void session.releaseTalk(target, inputKey)}
           style={style}
         >
           {children}
@@ -322,6 +329,9 @@ const styles = StyleSheet.create({
   },
   dimText: {
     color: 'rgba(255,255,255,0.55)',
+  },
+  labelCompact: {
+    fontSize: 14,
   },
   meta: {
     color: colors.muted,

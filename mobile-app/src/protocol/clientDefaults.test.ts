@@ -36,6 +36,11 @@ describe('parseDefaultClientSettingsScript', () => {
 });
 
 describe('normalizeServerClientDefaults', () => {
+  it('accepts both big main button defaults but rejects truthy strings', () => {
+    expect(normalizeServerClientDefaults({ bigMainButton: true })).toEqual({ bigMainButton: true });
+    expect(normalizeServerClientDefaults({ bigMainButton: false })).toEqual({ bigMainButton: false });
+    expect(normalizeServerClientDefaults({ bigMainButton: 'true' })).toEqual({});
+  });
   it('drops values outside the web option lists', () => {
     expect(
       normalizeServerClientDefaults({

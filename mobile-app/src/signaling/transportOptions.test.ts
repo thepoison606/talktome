@@ -98,4 +98,10 @@ describe('signaling handshake', () => {
     expect(registerUserPayload(identity, false, null, 'ios').clientType).toBe('ios-app');
     expect(registerUserPayload(identity, false, null, 'android').clientType).toBe('android-app');
   });
+
+  it('includes native version and build metadata without changing the identity', () => {
+    expect(registerUserPayload({ id: 5, name: 'adi', kind: 'user' }, false, 4, 'ios', {
+      clientVersion: '1.5.20', clientBuild: '70',
+    })).toMatchObject({ id: '5', productionId: 4, clientType: 'ios-app', clientVersion: '1.5.20', clientBuild: '70' });
+  });
 });
