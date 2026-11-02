@@ -15,16 +15,16 @@ taken during review are recorded in §19.
 
 ## 1. Context and goals
 
-Talktome already has three kinds of endpoints:
+Existing Talktome endpoints include:
 
 - the **browser client** (`public/client.js`) — a normal user over Socket.IO
   signalling and mediasoup `WebRtcTransport`s;
 - the **Bridge** (`bridge-client/`) — a Tauri/Rust desktop app that uses the
   bridge HTTP/SSE API and *plain RTP* (`PlainTransport`, unencrypted) to
-  connect studio audio interfaces, NDI and OMT;
-- the **radio gateway** (`gateway/radioGateway.js`) — a single-file Node
-  script that registers with the admin API key and `force: true`, also over
-  plain RTP, for a stationary radio interface.
+  connect studio audio interfaces, NDI and OMT.
+
+The headless client also replaces the earlier experimental radio gateway.
+The prototype and its deployment scripts have been removed.
 
 The headless client fills the remaining gap: a **dedicated hardware
 intercom panel / beltpack** that is a first-class Talktome user. It must:
@@ -56,7 +56,7 @@ intercom panel / beltpack** that is a first-class Talktome user. It must:
 
 ## 2. Non-goals
 
-- No changes to `gateway/radioGateway.js`, the Bridge or the server.
+- No changes to the Bridge or the server.
 - No Companion-specific HTTP endpoint on the device. Bitfocus Companion
   connects to the *server* and targets the user; the server forwards
   `api-talk-command` / `api-target-audio-command` to the user's socket and

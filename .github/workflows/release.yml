@@ -28,7 +28,6 @@ on:
       - "package-lock.json"
       - "*.js"
       - "src/**"
-      - "gateway/**"
       - "public/**"
       - "scripts/copy-runtime-deps.js"
       - "scripts/container-healthcheck.js"
