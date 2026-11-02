@@ -1,0 +1,48 @@
+[Unit]
+Description=Talktome headless intercom client (%i)
+Documentation=file:///usr/share/doc/talktome-headless/README.md
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/talktome-headless --instance %i
+# Optional: put TALKTOME_USER_PASSWORD (and other TALKTOME_* overrides) here
+# instead of the configuration file.
+EnvironmentFile=-/etc/talktome-headless/%i.env
+WatchdogSec=30
+Restart=always
+RestartSec=2
+User=talktome-headless
+Group=talktome-headless
+# Do not set SupplementaryGroups= here. systemd exits 216/GROUP
+# ("Failed to determine supplementary groups: No such file or directory")
+# if any listed group is missing. `gpio` is absent on Debian/Ubuntu that
+# is not Raspberry Pi OS; `plugdev` can be missing on minimal images.
+# User= already loads groups from the user database; postinst adds this
+# user to audio, plugdev and gpio when those groups exist.
+StateDirectory=talktome-headless/%i
+StateDirectoryMode=0750
+RuntimeDirectory=talktome-headless/%i
+# ProtectSystem=strict remounts /etc read-only. The web UI writes the instance
+# config atomically (<instance>.toml.tmp then rename) for password changes and
+# settings saves, so this directory must stay writable.
+ReadWritePaths=/etc/talktome-headless
+
+# Hardening. Audio (ALSA), HID (Stream Deck) and GPIO character devices must
+# stay reachable, so the device policy is left open and access is controlled
+# through the user's supplementary groups (see postinst) and the udev rule.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=false
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

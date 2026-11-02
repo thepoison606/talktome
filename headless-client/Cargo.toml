@@ -1,0 +1,102 @@
+[package]
+name = "talktome-headless"
+# Intentionally 0.0.0: the build version comes from Git tags via
+# scripts/resolve-build-version.js (TALKTOME_BUILD_VERSION) or build.rs.
+version = "0.0.0"
+edition = "2021"
+# sonora (AEC3 / NS / AGC2) requires Rust 1.91.
+rust-version = "1.91"
+license = "Apache-2.0"
+description = "Talktome headless intercom client for Raspberry Pi and other Linux boards"
+repository = "https://github.com/thepoison606/talktome"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "talktome-headless"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal", "fs"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+bytes = "1"
+url = "2"
+rand = "0.9"
+sha2 = "0.10"
+
+# Signalling: Socket.IO over WebSocket with rustls
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+rustls-native-certs = "0.8"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+
+# Serialization / config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+
+# Media
+webrtc = "0.17"
+cpal = "0.18"
+# Same versions as cpal's ALSA backend; used to list asound.conf PCMs like `aplay -L`.
+alsa = "0.11"
+alsa-sys = "0.4"
+opus = "0.4"
+rubato = "0.16"
+sonora = "0.2"
+
+# Control surfaces
+elgato-streamdeck = { version = "0.13", features = ["async"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+ab_glyph = "0.2"
+gpiocdev = { version = "0.8", features = ["async_tokio"] }
+
+# Web interface
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
+
+# Supervision / logging / CLI
+sd-notify = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+clap = { version = "4", features = ["derive", "env"] }
+hound = "3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[package.metadata.deb]
+name = "talktome-headless"
+maintainer = "Talktome contributors"
+copyright = "Talktome contributors"
+license-file = ["../LICENSE", "0"]
+extended-description = """\
+Headless Talktome intercom endpoint for Raspberry Pi and other Linux boards.
+Registers as a normal Talktome user over WebRTC, drives an attached Elgato
+Stream Deck as an intercom key panel and mirrors camera tally and talk state
+to GPIO lines."""
+section = "sound"
+priority = "optional"
+# Listed explicitly (instead of $auto) so cross-built packages do not depend on
+# dpkg-shlibdeps being able to inspect foreign binaries. libasound2t64 is the
+# time64 name used by Debian Trixie / Ubuntu 24.04.
+depends = "libc6 (>= 2.34), libasound2t64 (>= 1.2.0) | libasound2 (>= 1.2.0), libudev1 (>= 183), adduser, fonts-dejavu-core"
+recommends = "alsa-utils"
+maintainer-scripts = "debian/"
+assets = [
+    ["target/release/talktome-headless", "usr/bin/", "755"],
+    ["deploy/systemd/talktome-headless@.service", "lib/systemd/system/", "644"],
+    ["deploy/udev/60-talktome-streamdeck.rules", "lib/udev/rules.d/", "644"],
+    ["deploy/config.example.json", "usr/share/talktome-headless/", "644"],
+    ["deploy/config.example.toml", "usr/share/talktome-headless/", "644"],
+    ["examples/socket_panel.py", "usr/share/talktome-headless/examples/", "755"],
+    ["README.md", "usr/share/doc/talktome-headless/", "644"],
+]

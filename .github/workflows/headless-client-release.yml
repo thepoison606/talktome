@@ -1,0 +1,274 @@
+name: Headless Client Builds
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Version to build and upload to a draft (for example 1.5.10); empty uses Git version'
+        required: false
+        type: string
+      source_ref:
+        description: 'Optional source tag or commit to build with this workflow revision'
+        required: false
+        type: string
+  push:
+    branches:
+      - "main"
+    tags:
+      - "v*"
+    paths:
+      - ".github/workflows/headless-client-release.yml"
+      - "headless-client/**"
+      - "scripts/resolve-build-version.js"
+      - "scripts/upload-release-asset.sh"
+
+concurrency:
+  group: headless-builds-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Resolve build version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.build-version.outputs.version }}
+      app_version: ${{ steps.build-version.outputs.app_version }}
+      safe_version: ${{ steps.build-version.outputs.safe_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve version from Git tags
+        id: build-version
+        shell: bash
+        env:
+          TALKTOME_BUILD_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.release_version || '' }}
+        run: node scripts/resolve-build-version.js --github-output "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.deb_arch }} package
+    needs: version
+    runs-on: ubuntu-latest
+    # Debian Bookworm keeps the glibc/libasound dependencies compatible with
+    # Raspberry Pi OS Bookworm and Trixie.
+    container: debian:bookworm
+    env:
+      TALKTOME_BUILD_VERSION: ${{ needs.version.outputs.app_version }}
+      TALKTOME_BUILD_SAFE_VERSION: ${{ needs.version.outputs.safe_version }}
+      CARGO_DEB_VERSION: "3.8.0"
+      CARGO_TERM_COLOR: always
+      DEBIAN_FRONTEND: noninteractive
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            target: x86_64-unknown-linux-gnu
+            cross: false
+          - deb_arch: arm64
+            target: aarch64-unknown-linux-gnu
+            cross: true
+            gnu_prefix: aarch64-linux-gnu
+          - deb_arch: armhf
+            target: armv7-unknown-linux-gnueabihf
+            cross: true
+            gnu_prefix: arm-linux-gnueabihf
+            # Every Raspberry Pi 2/3/4 core has NEON; libopus' ARM intrinsics
+            # need the FPU flag that the Debian armhf toolchain lacks by default.
+            c_flags: "-mfpu=neon-vfpv4 -mfloat-abi=hard"
+
+    steps:
+      - name: Install build tools
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config cmake \
+            libasound2-dev libudev-dev dpkg-dev
+
+      - name: Install cross toolchain and target libraries
+        if: matrix.cross
+        shell: bash
+        run: |
+          dpkg --add-architecture "${{ matrix.deb_arch }}"
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            "crossbuild-essential-${{ matrix.deb_arch }}" \
+            "libasound2-dev:${{ matrix.deb_arch }}" \
+            "libudev-dev:${{ matrix.deb_arch }}"
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target "${{ matrix.target }}"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # The prebuilt cargo-deb release needs glibc 2.39; the Bookworm
+      # container has 2.36, so build it from source once and cache the binary.
+      - name: Restore cargo-deb
+        id: cargo-deb-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-deb
+          key: cargo-deb-${{ env.CARGO_DEB_VERSION }}-bookworm-${{ runner.arch }}
+
+      - name: Build cargo-deb from source
+        if: steps.cargo-deb-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: cargo install cargo-deb --version "$CARGO_DEB_VERSION" --locked
+
+      - name: Configure cross compilation
+        if: matrix.cross
+        shell: bash
+        run: |
+          prefix="${{ matrix.gnu_prefix }}"
+          target_upper="$(echo "${{ matrix.target }}" | tr 'a-z-' 'A-Z_')"
+          target_lower="$(echo "${{ matrix.target }}" | tr '-' '_')"
+          {
+            echo "CARGO_TARGET_${target_upper}_LINKER=${prefix}-gcc"
+            echo "CC_${target_lower}=${prefix}-gcc"
+            echo "CXX_${target_lower}=${prefix}-g++"
+            echo "AR_${target_lower}=${prefix}-ar"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+            echo "PKG_CONFIG_PATH_${target_lower}=/usr/lib/${prefix}/pkgconfig:/usr/share/pkgconfig"
+            echo "PKG_CONFIG_LIBDIR_${target_lower}=/usr/lib/${prefix}/pkgconfig:/usr/share/pkgconfig"
+            if [[ -n "${{ matrix.c_flags }}" ]]; then
+              echo "CFLAGS_${target_lower}=${{ matrix.c_flags }}"
+              echo "CXXFLAGS_${target_lower}=${{ matrix.c_flags }}"
+            fi
+          } >> "$GITHUB_ENV"
+
+      - name: Build Debian package
+        shell: bash
+        run: |
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            headless-client/scripts/build-deb.sh "${{ matrix.target }}"
+          else
+            headless-client/scripts/build-deb.sh
+          fi
+
+      - name: Prepare artifact
+        id: artifact
+        shell: bash
+        run: |
+          shopt -s nullglob globstar
+          # cargo-deb may place the same package under target/debian/ and
+          # target/<triple>/debian/; treat files with the same name as one.
+          files=(headless-client/target/**/debian/*.deb)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo 'No .deb produced' >&2
+            exit 1
+          fi
+          mapfile -t names < <(for f in "${files[@]}"; do basename "$f"; done | sort -u)
+          if [[ ${#names[@]} -ne 1 ]]; then
+            printf 'Expected exactly one package name, found %s\n' "${#names[@]}" >&2
+            printf '%s\n' "${files[@]}" >&2
+            exit 1
+          fi
+          mkdir -p headless-client/release-artifacts
+          name="talktome-headless_${TALKTOME_BUILD_SAFE_VERSION}_${{ matrix.deb_arch }}.deb"
+          cp "${files[0]}" "headless-client/release-artifacts/$name"
+          dpkg-deb --info "headless-client/release-artifacts/$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "path=headless-client/release-artifacts/$name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          if-no-files-found: error
+          path: ${{ steps.artifact.outputs.path }}
+
+  smoke:
+    name: Install ${{ matrix.deb_arch }} on ${{ matrix.distro }}
+    needs: [version, build]
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.distro }}
+    # arm64 hosted runners are only available on some plans; do not block the
+    # release on them.
+    continue-on-error: ${{ matrix.deb_arch == 'arm64' }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            distro: debian:bookworm
+          - deb_arch: arm64
+            runner: ubuntu-24.04-arm
+            distro: debian:trixie
+          - deb_arch: amd64
+            runner: ubuntu-latest
+            distro: debian:trixie
+
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v7
+        with:
+          name: talktome-headless_${{ needs.version.outputs.safe_version }}_${{ matrix.deb_arch }}.deb
+          path: package
+
+      - name: Install package
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ./package/*.deb
+
+      - name: Check installed client
+        shell: bash
+        run: |
+          talktome-headless --version
+          test "$(talktome-headless --version)" = "talktome-headless ${{ needs.version.outputs.app_version }}"
+          id talktome-headless
+          test -f /lib/systemd/system/talktome-headless@.service
+          test -f /lib/udev/rules.d/60-talktome-streamdeck.rules
+          talktome-headless --config /usr/share/talktome-headless/config.example.toml check-config
+          talktome-headless --config /usr/share/talktome-headless/config.example.json check-config
+          talktome-headless list-gpio
+
+  release:
+    name: Upload packages to draft release
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.release_version != '')
+    needs: [version, build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download packages
+        uses: actions/download-artifact@v7
+        with:
+          pattern: talktome-headless_*.deb
+          merge-multiple: true
+          path: packages
+
+      - name: Upload to draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.version.outputs.version }}
+        run: |
+          for file in packages/*.deb; do
+            bash scripts/upload-release-asset.sh "$RELEASE_TAG" "$file" "$RELEASE_TAG - macOS + Windows"
+          done

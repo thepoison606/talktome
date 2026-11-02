@@ -18,6 +18,7 @@ feedback and sharing how you use Talktome.
 - Program-audio feeds with volume and mute controls.
 - Camera tally and remote control through Bitfocus Companion, HTTP API, module and keyboard shortcuts.
 - Bridge Desktop Application to integrate NDI, OMT, hardware intercom systems, audio interfaces and mixing consoles.
+- Headless client that turns a Raspberry Pi (or any small Linux board) into an intercom panel with Elgato Stream Deck keys and dials, GPIO tally and PTT, and a web admin UI.
 - Optional multiple-production matrices with scoped users, conferences, feeds and production admins.
 
 ## Quick Start
@@ -117,8 +118,8 @@ native Bridge app.
 
 ### Versioning and releases
 
-Git release tags are the single source of truth for every Server, Bridge and
-Docker build. Create a tag such as `v1.2.5` to produce version `1.2.5`; commits
+Git release tags are the single source of truth for every Server, Bridge,
+headless client and Docker build. Create a tag such as `v1.2.5` to produce version `1.2.5`; commits
 after the latest tag receive a development version such as `1.2.5-dev.3`.
 Package, Cargo and Tauri manifests intentionally contain only the neutral
 `0.0.0` placeholder and must not be edited for a release. The shared
@@ -153,6 +154,8 @@ with `--node-version` to inspect its runtime without starting services.
 - `public/`: browser client, Admin UI and shared browser/server settings models.
 - `scripts/`: build, release, container healthcheck and maintenance tools.
 - `server-app/` and `bridge-client/`: native desktop applications.
+- `headless-client/`: Rust intercom panel for Raspberry Pi and other Linux
+  boards, shipped as Debian packages.
 - `gateway/`: radio gateway tools.
 - `vendor/`: locally maintained third-party patches.
 
@@ -427,6 +430,19 @@ as outputs. OBS 31 or newer can send and receive them using the official
 [OMT plugin](https://github.com/openmediatransport/omtplugin). Setup and network
 requirements are documented in the Bridge client's
 [OMT Audio documentation](bridge-client/README.md#omt-audio).
+
+## Headless Client
+
+`talktome-headless` logs in as a normal Talktome user and runs without a
+screen: an Elgato Stream Deck (MK.2, XL, Mini, Neo, +, + XL, Pedal) serves as
+the key panel with talk, reply, locks, volume and conference member mix; GPIO
+lines carry PGM/PRV tally, talk and status lights and PTT inputs; a local web
+UI covers status, settings and a remote control. It is built as `.deb`
+packages for arm64, armhf and amd64 by the Headless Client Builds workflow.
+Installation, configuration and the Stream Deck layout are described in
+[headless-client/README.md](headless-client/README.md); protocol and design
+details are in
+[headless-client/specification.md](headless-client/specification.md).
 
 ## Radio Gateway Prototype
 
