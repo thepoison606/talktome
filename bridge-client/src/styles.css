@@ -427,11 +427,15 @@ h3 {
 .port-audio-popover :focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 
 .managed-port-trigger-grid {
+  --target-picker-control-height: 2rem;
   align-items: start;
   display: grid;
   gap: 0.45rem 0.55rem;
-  grid-template-columns: minmax(10rem, 0.8fr) minmax(0, 1fr) minmax(9rem, 0.7fr);
+  grid-template-columns: minmax(0, 1fr) minmax(9rem, 12rem);
 }
+.managed-port-trigger-grid--simple > :first-child { grid-column: 1 / -1; }
+.managed-port-control--targets { grid-column: 1 / -1; margin-top: .35rem; }
+.managed-port-control .tt-target-picker__chip > span { color: #e2e8f0; font-size: .85rem; font-weight: 400; }
 
 .managed-port-control {
   align-content: start;
@@ -847,3 +851,5 @@ ul {
 .muted {
   color: #81909d;
 }
+
+.managed-port-control small { color: #9fb0c0; font-size: 0.7rem; }

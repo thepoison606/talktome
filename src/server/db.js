@@ -183,6 +183,7 @@ db.exec(`
                                                           trigger_mode         TEXT    NOT NULL DEFAULT 'external',
                                                           trigger_target_type  TEXT    NOT NULL DEFAULT '',
                                                           trigger_target_id    INTEGER,
+                                                          trigger_targets      TEXT,
                                                           trigger_threshold_db REAL    NOT NULL DEFAULT -45,
                                                           updated_at           TEXT    NOT NULL
     );
@@ -418,6 +419,7 @@ ensureColumn("feeds", "login_token_hash", "TEXT");
 ensureColumn("user_bridge_endpoints", "trigger_mode", "TEXT NOT NULL DEFAULT 'external'");
 ensureColumn("user_bridge_endpoints", "trigger_target_type", "TEXT NOT NULL DEFAULT ''");
 ensureColumn("user_bridge_endpoints", "trigger_target_id", "INTEGER");
+ensureColumn("user_bridge_endpoints", "trigger_targets", "TEXT");
 ensureColumn("user_bridge_endpoints", "trigger_threshold_db", "REAL NOT NULL DEFAULT -45");
 ensureColumn("user_bridge_endpoints", "production_id", "INTEGER REFERENCES productions(id) ON DELETE SET NULL");
 ensureColumn("feed_bridge_endpoints", "production_id", "INTEGER REFERENCES productions(id) ON DELETE SET NULL");

@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { normalize: normalizeUserAudioSettings } = require('../../public/userAudioSettings');
 const bridgeAudioLevels = require('../../public/bridgeAudioLevels');
+const bridgeTalkTrigger = require('../../public/bridgeTalkTrigger');
 const { loginNameKey, assertUniqueLoginNames } = require('./loginNames');
 
 const BRIDGE_ENDPOINT_TEXT_LIMIT = 200;
@@ -117,7 +118,7 @@ function validateOptionalBridgeDeviceChannel(device, leftChannel, label) {
 
 function normalizeBridgeTriggerMode(value) {
   const mode = String(value || '').trim().toLowerCase();
-  return mode === 'audio-level' ? 'audio-level' : 'external';
+  return bridgeTalkTrigger.mode(mode);
 }
 
 function normalizeBridgeTriggerTargetType(value) {
@@ -155,6 +156,9 @@ function normalizeBridgeEndpointConfig(config = {}) {
   const triggerMode = normalizeBridgeTriggerMode(config.triggerMode);
   const triggerTargetType = normalizeBridgeTriggerTargetType(config.triggerTargetType);
   const triggerTargetId = normalizeBridgeTriggerTargetId(config.triggerTargetId);
+  const triggerTargets = bridgeTalkTrigger.targets(config.triggerTargets,
+    triggerTargetType && triggerTargetId ? { type: triggerTargetType, id: triggerTargetId } : null,
+    { strict: true });
   const triggerThresholdDb = normalizeBridgeTriggerThresholdDb(config.triggerThresholdDb);
   validateBridgePair(inputLeftChannel, inputRightChannel, 'Input');
   validateBridgePair(outputLeftChannel, outputRightChannel, 'Output');
@@ -165,8 +169,8 @@ function normalizeBridgeEndpointConfig(config = {}) {
     }
     validateOptionalBridgeDeviceChannel(inputDevice, inputLeftChannel, 'Input');
     validateOptionalBridgeDeviceChannel(outputDevice, outputLeftChannel, 'Output');
-    if (triggerMode === 'audio-level' && (!triggerTargetType || triggerTargetId === null)) {
-      throw new Error('Audio level trigger requires a user or conference target');
+    if (triggerMode !== 'external' && !triggerTargets.length) {
+      throw new Error('Automatic talk trigger requires at least one user or conference target');
     }
   }
 
@@ -180,8 +184,9 @@ function normalizeBridgeEndpointConfig(config = {}) {
     outputLeftChannel,
     outputRightChannel,
     triggerMode,
-    triggerTargetType,
-    triggerTargetId,
+    triggerTargets,
+    triggerTargetType: triggerTargets[0]?.type || '',
+    triggerTargetId: triggerTargets[0]?.id ?? null,
     triggerThresholdDb,
   };
 }
@@ -232,6 +237,7 @@ function getAllUsers() {
       COALESCE(user_bridge_endpoints.trigger_mode, 'external') AS bridge_trigger_mode,
       COALESCE(user_bridge_endpoints.trigger_target_type, '') AS bridge_trigger_target_type,
       user_bridge_endpoints.trigger_target_id AS bridge_trigger_target_id,
+      user_bridge_endpoints.trigger_targets AS bridge_trigger_targets,
       COALESCE(user_bridge_endpoints.trigger_threshold_db, -45) AS bridge_trigger_threshold_db,
       user_bridge_endpoints.updated_at AS bridge_updated_at
     FROM users
@@ -263,6 +269,7 @@ function getUserById(id) {
       COALESCE(user_bridge_endpoints.trigger_mode, 'external') AS bridge_trigger_mode,
       COALESCE(user_bridge_endpoints.trigger_target_type, '') AS bridge_trigger_target_type,
       user_bridge_endpoints.trigger_target_id AS bridge_trigger_target_id,
+      user_bridge_endpoints.trigger_targets AS bridge_trigger_targets,
       COALESCE(user_bridge_endpoints.trigger_threshold_db, -45) AS bridge_trigger_threshold_db,
       user_bridge_endpoints.updated_at AS bridge_updated_at
     FROM users
@@ -364,6 +371,7 @@ function getBridgeEndpointsForDevice(bridgeDevice) {
       COALESCE(user_bridge_endpoints.trigger_mode, 'external') AS trigger_mode,
       COALESCE(user_bridge_endpoints.trigger_target_type, '') AS trigger_target_type,
       user_bridge_endpoints.trigger_target_id,
+      user_bridge_endpoints.trigger_targets,
       COALESCE(user_bridge_endpoints.trigger_threshold_db, -45) AS trigger_threshold_db,
       user_bridge_endpoints.updated_at
     FROM user_bridge_endpoints
@@ -716,40 +724,30 @@ function removeProductionFeed(productionId, feedId) {
 }
 
 function getProductionConferencesForUser(userId, productionId) {
-  return db.prepare(`
-    SELECT c.id, c.name, membership.can_talk AS canTalk
-    FROM production_user_conference membership
-    JOIN conferences c ON c.id = membership.conference_id
-    WHERE membership.production_id = ? AND membership.user_id = ?
-    ORDER BY c.name COLLATE NOCASE
-  `).all(Number(productionId), Number(userId)).map((conference) => ({
-    ...conference,
-    canTalk: Boolean(conference.canTalk),
-  }));
+  return getProductionTargets(userId, productionId)
+    .filter(target => target.targetType === 'conference')
+    .map(target => ({ id: target.targetId, name: target.name, canTalk: target.canTalk,
+      ...(target.bridgeManaged ? { bridgeManaged: true } : {}) }));
 }
 
 function getProductionUsersForConference(conferenceId, productionId) {
-  return db.prepare(`
-    SELECT u.id, u.name
-    FROM production_user_conference membership
-    JOIN users u ON u.id = membership.user_id
-    WHERE membership.production_id = ?
-      AND membership.conference_id = ?
-      AND u.is_superadmin = 0
-    ORDER BY u.name COLLATE NOCASE
-  `).all(Number(productionId), Number(conferenceId));
+  return getProductionMembers(productionId).filter(user => getProductionConferencesForUser(user.id, productionId)
+    .some(conference => conference.id === Number(conferenceId)))
+    .map(user => ({ id: user.id, name: user.name }));
 }
 
 function getAllConfiguredUsersForConference(conferenceId) {
-  return db.prepare(`
-    SELECT DISTINCT u.id, u.name
-    FROM users u
-    JOIN production_user_conference membership ON membership.user_id = u.id
-      AND membership.conference_id = ?
-    WHERE u.is_superadmin = 0
-      AND u.is_guest_profile = 0
-    ORDER BY u.name COLLATE NOCASE
-  `).all(Number(conferenceId));
+  const manual = db.prepare(`SELECT DISTINCT u.id, u.name FROM users u
+    JOIN production_user_conference membership ON membership.user_id = u.id AND membership.conference_id = ?
+    WHERE u.is_superadmin = 0 AND u.is_guest_profile = 0`).all(Number(conferenceId));
+  const members = new Map(manual.map(user => [Number(user.id), user]));
+  for (const row of db.prepare('SELECT user_id FROM user_bridge_endpoints WHERE enabled = 1').all()) {
+    if (getConfiguredBridgeTargetsForUser(row.user_id).some(target => target.targetType === 'conference' && target.targetId === Number(conferenceId))) {
+      const user = getUserById(row.user_id);
+      members.set(Number(user.id), { id: Number(user.id), name: user.name });
+    }
+  }
+  return [...members.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function setProductionConferenceMembership(productionId, userId, conferenceId) {
@@ -779,6 +777,7 @@ function setProductionConferenceMembership(productionId, userId, conferenceId) {
 }
 
 function setProductionConferenceListenOnly(productionId, userId, conferenceId) {
+  assertBridgeTargetEditable(userId, 'conference', conferenceId);
   const pid = Number(productionId);
   const uid = Number(userId);
   const cid = Number(conferenceId);
@@ -806,6 +805,7 @@ function setProductionConferenceListenOnly(productionId, userId, conferenceId) {
 }
 
 function removeProductionConferenceMembership(productionId, userId, conferenceId) {
+  assertBridgeTargetEditable(userId, 'conference', conferenceId);
   const pid = Number(productionId);
   const uid = Number(userId);
   const cid = Number(conferenceId);
@@ -823,7 +823,7 @@ function removeProductionConferenceMembership(productionId, userId, conferenceId
 }
 
 function getProductionTargets(userId, productionId) {
-  return db.prepare(`
+  const manual = db.prepare(`
     SELECT targetType, targetId, name, canTalk
     FROM (
       SELECT 'user' AS targetType, t.target_id AS targetId, u.name AS name,
@@ -870,6 +870,12 @@ function getProductionTargets(userId, productionId) {
     ...target,
     canTalk: Boolean(target.canTalk),
   }));
+  const managed = isUserInProduction(userId, productionId)
+    ? getConfiguredBridgeTargetsForUser(userId).filter(target => target.targetType === 'user'
+      ? isUserInProduction(target.targetId, productionId)
+      : Boolean(db.prepare('SELECT 1 FROM production_conferences WHERE production_id = ? AND conference_id = ?')
+        .get(Number(productionId), target.targetId))) : [];
+  return mergeBridgeTargets(manual, managed);
 }
 
 function getAvailableProductionTargets(userId, productionId) {
@@ -897,23 +903,52 @@ function editProductionTarget(productionId, userId, targetType, targetId, action
   })();
 }
 
+// Configuration catalog: Bridge endpoints are global, independent of panel layouts.
 function getBridgeTargetsForUser(userId) {
-  const targets = getProductionsForUser(userId)
-    .flatMap((production) => getProductionTargets(userId, production.id));
-  const unique = new Map();
+  return [
+    ...getAllUsers().filter(user => !user.is_superadmin && !user.is_guest_profile && Number(user.id) !== Number(userId))
+      .map(user => ({ targetType: 'user', targetId: Number(user.id), name: user.name, canTalk: true })),
+    ...getAllConferences().map(conference => ({ targetType: 'conference', targetId: Number(conference.id), name: conference.name, canTalk: true })),
+  ].sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' }));
+}
 
-  for (const target of targets) {
-    if (!['user', 'conference'].includes(target.targetType)) continue;
+function getConfiguredBridgeTargetsForUser(userId) {
+  const endpoint = db.prepare(`SELECT e.* FROM user_bridge_endpoints e JOIN users u ON u.id = e.user_id
+    WHERE e.user_id = ? AND e.enabled = 1 AND u.is_superadmin = 0 AND u.is_guest_profile = 0`).get(Number(userId));
+  if (!endpoint) return [];
+  if (!['audio-level', 'always-on'].includes(endpoint.trigger_mode)) return [];
+  const configured = bridgeTalkTrigger.targets(endpoint.trigger_targets,
+    endpoint.trigger_target_type && endpoint.trigger_target_id
+      ? { type: endpoint.trigger_target_type, id: endpoint.trigger_target_id } : null);
+  return configured.flatMap(target => {
+    if (target.type === 'user' && target.id === Number(userId)) return [];
+    const entity = target.type === 'user'
+      ? db.prepare('SELECT id, name FROM users WHERE id = ? AND is_superadmin = 0 AND is_guest_profile = 0').get(target.id)
+      : db.prepare('SELECT id, name FROM conferences WHERE id = ?').get(target.id);
+    return entity ? [{ targetType: target.type, targetId: Number(entity.id), name: entity.name, canTalk: true, bridgeManaged: true }] : [];
+  });
+}
+
+function mergeBridgeTargets(manual, managed) {
+  const result = new Map(manual.map(target => [`${target.targetType}:${target.targetId}`, target]));
+  for (const target of managed) {
     const key = `${target.targetType}:${target.targetId}`;
-    const existing = unique.get(key);
-    if (!existing || (target.targetType === 'conference' && target.canTalk && !existing.canTalk)) {
-      unique.set(key, target);
-    }
+    result.set(key, { ...result.get(key), ...target, manualAssigned: result.has(key) && (!result.get(key).bridgeManaged || result.get(key).manualAssigned === true) });
   }
+  return [...result.values()];
+}
 
-  return [...unique.values()]
-    .filter((target) => target.targetType !== 'conference' || target.canTalk)
-    .sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' }));
+function getBridgePanelTargetsForUser(userId) {
+  const manual = getProductionsForUser(userId).flatMap(production => getProductionTargets(userId, production.id));
+  return mergeBridgeTargets(manual, getConfiguredBridgeTargetsForUser(userId));
+}
+
+function assertBridgeTargetEditable(userId, targetType, targetId) {
+  if (getConfiguredBridgeTargetsForUser(userId).some(target => target.targetType === targetType && target.targetId === Number(targetId))) {
+    const error = new Error('Configured by Bridge; change this target in the user’s Bridge configuration');
+    error.statusCode = 409;
+    throw error;
+  }
 }
 
 function getPrimaryProductionTargets(userId) {
@@ -977,6 +1012,7 @@ function addProductionTarget(productionId, userId, targetType, targetId) {
 }
 
 function removeProductionTarget(productionId, userId, targetType, targetId) {
+  assertBridgeTargetEditable(userId, targetType, targetId);
   if (targetType === 'conference') {
     removeProductionConferenceMembership(productionId, userId, targetId);
     return;
@@ -1108,6 +1144,7 @@ function exportDatabaseSnapshot() {
         trigger_mode,
         trigger_target_type,
         trigger_target_id,
+        trigger_targets,
         trigger_threshold_db,
         audio_levels,
         updated_at
@@ -1245,10 +1282,11 @@ function importDatabaseSnapshot(snapshot) {
         trigger_mode,
         trigger_target_type,
         trigger_target_id,
+        trigger_targets,
         trigger_threshold_db,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertFeedBridgeEndpoint = db.prepare(`
       INSERT INTO feed_bridge_endpoints (
@@ -1453,6 +1491,9 @@ function importDatabaseSnapshot(snapshot) {
         triggerMode: row.trigger_mode,
         triggerTargetType: row.trigger_target_type,
         triggerTargetId: row.trigger_target_id,
+        triggerTargets: bridgeTalkTrigger.targets(row.trigger_targets,
+          row.trigger_target_type && row.trigger_target_id
+            ? { type: row.trigger_target_type, id: row.trigger_target_id } : null),
         triggerThresholdDb: row.trigger_threshold_db,
       });
       insertBridgeEndpoint.run(
@@ -1469,6 +1510,7 @@ function importDatabaseSnapshot(snapshot) {
         normalized.triggerMode,
         normalized.triggerTargetType,
         normalized.triggerTargetId,
+        JSON.stringify(normalized.triggerTargets),
         normalized.triggerThresholdDb,
         String(row.updated_at || new Date().toISOString())
       );
@@ -1801,13 +1843,11 @@ function updateUserBridgeEndpoint(userId, config = {}) {
   }
 
   const normalized = normalizeBridgeEndpointConfig(config);
-  if (normalized.enabled && normalized.triggerMode === 'audio-level') {
-    const triggerTarget = getBridgeTargetsForUser(numericUserId).find((target) => (
-      target.targetType === normalized.triggerTargetType
-      && Number(target.targetId) === Number(normalized.triggerTargetId)
-    ));
-    if (!triggerTarget) {
-      throw new Error('Audio level trigger target is unavailable to this bridge user');
+  if (normalized.enabled) {
+    const allowed = new Set(getBridgeTargetsForUser(numericUserId)
+      .map(target => `${target.targetType}:${target.targetId}`));
+    if (normalized.triggerTargets.some(target => !allowed.has(`${target.type}:${target.id}`))) {
+      throw new Error('Talk trigger target is unavailable to this bridge user');
     }
   }
   const now = new Date().toISOString();
@@ -1826,10 +1866,11 @@ function updateUserBridgeEndpoint(userId, config = {}) {
       trigger_mode,
       trigger_target_type,
       trigger_target_id,
+      trigger_targets,
       trigger_threshold_db,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
       enabled = excluded.enabled,
       bridge_device = excluded.bridge_device,
@@ -1843,6 +1884,7 @@ function updateUserBridgeEndpoint(userId, config = {}) {
       trigger_mode = excluded.trigger_mode,
       trigger_target_type = excluded.trigger_target_type,
       trigger_target_id = excluded.trigger_target_id,
+      trigger_targets = excluded.trigger_targets,
       trigger_threshold_db = excluded.trigger_threshold_db,
       updated_at = excluded.updated_at
   `);
@@ -1861,6 +1903,7 @@ function updateUserBridgeEndpoint(userId, config = {}) {
     normalized.triggerMode,
     normalized.triggerTargetType,
     normalized.triggerTargetId,
+    JSON.stringify(normalized.triggerTargets),
     normalized.triggerThresholdDb,
     now
   );
@@ -2364,6 +2407,8 @@ module.exports = {
   getAvailableProductionTargets,
   editProductionTarget,
   getBridgeTargetsForUser,
+  getConfiguredBridgeTargetsForUser,
+  getBridgePanelTargetsForUser,
   getPrimaryProductionTargets,
   addProductionTarget,
   removeProductionTarget,

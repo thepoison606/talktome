@@ -1,3 +1,4 @@
+const bridgeTalkTrigger = require('../../public/bridgeTalkTrigger');
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
@@ -208,6 +209,8 @@ const {
   getAvailableProductionTargets,
   editProductionTarget,
   getBridgeTargetsForUser,
+  getConfiguredBridgeTargetsForUser,
+  getBridgePanelTargetsForUser,
   addProductionTarget,
   removeProductionTarget,
   updateProductionTargetOrder,
@@ -449,6 +452,11 @@ function getEffectiveConferencesForPeer(peer) {
           ...conference,
           canTalk: Boolean(existing?.canTalk || conference.canTalk),
         });
+      }
+    }
+    for (const target of getConfiguredBridgeTargetsForUser(userId)) {
+      if (target.targetType === 'conference') {
+        conferences.set(target.targetId, { id: target.targetId, name: target.name, canTalk: true });
       }
     }
     return [...conferences.values()];
@@ -1485,7 +1493,9 @@ function buildBridgeRuntimeConfig(bridgeId) {
         rightChannel: Number(row.output_right_channel),
       },
       trigger: {
-        mode: row.trigger_mode === "audio-level" ? "audio-level" : "external",
+        mode: bridgeTalkTrigger.mode(row.trigger_mode),
+        targets: bridgeTalkTrigger.targets(row.trigger_targets, row.trigger_target_type && row.trigger_target_id
+          ? { type: row.trigger_target_type, id: Number(row.trigger_target_id) } : null),
         target: row.trigger_target_type && row.trigger_target_id
           ? {
               type: row.trigger_target_type,
@@ -2822,7 +2832,7 @@ function getUserAudioSettingTargets(userId) {
     ? productions.flatMap((production) => getProductionTargets(userId, production.id))
     : getUserTargets(userId);
   const unique = new Map();
-  source
+  [...source, ...getConfiguredBridgeTargetsForUser(userId)]
     .filter((target) => ['user', 'conference'].includes(target.targetType) && target.canTalk !== false)
     .forEach((target) => unique.set(`${target.targetType}:${target.targetId}`, {
       id: Number(target.targetId),
@@ -2840,6 +2850,7 @@ app.get('/admin/users/:id/audio-settings', requireAdmin, (req, res) => {
   res.json({
     settings: getResolvedUserAudioSettings(user.id),
     targets: getUserAudioSettingTargets(user.id),
+    bridgeTargets: getBridgeTargetsForUser(user.id),
     configuredAsBridge: Boolean(user.bridge_enabled),
   });
 });
@@ -3376,7 +3387,7 @@ app.put("/admin/productions/:productionId/conferences/:conferenceId/users/:userI
     notifyConferenceMembersChanged(req.params.conferenceId);
     res.sendStatus(204);
   } catch (error) {
-    res.status(400).json({ error: error.message || "Failed to update conference membership" });
+    res.status(error.statusCode || 400).json({ error: error.message || "Failed to update conference membership" });
   }
 });
 
@@ -3391,7 +3402,7 @@ app.delete("/admin/productions/:productionId/conferences/:conferenceId/users/:us
     notifyConferenceMembersChanged(req.params.conferenceId);
     res.sendStatus(204);
   } catch (error) {
-    res.status(400).json({ error: error.message || "Failed to update conference membership" });
+    res.status(error.statusCode || 400).json({ error: error.message || "Failed to update conference membership" });
   }
 });
 
@@ -3491,7 +3502,7 @@ app.put("/admin/productions/:productionId/users/:userId/targets/conference/:targ
     notifyConferenceMembersChanged(req.params.targetId);
     res.sendStatus(204);
   } catch (err) {
-    res.status(400).json({ error: err.message || "Failed to update conference target" });
+    res.status(err.statusCode || 400).json({ error: err.message || "Failed to update conference target" });
   }
 });
 
@@ -3509,7 +3520,7 @@ app.delete("/admin/productions/:productionId/users/:userId/targets/:type/:target
     }
     res.sendStatus(204);
   } catch (err) {
-    res.status(400).json({ error: err.message || "Failed to remove production target" });
+    res.status(err.statusCode || 400).json({ error: err.message || "Failed to remove production target" });
   }
 });
 
@@ -5270,8 +5281,10 @@ app.put("/api/v1/bridge/:bridgeId/ports/:kind/:id", requireBridgeApiAuth, (req, 
       if (user.is_superadmin) {
         return res.status(403).json({ error: "Superadmin cannot be a bridge endpoint" });
       }
+      const previousTargets = getConfiguredBridgeTargetsForUser(targetId);
       const updated = updateUserBridgeEndpoint(targetId, config);
       if (!updated) return res.status(404).json({ error: "User not found" });
+      notifyBridgeTargetsChanged(targetId, previousTargets);
       scheduleAdminStatusBroadcast("bridge-endpoint-updated");
       return res.json(buildBridgeRuntimeConfig(bridgeId));
     }
@@ -5293,6 +5306,7 @@ app.put("/api/v1/bridge/:bridgeId/ports/:kind/:id", requireBridgeApiAuth, (req, 
       message.includes("required") ||
       message.toLowerCase().includes("production") ||
       message.toLowerCase().includes("trigger") ||
+      message.toLowerCase().includes("talk target") ||
       message.includes("Invalid user id") ||
       message.includes("Invalid feed id")
     ) {
@@ -6119,8 +6133,10 @@ app.put('/users/:id/bridge-endpoint', requireAdmin, (req, res) => {
       return res.status(403).json({ error: 'Superadmin cannot be a bridge endpoint' });
     }
 
+    const previousTargets = getConfiguredBridgeTargetsForUser(userId);
     const updated = updateUserBridgeEndpoint(userId, req.body || {});
     if (!updated) return res.status(404).json({ error: 'User not found' });
+    notifyBridgeTargetsChanged(userId, previousTargets);
     scheduleAdminStatusBroadcast("bridge-endpoint-updated");
     res.sendStatus(204);
   } catch (err) {
@@ -6129,6 +6145,8 @@ app.put('/users/:id/bridge-endpoint', requireAdmin, (req, res) => {
       message.includes('channel') ||
       message.includes('required') ||
       message.toLowerCase().includes('production') ||
+      message.toLowerCase().includes('trigger') ||
+      message.toLowerCase().includes('talk target') ||
       message.includes('Invalid user id')
     ) {
       return res.status(400).json({ error: message });
@@ -6299,6 +6317,13 @@ app.delete("/users/:id/targets/:type/:tid", requireAdmin, (req, res) => {
     res.status(err?.statusCode || 400).json({ error: err.message || 'Failed to remove target' });
   }
 });
+
+function notifyBridgeTargetsChanged(userId, previousTargets) {
+  notifyTargetChange(userId);
+  const conferences = new Set([...previousTargets, ...getConfiguredBridgeTargetsForUser(userId)]
+    .filter(target => target.targetType === 'conference').map(target => target.targetId));
+  for (const conferenceId of conferences) notifyConferenceMembersChanged(conferenceId);
+}
 
 function notifyTargetChange(userId) {
   const idStr = String(userId);
@@ -7730,7 +7755,7 @@ function emitUserListToOperators() {
 const remotePanels = require('./remotePanelControl').installRemotePanelControl({
   app, io, publicDir, requireAdmin, getAdminSession, getUserById, findUserPeerByUserId,
   getUserList, getEnabledProductionsForUser, getPrimaryProduction, isUserInProduction, buildOperatorTargetsForUser,
-  getBridgeTargetsForUser, buildIncomingTalkStateForUser, getUserTargetAudioStates,
+  getBridgeTargetsForUser: getBridgePanelTargetsForUser, buildIncomingTalkStateForUser, getUserTargetAudioStates,
   getActiveFeedIds() {
     const ids = new Set();
     for (const peer of peers.values()) {

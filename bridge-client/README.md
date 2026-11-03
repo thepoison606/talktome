@@ -80,6 +80,42 @@ desired OBS source. Refresh the Bridge, then select the resulting
 The OBS output must contain an audio track; a video-only NDI test signal is
 discoverable but produces silence in this audio-only Bridge integration.
 
+## Talk triggers and target groups
+
+For each managed **user** endpoint, select **Talk trigger** and **Talk targets**
+in the Bridge window or in Admin → Users → Bridge endpoint. The target list
+contains all users and conferences on the server, regardless of Production or
+Matrix assignments. Selecting several targets distributes the same input audio to all of them.
+Selected targets appear as removable chips. The **+** beside them opens a searchable
+dialog grouped by conferences and users. **Apply** updates the selection, while **Cancel** discards dialog
+changes. In Admin, use **Save** afterwards to store the endpoint configuration;
+the Bridge window saves applied changes automatically.
+Each receiver retains their own mute and volume control for that source.
+Selecting a conference also opens its return audio to the Bridge output; use the
+Panel to mute it or adjust its volume. A listener reached both directly and via
+a conference receives the input only once.
+
+Selected targets appear as gray, Bridge-managed crosspoints in every Production
+Matrix containing both endpoints. Clicking one opens the Bridge configuration.
+Removing a selected target removes only its automatic routing; any underlying
+manual Matrix assignment remains, including a previous listen-only assignment.
+
+- **External API / Companion**: press/release and lock commands control talk.
+  Targets come from each command, including explicit user/conference and Reply
+  targets; this mode has no configured target group. Saved automatic targets are
+  inactive in this mode. Individual remote Panel buttons address their own targets.
+- **Audio level**: the input threshold opens and closes talk to all selected
+  targets together. At least one target is required.
+- **Always on**: continuously transmits to all selected targets whenever the
+  server session and input device are ready, even during silence. The saved mode
+  is restored after Bridge restarts, server reconnects and audio-device recovery.
+  Manual releases do not close this permanent route; change Talk trigger or
+  disable the endpoint to stop it. At least one target is required.
+
+Always on applies to the input/send direction. Return audio uses the configured
+conference memberships and output settings. Configuration backups include the mode
+and full target group; older single-target configurations remain supported.
+
 ## OMT Audio
 
 Open Media Transport support is bundled with the macOS and Windows Bridge, so

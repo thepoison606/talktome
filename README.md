@@ -330,14 +330,21 @@ actual membership; users without any Production receive a clear assignment error
 Conference identities remain global and may span Productions. Routing uses each
 connected user's currently loaded Production: speaking to a conference reaches
 all active users whose current Default or Production membership includes that
-conference, even when those users loaded different Productions. A user has only
-one active Talktome session at a time.
+conference, even when those users loaded different Productions. Direct user
+targets likewise reach the user's active session across Productions, and Reply
+can address a caller absent from the recipient's current target list. A user has
+only one active Talktome session at a time.
 
 Production admins may manage the contents, memberships and matrix of their own
 Productions without access to global users, server config, backups or other
 Productions. Only global admins may enable the feature, create, rename or delete
 Productions, or assign Production admins. Bridge endpoints, Bridge feeds and
 personal mute/volume settings remain global and do not select a Production.
+Bridge automatic Talk targets (Audio level / Always on) can select any user or conference on the server. Selected
+conferences also supply return audio. These targets appear as gray, managed
+Matrix crosspoints wherever both endpoints are present; click a gray point to
+open its Bridge configuration. Existing manual assignments survive removal of
+the corresponding Bridge target.
 
 ## Companion and HTTP API
 

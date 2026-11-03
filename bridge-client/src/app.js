@@ -1,5 +1,11 @@
+import '../../public/bridgeTalkTrigger.js';
+import '../../public/targetPicker.js';
+import '../../public/targetPicker.css';
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { audioLevels, audioMeter, gainLabel, renderPortAudioControl } from './portAudioControls.js';
+
+const bridgeTalkTrigger = globalThis.TalktomeBridgeTalkTrigger;
+const targetPicker = globalThis.TalktomeTargetPicker;
 
 const deviceList = document.getElementById("device-list");
 const deviceSummary = document.getElementById("device-summary");
@@ -701,12 +707,20 @@ async function stopManagedInputPath(session, reason = "input-stop") {
     await applyManagedTalkState(session, {
       talking: false,
       targets: [],
-      source: session.talkSource || "external"
+      source: session.talkSource || "external",
+      preserveAlwaysOn: false
     }).catch((error) => {
       recordManagedLifecycle(session, "input-talk-release-error", String(error?.message || error));
     });
   }
   await invoke("stop_bridge_input", { streamId: session.inputStreamId }).catch(() => {});
+  session.talking = false;
+  session.talkSource = null;
+  session.lockActive = false;
+  session.targets = [];
+  session.panelBaseTalkState = null;
+  session.panelTalkInputs?.clear();
+  session.panelTalkLocks?.clear();
   session.producerId = null;
   session.inputStartedAt = 0;
   session.inputReady = false;
@@ -930,7 +944,6 @@ function getManagedPortDraft(port) {
   const key = bridgePortKey(port);
   const draft = managedPortDrafts.get(key) || {};
   const trigger = port.trigger || {};
-  const triggerTarget = trigger.target || {};
   return {
     input: {
       deviceId: draft.input?.deviceId ?? port.input?.deviceId ?? "",
@@ -943,9 +956,8 @@ function getManagedPortDraft(port) {
       rightChannel: draft.output?.rightChannel ?? port.output?.rightChannel ?? null,
     } : null,
     trigger: port.kind === "user" ? {
-      mode: draft.trigger?.mode ?? (trigger.mode === "audio-level" ? "audio-level" : "external"),
-      targetType: draft.trigger?.targetType ?? (triggerTarget.type || ""),
-      targetId: draft.trigger?.targetId ?? (triggerTarget.id ?? null),
+      mode: draft.trigger?.mode ?? bridgeTalkTrigger.mode(trigger.mode),
+      targets: draft.trigger?.targets ?? bridgeTalkTrigger.fromTrigger(trigger),
       thresholdDb: draft.trigger?.thresholdDb ?? (trigger.thresholdDb ?? MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB),
     } : null,
   };
@@ -1304,65 +1316,41 @@ function renderManagedAssignmentControls(port, direction, assignment) {
 }
 
 function buildManagedTriggerTargetOptions(port, triggerDraft, { includeUnavailable = true } = {}) {
-  const selectedType = String(triggerDraft?.targetType || "").trim().toLowerCase();
-  const selectedId = Number(triggerDraft?.targetId);
-  const selected = selectedType && Number.isFinite(selectedId) ? `${selectedType}:${selectedId}` : "";
-  const targets = Array.isArray(port.triggerTargets) ? port.triggerTargets : [];
-  const options = ['<option value="">Select target</option>'];
-  let hasSelected = false;
-
-  targets.forEach((target) => {
-    const type = String(target.type || "").trim().toLowerCase();
-    const id = Number(target.id);
-    if (!["user", "conference"].includes(type) || !Number.isFinite(id)) return;
-    const value = `${type}:${id}`;
-    const selectedAttr = value === selected ? " selected" : "";
-    if (selectedAttr) hasSelected = true;
-    const typeLabel = type === "conference" ? "conference" : "user";
-    options.push(`<option value="${escapeHtml(value)}"${selectedAttr}>${escapeHtml(`${target.name || value} (${typeLabel})`)}</option>`);
-  });
-
-  if (includeUnavailable && selected && !hasSelected) {
-    options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(`${selected} (saved, unavailable)`)}</option>`);
+  const selected = new Set(bridgeTalkTrigger.targets(triggerDraft?.targets).map(target => `${target.type}:${target.id}`));
+  const options = new Map((port.triggerTargets || []).filter(target => ['user', 'conference'].includes(target.type))
+    .map(target => [`${target.type}:${target.id}`, { label: target.name, type: target.type }]));
+  if (includeUnavailable) for (const key of selected) {
+    if (!options.has(key)) options.set(key, { label: key, type: key.split(':')[0], unavailable: true });
   }
-
-  return options.join("");
+  return [...options].map(([value, option]) => ({ value, ...option }));
 }
 
 function renderManagedTriggerControls(port, draft) {
-  if (port.kind !== "user") return "";
-  const triggerDraft = draft.trigger || {};
-  const mode = triggerDraft.mode === "audio-level" ? "audio-level" : "external";
-  const threshold = Number(triggerDraft.thresholdDb);
-  const thresholdValue = Number.isFinite(threshold)
-    ? Math.max(MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB, Math.min(MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB, Math.round(threshold)))
-    : MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB;
-  const showDetails = mode === "audio-level";
-
-  return `
-    <div class="managed-port-trigger-grid">
-      <label class="managed-port-control">
-        <span>Talk trigger</span>
-        <select data-managed-port-control data-field="triggerMode">
-          <option value="external"${mode === "audio-level" ? "" : " selected"}>External trigger</option>
-          <option value="audio-level"${mode === "audio-level" ? " selected" : ""}>Audio level</option>
-        </select>
-      </label>
-      <label class="managed-port-control"${showDetails ? "" : " hidden"}>
-        <span>Trigger target</span>
-        <select data-managed-port-control data-field="triggerTarget">
-          ${buildManagedTriggerTargetOptions(port, triggerDraft)}
-        </select>
-      </label>
-      <label class="managed-port-control managed-port-control--threshold"${showDetails ? "" : " hidden"}>
-        <span class="managed-port-threshold-label">
-          <span>Threshold</span>
-          <output data-trigger-threshold-value>${escapeHtml(thresholdValue)} dBFS</output>
-        </span>
-        <input data-managed-port-control data-field="triggerThreshold" type="range" min="${MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB}" max="${MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB}" step="1" value="${escapeHtml(thresholdValue)}" aria-label="Audio trigger threshold">
-      </label>
+  if (port.kind !== 'user') return '';
+  const trigger = draft.trigger || {};
+  const mode = bridgeTalkTrigger.mode(trigger.mode);
+  const threshold = Number(trigger.thresholdDb ?? MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB);
+  const hint = mode === 'always-on'
+    ? 'Sends continuously to all selected targets. Resumes after reconnects. Change mode to stop.'
+    : mode === 'audio-level' ? 'Sends to all selected targets when the input exceeds the threshold.'
+      : 'Targets are supplied by API / Companion commands.';
+  return `<div class="managed-port-trigger-grid ${mode !== 'audio-level' ? 'managed-port-trigger-grid--simple' : ''}">
+    <label class="managed-port-control"><span>Talk trigger</span>
+      <select data-managed-port-control data-field="triggerMode">
+        <option value="external" ${mode === 'external' ? 'selected' : ''}>External API / Companion</option>
+        <option value="audio-level" ${mode === 'audio-level' ? 'selected' : ''}>Audio level</option>
+        <option value="always-on" ${mode === 'always-on' ? 'selected' : ''}>Always on</option>
+      </select>
+    </label>
+    <label class="managed-port-control managed-port-control--threshold" ${mode === 'audio-level' ? '' : 'hidden'}>
+      <span class="managed-port-threshold-label"><span>Threshold</span><output data-trigger-threshold-value>${escapeHtml(threshold)} dBFS</output></span>
+      <input data-managed-port-control data-field="triggerThreshold" type="range" min="${MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB}" max="${MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB}" step="1" value="${escapeHtml(threshold)}" aria-label="Audio trigger threshold">
+    </label>
+    <div class="managed-port-control managed-port-control--targets" ${mode === 'external' ? 'hidden' : ''}>
+      <span id="${escapeHtml(port.id)}-talk-targets-label" title="${escapeHtml(hint)} Targets are global. Selected conferences also open return audio; mute or adjust it in the Panel.">Talk targets ⓘ</span>
+      <div data-managed-target-picker data-selected-targets="${escapeHtml(JSON.stringify(bridgeTalkTrigger.targets(trigger.targets)))}" role="group" aria-labelledby="${escapeHtml(port.id)}-talk-targets-label"></div>
     </div>
-  `;
+  </div>`;
 }
 
 function getManagedPortElement(key) {
@@ -1382,21 +1370,15 @@ function readManagedPortAssignmentFromElement(card, direction) {
 }
 
 function readManagedTriggerFromElement(card) {
-  const mode = card.querySelector('[data-field="triggerMode"]')?.value === "audio-level"
-    ? "audio-level"
-    : "external";
-  const targetValue = card.querySelector('[data-field="triggerTarget"]')?.value || "";
-  const thresholdValue = Number(card.querySelector('[data-field="triggerThreshold"]')?.value);
-  const [targetType, rawTargetId] = targetValue.split(":");
-  const targetId = Number(rawTargetId);
-  return {
-    mode,
-    targetType: targetType === "user" || targetType === "conference" ? targetType : "",
-    targetId: Number.isFinite(targetId) ? targetId : null,
-    thresholdDb: Number.isFinite(thresholdValue)
-      ? Math.max(MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB, Math.min(MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB, thresholdValue))
-      : MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB,
-  };
+  const mode = bridgeTalkTrigger.mode(card.querySelector('[data-field="triggerMode"]')?.value);
+  const targets = targetPicker.read(card.querySelector('[data-managed-target-picker]')).map(value => {
+    const [type, id] = value.split(':');
+    return { type, id: Number(id) };
+  });
+  const threshold = Number(card.querySelector('[data-field="triggerThreshold"]')?.value);
+  return { mode, targets, thresholdDb: Number.isFinite(threshold)
+    ? Math.max(MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB, Math.min(MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB, threshold))
+    : MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB };
 }
 
 function updateManagedPortDraftFromElement(card) {
@@ -1432,16 +1414,11 @@ function validateManagedPortAssignment(assignment, label) {
 }
 
 function validateManagedTrigger(trigger) {
-  if (!trigger || trigger.mode !== "audio-level") return;
-  if (
-    !["user", "conference"].includes(trigger.targetType) ||
-    !Number.isInteger(Number(trigger.targetId)) ||
-    Number(trigger.targetId) < 1
-  ) {
-    throw new Error("Audio level trigger requires a selected user or conference target");
-  }
-  if (!Number.isFinite(Number(trigger.thresholdDb))) {
-    throw new Error("Audio level trigger threshold is invalid");
+  if (!trigger) return;
+  const targets = bridgeTalkTrigger.targets(trigger.targets, null, { strict: true });
+  if (trigger.mode !== 'external' && !targets.length) throw new Error('Select at least one talk target');
+  if (trigger.mode === 'audio-level' && !Number.isFinite(Number(trigger.thresholdDb))) {
+    throw new Error('Audio level trigger threshold is invalid');
   }
 }
 
@@ -1475,10 +1452,9 @@ async function saveManagedBridgePort(key) {
     payload.outputRightChannel = draft.output.rightChannel;
   }
   if (port.kind === "user") {
-    payload.triggerMode = draft.trigger?.mode === "audio-level" ? "audio-level" : "external";
+    payload.triggerMode = bridgeTalkTrigger.mode(draft.trigger?.mode);
     payload.triggerThresholdDb = draft.trigger?.thresholdDb ?? MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB;
-    payload.triggerTargetType = draft.trigger?.mode === "audio-level" ? (draft.trigger?.targetType || "") : "";
-    payload.triggerTargetId = draft.trigger?.mode === "audio-level" ? (draft.trigger?.targetId ?? null) : null;
+    payload.triggerTargets = draft.trigger?.targets || [];
   }
 
   managedPortEditStates.set(key, { saving: true });
@@ -1598,53 +1574,9 @@ function handleManagedPortControlChange(event) {
       finishManagedRangeInteraction();
     }
   }
-  if (field === "triggerMode") {
-    const showDetails = control.value === "audio-level";
-    for (const detail of card.querySelectorAll('[data-field="triggerTarget"], [data-field="triggerThreshold"]')) {
-      if (detail.parentElement instanceof HTMLElement) detail.parentElement.hidden = !showDetails;
-    }
-    const inputLevel = card.querySelector('[data-managed-input-level]');
-    if (inputLevel instanceof HTMLElement) inputLevel.hidden = !showDetails;
-    requestBridgeWindowResize();
-    const session = managedSessions.get(portKey);
-    const nextMode = control.value === "audio-level" ? "audio-level" : "external";
-    const previousMode = session?.port?.trigger?.mode === "audio-level"
-      ? "audio-level"
-      : "external";
-    if (
-      session
-      && nextMode === "external"
-      && (
-        previousMode === "audio-level"
-        || session.talking
-        || session.levelTriggerState?.active
-        || session.levelTriggerState?.releaseRequired
-      )
-    ) {
-      session.port = {
-        ...session.port,
-        trigger: {
-          ...(session.port.trigger || {}),
-          mode: "external",
-          target: null
-        }
-      };
-      recordManagedLifecycle(
-        session,
-        "level-trigger-mode-change",
-        `${previousMode}->external talking=${session.talking} source=${session.talkSource || "unknown"}`
-      );
-      disableManagedLevelTrigger(session, { forceRelease: true }).catch((error) => {
-        recordManagedLifecycle(
-          session,
-          "level-trigger-release-error",
-          String(error?.message || error)
-        );
-        setManagedSessionError(session, error);
-        renderManagedBridgePorts();
-      });
-    }
+  if (field === 'triggerMode') {
     renderManagedBridgePorts();
+    requestBridgeWindowResize();
   }
   if (event.type === "change") {
     scheduleManagedPortAutoSave(portKey);
@@ -1668,7 +1600,7 @@ function finishManagedRangeInteraction() {
 }
 
 function renderManagedBridgePorts() {
-  if (managedAudioPopover) return;
+  if (managedAudioPopover || targetPicker.isOpen()) return;
   const activeElement = document.activeElement;
   const managedControlFocused = (
     activeElement instanceof HTMLElement
@@ -1737,6 +1669,18 @@ function renderManagedBridgePorts() {
   if (html !== lastManagedBridgePortsHtml) {
     bridgePorts.innerHTML = html;
     lastManagedBridgePortsHtml = html;
+    for (const port of configuredPorts.filter(port => port.kind === 'user')) {
+      const card = getManagedPortElement(bridgePortKey(port));
+      const picker = card?.querySelector('[data-managed-target-picker]');
+      if (!picker) continue;
+      const draft = getManagedPortDraft(port);
+      targetPicker.mount(picker, buildManagedTriggerTargetOptions(port, draft.trigger),
+        bridgeTalkTrigger.targets(draft.trigger?.targets).map(target => `${target.type}:${target.id}`), () => {
+          updateManagedPortDraftFromElement(card);
+          scheduleManagedPortAutoSave(bridgePortKey(port));
+          requestBridgeWindowResize();
+        });
+    }
   }
   requestBridgeWindowResize();
 }
@@ -1915,22 +1859,45 @@ function resolveBridgeCommandTargets(session, payload) {
   return Number.isFinite(id) ? [{ type, id }] : [];
 }
 
-function getManagedTriggerTarget(port) {
-  const trigger = port?.trigger || {};
-  const target = trigger.target || {};
-  const type = String(target.type || "").toLowerCase();
-  const id = Number(target.id);
-  if ((type === "user" || type === "conference") && Number.isFinite(id) && id > 0) {
-    return { type, id };
-  }
-  return null;
+function getManagedTriggerTargets(port) {
+  if (!['audio-level', 'always-on'].includes(port?.trigger?.mode)) return [];
+  const targets = bridgeTalkTrigger.fromTrigger(port?.trigger);
+  if (!Array.isArray(port?.triggerTargets)) return targets;
+  const allowed = new Set(port.triggerTargets.map(target => `${target.type}:${target.id}`));
+  return targets.filter(target => allowed.has(`${target.type}:${target.id}`));
 }
 
-function managedTalkTargetsMatch(currentTargets, nextTarget) {
-  if (!nextTarget || !Array.isArray(currentTargets) || currentTargets.length !== 1) return false;
-  const current = currentTargets[0] || {};
-  return String(current.type || "").toLowerCase() === nextTarget.type
-    && Number(current.id) === Number(nextTarget.id);
+function managedTalkTargetsMatch(currentTargets, nextTargets) {
+  return bridgeTalkTrigger.matches(currentTargets, nextTargets);
+}
+
+async function ensureManagedAlwaysOn(session) {
+  if (session.port.kind !== 'user' || session.port.trigger?.mode !== 'always-on'
+    || !session.ready || session.starting || !session.inputReady || !session.producerId
+    || session.automaticReleaseRequired) return;
+  const targets = getManagedTriggerTargets(session.port);
+  if (!targets.length) {
+    if (session.talking && session.talkSource === 'always-on') {
+      await applyManagedTalkState(session, { talking: false, targets: [], preserveAlwaysOn: false });
+    }
+    return;
+  }
+  const current = new Set((session.targets || []).map(target => `${target.type}:${target.id}`));
+  if (session.talking && targets.every(target => current.has(`${target.type}:${target.id}`))) return;
+  await applyManagedTalkState(session, { talking: true, targets, source: 'always-on' });
+}
+
+async function syncManagedAutomaticTalk(session) {
+  if (session.automaticReleaseRequired) {
+    await applyManagedTalkState(session, { talking: false, targets: [], preserveAlwaysOn: false });
+    session.automaticReleaseRequired = false;
+  }
+  await ensureManagedAlwaysOn(session);
+  if (session.automaticRetryAt) {
+    session.error = null;
+    session.statusLabel = null;
+    session.automaticRetryAt = 0;
+  }
 }
 
 function getManagedLevelTriggerThreshold(port) {
@@ -1944,27 +1911,9 @@ function isManagedLevelTriggerEnabled(port) {
 }
 
 function getManagedEffectiveTriggerPort(session) {
-  const port = session?.port;
-  if (!port || port.kind !== "user") return port;
-  const draft = managedPortDrafts.get(bridgePortKey(port))?.trigger;
-  if (!draft) return port;
-
-  const mode = draft.mode === "audio-level" ? "audio-level" : "external";
-  const targetType = String(draft.targetType || "").trim().toLowerCase();
-  const targetId = Number(draft.targetId);
-  return {
-    ...port,
-    trigger: {
-      ...(port.trigger || {}),
-      mode,
-      target: mode === "audio-level"
-        && (targetType === "user" || targetType === "conference")
-        && Number.isFinite(targetId)
-        ? { type: targetType, id: targetId }
-        : null,
-      thresholdDb: draft.thresholdDb ?? port.trigger?.thresholdDb
-    }
-  };
+  // Only saved configuration may open a microphone automatically. Incomplete
+  // edits (especially a new mode with no targets yet) stay in the form draft.
+  return session?.port;
 }
 
 function isManagedLevelTriggerEnabledForSession(session) {
@@ -2085,9 +2034,19 @@ async function sendManagedCommandResult(session, payload, result) {
   });
 }
 
-async function performManagedTalkState(session, { talking, targets, lockActive = false, source = "external" }) {
+async function performManagedTalkState(session, { talking, targets, lockActive = false, source = "external", preserveAlwaysOn = true }) {
   if (session.port.kind === "feed") {
     throw new Error("Feed bridge ports do not support talk state");
+  }
+  if (preserveAlwaysOn && session.port.trigger?.mode === 'always-on') {
+    const automatic = getManagedTriggerTargets(session.port);
+    // A manual press/release must not close the permanently configured route.
+    targets = bridgeTalkTrigger.targets([...(talking ? targets : []), ...automatic]);
+    talking = targets.length > 0;
+    if (talking && bridgeTalkTrigger.matches(targets, automatic)) {
+      source = 'always-on';
+      lockActive = false;
+    }
   }
   if (talking) {
     if (!session.inputReady || !session.producerId) {
@@ -2143,6 +2102,11 @@ function applyManagedTalkState(session, request) {
     ) {
       recordManagedLifecycle(session, "level-trigger-start-skipped", "trigger mode is no longer audio-level");
       return false;
+    }
+    if (request?.talking && ['always-on', 'level'].includes(request.source)) {
+      if (request.source === 'always-on' && session.port.trigger?.mode !== 'always-on') return false;
+      request = { ...request, targets: getManagedTriggerTargets(session.port) };
+      if (!request.targets.length) return false;
     }
     return performManagedTalkState(session, request);
   };
@@ -2687,7 +2651,7 @@ async function processManagedLevelTriggers() {
     session.ready
     && session.inputReady
     && !session.starting
-    && isManagedLevelTriggerEnabledForSession(session)
+    && (isManagedLevelTriggerEnabledForSession(session) || session.port.trigger?.mode === 'always-on' || session.automaticReleaseRequired)
   ));
   if (!sessions.length) return;
 
@@ -2701,7 +2665,17 @@ async function processManagedLevelTriggers() {
     const now = Date.now();
 
     for (const session of sessions) {
-      if (!session.ready || session.starting) continue;
+      if (!session.ready || session.starting || !session.inputReady) continue;
+      if (session.port.trigger?.mode === 'always-on' || session.automaticReleaseRequired) {
+        if (session.automaticRetryAt > Date.now()) continue;
+        try {
+          await syncManagedAutomaticTalk(session);
+        } catch (error) {
+          session.automaticRetryAt = Date.now() + 1000;
+          setManagedSessionError(session, error);
+        }
+        continue;
+      }
       if (!isManagedLevelTriggerEnabledForSession(session)) {
         await disableManagedLevelTrigger(session).catch((error) => {
           setManagedSessionError(session, error);
@@ -2709,7 +2683,7 @@ async function processManagedLevelTriggers() {
         continue;
       }
       const effectivePort = getManagedEffectiveTriggerPort(session);
-      const triggerTarget = getManagedTriggerTarget(effectivePort);
+      const triggerTargets = getManagedTriggerTargets(effectivePort);
       const state = session.levelTriggerState || {
         active: false,
         aboveSince: 0,
@@ -2725,7 +2699,7 @@ async function processManagedLevelTriggers() {
       const triggerRevision = Number(state.revision || 0);
       const levelDb = Number(inputStats?.rmsDb);
 
-      if (!triggerTarget) {
+      if (!triggerTargets.length) {
         if (state.active && session.talking && session.talkSource === "level") {
           state.pending = true;
           try {
@@ -2757,7 +2731,7 @@ async function processManagedLevelTriggers() {
           try {
             const started = await applyManagedTalkState(session, {
               talking: true,
-              targets: [triggerTarget],
+              targets: triggerTargets,
               source: "level"
             });
             if (
@@ -2903,6 +2877,7 @@ async function startManagedInputPath(session, { reason = "input-start" } = {}) {
     session.inputReady = true;
     clearManagedInputError(session);
     recordManagedLifecycle(session, "producer-started", `reason=${reason}`);
+    await ensureManagedAlwaysOn(session);
     return true;
   } catch (error) {
     await invoke("stop_bridge_input", { streamId: session.inputStreamId }).catch(() => {});
@@ -3010,6 +2985,7 @@ async function startManagedSession(port, { reuse = false, silentRetry = false, r
   } finally {
     session.starting = false;
     session.backgroundRetry = false;
+    await ensureManagedAlwaysOn(session).catch(error => setManagedSessionError(session, error));
     renderManagedBridgePorts();
   }
 }
@@ -3042,6 +3018,9 @@ async function stopManagedSession(session, { remove = true, reason = "client-sto
   session.talkSource = null;
   session.lockActive = false;
   session.targets = [];
+  session.panelBaseTalkState = null;
+  session.panelTalkInputs?.clear();
+  session.panelTalkLocks?.clear();
   session.replyTarget = null;
   session.addressedNow = [];
   if (session.levelTriggerState) {
@@ -3052,6 +3031,8 @@ async function stopManagedSession(session, { remove = true, reason = "client-sto
     session.levelTriggerState.pending = false;
     session.levelTriggerState.releaseRequired = false;
   }
+  session.automaticReleaseRequired = false;
+  session.automaticRetryAt = 0;
   session.ready = false;
   session.starting = false;
   session.backgroundRetry = false;
@@ -3074,46 +3055,30 @@ async function reconcileManagedBridgeConfig(config) {
       await stopManagedSession(session, { reason: "port-config-changed" });
       continue;
     }
-    const levelTriggerWasEnabled = isManagedLevelTriggerEnabled(session.port);
+    const previousMode = bridgeTalkTrigger.mode(session.port.trigger?.mode);
+    const nextMode = bridgeTalkTrigger.mode(nextPort.trigger?.mode);
+    const targetsChanged = !managedTalkTargetsMatch(getManagedTriggerTargets(session.port), getManagedTriggerTargets(nextPort));
     session.port = nextPort;
     session.signature = nextSignature;
     await syncManagedPortAudioLevels(nextPort);
-    if (
-      !isManagedLevelTriggerEnabled(nextPort)
-      && (
-        levelTriggerWasEnabled
-        || session.levelTriggerState?.releaseRequired
-        || (session.talking && session.talkSource === "level")
-      )
-    ) {
-      await disableManagedLevelTrigger(session, {
-        forceRelease: levelTriggerWasEnabled || Boolean(session.levelTriggerState?.releaseRequired)
-      }).catch((error) => {
-        setManagedSessionError(session, error);
-      });
-    } else if (session.talking && session.talkSource === "level") {
-      const nextTarget = getManagedTriggerTarget(nextPort);
-      if (nextTarget && !managedTalkTargetsMatch(session.targets, nextTarget)) {
-        const state = session.levelTriggerState;
-        if (state) state.pending = true;
-        try {
-          await applyManagedTalkState(session, {
-            talking: true,
-            targets: [nextTarget],
-            source: "level"
-          });
-          recordManagedLifecycle(
-            session,
-            "level-trigger-target-updated",
-            `${nextTarget.type}:${nextTarget.id}`
-          );
-        } catch (error) {
-          setManagedSessionError(session, error);
-        } finally {
-          if (state) state.pending = false;
-        }
+    if ((previousMode !== nextMode || targetsChanged) && previousMode !== 'external') {
+      // Discard only transient talk state; the new saved automatic route is
+      // applied below. Never restore a removed destination from a panel lock.
+      session.panelBaseTalkState = null;
+      session.panelTalkInputs?.clear();
+      session.panelTalkLocks?.clear();
+      if (session.levelTriggerState) {
+        session.levelTriggerState.revision += 1;
+        session.levelTriggerState.active = false;
+        session.levelTriggerState.aboveSince = 0;
+        session.levelTriggerState.belowSince = 0;
       }
+      session.automaticReleaseRequired = true;
     }
+    await syncManagedAutomaticTalk(session).catch(error => {
+      session.automaticRetryAt = Date.now() + 1000;
+      setManagedSessionError(session, error);
+    });
   }
   for (const [key, port] of wanted) {
     const session = managedSessions.get(key);
