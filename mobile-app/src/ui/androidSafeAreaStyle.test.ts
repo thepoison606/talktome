@@ -13,6 +13,20 @@ describe('androidSafeAreaStyle', () => {
     expect(androidSafeAreaStyle('android', { top: 0, bottom: 0 }, 24)).toEqual({
       paddingTop: 32,
       paddingBottom: 8,
+      paddingLeft: 0,
+      paddingRight: 0,
+    });
+  });
+
+  it('keeps landscape Reply and audio controls clear of a right-side navigation bar', () => {
+    expect(androidSafeAreaStyle('android', { top: 24, bottom: 0, left: 0, right: 48 }, 24)).toEqual({
+      paddingTop: 32, paddingBottom: 8, paddingLeft: 0, paddingRight: 48,
+    });
+  });
+
+  it('respects the opposite landscape rotation and a display cutout', () => {
+    expect(androidSafeAreaStyle('android', { top: 0, bottom: 0, left: 48, right: 28 }, 24)).toMatchObject({
+      paddingLeft: 48, paddingRight: 28,
     });
   });
 

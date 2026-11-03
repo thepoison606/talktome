@@ -36,7 +36,7 @@ export default function App() {
   );
 }
 
-function AppContent() {
+export function AppContent() {
   const safeArea = useAndroidSafeArea();
   const hydrated = useSessionStore((state) => state.hydrated);
   const identity = useSessionStore((state) => state.identity);
@@ -89,9 +89,9 @@ function AppContent() {
   } else {
     screen = 'profiles';
   }
-  // Add profile is pushed over Profiles, so it slides in and swipes back like an iOS stack.
+  // On iOS, Add profile is pushed over Profiles with native swipe-back navigation.
   const loginOverProfiles = screen === 'login' && profiles.length > 0;
-  // The session sheet is presented by this stack, not by a React Native Modal (see sessionSheetState).
+  // iOS presents the session sheet in the stack; Android uses the overlay below.
   const sheetOpen = useSessionSheetOpen((state) => state.open) && screen === 'operator';
   const sheetColor = settingsPalette(settingsScheme(scheme)).sheet;
   let pages: Page[] = [screen];
@@ -123,54 +123,69 @@ function AppContent() {
     <View style={styles.root}>
       <SafeAreaView style={[styles.safe, safeArea]}>
         <StatusBar style="light" />
-        <ScreenStack style={styles.stack}>
-          {pages.map((page, index) => {
-            if (page === 'sheet') {
+        {Platform.OS === 'android' ? (
+          // Native pushed screens can lose Pressable events on Android/Fabric
+          // (including Add profile, #199). Keep Android pages in ordinary RN
+          // views, as with the session sheet; BackHandler above handles Back.
+          <View style={styles.stack}>
+            <AppScreen key={screen} screen={screen} />
+          </View>
+        ) : (
+          <ScreenStack style={styles.stack}>
+            {pages.map((page, index) => {
+              if (page === 'sheet') {
+                return (
+                  <ScreenStackItem
+                    key={page}
+                    screenId={page}
+                    headerConfig={HIDDEN_HEADER}
+                    {...sheetPresentation()}
+                    gestureEnabled
+                    fullScreenSwipeEnabled={false}
+                    onDismissed={closeSessionSheet}
+                    contentStyle={Platform.OS === 'ios' && Platform.isPad ? null : { backgroundColor: sheetColor }}
+                  >
+                    <SessionSheet onClose={closeSessionSheet} />
+                  </ScreenStackItem>
+                );
+              }
+              // Only pages pushed on another one slide and swipe back; other screens swap in place.
+              const pushed = index > 0;
               return (
                 <ScreenStackItem
                   key={page}
                   screenId={page}
                   headerConfig={HIDDEN_HEADER}
-                  {...sheetPresentation()}
-                  gestureEnabled
-                  fullScreenSwipeEnabled={false}
-                  onDismissed={closeSessionSheet}
-                  contentStyle={Platform.OS === 'ios' && Platform.isPad ? null : { backgroundColor: sheetColor }}
+                  stackAnimation={pushed ? 'default' : 'none'}
+                  gestureEnabled={pushed}
+                  fullScreenSwipeEnabled
+                  hideKeyboardOnSwipe
+                  onDismissed={() => {
+                    if (page === 'login') {
+                      session.cancelAddProfile();
+                    }
+                  }}
+                  contentStyle={styles.page}
                 >
-                  <SessionSheet onClose={closeSessionSheet} />
+                  <AppScreen screen={page} />
                 </ScreenStackItem>
               );
-            }
-            // Only pages pushed on another one slide and swipe back; other screens swap in place.
-            const pushed = index > 0;
-            return (
-              <ScreenStackItem
-                key={page}
-                screenId={page}
-                headerConfig={HIDDEN_HEADER}
-                stackAnimation={pushed ? 'default' : 'none'}
-                gestureEnabled={pushed}
-                fullScreenSwipeEnabled
-                hideKeyboardOnSwipe
-                onDismissed={() => {
-                  if (page === 'login') {
-                    session.cancelAddProfile();
-                  }
-                }}
-                contentStyle={styles.page}
-              >
-                <AppScreen screen={page} />
-              </ScreenStackItem>
-            );
-          })}
-        </ScreenStack>
+            })}
+          </ScreenStack>
+        )}
         {sheetOpen && Platform.OS === 'android' ? (
           // Android: a plain overlay. Taps did not reach the settings inside a native
           // react-native-screens modal on several phones (thepoison606/talktome#186).
           <View
             style={[
               styles.androidSheet,
-              { top: safeArea.paddingTop ?? 0, bottom: safeArea.paddingBottom ?? 0, backgroundColor: sheetColor },
+              {
+                top: safeArea.paddingTop ?? 0,
+                bottom: safeArea.paddingBottom ?? 0,
+                left: safeArea.paddingLeft ?? 0,
+                right: safeArea.paddingRight ?? 0,
+                backgroundColor: sheetColor,
+              },
             ]}
           >
             <SessionSheet onClose={closeSessionSheet} />

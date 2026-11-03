@@ -253,6 +253,7 @@ export function OperatorScreen() {
             style={styles.headerPeekCard}
           >
             <ChevronIcon color={colors.text} direction="down" size={14} />
+            <Text style={styles.headerPeekLabel}>Show top bar</Text>
           </Pressable>
         ) : (
           <View
@@ -304,25 +305,27 @@ export function OperatorScreen() {
           </View>
         )}
 
-        {mediaNotice ? <Text style={styles.warn}>{mediaNotice}</Text> : null}
-        {accessoryNotice ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={accessoryNotice}
-            accessibilityHint="Opens Accessories"
-            onPress={() => openSessionSheet('accessories')}
-            style={styles.accessoryNotice}
-          >
-            <Text style={styles.accessoryNoticeText} numberOfLines={1}>
-              {accessoryNotice}
+        {/* Reserve one line even when healthy: transient warnings must never
+            change the target grid's measured height or move a held button. */}
+        <View style={styles.noticeSlot}>
+          {store.error || mediaNotice || store.overBudget ? (
+            <Text style={store.error ? styles.error : styles.warn} numberOfLines={1}
+              accessibilityLiveRegion="polite">
+              {store.error || mediaNotice || 'Too many incoming streams — some feeds paused.'}
             </Text>
-            <Text style={styles.accessoryNoticeChevron}>›</Text>
-          </Pressable>
-        ) : null}
-        {store.overBudget ? (
-          <Text style={styles.warn}>Too many incoming streams — some feeds paused.</Text>
-        ) : null}
-        {store.error ? <Text style={styles.error}>{store.error}</Text> : null}
+          ) : accessoryNotice ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={accessoryNotice}
+              accessibilityHint="Opens Accessories"
+              onPress={() => openSessionSheet('accessories')}
+              style={styles.accessoryNotice}
+            >
+              <Text style={styles.accessoryNoticeText} numberOfLines={1}>{accessoryNotice}</Text>
+              <Text style={styles.accessoryNoticeChevron}>›</Text>
+            </Pressable>
+          ) : null}
+        </View>
 
         <View
           style={[
@@ -401,7 +404,14 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     gap: 6,
   },
+  headerPeekLabel: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '600',
+  },
   headerPeekCard: {
+    flexDirection: 'row',
+    gap: 6,
     height: COLLAPSED_HEADER_HEIGHT,
     marginBottom: 8,
     borderBottomLeftRadius: 16,
@@ -490,9 +500,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  noticeSlot: {
+    height: 26,
+    flexShrink: 0,
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
   warn: {
     color: colors.danger,
-    marginBottom: 8,
+    fontSize: 13,
   },
   accessoryNotice: {
     flexDirection: 'row',
@@ -501,8 +517,7 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
     gap: 6,
     paddingHorizontal: 10,
-    paddingVertical: 5,
-    marginBottom: 8,
+    paddingVertical: 2,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: 'rgba(245,194,107,0.35)',
@@ -521,7 +536,7 @@ const styles = StyleSheet.create({
   },
   error: {
     color: colors.danger,
-    marginBottom: 8,
+    fontSize: 13,
   },
   body: {
     flex: 1,

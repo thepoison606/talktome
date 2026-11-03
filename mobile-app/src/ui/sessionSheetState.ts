@@ -3,8 +3,8 @@ import { create } from 'zustand';
 export type SessionSheetStart = 'session' | 'accessories';
 
 /**
- * Whether the session sheet is open. App.tsx presents it through the native screen stack (not a
- * React Native Modal: native screens inside a Modal get a second touch handler and stop taking taps).
+ * Whether the session sheet is open. App.tsx uses the native screen stack on iOS and an ordinary
+ * overlay on Android. Native stacks/modals can otherwise swallow Android Pressable events.
  * `start` picks the page the sheet opens on; Session always stays underneath it.
  */
 export const useSessionSheetOpen = create<{ open: boolean; start: SessionSheetStart }>(() => ({
