@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseActiveProducer, parseActiveProducers } from './producers';
+import { isFeedVideoProducer, parseActiveProducer, parseActiveProducers } from './producers';
 
 describe('parseActiveProducer', () => {
   it('maps a server-rewritten user delivery', () => {
@@ -36,4 +36,13 @@ describe('parseActiveProducer', () => {
       ]),
     ).toHaveLength(1);
   });
+});
+
+
+it('retains the media kind so video never becomes an audio consumer', () => {
+  const base = { peerId: 'feed', producerId: 'v', appData: { type: 'feed', id: 1, mediaKind: 'video' } };
+  expect(isFeedVideoProducer(parseActiveProducer({ ...base, kind: 'video' })!)).toBe(true);
+  expect(isFeedVideoProducer(parseActiveProducer(base)!)).toBe(true);
+  expect(isFeedVideoProducer(parseActiveProducer({ ...base, kind: 'audio' })!)).toBe(false);
+  expect(isFeedVideoProducer(parseActiveProducer({ ...base, kind: 'video', appData: { type: 'talk' } })!)).toBe(false);
 });

@@ -1,4 +1,4 @@
-# Browser video feeds (first version)
+# Video feeds (feature preview)
 
 ## Send a webcam feed
 
@@ -19,12 +19,12 @@ Closed video windows, videos on another target layer, and backgrounded pages do 
 
 ## Scope and constraints
 
-- Sender and video receiver: web client only in this first version. iOS/Android apps, native Bridges and headless clients continue receiving audio. They are not sent video producer announcements.
+- Video sources: browser webcam or NDI/OMT in the native Bridge. Receivers: web client and iOS/Android apps from this feature branch. Older native apps, audio-only Bridges and headless clients keep their existing audio-only behavior.
 - Only an authenticated Feed may publish its own camera stream. Viewing requires the same effective Feed assignment as audio in the receiver's current production.
 - Capture aims for up to 1280×720 at 15 fps and a video bitrate cap of 1.2 Mbit/s. Actual resolution/rate depends on the camera, browser and available bandwidth. Each open receiver needs additional server outbound bandwidth.
 - The router negotiates VP8 or H.264; it does not transcode. Browser codec compatibility is therefore required. See [mediasoup RTP negotiation](https://mediasoup.org/documentation/v3/mediasoup/rtp-parameters-and-capabilities/).
 - Video does not change the existing low-latency audio path. Frame-accurate audio/video synchronization is not provided.
-- Screen sharing, recording and native mobile video reception are follow-up work.
+- Screen sharing, recording and mobile camera publishing are outside this preview.
 
 ## Validation
 
@@ -36,7 +36,7 @@ Before merging, manually check a real webcam between current Chrome and Safari, 
 
 Use the Bridge and server from `feature/video-feeds`; older Bridge versions only publish audio. In **Admin → Feeds**, enable **Use this feed as bridge input** and select the Bridge. Keep the audio input and channel selection as before. Under **Video source (optional)**, choose a discovered NDI or OMT source, then save. The same selector is available on the Feed card inside the native Bridge. **Off** removes only video. For video-only sources, leave the audio input empty.
 
-Video and audio can come from the same network source or from separate sources (for example an NDI picture and a sound card). The new video path is independent of audio: video failures and video-source changes restart only video. A missing source is retried automatically. Feed video is visible only to assigned, video-capable web receivers; existing native apps and audio-only Bridges remain audio-only receivers.
+Video and audio can come from the same network source or from separate sources (for example an NDI picture and a sound card). The new video path is independent of audio: video failures and video-source changes restart only video. A missing source is retried automatically. Feed video is visible only to assigned, video-capable receivers; older native apps and audio-only Bridges remain audio-only receivers.
 
 The Bridge uses the installed NDI Runtime and bundled OMT/VMX runtime. No NDI SDK/runtime is redistributed. It decodes network video to BGRA, scales it to at most 1280×720 at 15 fps, and encodes H.264 Baseline in software at a target of 1.2 Mbit/s. Each source requires an additional network receiver and encoder, so CPU, source bandwidth and memory increase per enabled Feed. This is a preview implementation, not an NDI/OMT passthrough or video output. Progressive sources with square pixels are recommended. Frame-accurate audio/video synchronization is not guaranteed.
 
@@ -53,3 +53,13 @@ cargo test --manifest-path bridge-client/src-tauri/Cargo.toml --lib video_loopba
 These integration tests publish actual synthetic NDI/OMT pictures, receive them in a separate process, encode/send RTP, then reconstruct and decode a picture. OMT discovery is checked, but its media test explicitly uses loopback port 6400 (must be free) to avoid SDK address races on hosts with virtual/link-local adapters. This does not override production address selection. The macOS test host reproduced such a discovery-selected link-local connection with no media, including in the pre-existing OMT audio test. Real multi-interface/remote-source checks remain necessary.
 
 Before merging, also check real OBS NDI/OMT sources on Windows and macOS, browser video playback in Safari/Chrome, audio continuity when changing video sources, source resolution changes, source loss/recovery and server reconnects.
+
+## iOS and Android receivers
+
+In the operator grid, a feed advertising video has a TV icon (📺). Tap it to expand the picture above the existing feed controls; tap it again to collapse. Volume/mute still affect only audio. Stop reception also releases the video connection; Start resumes it if the feed remains expanded. Video-only feeds are supported.
+
+The player stays within its target column, preserving the video aspect ratio with a small uniform black frame. Complete rows move to another layer when a video is expanded, without shrinking or clipping the audio controls. The tapped feed stays on the visible layer. Only expanded feeds on the current layer in the foreground subscribe to video. Layer changes, collapse, backgrounding, target removal and disconnect close video consumers and release native streams. Returning to the foreground or visible layer reconnects them. Receiver failures show an inline notice and retry without restarting intercom audio. Video reception does not request camera permission and is separate from the audio consumer budget.
+
+Validation: the mobile test suite covers lazy video subscriptions, delayed consume/resume cleanup, server-close races, retry, audio isolation, Stop/Start and row packing. `npm run typecheck` and iOS bundle export verify the shared app implementation. Native visual/device checks are recorded separately below; app-store/test distribution is not part of this feature preview.
+
+Native preview check (2026-11-04): Android standalone APK built locally and installed separately as `com.talktome.mobile.videopreview`. A real 640×360 H.264 RTP test pattern through an isolated Talktome server/Bridge session rendered at 15 fps. Stop/Start, layer departure/return, background/foreground, phone landscape and a two-column tablet layout were exercised; native renderer release/recreation was confirmed in logcat. Emulator display-density changes required restarting the app before testing the tablet configuration. iOS bundle export passes; a native iPhone/iPad run remains outstanding because the local Simulator service did not respond.

@@ -155,3 +155,16 @@ describe('signaling connection lifecycle', () => {
     expect(stateChanged).toHaveBeenLastCalledWith({ status: 'connected', socketId: 'socket-1' });
   });
 });
+
+
+describe('feed video capability', () => {
+  it.each(['ios', 'android'])('advertises optional video reception on %s registration', async platform => {
+    const signaling = new SignalingClient('https://example.test', () => ({}), platform);
+    clients.push(signaling);
+    const pending = signaling.connect(); sockets[0]!.serverConnect(); await pending;
+    let registration: Record<string, unknown> | undefined;
+    sockets[0]!.on('register-user', (payload, callback) => { registration = payload; callback({ ok: true }); });
+    await signaling.register({ id: 1, name: 'Viewer', kind: 'user' }, false, 2);
+    expect(registration).toMatchObject({ feedVideo: true, productionId: 2, clientType: `${platform}-app` });
+  });
+});

@@ -1,3 +1,5 @@
+import { FeedVideoReceiver } from './feedVideoReceiver';
+import { isFeedVideoProducer } from '../protocol/producers';
 import { Device } from 'mediasoup-client';
 import type { Consumer, Producer, Transport } from 'mediasoup-client/types';
 import { mediaDevices, MediaStream } from 'react-native-webrtc';
@@ -70,7 +72,28 @@ export class MediaEngine {
   private iceError: string | null = null;
   private work: Promise<void> = Promise.resolve();
 
-  constructor(private readonly signaling: SignalingClient) {}
+  private feedVideos: FeedVideoReceiver;
+  private videoProducers: ActiveProducer[] = [];
+  private visibleVideoKeys: string[] = [];
+  onVideoChange: (() => void) | null = null;
+
+  constructor(private readonly signaling: SignalingClient) {
+    this.feedVideos = new FeedVideoReceiver(signaling);
+    this.feedVideos.onChange = () => this.onVideoChange?.();
+  }
+
+  get feedVideoSnapshot() { return this.feedVideos.snapshot; }
+
+  setFeedVideoTargets(keys: string[]): void {
+    this.visibleVideoKeys = keys;
+    this.syncFeedVideos();
+  }
+
+  private syncFeedVideos(): void {
+    this.feedVideos.sync(this.videoProducers,
+      this.visibleVideoKeys.filter(key => !this.stoppedFeedKeys.has(key)),
+      this.recvTransport, this.device?.rtpCapabilities);
+  }
 
   async networkStats(): Promise<MediaNetworkStats> {
     const generation = this.mediaGeneration;
@@ -246,18 +269,29 @@ export class MediaEngine {
   }
 
   async consumeProducer(producer: ActiveProducer, ctx: ConsumerPriorityContext = {}): Promise<void> {
+    if (isFeedVideoProducer(producer)) {
+      this.videoProducers = [...this.videoProducers.filter(item => item.producerId !== producer.producerId), producer];
+      this.syncFeedVideos();
+      return;
+    }
     await this.serialize(() => this.consumeProducerLocked(producer, ctx));
   }
 
   async dropProducer(producerId: string): Promise<void> {
+    this.videoProducers = this.videoProducers.filter(item => item.producerId !== producerId);
+    this.syncFeedVideos();
     await this.serialize(() => this.dropProducerLocked(producerId));
   }
 
   async dropConsumer(consumerId: string): Promise<void> {
+    this.feedVideos.dropConsumer(consumerId);
     await this.serialize(() => this.dropConsumerLocked(consumerId));
   }
 
   async syncProducers(producers: ActiveProducer[], ctx: ConsumerPriorityContext = {}): Promise<void> {
+    this.videoProducers = producers.filter(isFeedVideoProducer);
+    this.syncFeedVideos();
+    producers = producers.filter(item => !isFeedVideoProducer(item));
     await this.serialize(async () => {
       const wanted = new Set(producers.map((item) => item.producerId));
       for (const producerId of [...this.remotes.keys()]) {
@@ -370,14 +404,17 @@ export class MediaEngine {
   }
 
   async setStoppedFeedKeys(keys: string[], ctx: ConsumerPriorityContext = {}): Promise<void> {
+    this.stoppedFeedKeys = new Set(keys);
+    this.syncFeedVideos();
     await this.serialize(async () => {
-      this.stoppedFeedKeys = new Set(keys);
       await this.applyBudget(ctx);
     });
   }
 
   async stop(): Promise<void> {
     this.mediaGeneration++;
+    this.videoProducers = [];
+    this.feedVideos.stop();
     this.talkGeneration++;
     await this.serialize(async () => {
       for (const producerId of [...this.remotes.keys()]) {

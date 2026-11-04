@@ -5,7 +5,13 @@ import { MediaEngine } from './engine';
 import { OPUS_PROFILES } from './opus';
 import { DEFAULT_OPERATOR_AUDIO } from '../session/operatorAudio';
 const mocks = vi.hoisted(() => ({ getUserMedia: vi.fn() }));
-vi.mock('react-native-webrtc', () => ({ mediaDevices: { getUserMedia: mocks.getUserMedia }, MediaStream: class {} }));
+vi.mock('react-native-webrtc', () => ({ mediaDevices: { getUserMedia: mocks.getUserMedia }, MediaStream: class {
+  tracks: { kind?: string }[] = [];
+  addTrack(track: { kind?: string }) { this.tracks.push(track); }
+  getAudioTracks() { return this.tracks.filter(track => track.kind === 'audio'); }
+  toURL() { return 'video-stream'; }
+  release() {}
+} }));
 vi.mock('mediasoup-client', () => ({ Device: class {} }));
 const target = { type: 'conference', id: 1, label: 'A', canTalk: true } as const;
 
@@ -87,5 +93,39 @@ describe('native panel media lifecycle', () => {
     const pending = f.engine.applyCaptureSettings({ ...DEFAULT_OPERATOR_AUDIO, autoGainControl: false }); await f.engine.stop();
     finish({ getAudioTracks: () => [nextTrack], getTracks: () => [nextTrack] });
     await expect(pending).rejects.toThrow('Media session changed'); expect(nextTrack.stop).toHaveBeenCalledOnce(); expect(f.producers[0]!.replaceTrack).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('video and intercom isolation', () => {
+  it('keeps playing audio when video is opened, hidden, or stopped', async () => {
+    const f = fixture();
+    const audio = { peerId: 'feed', producerId: 'audio', kind: 'audio' as const,
+      route: { kind: 'feed' as const, id: 1 }, appData: { type: 'feed', id: 1 } };
+    const video = { ...audio, producerId: 'video', kind: 'video' as const };
+    const consumers = new Map<string, { id: string; closed: boolean; track: object; resume: ReturnType<typeof vi.fn>; pause: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }>();
+    const recv = { closed: false, consume: vi.fn(async (params: { id: string; kind: string }) => {
+      const consumer = { id: params.id, closed: false, track: { kind: params.kind, _setVolume: vi.fn() }, resume: vi.fn(), pause: vi.fn(), close: vi.fn() };
+      consumers.set(params.id, consumer); return consumer;
+    }) };
+    Object.assign(f.signaling, { consume: vi.fn(async (id: string) => ({ id, producerId: id, kind: id, rtpParameters: {} })),
+      resumeConsumer: vi.fn().mockResolvedValue(undefined), closeConsumer: vi.fn().mockResolvedValue(undefined) });
+    Object.assign(f.engine, { device: { rtpCapabilities: {} }, recvTransport: recv });
+    await f.engine.syncProducers([audio, video]);
+    expect(consumers.size).toBe(1); expect(f.engine.activeRemoteCount).toBe(1);
+    f.engine.setFeedVideoTargets(['feed-1']);
+    await vi.waitFor(() => expect(f.engine.feedVideoSnapshot['feed-1']?.streamURL).toBe('video-stream'));
+    expect(f.engine.activeRemoteCount).toBe(1); expect(f.engine.overBudget).toBe(false);
+    f.engine.setFeedVideoTargets([]);
+    expect(consumers.get('video')!.close).toHaveBeenCalledOnce();
+    expect(consumers.get('audio')!.close).not.toHaveBeenCalled();
+    expect(consumers.get('audio')!.pause).not.toHaveBeenCalled();
+    f.engine.setFeedVideoTargets(['feed-1']);
+    await vi.waitFor(() => expect(f.engine.feedVideoSnapshot['feed-1']?.streamURL).toBeTruthy());
+    await f.engine.setStoppedFeedKeys(['feed-1']);
+    expect(f.engine.feedVideoSnapshot).toEqual({}); expect(f.engine.activeRemoteCount).toBe(0);
+    await f.engine.setStoppedFeedKeys([]);
+    await vi.waitFor(() => expect(f.engine.feedVideoSnapshot['feed-1']?.streamURL).toBeTruthy());
+    expect(f.engine.activeRemoteCount).toBe(1); await f.engine.stop();
   });
 });

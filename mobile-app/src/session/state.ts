@@ -1,3 +1,4 @@
+import type { FeedVideoSnapshot } from '../media/feedVideoReceiver';
 import { create } from 'zustand';
 import type { WatchTargetSelections } from '../watch/selection';
 
@@ -63,6 +64,8 @@ export type SessionUiState = {
   audioPreferences: Record<string, TargetAudioPreference>;
   speakingTargetKeys: string[];
   activeFeedKeys: string[];
+  videoFeedKeys: string[];
+  feedVideos: FeedVideoSnapshot;
   stoppedFeedKeys: string[];
   conferenceListen: ConferenceListenState;
   operatorAudio: OperatorAudioSettings;
@@ -162,6 +165,8 @@ export const initialState: SessionUiState = {
   audioPreferences: {},
   speakingTargetKeys: [],
   activeFeedKeys: [],
+  videoFeedKeys: [],
+  feedVideos: {},
   stoppedFeedKeys: [],
   conferenceListen: EMPTY_CONFERENCE_LISTEN,
   operatorAudio: DEFAULT_OPERATOR_AUDIO,
