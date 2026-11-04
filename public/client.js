@@ -8345,19 +8345,33 @@ function getTargetLayerSize(list, targetEls) {
 }
 
 function getVideoTargetLayers(list, targetEls) {
-  if (!list.classList?.contains('has-expanded-video')) return null;
+  if (!list.classList?.contains('has-expanded-video')) {
+    list.style?.removeProperty('grid-template-columns');
+    list.classList?.remove('video-grid-layout');
+    return null;
+  }
   list.style.setProperty('--feed-list-height', `${list.clientHeight}px`);
+  // Resolve the media-query columns with all targets present. Then retain that
+  // count on sparse layers too: auto-fit must not widen a single video target.
+  list.style.removeProperty('grid-template-columns');
   const hidden = targetEls.filter(el => el.classList.contains('layer-hidden'));
   hidden.forEach(el => el.classList.remove('layer-hidden'));
-  let heights;
+  let heights, columns = 1, gap = 0;
   try {
+    const listStyle = window.getComputedStyle(list);
+    const isGrid = listStyle.display === 'grid';
+    list.classList.toggle('video-grid-layout', isGrid);
+    if (isGrid) {
+      columns = Math.max(1, listStyle.gridTemplateColumns.trim().split(/\s+/).filter(track => parseFloat(track) > 0).length);
+      list.style.setProperty('grid-template-columns', `repeat(${columns}, minmax(0, 1fr))`);
+    }
+    gap = parseFloat(listStyle.rowGap) || 0;
     heights = targetEls.map(el => {
       const style = window.getComputedStyle(el);
       return el.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
     });
   } finally { hidden.forEach(el => el.classList.add('layer-hidden')); }
-  const gap = parseFloat(window.getComputedStyle(list).rowGap) || 0;
-  return window.TalktomeTargetLayers.packRows(heights, list.clientHeight, gap);
+  return window.TalktomeTargetLayers.packRows(heights, list.clientHeight, gap, columns);
 }
 
 function getTargetLayerAssignments(list, targetEls) {

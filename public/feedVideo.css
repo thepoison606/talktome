@@ -14,7 +14,8 @@
 .feed-video-panel video { display: block; position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
 .feed-video-panel > span { position: absolute; inset: 0; display: grid; place-items: center; padding: .75rem; color: #cbd5e1; pointer-events: none; text-align: center; }
 .feed-video-panel > span[hidden] { display: none; }
-/* A video page uses full-width rows. Other targets move to layers, never shrink. */
-#targets-list.has-expanded-video { display: flex; flex-direction: column; overflow: hidden; }
+/* Keep the responsive columns; only overflowing grid rows move to another layer. */
+#targets-list.has-expanded-video { overflow: hidden; }
+#targets-list.has-expanded-video.video-grid-layout { align-items: end; }
 #feed-video-preview { display: block; width: auto; height: auto; max-width: min(100%, 480px); max-height: 25vh; object-fit: contain; background: #000; margin: .75rem auto; border-radius: .4rem; }
 #feed-video-status { display: block; margin-top: .5rem; color: #94a3b8; font-size: .85rem; }
