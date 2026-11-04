@@ -7,11 +7,13 @@
 .feed-video-panel {
   grid-column: 1 / -1; grid-row: 1; position: relative; background: #000;
   --feed-video-max-height: min(260px, calc(var(--app-viewport-height, 100dvh) * .30), max(48px, calc(var(--feed-list-height, 100vh) - 110px)));
-  width: min(100%, calc(var(--feed-video-max-height) * var(--feed-video-aspect, 1.777778)));
-  aspect-ratio: var(--feed-video-aspect, 1.777778);
+  /* Include the same 2px picture frame on every side, without changing the
+     video's content aspect ratio or cropping the source. */
+  width: min(100%, calc(var(--feed-video-max-height) * var(--feed-video-aspect, 1.777778) + 4px));
+  box-sizing: border-box; padding: 2px;
   height: auto; min-width: 0; justify-self: center;
 }
-.feed-video-panel video { display: block; position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.feed-video-panel video { display: block; width: 100%; height: auto; aspect-ratio: var(--feed-video-aspect, 1.777778); object-fit: contain; }
 .feed-video-panel > span { position: absolute; inset: 0; display: grid; place-items: center; padding: .75rem; color: #cbd5e1; pointer-events: none; text-align: center; }
 .feed-video-panel > span[hidden] { display: none; }
 /* Keep the responsive columns; only overflowing grid rows move to another layer. */

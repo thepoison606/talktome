@@ -1991,7 +1991,10 @@ function getManagedInputLevelMap(status) {
 function updateManagedInputLevelDisplay(session, inputStats) {
   const card = getManagedPortElement(bridgePortKey(session.port));
   const display = card?.querySelector("[data-managed-input-level]");
-  if (!(display instanceof HTMLElement)) return;
+  const popoverLabel = managedAudioPopover?.direction === 'input'
+    && bridgePortKey(managedAudioPopover.port) === bridgePortKey(session.port)
+    ? managedAudioPopover.panel.querySelector('[data-audio-meter-label]') : null;
+  if (!(display instanceof HTMLElement) && !popoverLabel) return;
 
   const rmsDb = Number(inputStats?.rmsDb);
   const capturedFrames = Number(inputStats?.capturedFrames);
@@ -2004,15 +2007,11 @@ function updateManagedInputLevelDisplay(session, inputStats) {
       : !Number.isFinite(rmsDb) ? 'unavailable'
         : elapsed >= MANAGED_INPUT_ACTIVITY_GRACE_MS && rmsDb <= -119.9 ? 'silent' : 'active';
   const previous = session.inputLevelTextUpdate;
-  const popoverLabel = managedAudioPopover?.direction === 'input'
-    && bridgePortKey(managedAudioPopover.port) === bridgePortKey(session.port)
-    ? managedAudioPopover.panel.querySelector('[data-audio-meter-label]') : null;
-  if (previous?.display === display && previous.mode === mode
+  if (previous && previous.display === display && previous.mode === mode
     && now - previous.at < MANAGED_LEVEL_TEXT_REFRESH_MS) {
-    if (popoverLabel) popoverLabel.textContent = display.textContent;
+    if (popoverLabel) popoverLabel.textContent = previous.text;
     return;
   }
-  session.inputLevelTextUpdate = { display, mode, at: now };
   let text;
   let warning = false;
 
@@ -2036,8 +2035,11 @@ function updateManagedInputLevelDisplay(session, inputStats) {
       warning = true;
     }
   }
-  display.textContent = text;
-  display.classList.toggle('warning', warning);
+  session.inputLevelTextUpdate = { display, mode, at: now, text };
+  if (display instanceof HTMLElement) {
+    display.textContent = text;
+    display.classList.toggle('warning', warning);
+  }
   if (popoverLabel) popoverLabel.textContent = text;
 }
 
