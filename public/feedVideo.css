@@ -1,0 +1,24 @@
+/* The picture sits above the existing target controls; those keep their natural height. */
+#targets-list .feed-video-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 2rem; width: 2rem; height: 2rem; padding: .35rem; margin: 0 0 0 auto;
+  background: transparent; border: 0; border-radius: .35rem; color: #93c5fd; cursor: pointer;
+}
+#targets-list .feed-video-toggle[hidden], .feed-video-panel[hidden], #feed-video-preview[hidden] { display: none; }
+.feed-video-toggle svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.7; }
+#targets-list .feed-video-toggle:hover, #targets-list .feed-video-toggle[aria-expanded="true"] { background: #334155; color: white; }
+#targets-list .feed-video-toggle:focus-visible { outline: 2px solid #60a5fa; }
+#targets-list li.feed-video-expanded > :not(.feed-video-panel) { grid-row: 2; }
+#targets-list li.feed-video-expanded { row-gap: 0; }
+.feed-video-panel {
+  grid-column: 1 / -1; grid-row: 1; position: relative; background: #000;
+  height: min(260px, calc(var(--app-viewport-height, 100dvh) * .30), max(48px, calc(var(--feed-list-height, 100vh) - 110px)));
+  min-width: 0;
+}
+.feed-video-panel video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.feed-video-panel > span { position: absolute; inset: 0; display: grid; place-items: center; padding: .75rem; color: #cbd5e1; pointer-events: none; text-align: center; }
+.feed-video-panel > span[hidden] { display: none; }
+/* A video page uses full-width rows. Other targets move to layers, never shrink. */
+#targets-list.has-expanded-video { display: flex; flex-direction: column; overflow: hidden; }
+#feed-video-preview { display: block; width: min(100%, 480px); max-height: 25vh; object-fit: contain; background: #000; margin: .75rem auto; border-radius: .4rem; }
+#feed-video-status { display: block; margin-top: .5rem; color: #94a3b8; font-size: .85rem; }

@@ -1,4 +1,5 @@
 const bridgeTalkTrigger = require('../../public/bridgeTalkTrigger');
+const { FEED_VIDEO_CODECS, canPublishFeedMedia, canReceiveFeedVideo } = require("./feedVideoPolicy");
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
@@ -5731,6 +5732,9 @@ app.post(
         }
       }
       if (!producerPeerId) return res.status(404).json({ error: "Producer not found" });
+      if (peers.get(producerPeerId)?.producers.get(producerId)?.kind === "video") {
+        return res.status(400).json({ error: "Video requires a browser WebRTC receiver" });
+      }
       if (!router.canConsume({ producerId, rtpCapabilities: router.rtpCapabilities })) {
         return res.status(409).json({ error: "Cannot consume producer" });
       }
@@ -7421,7 +7425,7 @@ function listActiveProducersForPeer(peer, peerId) {
   for (const [otherPeerId, otherPeer] of peers) {
     if (otherPeerId === peerId) continue;
     for (const [producerId, producer] of otherPeer.producers) {
-      if (!producer || producer.closed) continue;
+      if (!producer || producer.closed || producer.kind === "video") continue;
       const appData = producer.appData;
       const type = String(appData?.type || "").trim().toLowerCase();
       let activeDelivery = null;
@@ -7517,6 +7521,7 @@ const mediaReadyPromise = (async () => {
         clockRate: 48000,
         channels: 2,
       },
+      ...FEED_VIDEO_CODECS,
     ],
   });
   console.log("[INIT] Router created");
@@ -7664,6 +7669,24 @@ function warnIfActiveProducerHasNoRecipients({ producer, speakerSocketId, speake
   })}`);
 }
 
+function mayReceiveFeedVideo(producer, speakerPeer, recipientPeer) {
+  return canReceiveFeedVideo({
+    producer, recipient: recipientPeer,
+    sameProduction: arePeersInSameActiveProduction(speakerPeer, recipientPeer),
+    assignedFeedIds: getEffectiveFeedIdsForPeer(recipientPeer),
+  });
+}
+
+function emitFeedVideoClosed(producer, speakerSocketId) {
+  // Never send video events to old audio-only clients (including native apps).
+  for (const recipientSocketId of producer.__recipientDeliveries?.keys?.() || []) {
+    peers.get(recipientSocketId)?.socket?.emit("producer-closed", {
+      peerId: speakerSocketId, producerId: producer.id,
+      kind: "video", appData: producer.appData,
+    });
+  }
+}
+
 function syncProducerRecipients({ producer, speakerSocketId, forceAnnounce = false }) {
   if (!producer) return [];
 
@@ -7672,7 +7695,8 @@ function syncProducerRecipients({ producer, speakerSocketId, forceAnnounce = fal
   const deliveries = resolveProducerRecipientDeliveries({
     appData: producer.appData,
     speakerSocketId,
-  });
+  }).filter((delivery) => producer.kind !== "video"
+    || mayReceiveFeedVideo(producer, speakerPeer, peers.get(delivery.recipientSocketId)));
   warnIfActiveProducerHasNoRecipients({
     producer,
     speakerSocketId,
@@ -7691,6 +7715,11 @@ function syncProducerRecipients({ producer, speakerSocketId, forceAnnounce = fal
     const deliveryChanged = producerDeliveryChanged(previousAppData, nextAppData);
     if (!deliveryChanged) continue;
     closeProducerConsumersForRecipient({ producerId: producer.id, recipientSocketId });
+    if (producer.kind === "video") {
+      peers.get(recipientSocketId)?.socket?.emit("producer-closed", {
+        peerId: speakerSocketId, producerId: producer.id, kind: "video", appData: previousAppData,
+      });
+    }
   }
 
   for (const [recipientSocketId, nextAppData] of nextDeliveries.entries()) {
@@ -7706,6 +7735,7 @@ function syncProducerRecipients({ producer, speakerSocketId, forceAnnounce = fal
       peerId: speakerSocketId,
       speakerUserId: speakerPeer?.userId ?? null,
       producerId: producer.id,
+      kind: producer.kind,
       appData: nextAppData,
     });
   }
@@ -7843,7 +7873,7 @@ io.on("connection", (socket) => {
     );
   });
 
-  socket.on("register-user", ({ id, name, kind = "user", force = false, guestProfileUserId = null, productionId = null, clientType = null, clientVersion = null, clientBuild = null } = {}, callback) => {
+  socket.on("register-user", ({ id, name, kind = "user", force = false, guestProfileUserId = null, productionId = null, clientType = null, clientVersion = null, clientBuild = null, feedVideo = false } = {}, callback) => {
     const peer = peers.get(socket.id);
     if (!peer) {
       if (typeof callback === "function") callback({ error: "Peer not registered" });
@@ -8005,6 +8035,7 @@ io.on("connection", (socket) => {
     }
 
     peer.connectedAt = Date.now();
+    peer.feedVideo = feedVideo === true;
     peer.clientType = normalizeRegisteredClientType(clientType);
     peer.clientVersion = normalizeClientVersion(clientVersion);
     peer.clientBuild = normalizeClientBuild(clientBuild);
@@ -8298,6 +8329,7 @@ io.on("connection", (socket) => {
 
       for (const [producerId, producer] of otherPeer.producers) {
         if (!producer || producer.closed) continue;
+        if (producer.kind === "video" && !mayReceiveFeedVideo(producer, otherPeer, peer)) continue;
         const appData = producer?.appData;
         if (!appData || typeof appData !== "object") continue;
         const type = String(appData.type || "").trim().toLowerCase();
@@ -8335,6 +8367,7 @@ io.on("connection", (socket) => {
           peerId: otherSocketId,
           speakerUserId: otherPeer?.userId ?? null,
           producerId,
+          kind: producer.kind,
           appData: reconciliationDelivery.appData,
           retainOnly: Boolean(reconciliationDelivery.retainOnly),
         });
@@ -8374,7 +8407,7 @@ io.on("connection", (socket) => {
     broadcastRuntimeUserStates("producer-close");
 
     // 3. Broadcast to all other clients immediately, including appData
-    socket.broadcast.emit("producer-closed", {
+    if (producer.kind !== "video") socket.broadcast.emit("producer-closed", {
       peerId:     socket.id,
       speakerUserId: peer?.userId ?? null,
       producerId,
@@ -8651,6 +8684,8 @@ io.on("connection", (socket) => {
 
   socket.on("produce-plain", async ({ kind = "audio", appData, rtpParameters } = {}, callback = () => {}) => {
     console.log("[GATEWAY] Client %s wants to produce plain %s", socket.id, kind, appData);
+    if (kind !== "audio") return callback({ error: "Plain feeds currently support audio only" });
+    appData = { ...appData, mediaKind: "audio" };
     try {
       const peer = peers.get(socket.id);
       if (!peer) {
@@ -8678,7 +8713,7 @@ io.on("connection", (socket) => {
       }
 
       const existingPlainProducers = Array.from(peer.producers.values()).filter((existingProducer) => (
-        existingProducer?.appData?.type === type
+        existingProducer?.kind === "audio" && existingProducer?.appData?.type === type
         && String(existingProducer?.appData?.id) === String(targetId)
       ));
       for (const existingProducer of existingPlainProducers) {
@@ -8778,6 +8813,9 @@ io.on("connection", (socket) => {
         return callback({ error: "Producer not found" });
       }
 
+      if (peers.get(producerPeer)?.producers.get(producerId)?.kind === "video") {
+        return callback({ error: "Video requires a browser WebRTC receiver" });
+      }
       const capabilities = rtpCapabilities || router.rtpCapabilities;
       if (!router.canConsume({ producerId, rtpCapabilities: capabilities })) {
         return callback({ error: "Cannot consume" });
@@ -8861,6 +8899,11 @@ io.on("connection", (socket) => {
             return callback({ error: "Peer not registered" });
           }
 
+          if (!canPublishFeedMedia({ peer, kind, appData })) {
+            return callback({ error: "Video is only supported for the assigned browser feed" });
+          }
+          appData = { ...appData, mediaKind: kind };
+
           if (type === "feed") {
             if (
               peer.kind !== "feed" ||
@@ -8883,7 +8926,8 @@ io.on("connection", (socket) => {
 
           if (type === "feed") {
             const existingFeedProducers = Array.from(peer.producers.values()).filter((existingProducer) => (
-              existingProducer?.appData?.type === "feed"
+              existingProducer?.kind === kind
+              && existingProducer?.appData?.type === "feed"
               && String(existingProducer?.appData?.id) === String(targetId)
             ));
             for (const existingProducer of existingFeedProducers) {
@@ -8952,7 +8996,13 @@ io.on("connection", (socket) => {
             );
           });
 
-          producer.on("close", () => {
+          const closeEmitter = kind === "video" ? producer.observer : producer;
+          closeEmitter.on("close", () => {
+            if (kind === "video") {
+              peer.producers.delete(producer.id);
+              emitFeedVideoClosed(producer, socket.id);
+              return;
+            }
             peer.producers.delete(producer.id);
             if (type === "talk" && getPeerActiveTalkProducers(peer).length === 0) {
               peer.activeTalkTargets = [];
@@ -9010,6 +9060,12 @@ io.on("connection", (socket) => {
         throw new Error("Producer not found");
       }
 
+      const requestedProducer = peers.get(producerPeer)?.producers.get(producerId);
+      if (requestedProducer?.kind === "video"
+        && !mayReceiveFeedVideo(requestedProducer, peers.get(producerPeer), peer)) {
+        return callback({ error: "Not authorized to view this video feed" });
+      }
+
       console.log(`[CONSUME] Found producer from peer ${producerPeer}`);
 
       if (!router.canConsume({ producerId, rtpCapabilities })) {
@@ -9044,6 +9100,12 @@ io.on("connection", (socket) => {
         paused: true,
       });
 
+      // Access may change while mediasoup is creating the consumer.
+      if (requestedProducer?.kind === "video"
+        && (peer.recvTransport !== transport || !mayReceiveFeedVideo(requestedProducer, peers.get(producerPeer), peer))) {
+        consumer.close();
+        return callback({ error: "Video feed access changed" });
+      }
       peer.consumers.set(consumer.id, consumer);
       console.log(
         `[CONSUME] Consumer created: ${consumer.id} for ${socket.id}`

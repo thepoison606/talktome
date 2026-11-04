@@ -2385,7 +2385,8 @@
       body.remote-panel .session-bar { flex-wrap: wrap; }
       body.remote-panel .session-slide-hint { display: none; }
     </style>
-  </head>
+    <link rel="stylesheet" href="/feedVideo.css">
+</head>
   <body>
     <div class="container">
     <!-- Login Section -->
@@ -2707,10 +2708,14 @@
         </div>
         <div class="feed-banner__settings">
           <div class="device-selector">
-            <label for="feed-input-select">Source</label>
+            <label for="feed-input-select">Audio source</label>
             <select id="feed-input-select">
               <option value="">Select device</option>
             </select>
+          </div>
+          <div class="device-selector">
+            <label for="feed-video-source">Video source (optional)</label>
+            <select id="feed-video-source"><option value="">Off — audio only</option></select>
           </div>
           <div class="device-selector">
             <label for="feed-ptime-select">Packet time</label>
@@ -2729,6 +2734,8 @@
             </label>
           </div>
         </div>
+        <video id="feed-video-preview" autoplay muted playsinline hidden aria-label="Camera preview"></video>
+        <span id="feed-video-status" role="status">Audio only</span>
         <div class="feed-level-controls" id="feed-level-controls">
           <label for="feed-input-gain">
             Input gain
@@ -2926,6 +2933,8 @@
   <script src="/incomingAudioLevels.js"></script>
   <script src="/audioMeter.js"></script>
   <script src="/clientDeviceStatus.js"></script>
+  <script src="/targetLayers.js"></script>
+  <script src="/feedVideo.js"></script>
   <script src="/client.js"></script>
   <script>
     (function () {

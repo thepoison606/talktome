@@ -64,6 +64,7 @@ function receiveHarness({ hidden = false, stopped = false, muted = false, blocke
   const context = {
     console: { info() {}, warn() {}, error(...args) { errors.push(args); } },
     performance, setTimeout, clearTimeout,
+    feedVideo: { announce: () => false, reconcile() {} },
     session: { kind: 'user', userId: 1 }, cachedUsers: [], device: { rtpCapabilities: {} },
     socket: { id: 'listener', connected: true, emit(event, data, done) {
       events.push(event);
@@ -166,6 +167,7 @@ test('foreground reconciliation requested during an older sync runs after it fin
   let consumes = 0;
   const context = {
     console, setTimeout, clearTimeout, queueMicrotask,
+    feedVideo: { announce: () => false, reconcile() {} },
     activeProducersSyncInFlight: false, activeProducersSyncRequested: false,
     mediaInitialized: true, isOperatorSession: () => true,
     audioElements: new Map(), peerConsumers: new Map(), targetStreamMap: new Map(),

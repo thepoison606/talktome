@@ -15,7 +15,7 @@ feedback and sharing how you use Talktome.
 
 - Browser-based intercom with direct targets, conferences, reply and talk lock.
 - Admin UI for users, feeds, conferences, target order, network config, RTC port range, backups, Guest login and panel remote control.
-- Program-audio feeds with volume and mute controls.
+- Program-audio feeds with volume and mute controls, plus optional browser webcam video.
 - Camera tally and remote control through Bitfocus Companion, HTTP API, module and keyboard shortcuts.
 - Bridge Desktop Application to integrate NDI, OMT, hardware intercom systems, audio interfaces and mixing consoles.
 - Headless client that turns a Raspberry Pi (or any small Linux board) into an intercom panel with Elgato Stream Deck keys and dials, GPIO tally and PTT, and a web admin UI.
@@ -275,7 +275,7 @@ Admin → Config → Backup and restore can also write automatic JSON configurat
 ## Users, Feeds And Guests
 
 - Operators log in at `/` and can talk to assigned users/conferences.
-- Feeds log in at `/`, publish their assigned feed, and cannot talk back.
+- Feeds log in at `/`, publish their assigned feed, and cannot talk back. Browser feeds can optionally publish a webcam; web users open the picture above the feed controls using its camera icon. See [browser video feeds](docs/browser-video-feeds.md).
 - Guests are enabled in Admin `Config`.
 - All Guests share the targets and conference memberships of the generated `Guest` profile.
 - The Guest profile in Admin `Users` provides a shareable login URL and QR code; Guests still choose their own display name when opening it.

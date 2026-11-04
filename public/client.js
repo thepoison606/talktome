@@ -3899,6 +3899,26 @@ document.addEventListener("DOMContentLoaded", () => {
   const stoppedFeedKeys = new Set();
   const listenOnlyConferenceKeys = new Set();
   const activeFeedKeys = new Set();
+  const feedVideo = window.TalktomeFeedVideo.createController({
+    socket, getSession: () => session, getDevice: () => device,
+    getSendTransport: () => sendTransport, getRecvTransport: () => recvTransport,
+    isStreaming: () => feedStreaming, isStopped: key => stoppedFeedKeys.has(key),
+    enabled: !remotePanel,
+    onLayoutChange: (anchorKey) => {
+      const list = document.getElementById('targets-list');
+      if (!list) return;
+      list.classList.toggle('has-expanded-video', feedVideo.hasExpanded());
+      updateTargetLayerControls();
+      // Keep the feed just opened on screen even if packing moved it to a new layer.
+      const anchor = anchorKey && document.getElementById(anchorKey);
+      if (anchor) {
+        currentTargetLayerIndex = Number(anchor.dataset.layer || 0);
+        updateTargetLayerControls();
+      }
+      schedulePttButtonSizing();
+    },
+  });
+
   const incomingLevelMonitor = window.TalktomeIncomingAudioLevels.createMonitor({
     getTransport: () => recvTransport,
     getAudioContext: () => {
@@ -5520,6 +5540,7 @@ let cachedOperatorTargets = null;
     });
 
     updateFeedReceptionUi(targetKey);
+    if (typeof feedVideo !== 'undefined') feedVideo.syncVisibility();
     if (!applyingClientPanelSettings && session.userId) {
       clientLocalStorage.setItem(`stoppedFeeds:user:${session.userId}`, JSON.stringify(Object.fromEntries([...stoppedFeedKeys].map(key => [key, true]))));
     }
@@ -6671,6 +6692,7 @@ let cachedOperatorTargets = null;
           producer = null;
         }
         feedStreaming = false;
+        feedVideo.stopSending();
         updateFeedControls();
         if (!feedManualStop) {
           scheduleMicCleanup();
@@ -6686,6 +6708,7 @@ let cachedOperatorTargets = null;
           producer = null;
         }
         feedStreaming = false;
+        feedVideo.stopSending();
         updateFeedControls();
         if (!feedManualStop) {
           shouldStartFeedWhenReady = true;
@@ -6696,6 +6719,7 @@ let cachedOperatorTargets = null;
       });
 
       updateFeedControls();
+      await feedVideo.startSending();
     } catch (err) {
       feedStreaming = false;
       shouldStartFeedWhenReady = true;
@@ -6709,6 +6733,7 @@ let cachedOperatorTargets = null;
 
   function stopFeedStream({ manual = false } = {}) {
     if (session.kind !== 'feed') return;
+    feedVideo.stopSending();
     const feedKey = session.feedId != null ? `feed-${session.feedId}` : null;
 
     if (producer) {
@@ -6767,6 +6792,8 @@ let cachedOperatorTargets = null;
 
   function closeMediaTransportState() {
     mediaStateGeneration += 1;
+    feedVideo.stopSending();
+    feedVideo.resetReceiving();
     stopMediaNetworkStatsReporting();
     try {
       producer?.close();
@@ -6940,7 +6967,7 @@ let cachedOperatorTargets = null;
       };
       const timer = setTimeout(() => finish({ error: "register-user timeout" }), timeoutMs);
       try {
-        socket.emit("register-user", payload, (resp) => {
+        socket.emit("register-user", { ...payload, feedVideo: !remotePanel }, (resp) => {
           clearTimeout(timer);
           finish(resp);
         });
@@ -8317,6 +8344,29 @@ function getTargetLayerSize(list, targetEls) {
     : dynamicLayerSize;
 }
 
+function getVideoTargetLayers(list, targetEls) {
+  if (!list.classList?.contains('has-expanded-video')) return null;
+  list.style.setProperty('--feed-list-height', `${list.clientHeight}px`);
+  const hidden = targetEls.filter(el => el.classList.contains('layer-hidden'));
+  hidden.forEach(el => el.classList.remove('layer-hidden'));
+  let heights;
+  try {
+    heights = targetEls.map(el => {
+      const style = window.getComputedStyle(el);
+      return el.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
+    });
+  } finally { hidden.forEach(el => el.classList.add('layer-hidden')); }
+  const gap = parseFloat(window.getComputedStyle(list).rowGap) || 0;
+  return window.TalktomeTargetLayers.packRows(heights, list.clientHeight, gap);
+}
+
+function getTargetLayerAssignments(list, targetEls) {
+  const videoLayers = getVideoTargetLayers(list, targetEls);
+  if (videoLayers) return videoLayers;
+  const size = getTargetLayerSize(list, targetEls);
+  return targetEls.map((_, index) => Math.floor(index / size));
+}
+
 function updateTargetLayerControls() {
   if (typeof document === 'undefined') return;
 
@@ -8328,10 +8378,12 @@ function updateTargetLayerControls() {
   const targetEls = Array.from(list.querySelectorAll('li.target-item'));
   const isMobileViewport = typeof window !== 'undefined'
     && (window.innerWidth <= MOBILE_TARGET_LAYER_MAX_WIDTH || isPhoneLandscapeViewport());
-  const layerSize = getTargetLayerSize(list, targetEls);
+  const assignments = getTargetLayerAssignments(list, targetEls);
+  const layerCount = Math.max(1, ...assignments.map(index => index + 1));
+  const hasVideo = list.classList?.contains('has-expanded-video');
   const shouldPaginate = isOperatorSession()
-    && isMobileViewport
-    && targetEls.length > layerSize;
+    && (isMobileViewport || hasVideo)
+    && layerCount > 1;
 
   if (!shouldPaginate) {
     currentTargetLayerIndex = 0;
@@ -8343,10 +8395,10 @@ function updateTargetLayerControls() {
     targetLayerButton.textContent = 'Layer 1/1';
     targetLayerButton.setAttribute('aria-label', 'Only one target layer');
     targetLayerSwitcher.hidden = true;
+    if (typeof feedVideo !== 'undefined') feedVideo.syncVisibility();
     return;
   }
 
-  const layerCount = Math.max(1, Math.ceil(targetEls.length / layerSize));
   if (currentTargetLayerIndex >= layerCount) {
     currentTargetLayerIndex = layerCount - 1;
   }
@@ -8355,7 +8407,7 @@ function updateTargetLayerControls() {
   }
 
   targetEls.forEach((targetEl, index) => {
-    const layerIndex = Math.floor(index / layerSize);
+    const layerIndex = assignments[index];
     targetEl.dataset.layer = String(layerIndex);
     targetEl.classList.toggle('layer-hidden', layerIndex !== currentTargetLayerIndex);
   });
@@ -8364,14 +8416,15 @@ function updateTargetLayerControls() {
   targetLayerButton.textContent = `Layer ${currentTargetLayerIndex + 1}/${layerCount}`;
   targetLayerButton.setAttribute('aria-label', `Switch target layer, current layer ${currentTargetLayerIndex + 1} of ${layerCount}`);
   targetLayerSwitcher.hidden = false;
+  if (typeof feedVideo !== 'undefined') feedVideo.syncVisibility();
 }
 
 function setTargetLayer(nextIndex) {
   const list = document.getElementById('targets-list');
   if (!list) return;
   const targetEls = Array.from(list.querySelectorAll('li.target-item'));
-  const layerSize = getTargetLayerSize(list, targetEls);
-  const layerCount = Math.max(1, Math.ceil(targetEls.length / layerSize));
+  const assignments = getTargetLayerAssignments(list, targetEls);
+  const layerCount = Math.max(1, ...assignments.map(index => index + 1));
   if (layerCount <= 1) return;
 
   const parsedIndex = Number(nextIndex);
@@ -8390,8 +8443,8 @@ function advanceTargetLayer() {
   const list = document.getElementById('targets-list');
   if (!list) return;
   const targetEls = Array.from(list.querySelectorAll('li.target-item'));
-  const layerSize = getTargetLayerSize(list, targetEls);
-  const layerCount = Math.max(1, Math.ceil(targetEls.length / layerSize));
+  const assignments = getTargetLayerAssignments(list, targetEls);
+  const layerCount = Math.max(1, ...assignments.map(index => index + 1));
   if (layerCount <= 1) return;
 
   const nextIndex = (currentTargetLayerIndex + 1) % layerCount;
@@ -10419,6 +10472,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       actions.append(muteBtn, receptionBtn);
 
       li.append(icon, createTargetLevelMeter(), info, actions);
+      feedVideo.attachTarget(li, key, name);
       list.appendChild(li);
     };
 
@@ -10463,6 +10517,8 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         .map(t => `feed-${t.targetId}`)
     );
 
+    feedVideo.pruneTargets(allowedFeedKeys);
+    list.classList.toggle('has-expanded-video', feedVideo.hasExpanded());
     const feedsToRemove = [];
     audioElements.forEach((entry, mapKey) => {
       if (entry?.type === 'feed' && !allowedFeedKeys.has(entry.key)) {
@@ -10539,6 +10595,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
 
   async function handleIncomingProducer(payload) {
+    if (feedVideo.announce(payload)) return;
     if (!payload || typeof payload !== 'object') return;
 
     if (!device || !recvTransport) {
@@ -10555,7 +10612,8 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     await consumeProducerPayload(payload);
   }
 
-  async function consumeProducerPayload({ peerId, speakerUserId = null, producerId, appData }) {
+  async function consumeProducerPayload({ peerId, speakerUserId = null, producerId, appData, kind }) {
+    if (feedVideo.announce({ peerId, producerId, appData, kind })) return;
     const consumeStartedAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
       ? performance.now()
       : Date.now();
@@ -11156,9 +11214,11 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         });
       });
 
+      feedVideo.reconcile(payloads);
       const expectedStreamKeys = new Set();
 
       for (const payload of payloads) {
+        if (feedVideo.announce(payload)) continue;
         const targetKey = targetKeyFromProducerPayload(payload);
         const streamKey = streamKeyFromProducerPayload(payload);
         if (!targetKey || !streamKey) continue;
@@ -11322,6 +11382,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
                 );
               });
 
+              if (response?.error || !response?.id) throw new Error(response?.error || "Producer not created");
               callback({ id: response.id });
             } catch (error) {
               errback(error);
@@ -11418,6 +11479,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   });
 
   socket.on('consumer-closed', ({ consumerId } = {}) => {
+    if (feedVideo.consumerClosed(consumerId)) return;
     const cleaned = cleanupConsumerById(consumerId);
     if (!cleaned && consumerId) {
       rememberEarlyClosedConsumer(consumerId);
@@ -11428,7 +11490,11 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
   });
 
 
-  socket.on("producer-closed", ({ peerId, speakerUserId = null, producerId, appData }) => {
+  socket.on("producer-closed", ({ peerId, speakerUserId = null, producerId, appData, kind }) => {
+    if (window.TalktomeFeedVideo.isVideo({ kind, appData })) {
+      feedVideo.removeProducer(producerId);
+      return;
+    }
     // 1️⃣ Compute the key like always
     let key;
     if (appData?.type === "conference") {
