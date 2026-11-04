@@ -199,6 +199,15 @@
         state.video.autoplay = true; state.video.muted = true; state.video.defaultMuted = true; state.video.playsInline = true;
         state.video.setAttribute('playsinline', '');
         state.video.setAttribute('aria-label', `Video: ${name}`);
+        const syncPictureSize = () => {
+          const ratio = state.video.videoWidth / state.video.videoHeight;
+          if (!Number.isFinite(ratio) || ratio <= 0 || ratio === state.aspectRatio) return;
+          state.aspectRatio = ratio;
+          state.panel.style.setProperty('--feed-video-aspect', String(ratio));
+          onLayoutChange();
+        };
+        state.video.addEventListener('loadedmetadata', syncPictureSize);
+        state.video.addEventListener('resize', syncPictureSize);
         state.video.addEventListener('click', () => {
           state.video.play().then(() => { state.error = ''; render(state); }).catch(() => {});
         });
