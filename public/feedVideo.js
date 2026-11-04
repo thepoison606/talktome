@@ -13,11 +13,15 @@
     document: doc = globalThis.document, mediaDevices = globalThis.navigator?.mediaDevices,
     makeStream = tracks => new MediaStream(tracks) }) {
     const feeds = new Map();
-    const select = doc.getElementById('feed-video-source');
+    const sourceButton = doc.getElementById('feed-video-source');
+    const cameraPicker = doc.getElementById('feed-camera-picker');
+    const cameraChoices = doc.getElementById('feed-camera-picker-list');
+    const cameraPickerStatus = doc.getElementById('feed-camera-picker-status');
     const preview = doc.getElementById('feed-video-preview');
     const senderStatus = doc.getElementById('feed-video-status');
     let cameraStream = null, videoProducer = null, sendGeneration = 0;
     let selectedCamera = ''; // Intentionally off after each page load; never silently enable a camera.
+    let cameras = [], pickerGeneration = 0, pickerBusy = false, cameraProbe = null;
     let receiveGeneration = 0;
     const earlyClosedConsumers = new Set();
     const closeRemote = id => { if (id && socket.connected) socket.emit('close-consumer', { consumerId: id }, () => {}); };
@@ -31,24 +35,76 @@
     });
     const setSenderStatus = text => { if (senderStatus) senderStatus.textContent = text; };
 
+    function updateSourceLabel() {
+      if (sourceButton) sourceButton.textContent = !selectedCamera ? 'Off — audio only'
+        : selectedCamera === 'default' ? 'Default camera'
+        : cameras.find(camera => camera.deviceId === selectedCamera)?.label || 'Selected camera (unavailable)';
+    }
+
+    function renderCameraChoices({ cameraAccess = true } = {}) {
+      if (!cameraChoices) return;
+      cameraChoices.replaceChildren();
+      const options = [['', 'Off — audio only'], ...(cameraAccess ? [['default', 'Default camera'],
+        ...cameras.map((camera, index) => [camera.deviceId, camera.label || `Camera ${index + 1}`])] : [])];
+      let activeChoice;
+      for (const [value, label] of options) {
+        const option = doc.createElement('button'); option.type = 'button'; option.value = value;
+        option.textContent = label; option.setAttribute('aria-pressed', String(value === selectedCamera));
+        option.addEventListener('click', () => {
+          selectedCamera = value; updateSourceLabel(); cameraPicker.close();
+          if (isStreaming()) startSending(); else stopSending();
+        });
+        cameraChoices.appendChild(option);
+        if (value === selectedCamera) activeChoice = option;
+      }
+      activeChoice?.focus?.();
+    }
+
     async function refreshCameras() {
-      if (!select || !enabled) return;
+      if (!sourceButton || !enabled) return;
+      const devices = await mediaDevices?.enumerateDevices?.() || [];
+      const discovered = devices.filter(device => device.kind === 'videoinput' && device.deviceId);
+      // Safari may hide labels again when the temporary permission probe ends.
+      // Keep the full snapshot while this chooser remains open.
+      if (!cameraPicker?.open || discovered.some(camera => camera.label) || !cameras.some(camera => camera.label)) cameras = discovered;
+      updateSourceLabel();
+      if (cameraPicker?.open && !pickerBusy) renderCameraChoices();
+    }
+
+    async function openCameraPicker() {
+      if (!enabled || sourceButton.disabled || getSession()?.kind !== 'feed' || cameraPicker.open) return;
+      const generation = ++pickerGeneration;
+      pickerBusy = true; cameraChoices.replaceChildren();
+      cameraPickerStatus.textContent = 'Loading cameras…';
+      cameraPicker.showModal();
+      let probe;
+      const current = () => generation === pickerGeneration && cameraPicker.open;
       try {
-        const devices = await mediaDevices?.enumerateDevices?.() || [];
-        select.replaceChildren();
-        for (const [value, label] of [['', 'Off — audio only'], ['default', 'Default camera'],
-          ...devices.filter(d => d.kind === 'videoinput' && d.deviceId)
-            .map((d, i) => [d.deviceId, d.label || `Camera ${i + 1}`])]) {
-          const option = doc.createElement('option');
-          option.value = value; option.textContent = label; select.appendChild(option);
+        await refreshCameras();
+        if (!current()) return;
+        // Safari intentionally withholds the real list until camera access is
+        // granted. Probe only after opening this chooser, never at page load,
+        // and never publish the probe as the feed's video source.
+        if (!cameraStream && !cameras.some(camera => camera.label)) {
+          cameraPickerStatus.textContent = 'Allow camera access to see the available cameras…';
+          probe = await mediaDevices.getUserMedia({ audio: false, video: true });
+          if (!current()) return;
+          cameraProbe = probe;
+          await refreshCameras();
         }
-        // Keep an unplugged selection visible, so it is never silently replaced.
-        if (selectedCamera && !Array.from(select.options).some(o => o.value === selectedCamera)) {
-          const option = doc.createElement('option'); option.value = selectedCamera;
-          option.textContent = 'Selected camera (unavailable)'; select.appendChild(option);
+        if (!current()) return;
+        cameraPickerStatus.textContent = cameras.length ? '' : 'No cameras found.';
+        renderCameraChoices();
+      } catch (error) {
+        if (current()) {
+          cameraPickerStatus.textContent = `Camera access unavailable: ${error.message}`;
+          renderCameraChoices({ cameraAccess: false });
         }
-        select.value = selectedCamera;
-      } catch (error) { setSenderStatus(`Camera list unavailable: ${error.message}`); }
+      } finally {
+        probe?.getTracks().forEach(track => track.stop());
+        if (cameraProbe === probe) cameraProbe = null;
+        if (generation === pickerGeneration) pickerBusy = false;
+      }
     }
 
     function stopSending() {
@@ -100,7 +156,7 @@
         created.on('trackended', ended);
         created.on('transportclose', ended);
         setSenderStatus('Camera live');
-        refreshCameras();
+        refreshCameras().catch(() => {});
       } catch (error) {
         captured?.getTracks().forEach(t => t.stop());
         if (generation === sendGeneration) {
@@ -280,15 +336,18 @@
       }
       return false;
     }
-    if (select) {
-      select.disabled = !enabled || !mediaDevices?.getUserMedia;
-      select.addEventListener('change', () => {
-        selectedCamera = select.value;
-        if (isStreaming()) startSending(); else stopSending();
+    if (sourceButton) {
+      sourceButton.disabled = !enabled || !mediaDevices?.getUserMedia;
+      sourceButton.addEventListener('click', openCameraPicker);
+      doc.getElementById('feed-camera-picker-close')?.addEventListener('click', () => cameraPicker.close());
+      cameraPicker?.addEventListener('close', () => {
+        pickerGeneration++; pickerBusy = false;
+        cameraProbe?.getTracks().forEach(track => track.stop()); cameraProbe = null;
+        sourceButton.focus?.();
       });
-      refreshCameras();
+      refreshCameras().catch(() => {});
     }
-    mediaDevices?.addEventListener?.('devicechange', refreshCameras);
+    mediaDevices?.addEventListener?.('devicechange', () => refreshCameras().catch(() => {}));
     doc.addEventListener('visibilitychange', syncVisibility);
     return { startSending, stopSending, attachTarget, announce, removeProducer, reconcile,
       pruneTargets, syncVisibility, resetReceiving, consumerClosed,

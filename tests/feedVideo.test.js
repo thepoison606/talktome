@@ -16,11 +16,13 @@ function element(tag = 'div') {
     appendChild(item) { this.children.push(item); if (tag === 'select') this.options.push(item); },
     prepend(item) { this.children.unshift(item); }, replaceChildren() { this.children = []; this.options = []; },
     play() { this.played = true; return Promise.resolve(); }, pause() { this.played = false; },
+    showModal() { this.open = true; }, close() { this.open = false; listeners.close?.(); }, focus() {},
   };
 }
-function harness({ deferConsume = false, deferCamera = false, denyCamera = false } = {}) {
-  const events = [], consumers = [], tracks = [], sends = [], callbacks = {};
-  const nodes = Object.fromEntries(['feed-video-source', 'feed-video-preview', 'feed-video-status'].map(id => [id, element(id.includes('source') ? 'select' : 'video')]));
+function harness({ deferConsume = false, deferCamera = false, denyCamera = false, permissionGated = false } = {}) {
+  const events = [], consumers = [], tracks = [], sends = [], callbacks = {}, cameraRequests = [];
+  let cameraPermission = !permissionGated;
+  const nodes = Object.fromEntries(['feed-video-source', 'feed-video-preview', 'feed-video-status', 'feed-camera-picker', 'feed-camera-picker-list', 'feed-camera-picker-status', 'feed-camera-picker-close'].map(id => [id, element()]));
   const doc = { hidden: false, getElementById: id => nodes[id], createElement: element,
     addEventListener: (event, fn) => { callbacks[event] = fn; } };
   let stopped = false, streaming = false, cameraResolve, consumeResolve;
@@ -42,12 +44,15 @@ function harness({ deferConsume = false, deferCamera = false, denyCamera = false
     sends.push(producer); return producer;
   } };
   const makeCamera = () => {
+    cameraPermission = true;
     const track = { stopped: false, stop() { this.stopped = true; } }; tracks.push(track);
     return { getTracks: () => [track], getVideoTracks: () => [track] };
   };
-  const mediaDevices = { enumerateDevices: async () => [{ kind: 'videoinput', deviceId: 'camera1', label: 'Webcam' }],
+  const mediaDevices = { enumerateDevices: async () => cameraPermission
+      ? [{ kind: 'videoinput', deviceId: 'camera1', label: 'Webcam' }, { kind: 'videoinput', deviceId: 'camera2', label: 'USB Camera' }]
+      : [{ kind: 'videoinput', deviceId: '', label: '' }],
     async getUserMedia(options) {
-      assert.equal(options.audio, false);
+      assert.equal(options.audio, false); cameraRequests.push(options);
       if (denyCamera) throw new Error('Permission denied');
       if (deferCamera) return new Promise(resolve => { cameraResolve = () => resolve(makeCamera()); });
       return makeCamera();
@@ -63,10 +68,16 @@ function harness({ deferConsume = false, deferCamera = false, denyCamera = false
   controller.attachTarget(row, 'feed-7', 'Program');
   const panel = row.children[0];
   const payload = { producerId: 'v1', kind: 'video', appData: { type: 'feed', id: 7 } };
-  return { controller, events, consumers, row, button, panel, payload, doc, nodes, tracks, sends,
+  return { controller, events, consumers, row, button, panel, payload, doc, nodes, tracks, sends, cameraRequests,
     setStopped(value) { stopped = value; controller.syncVisibility(); },
     setStreaming(value) { streaming = value; },
-    selectCamera: async value => { nodes['feed-video-source'].value = value; await nodes['feed-video-source'].dispatch('change'); await tick(); },
+    openCameraPicker: () => nodes['feed-video-source'].dispatch('click'),
+    selectCamera: async value => {
+      await nodes['feed-video-source'].dispatch('click');
+      const option = nodes['feed-camera-picker-list'].children.find(option => option.value === value);
+      assert(option, `Camera option ${value} is available`);
+      option.dispatch('click'); await tick();
+    },
     cameraReady: () => cameraResolve(), consumeReady: () => consumeResolve(),
     visibility: hidden => { doc.hidden = hidden; callbacks.visibilitychange(); },
   };
@@ -154,4 +165,37 @@ test('a consumer closed before its acknowledgement is not attached to the player
   h.controller.announce(h.payload); h.button.dispatch('click'); await tick();
   h.controller.consumerClosed('c1'); h.consumeReady(); await tick();
   assert.equal(h.consumers.length, 0);
+});
+
+test('Safari first opening requests permission and shows every camera without publishing a default source', async () => {
+  const h = harness({ permissionGated: true }); await tick(); h.setStreaming(true);
+  assert.equal(h.cameraRequests.length, 0, 'do not request camera permission at page load');
+  await h.openCameraPicker();
+  assert(h.nodes['feed-camera-picker'].open);
+  assert.deepEqual(h.nodes['feed-camera-picker-list'].children.map(option => option.value), ['', 'default', 'camera1', 'camera2']);
+  assert.equal(h.sends.length, 0, 'permission probe must never be broadcast');
+  assert.equal(h.nodes['feed-video-source'].textContent, 'Off — audio only');
+  assert(h.tracks.every(track => track.stopped), 'release the temporary permission probe');
+  const usb = h.nodes['feed-camera-picker-list'].children.find(option => option.value === 'camera2');
+  usb.dispatch('click'); await tick();
+  assert.equal(h.sends.length, 1);
+  assert.equal(h.cameraRequests[1].video.deviceId.exact, 'camera2');
+  assert.equal(h.nodes['feed-camera-picker'].open, false);
+});
+
+test('closing the chooser while permission is pending stops late camera tracks', async () => {
+  const h = harness({ permissionGated: true, deferCamera: true }); await tick();
+  const opening = h.openCameraPicker(); await tick();
+  h.nodes['feed-camera-picker-close'].dispatch('click'); h.cameraReady();
+  await opening; await tick();
+  assert(h.tracks.every(track => track.stopped)); assert.equal(h.sends.length, 0);
+  assert.equal(h.nodes['feed-camera-picker'].open, false);
+});
+
+test('camera chooser permission denial keeps audio-only selection and offers Off', async () => {
+  const h = harness({ permissionGated: true, denyCamera: true }); await tick();
+  await h.openCameraPicker();
+  assert.match(h.nodes['feed-camera-picker-status'].textContent, /Permission denied/);
+  assert.deepEqual(h.nodes['feed-camera-picker-list'].children.map(option => option.value), ['']);
+  assert.equal(h.sends.length, 0); assert.equal(h.nodes['feed-video-source'].textContent, 'Off — audio only');
 });

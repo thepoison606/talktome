@@ -3,7 +3,7 @@
 ## Send a webcam feed
 
 1. Create a Feed in Admin and assign it to the receiving users in the matrix, as for audio feeds.
-2. Log in as that Feed at `/` in a browser. Under **Video source (optional)** choose **Default camera** or a specific webcam, and grant camera permission.
+2. Log in as that Feed at `/` in a browser. Open **Video source (optional)**. If Safari has not exposed the camera list yet, grant camera access; the chooser then shows all available cameras immediately. Choose a specific webcam or **Default camera**. The brief permission probe is not broadcast and is stopped before a source is selected.
 3. Start the Feed if it is stopped. The local camera preview and **Camera live** confirm video capture. Audio source, gain and packet time work as before.
 4. Select **Off — audio only** to turn off just video, or **Stop Feed** to stop both audio and video.
 
