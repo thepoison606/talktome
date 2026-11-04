@@ -1044,6 +1044,62 @@ pub(crate) mod tests {
         drop(input);
     }
 
+    #[test]
+    #[ignore = "requires libomt and local OMT networking"]
+    fn omt_video_loopback() {
+        // Keep this explicit loopback independent of SDK multi-interface discovery:
+        // virtual link-local adapters on the test host can win its address race.
+        let check =
+            std::net::TcpListener::bind("[::]:6400").expect("OMT test needs free port 6400");
+        drop(check);
+        let stop = Arc::new(AtomicBool::new(false));
+        let sender_stop = Arc::clone(&stop);
+        let sender = thread::spawn(move || {
+            let api = load_api().expect("OMT Runtime required");
+            let name = CString::new("Talktome Video OMT Test").unwrap();
+            let sender = unsafe { (api.send_create)(name.as_ptr(), 0) };
+            assert!(!sender.is_null());
+            let _guard = OmtSenderGuard {
+                api: Arc::clone(&api),
+                sender,
+            };
+            let mut pixels = vec![180u8; 320 * 180 * 4];
+            while !sender_stop.load(Ordering::Relaxed) {
+                let mut frame = OmtMediaFrame {
+                    frame_type: 2,
+                    timestamp: -1,
+                    codec: i32::from_le_bytes(*b"BGRA"),
+                    width: 320,
+                    height: 180,
+                    stride: 320 * 4,
+                    flags: 0,
+                    frame_rate_n: 15,
+                    frame_rate_d: 1,
+                    aspect_ratio: 320.0 / 180.0,
+                    color_space: 709,
+                    sample_rate: 0,
+                    channels: 0,
+                    samples_per_channel: 0,
+                    data: pixels.as_mut_ptr().cast(),
+                    data_length: pixels.len() as i32,
+                    compressed_data: ptr::null_mut(),
+                    compressed_length: 0,
+                    frame_metadata: ptr::null_mut(),
+                    frame_metadata_length: 0,
+                };
+                assert!(unsafe { (api.send)(sender, &mut frame) } >= 0);
+                thread::sleep(Duration::from_millis(67));
+            }
+        });
+        thread::sleep(Duration::from_millis(750));
+        let result = std::panic::catch_unwind(|| {
+            crate::video_media::tests::run_external_video_probe("omt", "Talktome Video OMT Test")
+        });
+        stop.store(true, Ordering::Relaxed);
+        sender.join().unwrap();
+        result.unwrap();
+    }
+
     pub(crate) fn run_external_audio_probe(source_name: &str, require_signal: bool) {
         let executable = std::env::current_exe().expect("resolve current OMT test executable");
         let output = std::process::Command::new(executable)
@@ -1067,4 +1123,67 @@ pub(crate) mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+pub fn video_sources(wait: Duration) -> Vec<crate::video_media::VideoSource> {
+    load_api()
+        .ok()
+        .and_then(|api| api.discover_resilient(wait).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|source| crate::video_media::VideoSource {
+            id: source.id,
+            name: format!("OMT · {}", source.address),
+            protocol: "omt".into(),
+        })
+        .collect()
+}
+pub fn capture_video(device_id: &str, sink: crate::video_media::VideoSink) -> Result<(), String> {
+    let api = load_api()?;
+    let address = source_address_for_device(&api, device_id)?;
+    capture_video_at_address(&address, sink)
+}
+
+pub(crate) fn capture_video_at_address(
+    address: &str,
+    mut sink: crate::video_media::VideoSink,
+) -> Result<(), String> {
+    let api = load_api()?;
+    let address = CString::new(address).map_err(|_| "Invalid OMT source address")?;
+    let receiver = unsafe { (api.receive_create)(address.as_ptr(), 2, 2, 0) }; // Video, BGRA, no flags.
+    if receiver.is_null() {
+        return Err("OMT video receiver could not be created".into());
+    }
+    let _guard = OmtReceiverGuard {
+        api: Arc::clone(&api),
+        receiver,
+    };
+    while !sink.stop.load(Ordering::Relaxed) {
+        let raw = unsafe { (api.receive)(receiver, 2, OMT_RECEIVE_TIMEOUT_MS) };
+        if raw.is_null() {
+            continue;
+        }
+        let frame = unsafe { &*raw };
+        if frame.frame_type != 2 {
+            continue;
+        }
+        if ![i32::from_le_bytes(*b"BGRA"), i32::from_le_bytes(*b"BGRX")].contains(&frame.codec) {
+            return Err(format!(
+                "OMT returned unsupported video format {:08x}",
+                frame.codec
+            ));
+        }
+        let length = usize::try_from(frame.data_length).map_err(|_| "Invalid OMT video length")?;
+        // libomt owns the frame until the next receive; copying never retains its pointer.
+        unsafe {
+            sink.bgra(
+                frame.width,
+                frame.height,
+                frame.stride,
+                frame.data.cast(),
+                Some(length),
+            )
+        }?;
+    }
+    Ok(())
 }

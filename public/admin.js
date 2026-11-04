@@ -851,6 +851,7 @@ function updateBridgeEndpointDeviceOptions(formKey) {
   const bridgeSelect = document.getElementById(`bridge-device-${formKey}`);
   const inputDeviceSelect = document.getElementById(`bridge-input-device-${formKey}`);
   const outputDeviceSelect = document.getElementById(`bridge-output-device-${formKey}`);
+  const videoSelect = document.getElementById(`bridge-video-source-${formKey}`);
   if (!bridgeSelect || !inputDeviceSelect) return;
 
   const bridge = getBridgeById(bridgeSelect.value);
@@ -871,6 +872,14 @@ function updateBridgeEndpointDeviceOptions(formKey) {
   );
   inputDeviceSelect.disabled = !bridge;
   updateBridgeEndpointPairOptions(formKey, 'input');
+  if (videoSelect) {
+    const selected = videoSelect.value || videoSelect.dataset.savedValue || '';
+    setBridgeSelectOptions(videoSelect, (bridge?.inventory?.videoSources || [])
+      .map(source => ({ value: source.id, label: source.name })), selected, 'Off');
+    videoSelect.disabled = !bridge;
+    videoSelect.onchange = () => { videoSelect.dataset.savedValue = videoSelect.value; };
+  }
+
 
   if (outputDeviceSelect) {
     const outputDevices = (bridge?.inventory?.devices || [])
@@ -3112,6 +3121,10 @@ async function renderFeedList(feeds) {
                   <select id="bridge-input-pair-${formKey}" data-saved-left="${escapeHtml(valueOrEmpty(feed.bridge_input_left_channel))}" data-saved-right="${escapeHtml(valueOrEmpty(feed.bridge_input_right_channel))}"></select>
                 </div>
               </div>
+              <div class="field-group">
+                <label for="bridge-video-source-${formKey}">Video source (optional)</label>
+                <select id="bridge-video-source-${formKey}" data-saved-value="${escapeHtml(feed.bridge_video_source || '')}"></select>
+              </div>
             </div>
             <button type="submit" class="small">Save</button>
           </form>
@@ -4355,6 +4368,7 @@ window.saveFeedBridgeEndpoint = async function(event, feedId) {
     const payload = {
       enabled: Boolean(document.getElementById(`bridge-enabled-${formKey}`)?.checked),
       bridgeDevice: document.getElementById(`bridge-device-${formKey}`)?.value || '',
+      videoSource: document.getElementById(`bridge-video-source-${formKey}`)?.value || '',
       inputDevice: document.getElementById(`bridge-input-device-${formKey}`)?.value || '',
       inputLeftChannel: inputPair.left,
       inputRightChannel: inputPair.right,

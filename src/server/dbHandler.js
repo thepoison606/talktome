@@ -194,6 +194,10 @@ function normalizeBridgeEndpointConfig(config = {}) {
 function normalizeFeedBridgeEndpointConfig(config = {}) {
   const enabled = Boolean(config.enabled);
   const bridgeDevice = normalizeBridgeText(config.bridgeDevice);
+  const videoSource = normalizeBridgeText(config.videoSource);
+  if (videoSource && !/^(ndi|omt):recv:[a-f0-9]{16}$/.test(videoSource)) {
+    throw new Error('Video source must be an NDI or OMT input');
+  }
   const inputDevice = normalizeBridgeText(config.inputDevice);
   const inputLeftChannel = normalizeBridgeChannel(config.inputLeftChannel, 'Input left channel');
   const inputRightChannel = normalizeBridgeChannel(config.inputRightChannel, 'Input right channel');
@@ -210,6 +214,7 @@ function normalizeFeedBridgeEndpointConfig(config = {}) {
     enabled,
     bridgeDevice,
     inputDevice,
+    videoSource,
     inputLeftChannel,
     inputRightChannel,
   };
@@ -396,6 +401,7 @@ function getFeedBridgeEndpointsForDevice(bridgeDevice) {
       feed_bridge_endpoints.input_device,
       feed_bridge_endpoints.input_left_channel,
       feed_bridge_endpoints.input_right_channel,
+      feed_bridge_endpoints.video_source,
       feed_bridge_endpoints.updated_at
     FROM feed_bridge_endpoints
     JOIN feeds ON feeds.id = feed_bridge_endpoints.feed_id
@@ -419,6 +425,7 @@ function getAllFeeds() {
       COALESCE(feed_bridge_endpoints.input_device, '') AS bridge_input_device,
       feed_bridge_endpoints.input_left_channel AS bridge_input_left_channel,
       feed_bridge_endpoints.input_right_channel AS bridge_input_right_channel,
+      COALESCE(feed_bridge_endpoints.video_source, '') AS bridge_video_source,
       feed_bridge_endpoints.updated_at AS bridge_updated_at
     FROM feeds
     LEFT JOIN feed_bridge_endpoints ON feed_bridge_endpoints.feed_id = feeds.id
@@ -1160,6 +1167,7 @@ function exportDatabaseSnapshot() {
         input_device,
         input_left_channel,
         input_right_channel,
+        video_source,
         audio_levels,
         updated_at
       FROM feed_bridge_endpoints
@@ -1297,9 +1305,10 @@ function importDatabaseSnapshot(snapshot) {
         input_device,
         input_left_channel,
         input_right_channel,
+        video_source,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertProduction = db.prepare(`
       INSERT INTO productions (id, name, is_primary, created_at, updated_at)
@@ -1525,6 +1534,7 @@ function importDatabaseSnapshot(snapshot) {
         bridgeDevice: row.bridge_device,
         productionId: row.production_id,
         inputDevice: row.input_device,
+        videoSource: row.video_source,
         inputLeftChannel: row.input_left_channel,
         inputRightChannel: row.input_right_channel,
       });
@@ -1536,6 +1546,7 @@ function importDatabaseSnapshot(snapshot) {
         normalized.inputDevice,
         normalized.inputLeftChannel,
         normalized.inputRightChannel,
+        normalized.videoSource,
         String(row.updated_at || new Date().toISOString())
       );
       const levels = bridgeAudioLevels.normalize(typeof row.audio_levels === 'string' ? JSON.parse(row.audio_levels) : row.audio_levels);
@@ -1916,7 +1927,11 @@ function updateFeedBridgeEndpoint(feedId, config = {}) {
     throw new Error('Invalid feed id');
   }
 
-  const normalized = normalizeFeedBridgeEndpointConfig(config);
+  // Older Bridges do not send videoSource when editing audio settings.
+  const previous = config.videoSource === undefined
+    ? db.prepare('SELECT video_source FROM feed_bridge_endpoints WHERE feed_id = ?').get(numericFeedId)
+    : null;
+  const normalized = normalizeFeedBridgeEndpointConfig({ ...config, videoSource: config.videoSource ?? previous?.video_source });
   const now = new Date().toISOString();
   const stmt = db.prepare(`
     INSERT INTO feed_bridge_endpoints (
@@ -1927,9 +1942,10 @@ function updateFeedBridgeEndpoint(feedId, config = {}) {
       input_device,
       input_left_channel,
       input_right_channel,
+      video_source,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(feed_id) DO UPDATE SET
       enabled = excluded.enabled,
       bridge_device = excluded.bridge_device,
@@ -1937,6 +1953,7 @@ function updateFeedBridgeEndpoint(feedId, config = {}) {
       input_device = excluded.input_device,
       input_left_channel = excluded.input_left_channel,
       input_right_channel = excluded.input_right_channel,
+      video_source = excluded.video_source,
       updated_at = excluded.updated_at
   `);
 
@@ -1948,6 +1965,7 @@ function updateFeedBridgeEndpoint(feedId, config = {}) {
     normalized.inputDevice,
     normalized.inputLeftChannel,
     normalized.inputRightChannel,
+    normalized.videoSource,
     now
   );
   return result.changes > 0;

@@ -4,8 +4,9 @@ mod model;
 mod ndi;
 mod network_audio;
 mod omt;
-mod probe;
 mod port_audio_level;
+mod probe;
+mod video_media;
 
 use audio::{AudioDeviceSnapshot, AudioInventory};
 use bridge_media::{
@@ -355,7 +356,9 @@ struct BridgeEventStreamMessage {
 
 #[tauri::command(async)]
 fn list_audio_devices() -> Result<AudioInventory, String> {
-    audio::list_audio_devices()
+    let mut inventory = audio::list_audio_devices()?;
+    inventory.video_sources = list_video_sources();
+    Ok(inventory)
 }
 
 #[tauri::command(async)]
@@ -553,6 +556,33 @@ async fn bridge_api_request(
     serde_json::from_str(&text).map_err(|err| format!("failed to parse bridge API response: {err}"))
 }
 
+#[tauri::command(async)]
+fn list_video_sources() -> Vec<video_media::VideoSource> {
+    let mut sources = ndi::video_sources(Duration::from_millis(250));
+    sources.extend(omt::video_sources(Duration::from_millis(250)));
+    sources
+}
+#[tauri::command(async)]
+fn start_bridge_video(
+    request: video_media::StartVideoRequest,
+    manager: tauri::State<'_, video_media::VideoManager>,
+) -> Result<(), String> {
+    manager.start(request)
+}
+#[tauri::command(async)]
+fn stop_bridge_video(
+    stream_id: String,
+    manager: tauri::State<'_, video_media::VideoManager>,
+) -> Result<(), String> {
+    manager.stop(&stream_id)
+}
+#[tauri::command(async)]
+fn get_bridge_video_status(
+    manager: tauri::State<'_, video_media::VideoManager>,
+) -> Result<Vec<video_media::VideoStatus>, String> {
+    manager.status()
+}
+
 #[tauri::command]
 fn start_bridge_input(
     request: StartBridgeInputRequest,
@@ -627,8 +657,10 @@ fn set_bridge_port_audio_level(
 
 #[tauri::command]
 fn stop_all_bridge_media(
+    video: tauri::State<'_, video_media::VideoManager>,
     manager: tauri::State<'_, BridgeMediaManager>,
 ) -> Result<BridgeMediaStatus, String> {
+    video.stop_all()?;
     manager.stop_all()
 }
 
@@ -965,6 +997,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(ProbeManager::default())
         .manage(BridgeMediaManager::default())
+        .manage(video_media::VideoManager::default())
         .manage(BridgeEventStreamManager::default())
         .manage(WindowFocusGuard::default())
         .manage(TrayToggleGuard::default())
@@ -1096,6 +1129,10 @@ pub fn run() {
             set_autostart_enabled,
             start_audio_probe,
             start_bridge_input,
+            list_video_sources,
+            start_bridge_video,
+            stop_bridge_video,
+            get_bridge_video_status,
             start_bridge_event_stream,
             suppress_window_focus_hide,
             stop_all_audio_probe_ports,

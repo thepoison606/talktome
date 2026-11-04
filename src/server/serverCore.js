@@ -1419,6 +1419,12 @@ function sanitizeBridgeInventory(inventory = {}) {
   const devices = Array.isArray(inventory.devices) ? inventory.devices : [];
   return {
     host: normalizeBridgeRegistryText(inventory.host, "unknown"),
+    videoSources: (Array.isArray(inventory.videoSources) ? inventory.videoSources : [])
+      .filter(source => /^(ndi|omt):recv:[a-f0-9]{16}$/.test(String(source?.id || '')))
+      .slice(0, 256).map(source => ({
+        id: source.id, name: normalizeBridgeRegistryText(source.name, source.id),
+        protocol: source.id.startsWith('ndi:') ? 'ndi' : 'omt',
+      })),
     devices: devices.slice(0, 256).map((device, index) => {
       const direction = device?.direction === "output" ? "output" : "input";
       const id = normalizeBridgeRegistryText(device?.id, `${direction}-${index}`);
@@ -1526,6 +1532,7 @@ function buildBridgeRuntimeConfig(bridgeId) {
         rightChannel: Number(row.input_right_channel),
       },
       output: null,
+      videoSource: row.video_source || "",
       updatedAt: row.updated_at || null,
     };
   });
@@ -5294,6 +5301,7 @@ app.put("/api/v1/bridge/:bridgeId/ports/:kind/:id", requireBridgeApiAuth, (req, 
       const feed = getAllFeeds().find((entry) => Number(entry.id) === targetId);
       if (!feed) return res.status(404).json({ error: "Feed not found" });
       const updated = updateFeedBridgeEndpoint(targetId, config);
+      closeUnconfiguredBridgeVideo();
       if (!updated) return res.status(404).json({ error: "Feed not found" });
       scheduleAdminStatusBroadcast("bridge-feed-endpoint-updated");
       return res.json(buildBridgeRuntimeConfig(bridgeId));
@@ -5508,6 +5516,101 @@ app.post(
   }
 );
 
+// Video has its own transport: changing or losing an NDI/OMT video source
+// must never close the existing feed audio transport/producer.
+function configuredBridgeVideoSource(session) {
+  if (session.closed || session.kind !== 'feed') return '';
+  return getFeedBridgeEndpointsForDevice(session.bridgeId)
+    .find(row => Number(row.feed_id) === Number(session.feedId))?.video_source || '';
+}
+
+function closeUnconfiguredBridgeVideo() {
+  for (const session of bridgeControlSessions.values()) {
+    const transport = session.peer?.plainVideoSendTransport;
+    if (transport && transport.appData.videoSource !== configuredBridgeVideoSource(session)) transport.close();
+  }
+}
+
+app.post('/api/v1/bridge/sessions/:sessionId/video-send-transport',
+  requireBridgeApiAuth, requireBridgeControlSession, async (req, res) => {
+    let transport;
+    try {
+      const session = req.bridgeSession;
+      const source = configuredBridgeVideoSource(session);
+      if (!source) return res.status(403).json({ error: 'No video source configured for this Bridge feed' });
+      if (!router) return res.status(503).json({ error: 'Router not initialized' });
+      const route = resolveTransportAnnouncedAddress();
+      if (route.error || !route.announcedAddress) return res.status(503).json({ error: 'No announced media IP' });
+      const ip = selectMediaRouteAddress(route, req.socket?.localAddress);
+      transport = await router.createPlainTransport({
+        listenIp: { ip: '0.0.0.0', announcedIp: ip }, rtcpMux: true, comedia: true,
+      });
+      if (configuredBridgeVideoSource(session) !== source) { transport.close(); return res.status(409).json({ error: 'Video source changed' }); }
+      req.bridgePeer.plainVideoSendTransport?.close();
+      req.bridgePeer.plainVideoSendTransport = transport;
+      transport.appData.videoSource = source;
+      transport.appData.ssrc = (0x56494400 + Number(session.feedId)) >>> 0 || 1;
+      transport.observer.on('close', () => {
+        if (req.bridgePeer.plainVideoSendTransport === transport) req.bridgePeer.plainVideoSendTransport = null;
+      });
+      res.json({ id: transport.id, ip, port: transport.tuple.localPort,
+        payloadType: 102, ssrc: transport.appData.ssrc, cname: `talktome-bridge-feed-${session.feedId}` });
+    } catch (error) {
+      transport?.close();
+      res.status(500).json({ error: error?.message || 'Failed to create video transport' });
+    }
+  });
+
+app.post('/api/v1/bridge/sessions/:sessionId/video-producer',
+  requireBridgeApiAuth, requireBridgeControlSession, async (req, res) => {
+    let producer;
+    try {
+      const session = req.bridgeSession;
+      const peer = req.bridgePeer;
+      const source = configuredBridgeVideoSource(session);
+      if (!source) return res.status(403).json({ error: 'No video source configured for this Bridge feed' });
+      const transport = peer.plainVideoSendTransport;
+      if (!transport || transport.closed || transport.appData.videoSource !== source) {
+        return res.status(409).json({ error: 'Video transport not ready for this source' });
+      }
+      producer = await transport.produce({ kind: 'video', paused: true,
+        rtpParameters: {
+          codecs: [{ mimeType: 'video/H264', payloadType: 102, clockRate: 90000,
+            parameters: { 'packetization-mode': 1, 'profile-level-id': '42e01f', 'level-asymmetry-allowed': 1 },
+            rtcpFeedback: [] }],
+          encodings: [{ ssrc: transport.appData.ssrc }],
+          rtcp: { cname: `talktome-bridge-feed-${session.feedId}`, reducedSize: true },
+        }, appData: { type: 'feed', id: Number(session.feedId), mediaKind: 'video' },
+      });
+      if (configuredBridgeVideoSource(session) !== source || peer.plainVideoSendTransport !== transport) {
+        producer.close(); return res.status(409).json({ error: 'Video source changed' });
+      }
+      for (const existing of peer.producers.values()) if (existing.kind === 'video') existing.close();
+      peer.producers.set(producer.id, producer);
+      producer.__recipientDeliveries = new Map();
+      producer.__startedAt = Date.now();
+      producer.observer.on('close', () => {
+        peer.producers.delete(producer.id);
+        emitFeedVideoClosed(producer, session.id);
+      });
+      producer.observer.on('resume', () => {
+        announceProducerToRecipients({ producerId: producer.id, appData: producer.appData, speakerSocketId: session.id });
+      });
+      producer.observer.on('pause', () => emitFeedVideoClosed(producer, session.id));
+      res.json({ id: producer.id });
+    } catch (error) {
+      producer?.close();
+      res.status(500).json({ error: error?.message || 'Failed to create video producer' });
+    }
+  });
+
+app.delete('/api/v1/bridge/sessions/:sessionId/video',
+  requireBridgeApiAuth, requireBridgeControlSession, (req, res) => {
+    for (const producer of req.bridgePeer.producers.values()) if (producer.kind === 'video') producer.close();
+    req.bridgePeer.plainVideoSendTransport?.close();
+    res.json({ ok: true });
+  });
+
 app.post(
   "/api/v1/bridge/sessions/:sessionId/producers",
   requireBridgeApiAuth,
@@ -5530,7 +5633,7 @@ app.post(
         const isSameProducerKind = peer.kind === "feed"
           ? existingType === "feed" && String(existing?.appData?.id) === String(peer.feedId)
           : existingType === "talk";
-        if (isSameProducerKind) {
+        if (isSameProducerKind && existing.kind === "audio") {
           try {
             existing.close();
           } catch {}
@@ -6171,6 +6274,7 @@ app.put('/feeds/:id/bridge-endpoint', requireAdmin, (req, res) => {
     if (!feed) return res.status(404).json({ error: 'Feed not found' });
 
     const updated = updateFeedBridgeEndpoint(feedId, req.body || {});
+    closeUnconfiguredBridgeVideo();
     if (!updated) return res.status(404).json({ error: 'Feed not found' });
     scheduleAdminStatusBroadcast("bridge-feed-endpoint-updated");
     res.sendStatus(204);
@@ -7090,6 +7194,7 @@ function closeBridgeControlSession(sessionId, reason = "bridge-session-closed") 
         }
       } catch {}
     }
+    try { peer.plainVideoSendTransport?.close(); } catch {}
     try {
       if (peer.plainSendTransport && !peer.plainSendTransport.closed) {
         peer.plainSendTransport.close();

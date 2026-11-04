@@ -24,10 +24,32 @@ Closed video windows, videos on another target layer, and backgrounded pages do 
 - Capture aims for up to 1280×720 at 15 fps and a video bitrate cap of 1.2 Mbit/s. Actual resolution/rate depends on the camera, browser and available bandwidth. Each open receiver needs additional server outbound bandwidth.
 - The router negotiates VP8 or H.264; it does not transcode. Browser codec compatibility is therefore required. See [mediasoup RTP negotiation](https://mediasoup.org/documentation/v3/mediasoup/rtp-parameters-and-capabilities/).
 - Video does not change the existing low-latency audio path. Frame-accurate audio/video synchronization is not provided.
-- NDI/OMT video ingestion, screen sharing, recording and native mobile video reception are follow-up work.
+- Screen sharing, recording and native mobile video reception are follow-up work.
 
 ## Validation
 
 `npm test` covers camera permission denial, stopping while permission is pending, lazy subscriptions, Stop/Start, layer/background changes, producer replacement, rerendering and reconnection cleanup. A real local mediasoup server test exercises simultaneous audio/video production, codec negotiation, video consumption, replacement and authorization, plus compatibility with clients without video support.
 
 Before merging, manually check a real webcam between current Chrome and Safari, then the receiver in iPhone Safari and a narrow/landscape viewport. Verify camera switching, audio-only mode, full-height controls, layers, mute/volume, Feed Stop/Start and reconnects. The implementation session's computer-use backend was unavailable, so these visual/device checks are still required.
+
+## Send an NDI or OMT feed through the Bridge
+
+Use the Bridge and server from `feature/video-feeds`; older Bridge versions only publish audio. In **Admin → Feeds**, enable **Use this feed as bridge input** and select the Bridge. Keep the audio input and channel selection as before. Under **Video source (optional)**, choose a discovered NDI or OMT source, then save. The same selector is available on the Feed card inside the native Bridge. **Off** removes only video. For video-only sources, leave the audio input empty.
+
+Video and audio can come from the same network source or from separate sources (for example an NDI picture and a sound card). The new video path is independent of audio: video failures and video-source changes restart only video. A missing source is retried automatically. Feed video is visible only to assigned, video-capable web receivers; existing native apps and audio-only Bridges remain audio-only receivers.
+
+The Bridge uses the installed NDI Runtime and bundled OMT/VMX runtime. No NDI SDK/runtime is redistributed. It decodes network video to BGRA, scales it to at most 1280×720 at 15 fps, and encodes H.264 Baseline in software at a target of 1.2 Mbit/s. Each source requires an additional network receiver and encoder, so CPU, source bandwidth and memory increase per enabled Feed. This is a preview implementation, not an NDI/OMT passthrough or video output. Progressive sources with square pixels are recommended. Frame-accurate audio/video synchronization is not guaranteed.
+
+The H.264 sender uses separate RTP/RTCP from audio, periodic keyframes and sender reports. Its license notices are included in the Bridge's `licenses` resources. Existing audio-only FFmpeg builds do not need video codecs added.
+
+### Native validation
+
+Run `cargo test --manifest-path bridge-client/src-tauri/Cargo.toml --lib` for frame validation, real H.264 encode/decode, RTP fragmentation/reassembly and RTCP clock mapping. With NDI installed and the bundled OMT runtime prepared, also run:
+
+```sh
+cargo test --manifest-path bridge-client/src-tauri/Cargo.toml --lib video_loopback -- --ignored --nocapture --test-threads=1
+```
+
+These integration tests publish actual synthetic NDI/OMT pictures, receive them in a separate process, encode/send RTP, then reconstruct and decode a picture. OMT discovery is checked, but its media test explicitly uses loopback port 6400 (must be free) to avoid SDK address races on hosts with virtual/link-local adapters. This does not override production address selection. The macOS test host reproduced such a discovery-selected link-local connection with no media, including in the pre-existing OMT audio test. Real multi-interface/remote-source checks remain necessary.
+
+Before merging, also check real OBS NDI/OMT sources on Windows and macOS, browser video playback in Safari/Chrome, audio continuity when changing video sources, source resolution changes, source loss/recovery and server reconnects.

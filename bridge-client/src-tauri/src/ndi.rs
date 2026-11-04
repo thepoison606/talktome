@@ -106,6 +106,23 @@ type RecvCreateFn = unsafe extern "C" fn(*const NdiRecvCreateV3) -> NdiInstance;
 type RecvDestroyFn = unsafe extern "C" fn(NdiInstance);
 type RecvCaptureFn =
     unsafe extern "C" fn(NdiInstance, *mut c_void, *mut NdiAudioFrameV3, *mut c_void, u32) -> i32;
+#[repr(C)]
+#[derive(Default)]
+struct NdiVideoFrame {
+    width: i32,
+    height: i32,
+    fourcc: i32,
+    frame_rate_n: i32,
+    frame_rate_d: i32,
+    aspect_ratio: f32,
+    frame_format: i32,
+    timecode: i64,
+    data: *mut u8,
+    stride: i32,
+    metadata: *const c_char,
+    timestamp: i64,
+}
+type RecvFreeVideoFn = unsafe extern "C" fn(NdiInstance, *const NdiVideoFrame);
 type RecvFreeAudioFn = unsafe extern "C" fn(NdiInstance, *const NdiAudioFrameV3);
 type SendCreateFn = unsafe extern "C" fn(*const NdiSendCreate) -> NdiInstance;
 type SendDestroyFn = unsafe extern "C" fn(NdiInstance);
@@ -124,6 +141,7 @@ struct NdiApi {
     recv_destroy: RecvDestroyFn,
     recv_capture: RecvCaptureFn,
     recv_free_audio: RecvFreeAudioFn,
+    recv_free_video: RecvFreeVideoFn,
     send_create: SendCreateFn,
     send_destroy: SendDestroyFn,
     send_audio: SendAudioFn,
@@ -190,6 +208,7 @@ impl NdiApi {
                 recv_destroy: load_symbol(&library, b"NDIlib_recv_destroy\0")?,
                 recv_capture: load_symbol(&library, b"NDIlib_recv_capture_v3\0")?,
                 recv_free_audio: load_symbol(&library, b"NDIlib_recv_free_audio_v3\0")?,
+                recv_free_video: load_symbol(&library, b"NDIlib_recv_free_video_v2\0")?,
                 send_create: load_symbol(&library, b"NDIlib_send_create\0")?,
                 send_destroy: load_symbol(&library, b"NDIlib_send_destroy\0")?,
                 send_audio: load_symbol(&library, b"NDIlib_send_send_audio_v3\0")?,
@@ -1267,6 +1286,57 @@ pub(crate) mod tests {
         drop(input);
     }
 
+    #[test]
+    #[ignore = "requires installed NDI Runtime and local NDI networking"]
+    fn ndi_video_loopback() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let sender_stop = Arc::clone(&stop);
+        let sender = thread::spawn(move || {
+            let api = NdiApi::load().expect("NDI Runtime required");
+            let name = CString::new("Talktome Video NDI Test").unwrap();
+            let settings = NdiSendCreate {
+                ndi_name: name.as_ptr(),
+                groups: ptr::null(),
+                clock_video: false,
+                clock_audio: false,
+            };
+            let sender = unsafe { (api.send_create)(&settings) };
+            assert!(!sender.is_null());
+            let _guard = NdiSenderGuard { api: &api, sender };
+            type SendVideo = unsafe extern "C" fn(NdiInstance, *const NdiVideoFrame);
+            let send: SendVideo =
+                unsafe { *api._library.get(b"NDIlib_send_send_video_v2\0").unwrap() };
+            let mut pixels = vec![180u8; 320 * 180 * 4];
+            while !sender_stop.load(Ordering::Relaxed) {
+                let frame = NdiVideoFrame {
+                    width: 320,
+                    height: 180,
+                    fourcc: i32::from_le_bytes(*b"BGRA"),
+                    frame_rate_n: 15,
+                    frame_rate_d: 1,
+                    aspect_ratio: 0.0,
+                    frame_format: 1,
+                    timecode: NDI_TIMECODE_SYNTHESIZE,
+                    data: pixels.as_mut_ptr(),
+                    stride: 320 * 4,
+                    metadata: ptr::null(),
+                    timestamp: 0,
+                };
+                unsafe {
+                    send(sender, &frame);
+                };
+                thread::sleep(Duration::from_millis(67));
+            }
+        });
+        thread::sleep(Duration::from_millis(750));
+        let result = std::panic::catch_unwind(|| {
+            crate::video_media::tests::run_external_video_probe("ndi", "Talktome Video NDI Test")
+        });
+        stop.store(true, Ordering::Relaxed);
+        sender.join().unwrap();
+        result.unwrap();
+    }
+
     pub(crate) fn run_external_audio_probe(source_name: &str) {
         let executable = std::env::current_exe().expect("resolve current NDI test executable");
         let output = std::process::Command::new(executable)
@@ -1286,4 +1356,74 @@ pub(crate) mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+pub fn video_sources(wait: Duration) -> Vec<crate::video_media::VideoSource> {
+    NdiApi::load()
+        .ok()
+        .and_then(|api| api.discover_resilient(wait).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|source| crate::video_media::VideoSource {
+            id: source.id,
+            name: format!("NDI · {}", source.name),
+            protocol: "ndi".into(),
+        })
+        .collect()
+}
+pub fn capture_video(
+    device_id: &str,
+    mut sink: crate::video_media::VideoSink,
+) -> Result<(), String> {
+    let api = NdiApi::load()?;
+    let name = CString::new(source_name_for_device(&api, device_id)?)
+        .map_err(|_| "Invalid NDI source name")?;
+    let receiver_name = CString::new("Talktome Bridge video").unwrap();
+    let settings = NdiRecvCreateV3 {
+        source: NdiSource {
+            ndi_name: name.as_ptr(),
+            url_address: ptr::null(),
+        },
+        color_format: 0,
+        bandwidth: 100,
+        allow_video_fields: false,
+        receiver_name: receiver_name.as_ptr(),
+    };
+    let receiver = unsafe { (api.recv_create)(&settings) };
+    if receiver.is_null() {
+        return Err("NDI video receiver could not be created".into());
+    }
+    let _guard = NdiReceiverGuard {
+        api: &api,
+        receiver,
+    };
+    while !sink.stop.load(Ordering::Relaxed) {
+        let mut frame = NdiVideoFrame::default();
+        let kind = unsafe {
+            (api.recv_capture)(
+                receiver,
+                (&mut frame as *mut NdiVideoFrame).cast(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                100,
+            )
+        };
+        if kind == 1 {
+            let result = if [i32::from_le_bytes(*b"BGRA"), i32::from_le_bytes(*b"BGRX")]
+                .contains(&frame.fourcc)
+            {
+                unsafe { sink.bgra(frame.width, frame.height, frame.stride, frame.data, None) }
+            } else {
+                Err(format!(
+                    "NDI returned unsupported video format {:08x}",
+                    frame.fourcc
+                ))
+            };
+            unsafe { (api.recv_free_video)(receiver, &frame) };
+            result?;
+        } else if kind == NDI_FRAME_TYPE_ERROR {
+            return Err("NDI video source disconnected".into());
+        }
+    }
+    Ok(())
 }
