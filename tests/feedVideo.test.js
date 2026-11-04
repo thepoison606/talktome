@@ -87,7 +87,7 @@ test('advertising a feed does not receive video until expanded; audio controls s
   const h = harness(); await tick();
   assert.equal(h.button.textContent, '🎧');
   assert(h.controller.announce(h.payload));
-  assert.equal(h.button.textContent, '🎥'); assert.equal(h.button.attributes.role, 'button'); assert(h.panel.hidden); assert.equal(h.events.length, 0);
+  assert.equal(h.button.textContent, '📺'); assert.equal(h.button.attributes.role, 'button'); assert(h.panel.hidden); assert.equal(h.events.length, 0);
   h.button.dispatch('click'); await tick();
   assert.equal(h.events.filter(e => e.event === 'consume').length, 1);
   assert.equal(h.events.filter(e => e.event === 'resume-consumer').length, 1);

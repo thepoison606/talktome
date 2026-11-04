@@ -13,7 +13,7 @@ As with microphone input, camera input requires HTTPS or a loopback development 
 
 ## Watch a feed
 
-For a feed publishing video, the left-hand headphone icon (🎧) becomes a video emoji (🎥). Click it to open the picture **above** the normal volume, mute and reception Start/Stop controls; click again to close it. Volume and mute affect only audio. Stop reception also stops receiving video.
+For a feed publishing video, the left-hand headphone icon (🎧) becomes a TV emoji (📺). Click it to open the picture **above** the normal volume, mute and reception Start/Stop controls; click again to close it. Volume and mute affect only audio. Stop reception also stops receiving video.
 
 Closed video windows, videos on another target layer, and backgrounded pages do not subscribe to video. Reopening the window or returning to its layer resumes reception. Expanded feeds retain the responsive grid column width (one, two, three or four columns, as determined by the media queries). Additional complete grid rows move to layers according to their measured heights, including the tallest target in each row. Rows retain their normal controls and are not squeezed smaller.
 

@@ -180,7 +180,7 @@
     function render(state) {
       if (!state.row) return;
       const available = Boolean(state.payload);
-      state.button.textContent = available ? '🎥' : '🎧';
+      state.button.textContent = available ? '📺' : '🎧';
       state.button.setAttribute('role', available ? 'button' : 'img');
       state.button.tabIndex = available ? 0 : -1;
       if (available) state.button.setAttribute('aria-expanded', String(state.expanded));
