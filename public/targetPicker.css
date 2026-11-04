@@ -4,9 +4,9 @@
 .tt-target-picker .tt-target-picker__empty:hover { background: transparent; color: var(--target-picker-hover-text, #cbd5e1); text-decoration: none; }
 .tt-target-picker__chip { box-sizing: border-box; display: inline-flex; max-width: 100%; height: var(--target-picker-control-height, 2.2rem); align-items: center; gap: .3rem; border: 1px solid var(--target-picker-chip-border, #365174); border-radius: .5rem; background: var(--target-picker-chip-bg, #17283e); color: var(--target-picker-text, #e2e8f0); padding: 0 .25rem 0 .6rem; font-size: .85rem; font-weight: 400; }
 .tt-target-picker__chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tt-target-picker .tt-target-picker__remove { display: grid; place-items: center; flex: 0 0 1.8rem; width: 1.8rem; height: 1.8rem; min-height: 0; padding: 0; margin: 0; border: 0; border-radius: .3rem; background: transparent; color: var(--target-picker-secondary, #b7c8df); font-size: 1.2rem; cursor: pointer; }
-.tt-target-picker .tt-target-picker__remove:hover { background: transparent; border: 0; box-shadow: none; color: white; }
-.tt-target-picker .tt-target-picker__remove svg { display: block; width: 1rem; height: 1rem; pointer-events: none; }
+.tt-target-picker .tt-target-picker__chip .tt-target-picker__remove { display: grid; place-items: center; flex: 0 0 1.8rem; width: 1.8rem; height: 1.8rem; min-height: 0; padding: 0; margin: 0; border: 0; border-radius: .3rem; background: transparent; color: var(--target-picker-secondary, #b7c8df); font-size: 1.2rem; cursor: pointer; }
+.tt-target-picker .tt-target-picker__chip .tt-target-picker__remove:hover { background: transparent; border: 0; box-shadow: none; color: white; }
+.tt-target-picker .tt-target-picker__chip .tt-target-picker__remove svg { display: block; width: 1rem; height: 1rem; pointer-events: none; }
 .tt-target-picker .tt-target-picker__edit { box-sizing: border-box; display: grid; place-items: center; flex: 0 0 1.8rem; width: 1.8rem; height: var(--target-picker-control-height, 2.2rem); min-height: 0; margin: 0; padding: 0; border: 0; border-radius: .3rem; background: transparent; box-shadow: none; color: var(--target-picker-muted, #94a3b8); font: inherit; cursor: pointer; }
 .tt-target-picker .tt-target-picker__edit:hover { background: transparent; color: var(--target-picker-text, #e2e8f0); }
 .tt-target-picker .tt-target-picker__edit svg { display: block; width: 1.1rem; height: 1.1rem; pointer-events: none; }
