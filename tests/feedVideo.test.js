@@ -9,6 +9,7 @@ function element(tag = 'div') {
   return { tag, children: [], hidden: false, isConnected: true, attributes: {}, options: [], value: '',
     classList: { contains: key => classes.has(key), toggle: (key, yes) => yes ? classes.add(key) : classes.delete(key), add: key => classes.add(key), remove: key => classes.delete(key) },
     setAttribute(key, value) { this.attributes[key] = value; },
+    removeAttribute(key) { delete this.attributes[key]; },
     addEventListener(key, fn) { listeners[key] = fn; },
     dispatch(key) { return listeners[key]?.({ stopPropagation() {} }); },
     append(...items) { items.forEach(item => this.appendChild(item)); },
@@ -57,9 +58,10 @@ function harness({ deferConsume = false, deferCamera = false, denyCamera = false
     isStreaming: () => streaming, isStopped: () => stopped, onLayoutChange() {},
     document: doc, mediaDevices, makeStream: items => ({ items }),
   });
-  const row = element(); const label = element(); row.querySelector = () => label;
+  const row = element(); const icon = element(); row.querySelector = () => icon;
+  let button; icon.replaceWith = replacement => { button = replacement; };
   controller.attachTarget(row, 'feed-7', 'Program');
-  const button = label.children[0], panel = row.children[0];
+  const panel = row.children[0];
   const payload = { producerId: 'v1', kind: 'video', appData: { type: 'feed', id: 7 } };
   return { controller, events, consumers, row, button, panel, payload, doc, nodes, tracks, sends,
     setStopped(value) { stopped = value; controller.syncVisibility(); },
@@ -72,9 +74,9 @@ function harness({ deferConsume = false, deferCamera = false, denyCamera = false
 
 test('advertising a feed does not receive video until expanded; audio controls stay below', async () => {
   const h = harness(); await tick();
-  assert(h.button.hidden);
+  assert.equal(h.button.textContent, '🎧');
   assert(h.controller.announce(h.payload));
-  assert(!h.button.hidden); assert(h.panel.hidden); assert.equal(h.events.length, 0);
+  assert.equal(h.button.textContent, '🎥'); assert.equal(h.button.attributes.role, 'button'); assert(h.panel.hidden); assert.equal(h.events.length, 0);
   h.button.dispatch('click'); await tick();
   assert.equal(h.events.filter(e => e.event === 'consume').length, 1);
   assert.equal(h.events.filter(e => e.event === 'resume-consumer').length, 1);
@@ -91,7 +93,7 @@ test('Stop, hidden layers and background release video; resuming consumes again'
   h.row.classList.remove('layer-hidden'); h.controller.syncVisibility(); await tick();
   h.visibility(true); assert(h.consumers[2].closed);
   h.visibility(false); await tick(); assert.equal(h.consumers.length, 4);
-  h.controller.resetReceiving(); assert(h.consumers[3].closed); assert(h.button.hidden);
+  h.controller.resetReceiving(); assert(h.consumers[3].closed); assert.equal(h.button.textContent, '🎧');
 });
 
 test('collapsing while subscription is pending closes the eventual server consumer', async () => {
@@ -106,11 +108,11 @@ test('producer replacement, lost announcements, target removal and rerenders do 
   const h = harness(); h.controller.announce(h.payload); h.button.dispatch('click'); await tick();
   h.controller.announce({ ...h.payload, producerId: 'v2' }); await tick();
   assert(h.consumers[0].closed); assert.equal(h.consumers.length, 2);
-  const row = element(); const label = element(); row.querySelector = () => label;
+  const row = element(); const icon = element(); icon.replaceWith = () => {}; row.querySelector = () => icon;
   h.controller.attachTarget(row, 'feed-7', 'Program');
   assert.equal(row.children[0], h.panel); // reuse the playing element, not a competing consumer
   h.controller.syncVisibility(); await tick(); assert.equal(h.consumers.length, 2);
-  h.controller.reconcile([]); assert(h.consumers[1].closed); assert(h.button.hidden);
+  h.controller.reconcile([]); assert(h.consumers[1].closed); assert.equal(h.button.textContent, '🎧');
   h.controller.pruneTargets(new Set()); assert.equal(h.controller.hasExpanded(), false);
 });
 

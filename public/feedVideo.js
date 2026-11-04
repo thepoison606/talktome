@@ -4,7 +4,6 @@
   else root.TalktomeFeedVideo = factory();
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
-  const CAMERA_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="12" height="14" rx="2"/><path d="m15 10 6-4v12l-6-4z"/></svg>';
   const isVideo = payload => payload?.kind != null
     ? payload.kind === 'video' : payload?.appData?.mediaKind === 'video';
   const keyFor = payload => payload?.appData?.type === 'feed' ? `feed-${payload.appData.id}` : null;
@@ -125,9 +124,12 @@
     function render(state) {
       if (!state.row) return;
       const available = Boolean(state.payload);
-      state.button.hidden = !available;
-      state.button.setAttribute('aria-expanded', String(state.expanded && available));
-      state.button.title = state.expanded ? 'Hide video' : 'Show video';
+      state.button.textContent = available ? '🎥' : '🎧';
+      state.button.setAttribute('role', available ? 'button' : 'img');
+      state.button.tabIndex = available ? 0 : -1;
+      if (available) state.button.setAttribute('aria-expanded', String(state.expanded));
+      else state.button.removeAttribute('aria-expanded');
+      state.button.title = available ? (state.expanded ? 'Hide video' : 'Show video') : 'Audio feed';
       state.button.setAttribute('aria-label', `${state.button.title}: ${state.name}`);
       state.panel.hidden = !available || !state.expanded;
       state.row.classList.toggle('feed-video-expanded', available && state.expanded);
@@ -185,12 +187,20 @@
       }
       state.row = row; state.name = name;
       if (!state.button) {
-        state.button = doc.createElement('button'); state.button.type = 'button';
-        state.button.className = 'feed-video-toggle'; state.button.innerHTML = CAMERA_ICON;
+        state.button = doc.createElement('div');
+        state.button.className = 'feed-icon feed-video-toggle';
         state.button.addEventListener('pointerdown', event => event.stopPropagation());
-        state.button.addEventListener('click', event => {
-          event.stopPropagation(); state.expanded = !state.expanded; state.error = '';
+        const toggleVideo = event => {
+          event.stopPropagation();
+          if (!state.payload) return;
+          state.expanded = !state.expanded; state.error = '';
           render(state); onLayoutChange(key); syncVisibility();
+        };
+        state.button.addEventListener('click', toggleVideo);
+        state.button.addEventListener('keydown', event => {
+          if (state.payload && (event.key === 'Enter' || event.key === ' ')) {
+            event.preventDefault(); toggleVideo(event);
+          }
         });
         state.panel = doc.createElement('div'); state.panel.className = 'feed-video-panel';
         state.panel.id = `${key}-video`;
@@ -214,7 +224,7 @@
         state.message = doc.createElement('span'); state.message.setAttribute('role', 'status');
         state.panel.append(state.video, state.message);
       }
-      row.querySelector('.target-label-row').appendChild(state.button);
+      row.querySelector('.feed-icon').replaceWith(state.button);
       row.prepend(state.panel); render(state);
     }
     function announce(payload) {

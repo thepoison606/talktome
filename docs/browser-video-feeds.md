@@ -13,7 +13,7 @@ As with microphone input, camera input requires HTTPS or a loopback development 
 
 ## Watch a feed
 
-A camera icon appears beside the name of a feed publishing video. Click it to open the picture **above** the normal volume, mute and reception Start/Stop controls; click again to close it. Volume and mute affect only audio. Stop reception also stops receiving video.
+For a feed publishing video, the left-hand headphone icon (🎧) becomes a video emoji (🎥). Click it to open the picture **above** the normal volume, mute and reception Start/Stop controls; click again to close it. Volume and mute affect only audio. Stop reception also stops receiving video.
 
 Closed video windows, videos on another target layer, and backgrounded pages do not subscribe to video. Reopening the window or returning to its layer resumes reception. While any video is expanded, targets use full-width rows and additional targets move to layers according to their measured heights. Rows retain their normal controls and are not squeezed smaller.
 

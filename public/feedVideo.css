@@ -1,13 +1,7 @@
 /* The picture sits above the existing target controls; those keep their natural height. */
-#targets-list .feed-video-toggle {
-  display: inline-flex; align-items: center; justify-content: center;
-  flex: 0 0 2rem; width: 2rem; height: 2rem; padding: .35rem; margin: 0 0 0 auto;
-  background: transparent; border: 0; border-radius: .35rem; color: #93c5fd; cursor: pointer;
-}
-#targets-list .feed-video-toggle[hidden], .feed-video-panel[hidden], #feed-video-preview[hidden] { display: none; }
-.feed-video-toggle svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.7; }
-#targets-list .feed-video-toggle:hover, #targets-list .feed-video-toggle[aria-expanded="true"] { background: #334155; color: white; }
-#targets-list .feed-video-toggle:focus-visible { outline: 2px solid #60a5fa; }
+#targets-list .feed-video-toggle[role="button"] { cursor: pointer; }
+#targets-list .feed-video-toggle:focus-visible { outline: 2px solid #60a5fa; outline-offset: 3px; }
+.feed-video-panel[hidden], #feed-video-preview[hidden] { display: none; }
 #targets-list li.feed-video-expanded > :not(.feed-video-panel) { grid-row: 2; }
 #targets-list li.feed-video-expanded { row-gap: 0; }
 .feed-video-panel {
