@@ -9,7 +9,7 @@ final class WatchRemoteSession: NSObject, ObservableObject {
   @Published var holdingKey: String?
   @Published var lockedKey: String?
   @Published var touchTargetKey: String?
-  @Published var status = "Open TalkToMe on iPhone"
+  @Published var status = "Open Talktome on iPhone"
 
   private var awaitingConfirmKey: String?
   private var requestId: String?
@@ -149,7 +149,7 @@ final class WatchRemoteSession: NSObject, ObservableObject {
     snapshot = next
     reachable = WCSession.default.isReachable
     if snapshot.connected {
-      let place = snapshot.productionName.isEmpty ? "TalkToMe" : snapshot.productionName
+      let place = snapshot.productionName.isEmpty ? "Talktome" : snapshot.productionName
       status = snapshot.username.isEmpty ? place : "\(snapshot.username) · \(place)"
     } else { status = "Sign in on iPhone" }
     // Only the ready acknowledgment chooses where to play the beep. A general

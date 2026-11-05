@@ -6,7 +6,7 @@ const iosSigning = resolveIosSigning(__dirname);
 const config: ExpoConfig = {
   name: 'TalkToMe',
   slug: 'talktome',
-  version: process.env.TALKTOME_MOBILE_VERSION || '1.0.0',
+  version: process.env.TALKTOME_MOBILE_VERSION || '1.1.0',
   orientation: 'default',
   icon: './assets/icon.png',
   userInterfaceStyle: 'automatic',
@@ -15,19 +15,20 @@ const config: ExpoConfig = {
     supportsTablet: true,
     icon: './assets/icon.png',
     bundleIdentifier: iosSigning.bundleIdentifier,
-    buildNumber: process.env.TALKTOME_MOBILE_BUILD_NUMBER || '30',
+    buildNumber: process.env.TALKTOME_MOBILE_BUILD_NUMBER || '47',
     appleTeamId: iosSigning.appleTeamId,
     entitlements: {
       'com.apple.security.application-groups': [iosSigning.appGroup],
     },
     infoPlist: {
+      CFBundleDisplayName: 'Talktome',
       ITSAppUsesNonExemptEncryption: false,
       NSMicrophoneUsageDescription:
-        'TalkToMe uses the microphone so you can talk to other operators.',
+        'Talktome uses the microphone so you can talk to other operators.',
       NSLocalNetworkUsageDescription:
-        'TalkToMe connects to your self-hosted intercom on the local network.',
-      NSBluetoothAlwaysUsageDescription: 'TalkToMe connects to wireless PTT buttons and speaker mics.',
-      NSCameraUsageDescription: 'TalkToMe uses the camera to scan server and login QR codes.',
+        'Talktome connects to your self-hosted intercom on the local network.',
+      NSBluetoothAlwaysUsageDescription: 'Talktome connects to wireless PTT buttons and speaker mics.',
+      NSCameraUsageDescription: 'Talktome uses the camera to scan server and login QR codes.',
       NSAppTransportSecurity: {
         NSAllowsLocalNetworking: true,
       },
@@ -50,7 +51,7 @@ const config: ExpoConfig = {
   android: {
     // Android Java packages cannot contain a hyphen.
     package: process.env.TALKTOME_ANDROID_PACKAGE || 'com.talktome.mobile',
-    versionCode: Number(process.env.TALKTOME_MOBILE_BUILD_NUMBER || 30),
+    versionCode: Number(process.env.TALKTOME_MOBILE_BUILD_NUMBER || 47),
     adaptiveIcon: {
       backgroundColor: '#000000',
       foregroundImage: './assets/android-icon-foreground.png',
@@ -82,9 +83,9 @@ const config: ExpoConfig = {
       '@config-plugins/react-native-webrtc',
       {
         cameraPermission:
-          'TalkToMe uses the camera to scan server and login QR codes.',
+          'Talktome uses the camera to scan server and login QR codes.',
         microphonePermission:
-          'TalkToMe uses the microphone so you can talk to other operators.',
+          'Talktome uses the microphone so you can talk to other operators.',
       },
     ],
     './plugins/withTalkToMeJitsiWebrtc',
@@ -92,7 +93,7 @@ const config: ExpoConfig = {
     [
       'expo-camera',
       {
-        cameraPermission: 'TalkToMe uses the camera to scan server and login QR codes.',
+        cameraPermission: 'Talktome uses the camera to scan server and login QR codes.',
         recordAudioAndroid: false,
         barcodeScannerEnabled: true,
       },

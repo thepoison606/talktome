@@ -22,6 +22,7 @@ import { moveTargetOrder } from '../session/targetOrder';
 import { session, useSessionStore } from '../session/store';
 import { useSessionSheetOpen } from './sessionSheetState';
 import { talkTargetIdentity, type TalkTarget } from '../protocol';
+import { readNativeClientVersion } from '../protocol/clientVersion';
 import { watchTargetCandidates, toggleWatchTarget, WATCH_REPLY_TARGET } from '../watch/selection';
 import { describeWatchRemoteStatus, watchRemoteShortStatus, watchRemoteStatus } from '../watch/native';
 import { PttAddDevicePage, PttDeviceDetailPage, PttDevicesPage } from './PttSettingsScreens';
@@ -805,6 +806,7 @@ function WatchTargetsSettingsPage() {
 
 function DebugSettingsPage() {
   const store = useSessionStore();
+  const [{ clientVersion, clientBuild }] = useState(readNativeClientVersion);
   const [talkLinkToken, setTalkLinkToken] = useState('');
 
   useEffect(() => {
@@ -827,6 +829,10 @@ function DebugSettingsPage() {
 
   return (
     <>
+      <SettingsSection title="App">
+        <SettingsRow label="Version" value={clientVersion || 'Unknown'} />
+        <SettingsRow label="Build" value={clientBuild || 'Unknown'} />
+      </SettingsSection>
       <SettingsSection title="Session">
         <SettingsRow
           label="Background"

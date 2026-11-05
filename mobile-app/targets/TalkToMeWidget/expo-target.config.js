@@ -2,7 +2,7 @@
 module.exports = (config) => ({
   type: 'widget',
   name: 'TalkToMeWidget',
-  displayName: 'TalkToMe',
+  displayName: 'Talktome',
   bundleIdentifier: '.widget',
   deploymentTarget: '17.0',
   frameworks: ['SwiftUI', 'WidgetKit', 'ActivityKit', 'AppIntents'],

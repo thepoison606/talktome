@@ -2,7 +2,7 @@
 module.exports = {
   type: 'watch',
   name: 'TalkToMeWatch',
-  displayName: 'TalkToMe',
+  displayName: 'Talktome',
   icon: '../../assets/icon.png',
   bundleIdentifier: '.watchkitapp',
   deploymentTarget: '10.0',
