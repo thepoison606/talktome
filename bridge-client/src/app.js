@@ -2900,6 +2900,7 @@ async function startManagedInputPath(session, { reason = "input-start" } = {}) {
         rtpPort: Number(transport.port),
         payloadType: rtp.payloadType,
         ssrc: rtp.ssrc,
+        cname: transport.cname || '',
         audioLevel: getManagedAudioLevel(session.port, 'input')
       }
     });

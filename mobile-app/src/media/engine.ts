@@ -571,6 +571,7 @@ export class MediaEngine {
         id: params.id,
         producerId: params.producerId,
         kind: params.kind as 'audio' | 'video',
+        ...(producer.route.kind === 'feed' ? { streamId: `feed-${producer.route.id}` } : {}),
         rtpParameters: params.rtpParameters as never,
       });
 

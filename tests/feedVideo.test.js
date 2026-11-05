@@ -39,8 +39,8 @@ function harness({ deferConsume = false, deferTransport = false, deferCamera = f
     }
     else done?.(event === 'resume-consumer' ? undefined : { ok: true });
   } };
-  const recv = { closed: false, async consume(params) {
-    const consumer = { ...params, track: {}, on() {}, resume() {}, close() { this.closed = true; } };
+  const recv = { id: 'audio-recv', closed: false, async consume(params) {
+    const consumer = { ...params, track: {}, on() {}, resume() { this.paused = false; }, pause() { this.paused = true; }, close() { this.closed = true; } };
     consumers.push(consumer); return consumer;
   } };
   const send = { async produce(options) {
@@ -107,15 +107,15 @@ test('advertising a feed does not receive video until expanded; audio controls s
   h.button.dispatch('click'); assert(h.consumers[0].closed); assert(h.panel.hidden);
 });
 
-test('Stop, hidden layers and background release video; resuming consumes again', async () => {
+test('Stop and hidden layers release video; background pauses without renegotiating audio', async () => {
   const h = harness(); h.controller.announce(h.payload); h.button.dispatch('click'); await tick();
   h.setStopped(true); assert(h.consumers[0].closed);
   h.setStopped(false); await tick(); assert.equal(h.consumers.length, 2);
   h.row.classList.add('layer-hidden'); h.controller.syncVisibility(); assert(h.consumers[1].closed);
   h.row.classList.remove('layer-hidden'); h.controller.syncVisibility(); await tick();
-  h.visibility(true); assert(h.consumers[2].closed);
-  h.visibility(false); await tick(); assert.equal(h.consumers.length, 4);
-  h.controller.resetReceiving(); assert(h.consumers[3].closed); assert.equal(h.button.textContent, '🎧');
+  h.visibility(true); assert(h.consumers[2].paused); assert(!h.consumers[2].closed);
+  h.visibility(false); await tick(); assert.equal(h.consumers.length, 3);
+  h.controller.resetReceiving(); assert(h.consumers[2].closed); assert.equal(h.button.textContent, '🎧');
 });
 
 test('collapsing while subscription is pending closes the eventual server consumer', async () => {
@@ -233,36 +233,43 @@ test('revoking permission during camera permission closes late tracks without pr
 });
 
 
-test('background and pagehide release only the dedicated video connection and detach the picture', async () => {
+test('audio and video share the receive connection and stream id; hiding never renegotiates it', async () => {
   const h = harness(); h.controller.announce(h.payload); h.button.dispatch('click'); await tick();
-  assert.equal(h.videoTransports.length, 1);
-  assert(h.events.filter(e => e.event === 'consume').every(e => e.data.transportId === h.videoTransports[0].id));
+  assert.equal(h.videoTransports.length, 0);
+  assert(h.events.filter(e => e.event === 'consume').every(e => e.data.transportId === h.recv.id));
+  assert.equal(h.consumers[0].streamId, 'feed-7');
   const video = h.panel.children[0];
   video.pause = () => assert.equal(video.srcObject, null, 'detach before pausing Safari playback');
-  h.visibility(true);
-  assert.equal(h.videoTransports[0].closed, true);
-  assert.equal(h.recv.closed, false, 'the audio connection must survive');
-  assert(h.events.some(e => e.event === 'close-video-recv-transport'));
+  h.visibility(true); await tick();
+  assert(!h.consumers[0].closed); assert(h.consumers[0].paused);
+  assert.equal(h.recv.closed, false);
+  assert(h.events.some(e => e.event === 'pause-consumer'));
+  assert(!h.events.some(e => e.event === 'close-consumer'));
   h.visibility(false); await tick();
-  assert.equal(h.videoTransports.length, 2); assert.equal(h.consumers.length, 2);
-  h.callbacks.pagehide();
-  assert(h.videoTransports[1].closed); assert.equal(h.recv.closed, false);
+  assert.equal(h.consumers.length, 1); assert(!h.consumers[0].paused);
+  h.callbacks.pagehide(); await tick();
+  assert(h.consumers[0].paused); assert.equal(h.recv.closed, false);
   h.callbacks.pageshow(); await tick();
-  assert.equal(h.videoTransports.length, 3);
+  assert.equal(h.consumers.length, 1);
   h.setStopped(true); h.visibility(true); h.visibility(false); await tick();
-  assert.equal(h.videoTransports.length, 3, 'a manually stopped feed stays stopped');
+  assert.equal(h.consumers.length, 1, 'a manually stopped feed stays stopped');
 });
 
+test('a consumer completing while locked is closed locally only after foregrounding', async () => {
+  const h = harness(); h.controller.announce(h.payload); h.button.dispatch('click'); await tick();
+  h.visibility(true); await tick();
+  h.controller.removeProducer('v1');
+  assert(!h.consumers[0].closed, 'no receive SDP mutation in the background');
+  assert(h.events.some(e => e.event === 'close-consumer'));
+  h.visibility(false); await tick();
+  assert(h.consumers[0].closed); assert.equal(h.recv.closed, false);
+});
 
-test('locking while a video connection is pending discards the late video transport without touching audio', async () => {
-  const h = harness({ deferTransport: true });
+test('locking before a consume response discards the late subscription without touching audio', async () => {
+  const h = harness({ deferConsume: true });
   h.controller.announce(h.payload); h.button.dispatch('click'); await tick();
-  h.visibility(true);
-  h.transportReady(); await tick();
-  assert.equal(h.videoTransports.length, 0);
+  h.visibility(true); h.consumeReady(); await tick();
   assert.equal(h.consumers.length, 0);
-  assert(h.events.some(e => e.event === 'close-video-recv-transport' && e.data.transportId));
+  assert(h.events.some(e => e.event === 'close-consumer'));
   assert.equal(h.recv.closed, false);
-  h.visibility(false); await tick(); h.transportReady(); await tick();
-  assert.equal(h.videoTransports.length, 1); assert.equal(h.consumers.length, 1);
 });

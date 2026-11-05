@@ -24,7 +24,7 @@
     let selectedCamera = ''; // Intentionally off after each page load; never silently enable a camera.
     let cameras = [], pickerGeneration = 0, pickerBusy = false, cameraProbe = null;
     let receiveGeneration = 0;
-    let videoRecvTransport = null, videoTransportPending = null, videoTransportEpoch = 0;
+    const deferredConsumerCloses = new Set();
     let pageSuspended = false;
     const earlyClosedConsumers = new Set();
     const closeRemote = id => { if (id && socket.connected) socket.emit('close-consumer', { consumerId: id }, () => {}); };
@@ -36,49 +36,21 @@
         else resolve(result || {});
       });
     });
-    const closeVideoTransportOnServer = id => {
-      if (id && socket.connected) socket.emit('close-video-recv-transport', { transportId: id }, () => {});
-    };
-    function releaseVideoTransport() {
-      videoTransportEpoch++;
-      const transport = videoRecvTransport;
-      videoRecvTransport = null; videoTransportPending = null;
-      // This PeerConnection contains video only. Audio never renegotiates here.
-      if (transport) { closeVideoTransportOnServer(transport.id); transport.close(); }
+    // Feed audio and video must share a PeerConnection and stream id for
+    // WebRTC lip sync. Never renegotiate that connection while Safari is hidden.
+    function closeLocal(consumer) {
+      if (doc.hidden || pageSuspended) deferredConsumerCloses.add(consumer);
+      else { try { consumer.close(); } catch {} }
     }
-    function ensureVideoTransport() {
-      if (videoRecvTransport && !videoRecvTransport.closed) return Promise.resolve(videoRecvTransport);
-      if (videoTransportPending) return videoTransportPending;
-      const epoch = videoTransportEpoch;
-      const device = getDevice();
-      const pending = (async () => {
-        const params = await request('create-video-recv-transport', null);
-        if (epoch !== videoTransportEpoch || doc.hidden || pageSuspended || device !== getDevice()) {
-          closeVideoTransportOnServer(params.id);
-          throw new Error('Video receive request cancelled');
-        }
-        let transport;
-        try { transport = device.createRecvTransport(params); }
-        catch (error) { closeVideoTransportOnServer(params.id); throw error; }
-        videoRecvTransport = transport;
-        transport.on('connectionstatechange', state => {
-          if (state !== 'failed' || videoRecvTransport !== transport) return;
-          for (const feed of feeds.values()) { closeReception(feed); feed.error = 'Video connection interrupted'; render(feed); }
-          releaseVideoTransport();
-          const retryEpoch = videoTransportEpoch;
-          setTimeout(() => { if (retryEpoch === videoTransportEpoch) syncVisibility(); }, 2000);
-        });
-        transport.on('connect', ({ dtlsParameters }, connected, failed) => {
-          request('connect-video-recv-transport', { transportId: transport.id, dtlsParameters }).then(() => {
-            if (epoch === videoTransportEpoch && !transport.closed) connected();
-            else failed(new Error('Video receive request cancelled'));
-          }, failed);
-        });
-        return transport;
-      })();
-      videoTransportPending = pending;
-      pending.finally(() => { if (videoTransportPending === pending) videoTransportPending = null; }).catch(() => {});
-      return pending;
+    function releaseVideoTransport() {
+      if (doc.hidden || pageSuspended) return;
+      for (const consumer of deferredConsumerCloses) { try { consumer.close(); } catch {} }
+      deferredConsumerCloses.clear();
+    }
+    async function ensureVideoTransport() {
+      const transport = getRecvTransport();
+      if (!transport || transport.closed) throw new Error('Receive transport not ready');
+      return transport;
     }
     const setSenderStatus = text => { if (senderStatus) senderStatus.textContent = text; };
 
@@ -235,7 +207,7 @@
 
     function closeReception(state) {
       state.token++;
-      state.pending = false;
+      state.pending = false; state.suspended = false;
       const consumer = state.consumer; state.consumer = null;
       if (state.video) {
         // Detach the picture before pause so Safari cannot treat its MediaStream
@@ -243,7 +215,7 @@
         state.video.srcObject = null;
         state.video.pause();
       }
-      if (consumer) { closeRemote(consumer.id); try { consumer.close(); } catch {} }
+      if (consumer) { closeRemote(consumer.id); closeLocal(consumer); }
     }
     function shouldReceive(state) {
       return enabled && state.expanded && state.payload && !isStopped(state.key)
@@ -266,7 +238,20 @@
       state.message.hidden = !state.message.textContent;
     }
     async function receive(state) {
-      if (!shouldReceive(state) || state.consumer || state.pending) return;
+      if (!shouldReceive(state) || state.pending) return;
+      if (state.consumer) {
+        if (state.suspended) {
+          state.suspended = false;
+          const id = state.consumer.id;
+          state.consumer.track.enabled = true;
+          state.video.srcObject = makeStream([state.consumer.track]);
+          state.controlWork = (state.controlWork || Promise.resolve()).catch(() => {}).then(() => request('resume-consumer', { consumerId: id }));
+          state.controlWork.catch(() => {});
+          state.consumer.resume();
+          state.video.play().catch(() => {});
+        }
+        return;
+      }
       state.pending = true; state.error = ''; render(state);
       const token = state.token, generation = receiveGeneration;
       const payload = state.payload;
@@ -280,9 +265,12 @@
         params = await request('consume', { producerId: payload.producerId, rtpCapabilities: getDevice().rtpCapabilities, transportId: transport.id });
         if (!current() || earlyClosedConsumers.delete(params.id)) { closeRemote(params.id); return; }
         if (params.kind !== 'video') throw new Error('Expected a video stream');
-        consumer = await transport.consume(params);
-        if (!current() || earlyClosedConsumers.delete(consumer.id)) { closeRemote(consumer.id); consumer.close(); return; }
+        consumer = await transport.consume({ ...params, streamId: state.key });
+        if (!current() || earlyClosedConsumers.delete(consumer.id)) { closeRemote(consumer.id); closeLocal(consumer); return; }
         state.consumer = consumer;
+        consumer.on('transportclose', () => {
+          if (state.consumer === consumer) { closeReception(state); render(state); }
+        });
         state.video.srcObject = makeStream([consumer.track]);
         await request('resume-consumer', { consumerId: consumer.id });
         if (!current()) return;
@@ -290,11 +278,8 @@
         state.video.play().catch(() => {
           if (current() && state.consumer === consumer) { state.error = 'Tap the video to play'; render(state); }
         });
-        consumer.on('transportclose', () => {
-          if (state.consumer === consumer) { closeReception(state); render(state); }
-        });
       } catch (error) {
-        if (consumer) { closeRemote(consumer.id); try { consumer.close(); } catch {} }
+        if (consumer) { closeRemote(consumer.id); closeLocal(consumer); }
         else if (params?.id) closeRemote(params.id);
         if (token === state.token && generation === receiveGeneration) {
           state.consumer = null; state.error = `Video unavailable: ${error.message}`;
@@ -304,12 +289,23 @@
       }
     }
     function syncVisibility() {
+      releaseVideoTransport();
       for (const state of feeds.values()) {
         if (shouldReceive(state)) receive(state);
-        else if (state.consumer || state.pending) closeReception(state);
+        else if ((doc.hidden || pageSuspended) && state.consumer && state.expanded && !isStopped(state.key)) {
+          if (!state.suspended) {
+            state.suspended = true;
+            state.video.srcObject = null;
+            state.video.pause();
+            state.consumer.track.enabled = false;
+            state.consumer.pause();
+            const id = state.consumer.id;
+            state.controlWork = (state.controlWork || Promise.resolve()).catch(() => {}).then(() => request('pause-consumer', { consumerId: id }));
+            state.controlWork.catch(() => {});
+          }
+        } else if (state.consumer || state.pending) closeReception(state);
         render(state);
       }
-      if (![...feeds.values()].some(shouldReceive)) releaseVideoTransport();
     }
     function attachTarget(row, key, name) {
       if (!enabled) return;

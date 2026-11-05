@@ -113,15 +113,23 @@ struct RawFrame {
     data: Vec<u8>,
     width: usize,
     height: usize,
-    captured: Instant,
+    presentation_time: SystemTime,
 }
 pub struct VideoSink {
     sender: SyncSender<RawFrame>,
     pub stop: Arc<AtomicBool>,
     stats: Arc<Counters>,
     pacer: FramePacer,
+    source_clock: Option<Arc<crate::media_timing::SourceClock>>,
+    presentation_time: Option<SystemTime>,
 }
 impl VideoSink {
+    pub fn set_source_timestamp(&mut self, timestamp: i64) {
+        self.presentation_time = self
+            .source_clock
+            .as_ref()
+            .map(|clock| clock.map(timestamp, SystemTime::now()));
+    }
     pub fn set_source_rate(&mut self, numerator: i32, denominator: i32) {
         self.pacer.set_source_rate(numerator, denominator);
     }
@@ -171,7 +179,10 @@ impl VideoSink {
             data: bytes,
             width: w,
             height: h,
-            captured: now,
+            presentation_time: self
+                .presentation_time
+                .take()
+                .unwrap_or_else(SystemTime::now),
         }) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
@@ -263,6 +274,9 @@ impl VideoManager {
             stop: Arc::clone(&stop),
             stats: Arc::clone(&stats),
             pacer: FramePacer::default(),
+            source_clock: crate::omt::is_input_device(&request.source_id)
+                .then(|| crate::media_timing::SourceClock::for_source(&request.source_id)),
+            presentation_time: None,
         };
         let capture_stats = Arc::clone(&stats);
         let capture_stop = Arc::clone(&stop);
@@ -279,7 +293,6 @@ impl VideoManager {
         let encoding_stats = Arc::clone(&stats);
         let encoding_stop = Arc::clone(&stop);
         let encode = thread::spawn(move || {
-            let start = Instant::now();
             let mut sequence = now_ms() as u16;
             let mut keyframe = Instant::now() - Duration::from_secs(2);
             let mut report = Instant::now() - Duration::from_secs(2);
@@ -302,8 +315,9 @@ impl VideoManager {
                     .and_then(|stream| {
                         let bytes = stream.to_vec();
                         let timestamp = frame
-                            .captured
-                            .saturating_duration_since(start)
+                            .presentation_time
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
                             .as_micros()
                             .wrapping_mul(90)
                             / 1000;
@@ -321,16 +335,22 @@ impl VideoManager {
                             octets = octets.wrapping_add((packet.len() - 12) as u32);
                         }
                         if report.elapsed() >= Duration::from_secs(1) {
-                            // Map this captured frame to wall clock for WebRTC A/V synchronization.
-                            let captured_at = SystemTime::now()
-                                .checked_sub(frame.captured.elapsed())
-                                .unwrap_or(SystemTime::now());
+                            // Report the current source clock, including time spent
+                            // decoding/scaling/encoding, rather than re-timestamping
+                            // the picture when its encoded bytes happen to arrive.
+                            let now = SystemTime::now();
+                            let projected = crate::media_timing::projected_timestamp(
+                                timestamp as u32,
+                                frame.presentation_time,
+                                now,
+                                90_000,
+                            );
                             let packet = sender_report(
                                 request.ssrc,
-                                timestamp as u32,
+                                projected,
                                 packets,
                                 octets,
-                                captured_at,
+                                now,
                                 &request.cname,
                             );
                             socket
@@ -493,7 +513,7 @@ fn packetize_h264(
 }
 
 // Compound RTCP SR + SDES (RFC 3550); muxed on the same UDP socket as RTP.
-fn sender_report(
+pub(crate) fn sender_report(
     ssrc: u32,
     timestamp: u32,
     packets: u32,
@@ -648,6 +668,8 @@ pub(crate) mod tests {
             stop: Arc::new(AtomicBool::new(false)),
             stats: Arc::new(Counters::default()),
             pacer: FramePacer::default(),
+            source_clock: None,
+            presentation_time: None,
         };
         let small = [0u8; 16];
         assert!(unsafe { sink.bgra(10, 10, 40, small.as_ptr(), Some(small.len())) }.is_err());

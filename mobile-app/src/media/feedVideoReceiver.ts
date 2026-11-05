@@ -87,6 +87,7 @@ export class FeedVideoReceiver {
         if (params.kind !== 'video') throw new Error('Expected a video track');
         consumer = await request.transport.consume({
           id: params.id, producerId: params.producerId, kind: 'video', rtpParameters: params.rtpParameters as never,
+          streamId: request.key,
         });
         if (!this.current(id, request, epoch)) { consumer.close(); this.closeServer(consumerId); continue; }
         stream = new MediaStream(); stream.addTrack(consumer.track as never);

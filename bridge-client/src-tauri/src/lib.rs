@@ -1,5 +1,6 @@
 mod audio;
 mod bridge_media;
+mod media_timing;
 mod model;
 mod ndi;
 mod network_audio;

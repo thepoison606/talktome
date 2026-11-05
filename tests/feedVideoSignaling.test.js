@@ -113,6 +113,9 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   const consumption = await request(viewer, 'consume', { producerId: video.id, rtpCapabilities: caps });
   assert.equal(consumption.kind, 'video'); assert(consumption.id);
   await request(viewer, 'resume-consumer', { consumerId: consumption.id });
+  assert.equal((await request(viewer, 'pause-consumer', { consumerId: consumption.id })).paused, true);
+  assert.equal((await request(native, 'pause-consumer', { consumerId: consumption.id })).paused, false, 'other peers cannot pause this video');
+  await request(viewer, 'resume-consumer', { consumerId: consumption.id });
   // Video may disappear at screen lock without replacing audio's PeerConnection.
   const audioConsumer = await request(viewer, 'consume', { producerId: audio.id, rtpCapabilities: caps });
   assert.equal(audioConsumer.kind, 'audio');
@@ -192,6 +195,7 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   const audioTransport = await api('POST', route + '/plain-send-transport', {});
   const bridgeAudio = await api('POST', route + '/producers', audioTransport);
   const videoTransport = await api('POST', route + '/video-send-transport', {});
+  assert.equal(audioTransport.cname, videoTransport.cname, 'native encoders must use one feed synchronization identity');
   assert.equal(videoTransport.payloadType, 102);
   const bridgeVideo = await api('POST', route + '/video-producer', {});
   assert(!(await request(viewer, 'request-active-producers')).some(p => p.producerId === bridgeVideo.id), 'source must not be advertised before its first encoded picture');

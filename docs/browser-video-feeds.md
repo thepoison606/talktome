@@ -31,7 +31,7 @@ Closed video windows, videos on another target layer, and backgrounded pages do 
 - Only an authenticated Feed may publish its own camera stream. Viewing requires the same effective Feed assignment as audio in the receiver's current production.
 - Browser capture aims for up to 1280×720 at 15 fps and a video bitrate cap of 1.2 Mbit/s. Bridge capture supports up to 1280×720 at 30 fps with a 2.4 Mbit/s target. Actual resolution/rate depends on the camera, browser and available bandwidth. Each open receiver needs additional server outbound bandwidth.
 - The router negotiates VP8 or H.264; it does not transcode. Browser codec compatibility is therefore required. See [mediasoup RTP negotiation](https://mediasoup.org/documentation/v3/mediasoup/rtp-parameters-and-capabilities/).
-- Video does not change the existing low-latency audio path. Frame-accurate audio/video synchronization is not provided.
+- OMT audio and video from the same source retain their presentation clock through RTP/RTCP and share a receive synchronization group. WebRTC may buffer feed audio to match video; intercom talk audio is not intentionally delayed. Separately selected audio/video sources cannot be automatically aligned.
 - Screen sharing, recording and mobile camera publishing are outside this preview.
 
 ## Validation
@@ -81,11 +81,11 @@ main-button layout update in native clients requires an app build containing thi
 Users can subsequently save their own preferences again.
 
 
-Browser playback uses a dedicated, lazily created WebRTC receive transport for feed video.
-On `visibilitychange` to hidden or `pagehide`, only the picture, its consumers and that
-video transport are released. Audio keeps its own transport and existing iOS background
-playback handoff. Returning to the page reconnects expanded video targets; it does not
-restart feeds that the listener explicitly stopped. This also avoids video SDP changes
-blocking audio reception during Safari's transition into the background.
+Browser feed audio and video share a WebRTC receive transport and a per-feed stream id so WebRTC can synchronize them. On `visibilitychange` to hidden or `pagehide`, the picture is detached and its consumer is paused on the server; the existing receive connection is not renegotiated. Returning resumes that consumer. Removed/replaced video consumers are closed locally after foregrounding, avoiding Safari background SDP changes. Feed audio retains its existing background playback handoff. Explicitly stopped feeds remain stopped.
+
+For OMT input, both encoders use the original 100 ns presentation timestamps from the source. A source clock is shared only by identical OMT source IDs, with a fresh epoch after large clock discontinuities. The Opus RTP relay forwards encoded packets unchanged and supplies muxed sender reports mapped to the accepted PCM samples; video sender reports use the same source clock. This preserves synchronization through decode/encode delays and PCM queue gaps. A common RTCP CNAME identifies the feed. No fixed global audio delay is added. Sources with missing timestamps or independently timed inputs cannot provide guaranteed lip sync. Validate with a real flash/beep or clap source on the intended receiving device before release.
+
 
 Bridge frame-rate check (2026-11-05): the 15 fps/67 ms gate was replaced with source-aware pacing up to 30 fps, tested with jittered 25/30/50/60 and fractional-rate sources. All 31 native unit tests pass. Separate-process 720p moving-pattern tests measured 29.9 decoded fps through NDI and 27.4 through OMT, including H.264 encoding, RTP and decoding on the local Mac. These are local synthetic-source results, not a remote-network or multi-feed capacity guarantee. The live OBS source was not discoverable during this check.
+
+OMT synchronization checks (2026-11-05): a real FFmpeg/libopus encode plus local UDP relay preserves the original source clock to within 2 ms in its sender report, even with 240 ms of input delay. Tests also cover delayed video frames sharing the audio clock, source separation, PCM queue gaps, RTP wraparound, matching feed CNAMEs/receive stream IDs, and background video pause without closing audio. The full server/browser suite passes (354 tests). Separate-process 720p NDI and OMT capture/encode/RTP/decode tests still pass. Real-device lip sync remains a required listening/viewing check; test results do not promise frame-accurate sync across arbitrary sources or output hardware.

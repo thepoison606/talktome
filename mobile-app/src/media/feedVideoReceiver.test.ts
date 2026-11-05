@@ -27,6 +27,7 @@ describe('lazy native feed video', () => {
     const f = setup(); f.sync([]); await Promise.resolve(); expect(f.signaling.consume).not.toHaveBeenCalled();
     f.sync(['feed-1']); await vi.waitFor(() => expect(f.receiver.snapshot['feed-1']?.streamURL).toBe('native-video'));
     expect(f.signaling.consume).toHaveBeenCalledTimes(1); expect(f.signaling.consume).toHaveBeenCalledWith('v1', {});
+    expect(f.transport.consume).toHaveBeenCalledWith(expect.objectContaining({ streamId: 'feed-1' }));
     f.sync([]); expect(f.receiver.snapshot).toEqual({}); expect(f.consumer.close).toHaveBeenCalledOnce();
     expect(mocks.released).toHaveBeenCalledOnce();
   });

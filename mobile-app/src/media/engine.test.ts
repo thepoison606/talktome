@@ -116,6 +116,7 @@ describe('video and intercom isolation', () => {
     f.engine.setFeedVideoTargets(['feed-1']);
     await vi.waitFor(() => expect(f.engine.feedVideoSnapshot['feed-1']?.streamURL).toBe('video-stream'));
     expect(f.engine.activeRemoteCount).toBe(1); expect(f.engine.overBudget).toBe(false);
+    expect(recv.consume.mock.calls.every(([params]) => (params as { streamId?: string }).streamId === 'feed-1')).toBe(true);
     f.engine.setFeedVideoTargets([]);
     expect(consumers.get('video')!.close).toHaveBeenCalledOnce();
     expect(consumers.get('audio')!.close).not.toHaveBeenCalled();

@@ -10768,7 +10768,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         return;
       }
 
-      const consumer = await recvTransport.consume(consumeParams);
+      const consumer = await recvTransport.consume({ ...consumeParams, ...(isFeed ? { streamId: targetKey } : {}) });
       logReceiveDiagnostic('consumer-created', {
         producerId: effectiveProducerId,
         consumerId: consumer?.id || null,

@@ -502,6 +502,7 @@ fn source_address_for_device(api: &OmtApi, device_id: &str) -> Result<String, St
 impl OmtInputRuntime {
     #[allow(clippy::too_many_arguments)]
     pub fn start(
+        timing: Option<Arc<Mutex<crate::media_timing::AudioTimeline>>>,
         device_id: String,
         left_channel: u16,
         right_channel: u16,
@@ -518,6 +519,7 @@ impl OmtInputRuntime {
         let startup_error_tx = startup_tx.clone();
         let handle = thread::spawn(move || {
             let result = run_omt_input(
+                timing,
                 &device_id,
                 left_channel,
                 right_channel,
@@ -567,6 +569,7 @@ impl Drop for OmtInputRuntime {
 
 #[allow(clippy::too_many_arguments)]
 fn run_omt_input(
+    timing: Option<Arc<Mutex<crate::media_timing::AudioTimeline>>>,
     device_id: &str,
     left_channel: u16,
     right_channel: u16,
@@ -609,6 +612,7 @@ fn run_omt_input(
             continue;
         }
         match copy_omt_audio(
+            timing.as_ref(),
             frame,
             left_channel,
             right_channel,
@@ -646,6 +650,7 @@ impl Drop for OmtReceiverGuard {
 
 #[allow(clippy::too_many_arguments)]
 fn copy_omt_audio(
+    timing: Option<&Arc<Mutex<crate::media_timing::AudioTimeline>>>,
     frame: &OmtMediaFrame,
     left_channel: u16,
     right_channel: u16,
@@ -697,9 +702,12 @@ fn copy_omt_audio(
     }
     level_milli_db.store(rms_milli_db(sum_squares, samples * 2), Ordering::Relaxed);
     captured_frames.fetch_add(samples as u64, Ordering::Relaxed);
+    let mut timeline = timing.and_then(|timing| timing.lock().ok());
     if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) = sender.try_send(bytes) {
         dropped_chunks.fetch_add(1, Ordering::Relaxed);
         dropped_frames.fetch_add(samples as u64, Ordering::Relaxed);
+    } else if let Some(timeline) = timeline.as_mut() {
+        timeline.append(samples, frame.timestamp, std::time::SystemTime::now());
     }
     Ok(())
 }
@@ -1016,6 +1024,7 @@ pub(crate) mod tests {
         };
         let (audio_tx, audio_rx) = sync_channel(8);
         let input = OmtInputRuntime::start(
+            None,
             source.id,
             1,
             2,
@@ -1188,6 +1197,7 @@ pub(crate) fn capture_video_at_address(
         }
         let length = usize::try_from(frame.data_length).map_err(|_| "Invalid OMT video length")?;
         sink.set_source_rate(frame.frame_rate_n, frame.frame_rate_d);
+        sink.set_source_timestamp(frame.timestamp);
         // libomt owns the frame until the next receive; copying never retains its pointer.
         unsafe {
             sink.bgra(

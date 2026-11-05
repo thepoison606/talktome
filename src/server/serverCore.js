@@ -5566,6 +5566,9 @@ app.post(
         port: transport.tuple.localPort,
         protocol: transport.tuple.protocol,
         payloadType: GATEWAY_OPUS_PAYLOAD_TYPE,
+        cname: req.bridgePeer.kind === 'feed'
+          ? `talktome-bridge-feed-${req.bridgePeer.feedId}`
+          : `talktome-bridge-${req.bridgePeer.userId}`,
         ssrc: GATEWAY_OPUS_SSRC
           + (req.bridgePeer.kind === "feed"
             ? 10000 + Number(req.bridgePeer.feedId || 0)
@@ -9337,6 +9340,16 @@ io.on("connection", (socket) => {
       });
     } catch (error) {
       console.error("[CONSUME] Error:", error);
+      callback({ error: error.message });
+    }
+  });
+
+  socket.on("pause-consumer", async ({ consumerId } = {}, callback = () => {}) => {
+    try {
+      const consumer = peers.get(socket.id)?.consumers.get(consumerId);
+      if (consumer) await consumer.pause();
+      callback({ ok: true, paused: consumer?.paused === true });
+    } catch (error) {
       callback({ error: error.message });
     }
   });
