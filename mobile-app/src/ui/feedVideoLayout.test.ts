@@ -63,4 +63,12 @@ describe('inline video layers', () => {
     expect(feedVideoLayers(targets, portrait, expanded, 590, 100, 220))
       .toEqual(feedVideoLayers(targets, portrait, expanded, 590, 100));
   });
+  it('fits a third row on a small landscape tablet with a modestly shorter picture', () => {
+    const layout = operatorLayout({ width: 1006, height: 570, availableHeight: 450 });
+    expect(layout.columns).toBe(2);
+    const pages = feedVideoLayers(targets, layout, new Set(['feed-2']), 450, 180, 212);
+    expect(pages[0]).toHaveLength(3);
+    expect(pages[0]![0]!.videoHeight).toBe(170);
+    expect(pages[0]!.reduce((sum, row) => sum + row.height, 2 * layout.gap)).toBe(450);
+  });
 });
