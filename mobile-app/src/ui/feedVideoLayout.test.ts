@@ -35,4 +35,32 @@ describe('inline video layers', () => {
     expect(pages[0]).toHaveLength(2);
     expect(pages[0]!.reduce((sum, row) => sum + row.height, layout.gap)).toBeLessThanOrEqual(300);
   });
+  it('uses the remaining height after packing eight landscape targets', () => {
+    const layout = operatorLayout({ width: 844, height: 390, availableHeight: 300 });
+    const videoHeight = feedVideoHeight(310, 390, 300, layout.cardHeight, 4, layout.gap);
+    const pages = feedVideoLayers(targets, layout, new Set(['feed-2']), 300, videoHeight, 178);
+    expect(pages[0]).toHaveLength(2);
+    expect(pages[0]![0]!.videoHeight).toBeGreaterThan(videoHeight);
+    expect(pages[0]!.reduce((sum, row) => sum + row.height, layout.gap)).toBeCloseTo(300);
+    expect(pages.flat().flatMap(row => row.targets)).toEqual(targets);
+    for (const row of pages.flat()) expect(row.height - row.videoHeight).toBeCloseTo(layout.cardHeight);
+  });
+  it('keeps a third landscape target row when it fits before enlarging video', () => {
+    const layout = operatorLayout({ width: 844, height: 500, availableHeight: 400 });
+    const videoHeight = feedVideoHeight(200, 500, 400, layout.cardHeight, 4, layout.gap);
+    const pages = feedVideoLayers(targets, layout, new Set(['feed-2']), 400, videoHeight, 178);
+    expect(pages[0]).toHaveLength(3);
+    expect(pages[0]!.reduce((sum, row) => sum + row.height, 2 * layout.gap)).toBeCloseTo(400);
+  });
+  it('shares spare height between expanded rows and leaves portrait unchanged', () => {
+    const layout = operatorLayout({ width: 844, height: 390, availableHeight: 300 });
+    const expanded = new Set(['feed-1', 'feed-3']);
+    const pages = feedVideoLayers(targets.slice(0, 4), layout, expanded, 300, 40, 178);
+    expect(pages[0]).toHaveLength(2);
+    expect(pages[0]![0]!.videoHeight).toBeCloseTo(pages[0]![1]!.videoHeight);
+    expect(pages[0]!.reduce((sum, row) => sum + row.height, layout.gap)).toBeCloseTo(300);
+    const portrait = operatorLayout({ width: 390, height: 844, availableHeight: 590 });
+    expect(feedVideoLayers(targets, portrait, expanded, 590, 100, 220))
+      .toEqual(feedVideoLayers(targets, portrait, expanded, 590, 100));
+  });
 });

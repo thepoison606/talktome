@@ -2,11 +2,12 @@ import type { TalkTarget } from '../protocol';
 import { talkTargetIdentity } from '../protocol';
 import { chunkTargets, type OperatorLayout } from './layers';
 
-export type VideoTargetRow = { targets: TalkTarget[]; height: number };
+export type VideoTargetRow = { targets: TalkTarget[]; height: number; videoHeight: number };
 
 /** Pack complete rows into layers. Expanded video never squeezes the audio controls. */
 export function feedVideoLayers(targets: TalkTarget[], layout: OperatorLayout,
-  expanded: ReadonlySet<string>, availableHeight: number, videoHeight: number): VideoTargetRow[][] {
+  expanded: ReadonlySet<string>, availableHeight: number, videoHeight: number,
+  maxVideoHeight = videoHeight): VideoTargetRow[][] {
   const pages: VideoTargetRow[][] = [[]];
   let used = 0;
   for (const row of chunkTargets(targets, layout.columns)) {
@@ -18,7 +19,19 @@ export function feedVideoLayers(targets: TalkTarget[], layout: OperatorLayout,
       page = []; pages.push(page); used = 0;
     }
     used += (page.length ? layout.gap : 0) + height;
-    page.push({ targets: row, height });
+    page.push({ targets: row, height, videoHeight: hasVideo ? videoHeight : 0 });
+  }
+  // Pack all full target rows first, then give the remaining landscape space to
+  // the pictures on each page. Growing a picture must not push another row out.
+  if (layout.landscape && maxVideoHeight > videoHeight) {
+    for (const page of pages) {
+      const videos = page.filter(row => row.videoHeight > 0);
+      if (!videos.length) continue;
+      const usedHeight = page.reduce((sum, row) => sum + row.height, 0) + (page.length - 1) * layout.gap;
+      const extra = Math.max(0, Math.min(maxVideoHeight - videoHeight,
+        (availableHeight - usedHeight) / videos.length));
+      for (const row of videos) { row.height += extra; row.videoHeight += extra; }
+    }
   }
   return pages;
 }

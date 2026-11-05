@@ -80,10 +80,12 @@ export function OperatorScreen() {
     headerCollapsed,
   });
   const replyBeside = layout.replyBeside;
-  const videoHeight = feedVideoHeight((listWidth || width - 32) / layout.columns - layout.gap,
+  const videoCellWidth = (listWidth || width - 32) / layout.columns - layout.gap;
+  const videoHeight = feedVideoHeight(videoCellWidth,
     height, availableHeight, layout.cardHeight,
     layout.landscape ? Math.min(layout.rows, Math.ceil(store.targets.length / layout.columns)) : 0, layout.gap);
-  const pages = feedVideoLayers(store.targets, layout, expandedVideos, availableHeight, videoHeight);
+  const maxVideoHeight = Math.min(260, videoCellWidth * 9 / 16 + 4);
+  const pages = feedVideoLayers(store.targets, layout, expandedVideos, availableHeight, videoHeight, maxVideoHeight);
   const layers = pages.length;
   const safeLayerIndex = Math.min(layerIndex, layers - 1);
   const grid = pages[safeLayerIndex]!;
@@ -105,7 +107,7 @@ export function OperatorScreen() {
     const key = talkTargetIdentity(target);
     const next = new Set(expandedVideos);
     if (next.has(key)) next.delete(key); else next.add(key);
-    const nextPages = feedVideoLayers(store.targets, layout, next, availableHeight, videoHeight);
+    const nextPages = feedVideoLayers(store.targets, layout, next, availableHeight, videoHeight, maxVideoHeight);
     setExpandedVideos(next);
     // Expanding a row can move it to the next layer; keep the tapped feed on screen.
     setLayerIndex(Math.max(0, nextPages.findIndex(page => page.some(row =>
@@ -377,7 +379,7 @@ export function OperatorScreen() {
                       height={layout.cardHeight}
                       videoAvailable={store.videoFeedKeys.includes(talkTargetIdentity(target))}
                       videoExpanded={expandedVideos.has(talkTargetIdentity(target))}
-                      videoHeight={videoHeight}
+                      videoHeight={row.videoHeight}
                       videoStreamURL={store.feedVideos[talkTargetIdentity(target)]?.streamURL}
                       videoError={store.feedVideos[talkTargetIdentity(target)]?.error}
                       onToggleVideo={() => toggleVideo(target)}
