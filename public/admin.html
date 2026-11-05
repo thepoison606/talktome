@@ -1091,12 +1091,24 @@
 
       .default-client-setting-field {
         display: grid;
-        gap: 0.5rem;
-        padding: 0.55rem 1rem;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+        min-height: 2.2rem;
+        gap: 1rem;
+        padding: 0.45rem 1rem;
         border: 1px solid var(--border);
         border-radius: 10px;
         background: rgba(15, 23, 42, 0.55);
         min-width: 0;
+      }
+
+      .default-client-settings-form .default-client-setting-field > select {
+        justify-self: end;
+        width: min(100%, 18rem);
+        min-width: 0;
+        height: 1.5rem;
+        padding: 0 0.5rem;
+        font-size: 0.9rem;
       }
 
       .default-client-setting-field > label,
