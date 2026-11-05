@@ -3121,10 +3121,8 @@ async function renderFeedList(feeds) {
             <span class="admin-switch__track" aria-hidden="true"></span>
             <span>Allow Feed-Video</span>
           </label>
-          <span class="permission-origin">${feed.allow_feed_video == null ? 'Using client default' : 'Feed override'}</span>
-          ${feed.allow_feed_video == null ? '' : `<button type="button" class="small" onclick="saveFeedVideoPermission(${feed.id}, null, this)">Use client default</button>`}
         </div>
-        <div class="nested-block">
+        <div class="nested-block feed-bridge-controls">
           <form class="bridge-config-form" id="bridge-config-${formKey}" data-bridge-config-key="${formKey}" onsubmit="saveFeedBridgeEndpoint(event, ${feed.id})">
             <label class="admin-switch bridge-input-switch" for="bridge-enabled-${formKey}">
               <input type="checkbox" id="bridge-enabled-${formKey}" role="switch" ${isBridgeEndpoint ? 'checked' : ''}>

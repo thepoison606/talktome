@@ -830,7 +830,8 @@
         margin-top: 1.5rem;
       }
 
-      .user-target-controls + .user-bridge-controls {
+      .user-target-controls + .user-bridge-controls,
+      .feed-video-permission + .feed-bridge-controls {
         margin-top: 0.65rem;
       }
 
@@ -848,7 +849,8 @@
         color: var(--text);
       }
 
-      .user-bridge-controls .bridge-config-form {
+      .user-bridge-controls .bridge-config-form,
+      .feed-bridge-controls .bridge-config-form {
         margin-top: 0;
       }
 
@@ -887,8 +889,12 @@
       }
 
       .feed-video-permission { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 0.9rem; }
-      .feed-video-permission .admin-switch { margin: 0; }
-      .feed-video-permission .permission-origin { color: var(--muted); font-size: 0.8rem; }
+      .feed-video-permission .admin-switch {
+        margin: 0;
+        min-height: var(--control-height);
+        color: var(--text);
+        font-family: inherit;
+      }
       #feeds-section :is(select, input, .admin-switch, .field-group > label) { font-size: 0.9rem; }
 
       .bridge-config-options {

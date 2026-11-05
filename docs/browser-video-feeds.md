@@ -2,7 +2,7 @@
 
 ## Enable feed video
 
-**Admin → Config → Client defaults → Allow Feed-Video** controls the inherited permission. It is **off** by default. Each Feed has its own **Allow Feed-Video** switch in **Admin → Feeds**; changing it creates an explicit on/off override. **Use client default** clears the override. This permission is enforced by the server for browser and Bridge publishers, and applies to all receivers of that feed.
+**Admin → Config → Client defaults → Allow Feed-Video** controls the inherited permission. It is **off** by default. Each Feed has its own **Allow Feed-Video** switch in **Admin → Feeds**; changing it creates an explicit on/off override. Feeds without an explicit override continue to follow the default. This permission is enforced by the server for browser and Bridge publishers, and applies to all receivers of that feed.
 
 Turning video off closes its producers and consumers immediately while feed audio continues. Browser camera tracks are stopped; the Bridge stops its video capture after receiving the updated runtime configuration. Camera/source selections remain saved for re-enabling. A running browser feed resumes its previously selected camera when video is allowed again. Old clients cannot bypass the server permission. Permissions survive restarts and configuration backups; feeds in older backups inherit the default.
 
