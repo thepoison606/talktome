@@ -258,6 +258,23 @@ session cookies require it. Keep the HTTP backend private. WebRTC media still
 uses the configured RTC ports directly (or TURN); an HTTP reverse proxy does
 not forward those media ports. Configure the media network and firewall as usual.
 
+## HTTP request limits
+
+The server applies per-client-IP HTTP limits before parsing JSON or accessing
+files: 6000 requests/minute overall, 600/minute for Admin and legacy user/feed/
+conference routes (including the Panel), and 2400/minute for `/api` routes.
+Login POSTs share a quota of 30 failed requests per 15 minutes across user,
+feed, token, guest, SSO, Admin and Companion logins. Successful logins do not
+consume that quota. Excess requests return HTTP `429` with `Retry-After`.
+
+Client IPs use the same trusted-proxy allowlist as the Status page; untrusted
+forwarded headers cannot change the quota key. IPv6 addresses are grouped by
+`/56` subnet. Limits are shared by clients behind one NAT address. Configure
+`trustedProxies` correctly behind a reverse proxy so unrelated clients do not
+all share its quota. Counters are held in memory per server process and reset
+on restart. Existing SSE streams and WebRTC audio/video are not interrupted
+when an HTTP quota is reached; Socket.IO messages are outside these HTTP limits.
+
 ## Data
 
 State is stored in SQLite `app.db`; config, certificates and generated API keys live in the same app data directory.

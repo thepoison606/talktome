@@ -1,6 +1,7 @@
 const bridgeTalkTrigger = require('../../public/bridgeTalkTrigger');
 const { isFeedVideoAllowed, FEED_VIDEO_CODECS, canPublishFeedMedia, canReceiveFeedVideo } = require("./feedVideoPolicy");
 const express = require("express");
+const { installHttpRateLimits } = require("./httpRateLimits");
 const fs = require("fs");
 const path = require("path");
 const { projectRoot } = require("./projectPaths");
@@ -246,6 +247,7 @@ const {
 } = require("./dbHandler");
 
 const app = express();
+installHttpRateLimits(app, { getWebAccess: () => WEB_ACCESS });
 app.use(express.json({ limit: "10mb" }));
 const PROXY_SSO_CONFIG = loadProxySsoConfig(process.env);
 
