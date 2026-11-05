@@ -41,7 +41,7 @@
       if (DIM_AMOUNT_DB_OPTIONS.includes(number)) output.dimAmountDb = number;
       else reject('Invalid dim amount.');
     }
-    ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'lockMultipleTargets', 'voiceTriggerEnabled']
+    ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'bigMainButton', 'lockMultipleTargets', 'voiceTriggerEnabled']
       .forEach((key) => {
         if (!has(key)) return;
         if (typeof value[key] === 'boolean') output[key] = value[key];
@@ -66,9 +66,12 @@
   }
 
   function resolve(value, configuredDefaults = {}) {
+    const defaults = normalize(configuredDefaults, { partial: true });
+    // Layout defaults are applied by each client until explicitly overridden per user.
+    delete defaults.bigMainButton;
     return {
       ...DEFAULTS,
-      ...normalize(configuredDefaults, { partial: true }),
+      ...defaults,
       ...normalize(value, { partial: true }),
     };
   }

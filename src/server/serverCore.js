@@ -44,6 +44,7 @@ const {
 } = require("./bridgeSessionLiveness");
 const { syncRuntimeExecutable } = require("./runtimeWorker");
 const {
+  normalizeApplyToAll,
   normalizeConfiguredDefaultClientSettings,
   resolveDefaultClientSettings,
   serializeDefaultClientSettingsScript,
@@ -4618,13 +4619,40 @@ app.put("/admin/settings/guest-login", requireAdmin, (req, res) => {
 app.put("/admin/settings/default-client", requireAdmin, (req, res) => {
   try {
     const settings = normalizeConfiguredDefaultClientSettings(req.body, { strict: true });
+    const applyToAll = normalizeApplyToAll(req.body?.applyToAll, settings);
     const currentConfig = loadRuntimeConfig() || {};
     const updatedConfig = {
       ...currentConfig,
       defaultClientSettings: settings,
     };
     const configPath = saveRuntimeConfig(updatedConfig);
-    getAllUsers().forEach(emitTargetRearrangePermission);
+    for (const user of getAllUsers()) {
+      if (user.is_superadmin) continue;
+      const audio = getUserAudioSettings(user.id) || {};
+      let audioChanged = false;
+      for (const key of applyToAll) {
+        if (key === 'allowTargetRearrange') updateUserTargetRearrangePermission(user.id, settings[key]);
+        else if (key === 'allowTargetAddRemove') updateUserTargetAddRemovePermission(user.id, settings[key]);
+        else if (key !== 'allowFeedVideo') { audio[key] = settings[key]; audioChanged = true; }
+      }
+      if (audioChanged) {
+        updateUserAudioSettings(user.id, audio);
+        const resolved = getResolvedUserAudioSettings(user.id);
+        const panelSettings = getUserPanelSettings(user.id);
+        panelSettings.revision = (Number(panelSettings.revision) || 0) + 1;
+        updateUserPanelSettings(user.id, panelSettings);
+        for (const peer of peers.values()) {
+          if (peer.kind === 'user' && Number(peer.userId) === Number(user.id)) {
+            peer.socket.emit('panel-command', { kind: 'audio-settings', settings: resolved, panelSettings: remotePanels.savedSettings(user.id) });
+          }
+        }
+        remotePanels.publish(user.id);
+      }
+      emitTargetRearrangePermission(getUserById(user.id));
+    }
+    if (applyToAll.includes('allowFeedVideo')) {
+      for (const feed of getAllFeeds()) updateFeedVideoPermission(feed.id, settings.allowFeedVideo);
+    }
     syncFeedVideoPermissions();
     return res.json({
       settings: resolveDefaultClientSettings(settings),

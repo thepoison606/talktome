@@ -12,7 +12,7 @@ afterEach(() => { panels.splice(0).forEach(panel => panel.reset()); vi.useRealTi
 
 function fixture() {
   let state: PanelSessionState = {
-    identity: { kind: 'user', id: 1, name: 'Me' }, operatorReady: false, activeProfileId: 'server::me',
+    identity: { kind: 'user', id: 1, name: 'Me' }, operatorReady: false, bigMainButton: false, activeProfileId: 'server::me',
     productionId: 7, productions: [{ id: 7, name: 'Studio' }, { id: 8, name: 'Field' }], mainButtonTargets: {},
     audioPreferences: {}, conferenceListen: { excluded: {}, levels: {} }, stoppedFeedKeys: [],
     operatorAudio: { ...DEFAULT_OPERATOR_AUDIO }, leftHanded: false, lockMultipleTargets: false,
@@ -25,7 +25,7 @@ function fixture() {
     state: () => state,
     subscribe: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     defaultAudioProfile: () => 'standard',
-    applyAudioSettings: vi.fn(async settings => update({ leftHanded: settings.leftHandMode, lockMultipleTargets: settings.lockMultipleTargets, operatorAudio: { ...state.operatorAudio, feedDimDb: settings.dimAmountDb, feedDimSelf: settings.dimFeedsWhileSpeaking, feedDimIncoming: settings.dimWhenAddressed, playConnectionSounds: settings.playConnectionSounds, echoCancellation: settings.audioAutoProcessing, noiseSuppression: settings.audioAutoProcessing, autoGainControl: settings.audioAutoProcessing } })),
+    applyAudioSettings: vi.fn(async settings => update({ leftHanded: settings.leftHandMode, ...(typeof settings.bigMainButton === 'boolean' ? { bigMainButton: settings.bigMainButton } : {}), lockMultipleTargets: settings.lockMultipleTargets, operatorAudio: { ...state.operatorAudio, feedDimDb: settings.dimAmountDb, feedDimSelf: settings.dimFeedsWhileSpeaking, feedDimIncoming: settings.dimWhenAddressed, playConnectionSounds: settings.playConnectionSounds, echoCancellation: settings.audioAutoProcessing, noiseSuppression: settings.audioAutoProcessing, autoGainControl: settings.audioAutoProcessing } })),
     applyAudioStates: vi.fn(async (states: PanelAudioState[], replace: boolean) => update({ audioPreferences: { ...(replace ? {} : state.audioPreferences), ...Object.fromEntries(states.map(item => [`${item.targetType}-${item.targetId}`, { volume: item.volume, muted: item.muted }])) } })),
     applyConferenceListen: vi.fn(async conferenceListen => update({ conferenceListen })),
     applyStoppedFeeds: vi.fn(async stoppedFeedKeys => update({ stoppedFeedKeys })),
@@ -44,6 +44,17 @@ function fixture() {
 }
 
 describe('native remote panel', () => {
+  it('restores and applies an explicit main-button override while accepting older settings without it', async () => {
+    const f = fixture(); await f.register();
+    expect(await f.panel.handleCommand({ kind: 'audio-settings', settings: { ...PANEL_AUDIO_DEFAULTS, bigMainButton: true } })).toMatchObject({ ok: true });
+    expect(f.state().bigMainButton).toBe(true);
+    expect(await f.panel.handleCommand({ kind: 'audio-settings', settings: { ...PANEL_AUDIO_DEFAULTS, bigMainButton: false } })).toMatchObject({ ok: true });
+    expect(f.state().bigMainButton).toBe(false);
+    f.update({ bigMainButton: true });
+    expect(await f.panel.handleCommand({ kind: 'audio-settings', settings: PANEL_AUDIO_DEFAULTS })).toMatchObject({ ok: true });
+    expect(f.state().bigMainButton).toBe(true);
+  });
+
   it('applies queued Companion volume and mute changes to users, conferences and feeds', async () => {
     const f = fixture(); await f.register();
     for (const target of [user, conference, feed]) {

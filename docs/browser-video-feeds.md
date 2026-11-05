@@ -71,3 +71,11 @@ The player stays within its target column, preserving the video aspect ratio wit
 Validation: the mobile test suite covers lazy video subscriptions, delayed consume/resume cleanup, server-close races, retry, audio isolation, Stop/Start and row packing. `npm run typecheck` and iOS bundle export verify the shared app implementation. Native visual/device checks are recorded separately below; app-store/test distribution is not part of this feature preview.
 
 Native preview check (2026-11-04): Android standalone APK built locally and installed separately as `com.talktome.mobile.videopreview`. A real 640×360 H.264 RTP test pattern through an isolated Talktome server/Bridge session rendered at 15 fps. Stop/Start, layer departure/return, background/foreground, phone landscape and a two-column tablet layout were exercised; native renderer release/recreation was confirmed in logcat. Emulator display-density changes required restarting the app before testing the tablet configuration. iOS bundle export passes; a native iPhone/iPad run remains outstanding because the local Simulator service did not respond.
+
+
+Client defaults support an optional **Apply to all** checkbox next to each changed switch.
+Saving without it only updates the default. Selecting it replaces that setting for all
+users (including offline users), preserving their other preferences. Feed-Video applies
+to all feeds instead. Connected clients receive the changed settings immediately; the
+main-button layout update in native clients requires an app build containing this change.
+Users can subsequently save their own preferences again.

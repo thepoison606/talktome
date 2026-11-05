@@ -309,6 +309,11 @@ function getUserAudioSettings(userId) {
 
 function updateUserAudioSettings(userId, settings) {
   const normalized = normalizeUserAudioSettings(settings, { strict: true, partial: true });
+  // Older clients and the audio-only editor do not send layout preferences.
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'bigMainButton')) {
+    const previous = getUserAudioSettings(userId);
+    if (typeof previous?.bigMainButton === 'boolean') normalized.bigMainButton = previous.bigMainButton;
+  }
   const result = db.prepare('UPDATE users SET audio_settings = ? WHERE id = ?')
     .run(JSON.stringify(normalized), userId);
   return result.changes > 0 ? normalized : null;

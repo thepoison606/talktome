@@ -3433,7 +3433,20 @@ async function loadDefaultClientSettings() {
   if (defaultClientAllowTargetRearrange) defaultClientAllowTargetRearrange.checked = settings.allowTargetRearrange !== false;
   if (defaultClientAllowTargetAddRemove) defaultClientAllowTargetAddRemove.checked = settings.allowTargetAddRemove === true;
   if (defaultClientAllowFeedVideo) defaultClientAllowFeedVideo.checked = settings.allowFeedVideo === true;
+  resetDefaultClientApplyAll();
   return payload;
+}
+
+const defaultClientApplyAll = new Map();
+function resetDefaultClientApplyAll() {
+  for (const [input, entry] of defaultClientApplyAll) {
+    entry.original = input.checked;
+    entry.checkbox.checked = false;
+    entry.label.hidden = true;
+  }
+}
+function selectedDefaultClientOverrides() {
+  return [...defaultClientApplyAll.values()].filter(entry => !entry.label.hidden && entry.checkbox.checked).map(entry => entry.key);
 }
 
 function renderAutomaticBackupSettings(settings = {}) {
@@ -4715,6 +4728,37 @@ if (guestLoginEnabledInput) {
 }
 
 if (defaultClientSettingsForm) {
+  const keys = ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'bigMainButton', 'lockMultipleTargets', 'allowTargetRearrange', 'allowTargetAddRemove', 'allowFeedVideo'];
+  defaultClientSettingsForm.querySelectorAll('.default-client-setting-toggle').forEach((row, index) => {
+    const input = row.querySelector('input[role="switch"]');
+    const text = row.querySelector('span:first-child');
+    text.id = `${input.id}-label`;
+    input.setAttribute('aria-labelledby', text.id);
+    const controls = document.createElement('span');
+    controls.className = 'default-client-setting-controls';
+    const label = document.createElement('label');
+    label.className = 'default-client-apply-all';
+    label.hidden = true;
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    label.append(checkbox, document.createTextNode('Apply to all'));
+    const switchLabel = document.createElement('label');
+    switchLabel.className = 'admin-switch';
+    const oldSwitch = row.querySelector('.admin-switch');
+    switchLabel.append(...oldSwitch.childNodes);
+    oldSwitch.remove();
+    controls.append(label, switchLabel);
+    row.append(controls);
+    const entry = { key: keys[index], label, checkbox, original: input.checked };
+    defaultClientApplyAll.set(input, entry);
+    input.addEventListener('change', () => {
+      label.hidden = input.checked === entry.original;
+      if (label.hidden) checkbox.checked = false;
+    });
+    row.addEventListener('click', event => {
+      if (event.target === row || event.target === text) { input.checked = !input.checked; input.dispatchEvent(new Event('change')); }
+    });
+  });
   defaultClientSettingsForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const submitButton = defaultClientSettingsForm.querySelector('button[type="submit"]');
@@ -4739,7 +4783,7 @@ if (defaultClientSettingsForm) {
       const res = await authedFetch('/admin/settings/default-client', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: JSON.stringify({ ...settings, applyToAll: selectedDefaultClientOverrides() }),
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to save default client settings');

@@ -210,4 +210,34 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   assert(closed.some(p => p.producerId === lastBridgeVideo.id));
   assert.deepEqual(await request(viewer, 'request-active-producers'), []);
 
+  // Applying one default to all must preserve unrelated user settings and stop stale reports overwriting it.
+  const users = await admin('GET', '/users');
+  const userId = users.find(user => user.name === 'Viewer').id;
+  await admin('PUT', `/admin/users/${userId}/audio-settings`, { settings: { leftHandMode: true, dimAmountDb: -24, userInputGainDb: 8 } });
+  await admin('PUT', `/admin/users/${userId}/target-rearrange`, { allowTargetRearrange: false });
+  const commands = [];
+  viewer.on('panel-command', command => commands.push(command));
+  await admin('PUT', '/admin/settings/default-client', { leftHandMode: false });
+  assert.equal((await admin('GET', `/admin/users/${userId}/audio-settings`)).settings.leftHandMode, true);
+  await admin('PUT', '/admin/settings/default-client', { leftHandMode: false, applyToAll: ['unknown'] }, 400);
+  assert.equal((await admin('GET', `/admin/users/${userId}/audio-settings`)).settings.leftHandMode, true);
+  await admin('PUT', '/admin/settings/default-client', { leftHandMode: false, bigMainButton: true, allowTargetRearrange: true,
+    allowFeedVideo: false, applyToAll: ['leftHandMode', 'bigMainButton', 'allowTargetRearrange', 'allowFeedVideo'] });
+  await delay(30);
+  const updated = await admin('GET', `/admin/users/${userId}/audio-settings`);
+  assert.equal(updated.settings.leftHandMode, false);
+  assert.equal(updated.settings.bigMainButton, true);
+  assert.equal(updated.settings.dimAmountDb, -24);
+  assert.equal(updated.settings.userInputGainDb, 8);
+  assert.equal((await admin('GET', '/users')).find(user => user.id === userId).allow_target_rearrange, 1);
+  assert.equal((await admin('GET', '/feeds'))[0].allowFeedVideo, false);
+  assert(commands.some(command => command.kind === 'audio-settings' && command.settings.bigMainButton === true && command.panelSettings.revision > 0));
+  const stale = await request(viewer, 'user-audio-settings-update', { revision: 0, settings: { leftHandMode: true } });
+  assert.equal(stale.ok, false);
+  assert.equal((await admin('GET', `/admin/users/${userId}/audio-settings`)).settings.leftHandMode, false);
+  await admin('PUT', `/admin/users/${userId}/audio-settings`, { settings: { leftHandMode: true } });
+  assert.equal((await admin('GET', `/admin/users/${userId}/audio-settings`)).settings.bigMainButton, true, 'audio-only editors preserve the layout override');
+  const offlineId = users.find(user => user.name === 'Bridge user').id;
+  assert.equal((await admin('GET', `/admin/users/${offlineId}/audio-settings`)).settings.bigMainButton, true);
+
 });

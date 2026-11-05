@@ -1091,7 +1091,7 @@
       .default-client-setting-field {
         display: grid;
         gap: 0.5rem;
-        padding: 0.9rem 1rem;
+        padding: 0.55rem 1rem;
         border: 1px solid var(--border);
         border-radius: 10px;
         background: rgba(15, 23, 42, 0.55);
@@ -1113,11 +1113,14 @@
         gap: 1rem;
         border: 1px solid var(--border);
         border-radius: 10px;
-        padding: 0.9rem 1rem;
+        padding: 0.45rem 1rem;
         background: rgba(15, 23, 42, 0.55);
         cursor: pointer;
       }
 
+      .default-client-setting-controls { display: flex; align-items: center; gap: .75rem; }
+      .default-client-apply-all { display: inline-flex; align-items: center; gap: .35rem; font-size: .8rem; color: var(--muted); white-space: nowrap; }
+      .default-client-apply-all[hidden] { display: none; }
       .default-client-settings-actions {
         display: flex;
         align-items: center;
@@ -4634,56 +4637,56 @@
                 </div>
 
                 <div class="default-client-settings-toggles">
-                  <label class="default-client-setting-toggle">
+                  <div class="default-client-setting-toggle">
                     <span>Dim feeds while speaking</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-dim-self" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle">
+                  </div>
+                  <div class="default-client-setting-toggle">
                     <span>Dim feeds when addressed</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-dim-incoming" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle">
+                  </div>
+                  <div class="default-client-setting-toggle">
                     <span>Audio auto processing</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-audio-processing" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle">
+                  </div>
+                  <div class="default-client-setting-toggle">
                     <span>Play connection sounds</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-connection-sounds" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle">
+                  </div>
+                  <div class="default-client-setting-toggle">
                     <span>Incoming level meters</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-incoming-levels" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle">
+                  </div>
+                  <div class="default-client-setting-toggle">
                     <span>Left-hand mode</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-left-hand" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle" title="Make the main talk button larger until the client saves its own preference.">
+                  </div>
+                  <div class="default-client-setting-toggle" title="Make the main talk button larger until the client saves its own preference.">
                     <span>Big main button</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-big-main-button" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label
+                  </div>
+                  <div
                     class="default-client-setting-toggle"
                     title="Keep locked targets active while temporarily talking to or locking additional targets."
                   >
@@ -4692,28 +4695,28 @@
                       <input type="checkbox" id="default-client-lock-multiple" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle" title="Allow users to change the order of their target buttons. Can be overridden per user.">
+                  </div>
+                  <div class="default-client-setting-toggle" title="Allow users to change the order of their target buttons. Can be overridden per user.">
                     <span>Allow target rearrange</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-allow-target-rearrange" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle" title="Allow users to add or remove targets in their production. Can be overridden per user.">
+                  </div>
+                  <div class="default-client-setting-toggle" title="Allow users to add or remove targets in their production. Can be overridden per user.">
                     <span>Allow target add/remove</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-allow-target-add-remove" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle" title="Allow feeds to transmit video. Can be overridden per feed. Disabled feeds remain audio-only.">
+                  </div>
+                  <div class="default-client-setting-toggle" title="Allow feeds to transmit video. Can be overridden per feed. Disabled feeds remain audio-only.">
                     <span>Allow Feed-Video</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-allow-feed-video" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
+                  </div>
                   <div class="default-client-settings-actions">
                     <button type="submit">Save</button>
                   </div>

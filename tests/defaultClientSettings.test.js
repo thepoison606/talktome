@@ -81,3 +81,13 @@ test('feed video defaults to off and only accepts boolean configuration', () => 
   assert.equal(resolveDefaultClientSettings({ allowFeedVideo: true }).allowFeedVideo, true);
   assert.throws(() => normalizeConfiguredDefaultClientSettings({ allowFeedVideo: 'true' }, { strict: true }), /boolean/);
 });
+
+
+test("apply-to-all only accepts explicitly supplied boolean default keys", () => {
+  const { normalizeApplyToAll } = require('../src/server/defaultClientSettings');
+  assert.deepEqual(normalizeApplyToAll(undefined, {}), []);
+  assert.deepEqual(normalizeApplyToAll(['bigMainButton', 'bigMainButton'], { bigMainButton: true }), ['bigMainButton']);
+  for (const value of [true, 'bigMainButton', ['audioProfile'], ['unknown'], ['leftHandMode']]) {
+    assert.throws(() => normalizeApplyToAll(value, { audioProfile: 'low' }), /Invalid applyToAll/);
+  }
+});

@@ -68,7 +68,16 @@ function serializeDefaultClientSettingsScript(value) {
   return `window.TALKTOME_DEFAULT_CLIENT_SETTINGS = ${json};\n`;
 }
 
+function normalizeApplyToAll(value, settings) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some(key => !DEFAULT_CLIENT_SETTING_KEYS.includes(key)
+      || typeof BUILTIN_DEFAULT_CLIENT_SETTINGS[key] !== 'boolean'
+      || typeof settings[key] !== 'boolean')) throw new Error('Invalid applyToAll settings.');
+  return [...new Set(value)];
+}
+
 module.exports = {
+  normalizeApplyToAll,
   AUDIO_PROFILES,
   DIM_AMOUNT_DB_OPTIONS,
   BUILTIN_DEFAULT_CLIENT_SETTINGS,

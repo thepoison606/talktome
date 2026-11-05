@@ -13,7 +13,7 @@ export type PanelSessionState = Pick<SessionUiState,
   'identity' | 'operatorReady' | 'activeProfileId' | 'productionId' | 'productions' | 'mainButtonTargets'
   | 'audioPreferences' | 'conferenceListen' | 'stoppedFeedKeys' | 'operatorAudio' | 'leftHanded'
   | 'lockMultipleTargets' | 'audioRoutes' | 'audioSessionAvailable' | 'talking' | 'talkingTargetKeys'
-  | 'lockedTargetKeys' | 'targets' | 'replyTarget'>;
+  | 'lockedTargetKeys' | 'targets' | 'replyTarget' | 'bigMainButton'>;
 
 export type RemotePanelHost = {
   systemAudioRouting?: boolean;
@@ -363,7 +363,7 @@ export class RemotePanelCoordinator {
   private currentAudioSettings(): PanelAudioSettings {
     const state = this.host.state();
     return {
-      ...this.audioBase, dimAmountDb: state.operatorAudio.feedDimDb,
+      ...this.audioBase, ...(typeof this.audioBase.bigMainButton === 'boolean' ? { bigMainButton: state.bigMainButton } : {}), dimAmountDb: state.operatorAudio.feedDimDb,
       dimFeedsWhileSpeaking: state.operatorAudio.feedDimSelf, dimWhenAddressed: state.operatorAudio.feedDimIncoming,
       audioAutoProcessing: state.operatorAudio.echoCancellation && state.operatorAudio.noiseSuppression && state.operatorAudio.autoGainControl,
       playConnectionSounds: state.operatorAudio.playConnectionSounds,

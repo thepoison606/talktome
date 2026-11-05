@@ -9089,6 +9089,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       showIncomingLevels: showIncomingLevelsEnabled,
       leftHandMode: leftHandModeEnabled,
       lockMultipleTargets: lockMultipleTargetsEnabled,
+      bigMainButton: document.body.classList.contains('big-main-button'),
       userInputGainDb,
       voiceTriggerEnabled,
       voiceTriggerTarget: voiceTriggerTargetIdentity,
@@ -9124,6 +9125,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     setPlayConnectionSounds(settings.playConnectionSounds, { persist: false });
     setShowIncomingLevels(settings.showIncomingLevels, { persist: false });
     setLeftHandMode(settings.leftHandMode, { persist: false });
+    if (typeof settings.bigMainButton === 'boolean') setBigMainButton(settings.bigMainButton);
     setLockMultipleTargets(settings.lockMultipleTargets, { persist: false });
     setUserInputGainDb(Number(settings.userInputGainDb), { persist: false });
     setVoiceTriggerTargetIdentity(settings.voiceTriggerTarget, { persist: false });
