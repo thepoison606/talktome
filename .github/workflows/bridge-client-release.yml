@@ -30,6 +30,8 @@ on:
       - "vendor/tray-icon/**"
       - "scripts/resolve-build-version.js"
       - "scripts/upload-release-asset.sh"
+      - "scripts/notarize-macos.py"
+      - "scripts/ci-notarize-macos.py"
 
 concurrency:
   group: bridge-builds-${{ github.workflow }}-${{ github.ref }}
@@ -176,6 +178,24 @@ jobs:
           npm run prepare:ffmpeg -- --release --force
           npm run prepare:omt -- --release --force
           npm exec tauri build -- --bundles nsis --config tauri.release-version.json
+
+      - name: Sign and notarize macOS Bridge
+        if: matrix.ffmpeg_source == 'macos-lgpl' && vars.MACOS_SIGNING_ENABLED == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          shopt -s nullglob
+          dmgs=(bridge-client/src-tauri/target/release/bundle/dmg/*.dmg)
+          [[ ${#dmgs[@]} -eq 1 ]] || { echo 'Expected one Bridge DMG before signing' >&2; exit 1; }
+          python3 scripts/ci-notarize-macos.py \
+            --app "bridge-client/src-tauri/target/release/bundle/macos/Talktome Bridge.app" \
+            --entitlements bridge-client/src-tauri/Entitlements.plist \
+            --output-dmg "${dmgs[0]}"
 
       - name: Verify macOS Bridge version
         if: matrix.ffmpeg_source == 'macos-lgpl'

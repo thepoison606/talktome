@@ -19,9 +19,10 @@ def run(*args, capture=False):
                           stdout=subprocess.PIPE if capture else None).stdout
 
 
-def notarize(archive, profile, report):
+def notarize(archive, profile, report, keychain=None):
+    extra = ['--keychain', keychain] if keychain else []
     result = run('xcrun', 'notarytool', 'submit', archive, '--keychain-profile',
-                 profile, '--wait', '--output-format', 'json', capture=True)
+                 profile, *extra, '--wait', '--output-format', 'json', capture=True)
     report.write_text(result)
     status = json.loads(result)
     if status.get('status') != 'Accepted':
@@ -35,6 +36,7 @@ def main():
     parser.add_argument('--output-dmg', required=True, type=Path)
     parser.add_argument('--identity', default=os.environ.get('APPLE_SIGNING_IDENTITY', ''))
     parser.add_argument('--profile', default='talktome-notary')
+    parser.add_argument('--keychain', type=Path)
     args = parser.parse_args()
     app = args.app.resolve()
     output = args.output_dmg.resolve()
@@ -75,14 +77,14 @@ def main():
         run('codesign', '--verify', '--deep', '--strict', bundle)
         archive = root / 'app.zip'
         run('ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', bundle, archive)
-        notarize(archive, args.profile, output.with_suffix('.app-notarization.json'))
+        notarize(archive, args.profile, output.with_suffix('.app-notarization.json'), args.keychain)
         run('xcrun', 'stapler', 'staple', bundle)
         run('xcrun', 'stapler', 'validate', bundle)
         run('spctl', '--assess', '--type', 'execute', '--verbose=2', bundle)
         (content / 'Applications').symlink_to('/Applications')
         run('hdiutil', 'create', '-volname', app.stem, '-srcfolder', content, '-format', 'UDZO', output)
         run('codesign', '--force', '--sign', args.identity, '--timestamp', output)
-        notarize(output, args.profile, output.with_suffix('.dmg-notarization.json'))
+        notarize(output, args.profile, output.with_suffix('.dmg-notarization.json'), args.keychain)
         run('xcrun', 'stapler', 'staple', output)
         run('xcrun', 'stapler', 'validate', output)
         run('spctl', '--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=2', output)

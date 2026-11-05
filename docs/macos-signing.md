@@ -46,10 +46,18 @@ it is not an App Store release.
 
 ## CI
 
-The existing release workflows still build their current artifacts. Before
-enabling signed releases in CI, install the Developer ID identity into an
-ephemeral runner Keychain and supply notarization credentials from GitHub
-Secrets. Run the same helper before uploading the final DMGs. The certificate
-private key, P12 password and API-key contents belong only in secrets/Keychain.
+Both desktop release workflows run the signing helper when repository variable
+`MACOS_SIGNING_ENABLED` is `true`. Set `MACOS_SIGNING_IDENTITY` to the complete
+Developer ID Application identity. Required repository secrets are
+`MACOS_CERTIFICATE_P12` (base64 P12), `MACOS_CERTIFICATE_PASSWORD`,
+`APP_STORE_CONNECT_PRIVATE_KEY` (PEM), `APP_STORE_CONNECT_KEY_ID`, and
+`APP_STORE_CONNECT_ISSUER_ID`.
+
+`scripts/ci-notarize-macos.py` imports the identity and API credentials into an
+ephemeral runner Keychain, runs the verified local signing/notarization helper,
+and replaces the build's original DMG only after all checks pass. It restores
+the Keychain search list and removes credentials on exit. Enabled signing fails
+the build when credentials are missing or Apple rejects notarization. The
+certificate private key, P12 password and API-key contents belong only in secrets/Keychain.
 Publishing an old unsigned DMG does not retroactively notarize it; replace it
 with the newly verified signed artifact when making that release.

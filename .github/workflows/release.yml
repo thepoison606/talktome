@@ -35,6 +35,8 @@ on:
       - "scripts/native-startup-smoke-test.mjs"
       - "scripts/postbuild-pkg.js"
       - "scripts/create-macos-dmg.sh"
+      - "scripts/notarize-macos.py"
+      - "scripts/ci-notarize-macos.py"
       - "scripts/resolve-build-version.js"
       - "scripts/verify-build-node.js"
       - "scripts/upload-release-asset.sh"
@@ -206,6 +208,21 @@ jobs:
           --executable "$TRAY_EXECUTABLE"
           --expected-version "$APP_VERSION"
           --timeout-seconds 120
+
+      - name: Sign and notarize macOS Server
+        if: matrix.os == 'macos-15' && vars.MACOS_SIGNING_ENABLED == 'true'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: >-
+          python3 scripts/ci-notarize-macos.py
+          --app "server-app/src-tauri/target/release/bundle/macos/Talktome Server.app"
+          --entitlements server-app/src-tauri/Entitlements.plist
+          --output-dmg "server-app/src-tauri/target/release/bundle/dmg/Talktome Server_aarch64.dmg"
 
       - name: Prepare server app artifact
         shell: bash
