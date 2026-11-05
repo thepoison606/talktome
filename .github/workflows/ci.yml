@@ -69,6 +69,7 @@ jobs:
           libappindicator3-dev
           librsvg2-dev
           patchelf
+          ffmpeg
 
       - name: Install JavaScript dependencies
         working-directory: bridge-client
@@ -92,6 +93,9 @@ jobs:
         run: cargo check --locked --manifest-path bridge-client/src-tauri/Cargo.toml
 
       - name: Test Rust
+        env:
+          # Audio/video clock tests run a real Opus encoder, not the bundle placeholder.
+          TALKTOME_FFMPEG: /usr/bin/ffmpeg
         run: cargo test --locked --manifest-path bridge-client/src-tauri/Cargo.toml --lib
 
   server-app:
