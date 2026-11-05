@@ -8355,7 +8355,9 @@ function getVideoTargetLayers(list, targetEls) {
     list.classList?.remove('video-grid-layout');
     return null;
   }
-  list.style.setProperty('--feed-list-height', `${list.clientHeight}px`);
+  // Keep the viewport budget fixed while exposing hidden layers for measurement.
+  const availableHeight = list.clientHeight;
+  list.style.setProperty('--feed-list-height', `${availableHeight}px`);
   // Resolve the media-query columns with all targets present. Then retain that
   // count on sparse layers too: auto-fit must not widen a single video target.
   list.style.removeProperty('grid-template-columns');
@@ -8376,7 +8378,7 @@ function getVideoTargetLayers(list, targetEls) {
       return el.getBoundingClientRect().height + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
     });
   } finally { hidden.forEach(el => el.classList.add('layer-hidden')); }
-  return window.TalktomeTargetLayers.packRows(heights, list.clientHeight, gap, columns);
+  return window.TalktomeTargetLayers.packRows(heights, availableHeight, gap, columns);
 }
 
 function getTargetLayerAssignments(list, targetEls) {

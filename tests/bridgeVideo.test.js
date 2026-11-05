@@ -95,3 +95,29 @@ test('feed video overrides survive restart, backups and legacy restores', t => {
     assert.throws(()=>db.importDatabaseSnapshot(bad),/Invalid feed video permission/);
     assert.equal(db.getAllFeeds().length,1);`);
 });
+
+
+test('selecting Off is autosaved and reconciles only the video path', async () => {
+  const f = runtime();
+  Object.assign(f.context, {
+    currentInventory: { videoSources: [] }, escapeHtml: value => String(value),
+    managedAudioPopover: null, managedBridgeConfig: {},
+    bridgePortKey: port => port.id, bridgePortSignature: () => 'same',
+    getManagedTriggerTargets: () => [], managedTalkTargetsMatch: () => true,
+    bridgeTalkTrigger: { mode: () => 'external' },
+    syncManagedPortAudioLevels: async () => {}, syncManagedAutomaticTalk: async () => {}, renderManagedBridgePorts() {},
+  });
+  vm.runInContext(source.slice(source.indexOf('function renderManagedVideoControls('), source.indexOf('function renderManagedBridgePorts(')), f.context);
+  const html = f.context.renderManagedVideoControls(f.session.port, { videoSource: '' });
+  assert.match(html, /<select[^>]*data-field="videoSource"[^>]*data-managed-port-control/);
+  assert.match(html, /<option value="" selected>Off/);
+  f.session.signature = 'same'; f.session.videoProducerId = 'video-1'; f.session.videoFrames = 100;
+  const off = { ...f.session.port, videoSource: '' };
+  vm.runInContext(source.slice(source.indexOf('async function reconcileManagedBridgeConfig('), source.indexOf('async function refreshManagedInventoryOnly(')), f.context);
+  await f.context.reconcileManagedBridgeConfig({ ports: [off] });
+  assert.equal(f.session.videoProducerId, null); assert.equal(f.session.videoFrames, 0);
+  assert(f.calls.some(call => call.command === 'stop_bridge_video'));
+  assert(f.calls.some(call => call.method === 'DELETE' && call.url.endsWith('/video')));
+  assert.equal(f.session.producerId, 'audio-1'); assert.equal(f.session.ready, true);
+  assert.equal(f.context.managedFeedVideoStatus(off, { videoFrames: 100 }), '');
+});

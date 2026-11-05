@@ -878,3 +878,5 @@ ul {
 .managed-port-control small { color: #9fb0c0; font-size: 0.7rem; }
 
 .managed-video-source { grid-column: 1 / -1; display: grid; gap: 0.25rem; }
+
+.managed-port-card [data-video-status][hidden] { display: none; }

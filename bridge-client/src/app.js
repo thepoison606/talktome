@@ -1611,10 +1611,22 @@ function renderManagedVideoControls(port, draft) {
     options.push({ id: draft.videoSource, name: `${draft.videoSource} (saved, unavailable)` });
   }
   return `<label class="field-group managed-video-source">Video source (optional)
-    <select data-field="videoSource"${port.videoAllowed === false ? ' disabled title="Video disabled by administrator"' : ''}>${options.map(source => `<option value="${escapeHtml(source.id)}"${source.id === draft.videoSource ? ' selected' : ''}>${escapeHtml(source.name)}</option>`).join('')}</select></label>`;
+    <select data-field="videoSource" data-managed-port-control${port.videoAllowed === false ? ' disabled title="Video disabled by administrator"' : ''}>${options.map(source => `<option value="${escapeHtml(source.id)}"${source.id === draft.videoSource ? ' selected' : ''}>${escapeHtml(source.name)}</option>`).join('')}</select></label>`;
+}
+
+function managedFeedVideoStatus(port, session) {
+  if (!port.videoSource) return '';
+  return `Video: ${port.videoAllowed === false ? "Disabled by administrator" : session?.videoError || (session?.videoFrames ? "Live" : "Waiting for source…")}`;
 }
 
 function renderManagedBridgePorts() {
+  // Refresh live labels even while a select has focus and the form cannot be rebuilt.
+  for (const port of managedBridgeConfig?.ports || []) {
+    const status = getManagedPortElement(bridgePortKey(port))?.querySelector('[data-video-status]');
+    if (!status) continue;
+    status.textContent = managedFeedVideoStatus(port, managedSessions.get(bridgePortKey(port)));
+    status.hidden = !status.textContent;
+  }
   if (managedAudioPopover || targetPicker.isOpen()) return;
   const activeElement = document.activeElement;
   const managedControlFocused = (
@@ -1676,7 +1688,7 @@ function renderManagedBridgePorts() {
         ${hasOutput ? `<small>${escapeHtml(formatManagedReturnPathStatus(session))}</small>` : "<span></span>"}
         ${port.kind === "user" ? `<small class="managed-port-input-level" data-managed-input-level${draft.trigger?.mode === "audio-level" ? "" : " hidden"}>Input level: waiting…</small>` : ""}
       </div>` : ""}
-      ${port.kind === "feed" && port.videoSource ? `<small>Video: ${escapeHtml(port.videoAllowed === false ? "Disabled by administrator" : session?.videoError || (session?.videoFrames ? "Live" : "Waiting for source…"))}</small>` : ""}
+      ${port.kind === "feed" ? `<small data-video-status${port.videoSource ? "" : " hidden"}>${escapeHtml(managedFeedVideoStatus(port, session))}</small>` : ""}
       ${sessionError ? `<div class="managed-port-error">${escapeHtml(sessionError)}</div>` : ""}
       ${editState.error ? `<div class="managed-port-error">${escapeHtml(editState.error)}</div>` : ""}
       </article>

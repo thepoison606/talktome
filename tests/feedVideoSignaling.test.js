@@ -205,6 +205,11 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   await api('POST', route + '/video-send-transport', {});
   const lastBridgeVideo = await api('POST', route + '/video-producer', {});
   await api('POST', route + `/producers/${lastBridgeVideo.id}/resume`, {});
+  const offConfig = await api('PUT', `/api/v1/bridge/video-test/ports/feed/${fixture.feed}`, { videoSource: '' });
+  assert.equal(offConfig.ports.find(port => port.kind === 'feed').videoSource, '');
+  await delay(20);
+  assert(closed.some(p => p.producerId === lastBridgeVideo.id));
+  assert.deepEqual((await request(viewer, 'request-active-producers')).map(p => p.producerId), [audioReplacement.id], 'Off withdraws only video, preserving audio');
   await api('DELETE', route);
   await delay(20);
   assert(closed.some(p => p.producerId === lastBridgeVideo.id));
