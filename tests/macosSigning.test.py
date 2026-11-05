@@ -85,5 +85,35 @@ class SigningTests(unittest.TestCase):
         self.ci(False, rejection=True)
 
 
+class LocalReleaseTests(unittest.TestCase):
+    def test_upload_refuses_mislabeled_or_dirty_builds(self):
+        module = load('release-macos-local')
+        module.release_matches('v1.5.23', 'abc', 'abc', '1.5.23', True)
+        for tag, head, tag_commit, version, release in [
+            ('v1.5.23', 'abc', 'def', '1.5.23', True),
+            ('v1.5.23', 'abc', 'abc', '1.5.23-dev.1', False),
+            ('v1.5.23', 'abc', 'abc', '1.5.24', True),
+            ('main', 'abc', 'abc', '1.5.23', True),
+        ]:
+            with self.subTest(tag=tag, version=version, commit=tag_commit):
+                with self.assertRaises(RuntimeError):
+                    module.release_matches(tag, head, tag_commit, version, release)
+
+    def test_upload_refuses_published_release(self):
+        module = load('release-macos-local')
+        with patch.object(module, 'run', return_value='{"isDraft":false}') as run:
+            with self.assertRaisesRegex(RuntimeError, 'published'):
+                module.require_draft('v1.5.23', {}, 'abc')
+        self.assertEqual(run.call_count, 1)
+
+    def test_upload_requires_matching_github_tag(self):
+        module = load('release-macos-local')
+        with patch.object(module, 'run', side_effect=['{"isDraft":true}', 'different-commit']):
+            with self.assertRaisesRegex(RuntimeError, 'GitHub release tag'):
+                module.require_draft('v1.5.23', {}, 'abc')
+        with patch.object(module, 'run', side_effect=['{"isDraft":true}', 'abc\n']):
+            self.assertTrue(module.require_draft('v1.5.23', {}, 'abc')['isDraft'])
+
+
 if __name__ == '__main__':
     unittest.main()
