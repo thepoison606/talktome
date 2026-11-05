@@ -1120,7 +1120,17 @@
 
       .default-client-setting-controls { display: flex; align-items: center; gap: .75rem; }
       .default-client-apply-all { display: inline-flex; align-items: center; gap: .35rem; font-size: .8rem; color: var(--muted); white-space: nowrap; }
-      .default-client-apply-all[hidden] { display: none; }
+      /* Reserve the same space before and after revealing Apply to all. */
+      .default-client-apply-all[hidden] { display: inline-flex; visibility: hidden; pointer-events: none; }
+      .default-client-apply-all input[type='checkbox'] {
+        flex: 0 0 1rem;
+        width: 1rem;
+        height: 1rem;
+        padding: 0;
+        margin: 0;
+        box-sizing: border-box;
+        accent-color: var(--primary);
+      }
       .default-client-settings-actions {
         display: flex;
         align-items: center;
