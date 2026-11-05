@@ -79,3 +79,11 @@ users (including offline users), preserving their other preferences. Feed-Video 
 to all feeds instead. Connected clients receive the changed settings immediately; the
 main-button layout update in native clients requires an app build containing this change.
 Users can subsequently save their own preferences again.
+
+
+Browser playback uses a dedicated, lazily created WebRTC receive transport for feed video.
+On `visibilitychange` to hidden or `pagehide`, only the picture, its consumers and that
+video transport are released. Audio keeps its own transport and existing iOS background
+playback handoff. Returning to the page reconnects expanded video targets; it does not
+restart feeds that the listener explicitly stopped. This also avoids video SDP changes
+blocking audio reception during Safari's transition into the background.

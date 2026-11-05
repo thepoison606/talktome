@@ -8713,8 +8713,11 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("create-recv-transport", async (_, callback) => {
-    console.log(`[TRANSPORT] Client ${socket.id} requests recv transport`);
+  async function createReceiveTransport(videoOnly, callback = () => {}) {
+    console.log(`[TRANSPORT] Client ${socket.id} requests ${videoOnly ? 'video ' : ''}recv transport`);
+    const peer = peers.get(socket.id);
+    if (!peer || (videoOnly && peer.feedVideo !== true)) return callback({ error: 'Peer not registered for feed video' });
+    const videoEpoch = videoOnly ? (peer.videoTransportEpoch = (peer.videoTransportEpoch || 0) + 1) : null;
     try {
       if (!router) {
         return callback({ error: "Media router is not ready, try again" });
@@ -8743,9 +8746,18 @@ io.on("connection", (socket) => {
         initialAvailableOutgoingBitrate: 600000,
       });
 
-      peers.get(socket.id).recvTransport = transport;
-      resetPeerMediaTransportStatus(peers.get(socket.id), "receive");
-      attachWebRtcTransportDiagnostics(socket.id, "receive", transport);
+      if (peers.get(socket.id) !== peer || (videoOnly && peer.videoTransportEpoch !== videoEpoch)) {
+        transport.close();
+        return callback({ error: 'Receive transport request expired' });
+      }
+      if (videoOnly) {
+        peer.videoRecvTransport?.close();
+        peer.videoRecvTransport = transport;
+      } else {
+        peer.recvTransport = transport;
+        resetPeerMediaTransportStatus(peer, "receive");
+      }
+      attachWebRtcTransportDiagnostics(socket.id, videoOnly ? "video-receive" : "receive", transport);
       scheduleAdminStatusBroadcast("receive-transport-created");
       console.log(`[TRANSPORT] Recv transport created: ${transport.id}`);
       console.log(`[TRANSPORT] ICE Candidates:`, transport.iceCandidates);
@@ -8761,6 +8773,26 @@ io.on("connection", (socket) => {
       console.error("[TRANSPORT] Error creating recv transport:", error);
       callback({ error: error.message });
     }
+  }
+
+  socket.on('create-recv-transport', (_, callback) => createReceiveTransport(false, callback));
+  socket.on('create-video-recv-transport', (_, callback) => createReceiveTransport(true, callback));
+  socket.on('connect-video-recv-transport', async ({ transportId, dtlsParameters } = {}, callback = () => {}) => {
+    try {
+      const transport = peers.get(socket.id)?.videoRecvTransport;
+      if (!transport || transport.closed || transport.id !== transportId) throw new Error('Video receive transport not ready');
+      await transport.connect({ dtlsParameters });
+      callback({ ok: true });
+    } catch (error) { callback({ error: error.message }); }
+  });
+  socket.on('close-video-recv-transport', ({ transportId } = {}, callback = () => {}) => {
+    const peer = peers.get(socket.id);
+    const transport = peer?.videoRecvTransport;
+    if (transport && transport.id === transportId) {
+      peer.videoRecvTransport = null;
+      transport.close();
+    }
+    callback({ ok: true });
   });
 
   socket.on("connect-send-transport", async ({ dtlsParameters }, callback) => {
@@ -9208,7 +9240,7 @@ io.on("connection", (socket) => {
 
 
 
-  socket.on("consume", async ({ producerId, rtpCapabilities }, callback) => {
+  socket.on("consume", async ({ producerId, rtpCapabilities, transportId = null }, callback) => {
     console.log(
       `[CONSUME] Client ${socket.id} wants to consume producer ${producerId}`
     );
@@ -9244,8 +9276,10 @@ io.on("connection", (socket) => {
         throw new Error("Cannot consume");
       }
 
-      const transport = peer.recvTransport;
-      if (!transport) {
+      const separateVideo = transportId != null && transportId === peer.videoRecvTransport?.id;
+      if (separateVideo && requestedProducer?.kind !== 'video') return callback({ error: 'Video transport cannot receive audio' });
+      const transport = separateVideo ? peer.videoRecvTransport : peer.recvTransport;
+      if (!transport || transport.closed || (transportId != null && transport.id !== transportId)) {
         return callback({ error: "Receive transport not ready" });
       }
 
@@ -9274,7 +9308,8 @@ io.on("connection", (socket) => {
 
       // Access may change while mediasoup is creating the consumer.
       if (requestedProducer?.kind === "video"
-        && (peer.recvTransport !== transport || !mayReceiveFeedVideo(requestedProducer, peers.get(producerPeer), peer))) {
+        && ((separateVideo ? peer.videoRecvTransport : peer.recvTransport) !== transport
+          || peers.get(socket.id) !== peer || !mayReceiveFeedVideo(requestedProducer, peers.get(producerPeer), peer))) {
         consumer.close();
         return callback({ error: "Video feed access changed" });
       }
@@ -9376,6 +9411,8 @@ io.on("connection", (socket) => {
         peer.recvTransport.close();
         console.log(`[CLEANUP] Recv transport closed for ${socket.id}`);
       }
+
+      peer.videoRecvTransport?.close();
 
       // Close consumers
       peer.consumers.forEach((c) => c.close());

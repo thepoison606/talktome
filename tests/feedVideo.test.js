@@ -19,19 +19,25 @@ function element(tag = 'div') {
     showModal() { this.open = true; }, close() { this.open = false; listeners.close?.(); }, focus() {},
   };
 }
-function harness({ deferConsume = false, deferCamera = false, denyCamera = false, permissionGated = false, allowed = true } = {}) {
-  const events = [], consumers = [], tracks = [], sends = [], callbacks = {}, cameraRequests = [];
+function harness({ deferConsume = false, deferTransport = false, deferCamera = false, denyCamera = false, permissionGated = false, allowed = true } = {}) {
+  const events = [], consumers = [], tracks = [], sends = [], callbacks = {}, cameraRequests = [], videoTransports = [];
+  let consumerCount = 0;
   let cameraPermission = !permissionGated;
   const nodes = Object.fromEntries(['feed-video-source', 'feed-video-preview', 'feed-video-status', 'feed-camera-picker', 'feed-camera-picker-list', 'feed-camera-picker-status', 'feed-camera-picker-close'].map(id => [id, element()]));
   const doc = { hidden: false, getElementById: id => nodes[id], createElement: element,
-    addEventListener: (event, fn) => { callbacks[event] = fn; } };
-  let stopped = false, streaming = false, cameraResolve, consumeResolve;
+    addEventListener: (event, fn) => { callbacks[event] = fn; },
+    defaultView: { addEventListener: (event, fn) => { callbacks[event] = fn; } } };
+  let stopped = false, streaming = false, cameraResolve, consumeResolve, transportResolve;
   const socket = { connected: true, emit(event, data, done) {
     events.push({ event, data });
     if (event === 'consume') {
-      const result = { id: `c${events.length}`, producerId: data.producerId, kind: 'video', rtpParameters: {} };
+      const result = { id: `c${++consumerCount}`, producerId: data.producerId, kind: 'video', rtpParameters: {} };
       if (deferConsume) consumeResolve = () => done(result); else done(result);
-    } else done?.(event === 'resume-consumer' ? undefined : { ok: true });
+    } else if (event === 'create-video-recv-transport') {
+      const complete = () => done({ id: `video-transport-${videoTransports.length + 1}` });
+      if (deferTransport) transportResolve = complete; else complete();
+    }
+    else done?.(event === 'resume-consumer' ? undefined : { ok: true });
   } };
   const recv = { closed: false, async consume(params) {
     const consumer = { ...params, track: {}, on() {}, resume() {}, close() { this.closed = true; } };
@@ -57,8 +63,12 @@ function harness({ deferConsume = false, deferCamera = false, denyCamera = false
       if (deferCamera) return new Promise(resolve => { cameraResolve = () => resolve(makeCamera()); });
       return makeCamera();
     } };
+  const device = { canProduce: () => true, rtpCapabilities: {}, createRecvTransport(params) {
+    const transport = { id: params.id, closed: false, on() {}, consume: params => recv.consume(params), close() { this.closed = true; } };
+    videoTransports.push(transport); return transport;
+  } };
   const controller = createController({ socket, getSession: () => ({ kind: 'feed', feedId: 7 }),
-    getDevice: () => ({ canProduce: () => true, rtpCapabilities: {} }),
+    getDevice: () => device,
     getSendTransport: () => send, getRecvTransport: () => recv,
     isStreaming: () => streaming, isStopped: () => stopped, onLayoutChange() {},
     document: doc, mediaDevices, makeStream: items => ({ items }),
@@ -69,7 +79,7 @@ function harness({ deferConsume = false, deferCamera = false, denyCamera = false
   controller.attachTarget(row, 'feed-7', 'Program');
   const panel = row.children[0];
   const payload = { producerId: 'v1', kind: 'video', appData: { type: 'feed', id: 7 } };
-  return { controller, events, consumers, row, button, panel, payload, doc, nodes, tracks, sends, cameraRequests,
+  return { controller, events, consumers, row, button, panel, payload, doc, nodes, tracks, sends, cameraRequests, videoTransports, recv, callbacks,
     setStopped(value) { stopped = value; controller.syncVisibility(); },
     setStreaming(value) { streaming = value; },
     openCameraPicker: () => nodes['feed-video-source'].dispatch('click'),
@@ -79,7 +89,7 @@ function harness({ deferConsume = false, deferCamera = false, denyCamera = false
       assert(option, `Camera option ${value} is available`);
       option.dispatch('click'); await tick();
     },
-    cameraReady: () => cameraResolve(), consumeReady: () => consumeResolve(),
+    transportReady: () => transportResolve(), cameraReady: () => cameraResolve(), consumeReady: () => consumeResolve(),
     visibility: hidden => { doc.hidden = hidden; callbacks.visibilitychange(); },
   };
 }
@@ -220,4 +230,39 @@ test('revoking permission during camera permission closes late tracks without pr
   await h.selectCamera('default'); h.controller.setAllowed(false);
   h.cameraReady(); await tick(); assert(h.tracks.every(track => track.stopped));
   assert.equal(h.sends.length, 0);
+});
+
+
+test('background and pagehide release only the dedicated video connection and detach the picture', async () => {
+  const h = harness(); h.controller.announce(h.payload); h.button.dispatch('click'); await tick();
+  assert.equal(h.videoTransports.length, 1);
+  assert(h.events.filter(e => e.event === 'consume').every(e => e.data.transportId === h.videoTransports[0].id));
+  const video = h.panel.children[0];
+  video.pause = () => assert.equal(video.srcObject, null, 'detach before pausing Safari playback');
+  h.visibility(true);
+  assert.equal(h.videoTransports[0].closed, true);
+  assert.equal(h.recv.closed, false, 'the audio connection must survive');
+  assert(h.events.some(e => e.event === 'close-video-recv-transport'));
+  h.visibility(false); await tick();
+  assert.equal(h.videoTransports.length, 2); assert.equal(h.consumers.length, 2);
+  h.callbacks.pagehide();
+  assert(h.videoTransports[1].closed); assert.equal(h.recv.closed, false);
+  h.callbacks.pageshow(); await tick();
+  assert.equal(h.videoTransports.length, 3);
+  h.setStopped(true); h.visibility(true); h.visibility(false); await tick();
+  assert.equal(h.videoTransports.length, 3, 'a manually stopped feed stays stopped');
+});
+
+
+test('locking while a video connection is pending discards the late video transport without touching audio', async () => {
+  const h = harness({ deferTransport: true });
+  h.controller.announce(h.payload); h.button.dispatch('click'); await tick();
+  h.visibility(true);
+  h.transportReady(); await tick();
+  assert.equal(h.videoTransports.length, 0);
+  assert.equal(h.consumers.length, 0);
+  assert(h.events.some(e => e.event === 'close-video-recv-transport' && e.data.transportId));
+  assert.equal(h.recv.closed, false);
+  h.visibility(false); await tick(); h.transportReady(); await tick();
+  assert.equal(h.videoTransports.length, 1); assert.equal(h.consumers.length, 1);
 });

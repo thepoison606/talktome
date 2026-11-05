@@ -24,6 +24,8 @@
     let selectedCamera = ''; // Intentionally off after each page load; never silently enable a camera.
     let cameras = [], pickerGeneration = 0, pickerBusy = false, cameraProbe = null;
     let receiveGeneration = 0;
+    let videoRecvTransport = null, videoTransportPending = null, videoTransportEpoch = 0;
+    let pageSuspended = false;
     const earlyClosedConsumers = new Set();
     const closeRemote = id => { if (id && socket.connected) socket.emit('close-consumer', { consumerId: id }, () => {}); };
     const request = (event, payload) => new Promise((resolve, reject) => {
@@ -34,6 +36,50 @@
         else resolve(result || {});
       });
     });
+    const closeVideoTransportOnServer = id => {
+      if (id && socket.connected) socket.emit('close-video-recv-transport', { transportId: id }, () => {});
+    };
+    function releaseVideoTransport() {
+      videoTransportEpoch++;
+      const transport = videoRecvTransport;
+      videoRecvTransport = null; videoTransportPending = null;
+      // This PeerConnection contains video only. Audio never renegotiates here.
+      if (transport) { closeVideoTransportOnServer(transport.id); transport.close(); }
+    }
+    function ensureVideoTransport() {
+      if (videoRecvTransport && !videoRecvTransport.closed) return Promise.resolve(videoRecvTransport);
+      if (videoTransportPending) return videoTransportPending;
+      const epoch = videoTransportEpoch;
+      const device = getDevice();
+      const pending = (async () => {
+        const params = await request('create-video-recv-transport', null);
+        if (epoch !== videoTransportEpoch || doc.hidden || pageSuspended || device !== getDevice()) {
+          closeVideoTransportOnServer(params.id);
+          throw new Error('Video receive request cancelled');
+        }
+        let transport;
+        try { transport = device.createRecvTransport(params); }
+        catch (error) { closeVideoTransportOnServer(params.id); throw error; }
+        videoRecvTransport = transport;
+        transport.on('connectionstatechange', state => {
+          if (state !== 'failed' || videoRecvTransport !== transport) return;
+          for (const feed of feeds.values()) { closeReception(feed); feed.error = 'Video connection interrupted'; render(feed); }
+          releaseVideoTransport();
+          const retryEpoch = videoTransportEpoch;
+          setTimeout(() => { if (retryEpoch === videoTransportEpoch) syncVisibility(); }, 2000);
+        });
+        transport.on('connect', ({ dtlsParameters }, connected, failed) => {
+          request('connect-video-recv-transport', { transportId: transport.id, dtlsParameters }).then(() => {
+            if (epoch === videoTransportEpoch && !transport.closed) connected();
+            else failed(new Error('Video receive request cancelled'));
+          }, failed);
+        });
+        return transport;
+      })();
+      videoTransportPending = pending;
+      pending.finally(() => { if (videoTransportPending === pending) videoTransportPending = null; }).catch(() => {});
+      return pending;
+    }
     const setSenderStatus = text => { if (senderStatus) senderStatus.textContent = text; };
 
     function updateSourceLabel() {
@@ -191,13 +237,18 @@
       state.token++;
       state.pending = false;
       const consumer = state.consumer; state.consumer = null;
+      if (state.video) {
+        // Detach the picture before pause so Safari cannot treat its MediaStream
+        // as the page's active background playback session.
+        state.video.srcObject = null;
+        state.video.pause();
+      }
       if (consumer) { closeRemote(consumer.id); try { consumer.close(); } catch {} }
-      if (state.video) { state.video.pause(); state.video.srcObject = null; }
     }
     function shouldReceive(state) {
       return enabled && state.expanded && state.payload && !isStopped(state.key)
         && state.row?.isConnected && !state.row.classList.contains('layer-hidden')
-        && !doc.hidden && getRecvTransport() && !getRecvTransport().closed;
+        && !doc.hidden && !pageSuspended && getRecvTransport() && !getRecvTransport().closed;
     }
     function render(state) {
       if (!state.row) return;
@@ -218,12 +269,15 @@
       if (!shouldReceive(state) || state.consumer || state.pending) return;
       state.pending = true; state.error = ''; render(state);
       const token = state.token, generation = receiveGeneration;
-      const payload = state.payload, transport = getRecvTransport();
+      const payload = state.payload;
+      let transport;
       let consumer = null, params = null;
       const current = () => generation === receiveGeneration && token === state.token
         && state.payload?.producerId === payload.producerId && shouldReceive(state);
       try {
-        params = await request('consume', { producerId: payload.producerId, rtpCapabilities: getDevice().rtpCapabilities });
+        transport = await ensureVideoTransport();
+        if (!current()) return;
+        params = await request('consume', { producerId: payload.producerId, rtpCapabilities: getDevice().rtpCapabilities, transportId: transport.id });
         if (!current() || earlyClosedConsumers.delete(params.id)) { closeRemote(params.id); return; }
         if (params.kind !== 'video') throw new Error('Expected a video stream');
         consumer = await transport.consume(params);
@@ -255,6 +309,7 @@
         else if (state.consumer || state.pending) closeReception(state);
         render(state);
       }
+      if (![...feeds.values()].some(shouldReceive)) releaseVideoTransport();
     }
     function attachTarget(row, key, name) {
       if (!enabled) return;
@@ -286,6 +341,8 @@
         state.video = doc.createElement('video');
         state.video.autoplay = true; state.video.muted = true; state.video.defaultMuted = true; state.video.playsInline = true;
         state.video.setAttribute('playsinline', '');
+        state.video.disablePictureInPicture = true;
+        state.video.disableRemotePlayback = true;
         state.video.setAttribute('aria-label', `Video: ${name}`);
         const syncPictureSize = () => {
           const ratio = state.video.videoWidth / state.video.videoHeight;
@@ -338,6 +395,7 @@
         if (allowedKeys.has(key)) continue;
         closeReception(state); feeds.delete(key);
       }
+      if (![...feeds.values()].some(shouldReceive)) releaseVideoTransport();
     }
     function resetReceiving() {
       receiveGeneration++;
@@ -345,6 +403,7 @@
       for (const state of feeds.values()) {
         closeReception(state); state.payload = null; render(state);
       }
+      releaseVideoTransport();
       onLayoutChange();
     }
     function consumerClosed(id) {
@@ -371,6 +430,8 @@
     }
     mediaDevices?.addEventListener?.('devicechange', () => refreshCameras().catch(() => {}));
     doc.addEventListener('visibilitychange', syncVisibility);
+    doc.defaultView?.addEventListener('pagehide', () => { pageSuspended = true; syncVisibility(); });
+    doc.defaultView?.addEventListener('pageshow', () => { pageSuspended = false; syncVisibility(); });
     return { setAllowed, startSending, stopSending, attachTarget, announce, removeProducer, reconcile,
       pruneTargets, syncVisibility, resetReceiving, consumerClosed,
       hasExpanded: () => Array.from(feeds.values()).some(s => s.payload && s.expanded && s.row?.isConnected) };

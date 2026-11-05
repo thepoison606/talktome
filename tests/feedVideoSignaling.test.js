@@ -113,6 +113,27 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   const consumption = await request(viewer, 'consume', { producerId: video.id, rtpCapabilities: caps });
   assert.equal(consumption.kind, 'video'); assert(consumption.id);
   await request(viewer, 'resume-consumer', { consumerId: consumption.id });
+  // Video may disappear at screen lock without replacing audio's PeerConnection.
+  const audioConsumer = await request(viewer, 'consume', { producerId: audio.id, rtpCapabilities: caps });
+  assert.equal(audioConsumer.kind, 'audio');
+  assert((await request(native, 'create-video-recv-transport', null)).error);
+  const separateVideo = await request(viewer, 'create-video-recv-transport', null);
+  assert(separateVideo.id);
+  assert.match((await request(viewer, 'consume', { producerId: audio.id, rtpCapabilities: caps, transportId: separateVideo.id })).error, /cannot receive audio/);
+  const videoConsumer = await request(viewer, 'consume', { producerId: video.id, rtpCapabilities: caps, transportId: separateVideo.id });
+  assert.equal(videoConsumer.kind, 'video');
+  await request(viewer, 'close-video-recv-transport', { transportId: separateVideo.id });
+  assert((await request(viewer, 'consume', { producerId: video.id, rtpCapabilities: caps, transportId: separateVideo.id })).error);
+  // The original audio transport is still present and accepts DTLS setup.
+  assert(!(await request(viewer, 'connect-recv-transport', { dtlsParameters: { ...separateVideo.dtlsParameters, role: 'client' } }))?.error);
+  await request(viewer, 'resume-consumer', { consumerId: audioConsumer.id });
+  await delay(20);
+  assert(output.includes(`Consumer ${audioConsumer.id} resumed`), 'audio consumer survives video transport closure');
+  const reopenedVideo = await request(viewer, 'create-video-recv-transport', null);
+  assert.notEqual(reopenedVideo.id, separateVideo.id);
+  await request(viewer, 'close-video-recv-transport', { transportId: separateVideo.id });
+  assert.equal((await request(viewer, 'consume', { producerId: video.id, rtpCapabilities: caps, transportId: reopenedVideo.id })).kind, 'video', 'late closure of the previous video connection must not close the new one');
+  await request(viewer, 'close-video-recv-transport', { transportId: reopenedVideo.id });
   for (const socket of [native, unassigned]) {
     assert.match((await request(socket, 'consume', { producerId: video.id, rtpCapabilities: caps })).error, /Not authorized/);
   }
