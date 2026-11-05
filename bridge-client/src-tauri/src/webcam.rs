@@ -202,6 +202,74 @@ pub fn capture_video(id: &str, mut sink: VideoSink) -> Result<(), String> {
         .get()
         .and_then(|cache| cache.lock().ok()?.1.get(id).cloned())
         .ok_or("Webcam unavailable; reconnect it and refresh the video sources")?;
+    match capture_camera(&camera, &mut sink, None) {
+        Err(error) if cfg!(target_os = "macos") && error.contains("Selected framerate") => {
+            // Some virtual cameras expose only 60 fps, other cameras only 25.
+            // Capture a supported native mode, then cap the outgoing video at 30.
+            if let Some(mode) = supported_mode(&error) {
+                capture_camera(&camera, &mut sink, Some(mode)).map_err(short_error)
+            } else {
+                Err(short_error(error))
+            }
+        }
+        result => result.map_err(short_error),
+    }
+}
+#[derive(Debug, PartialEq)]
+struct CameraMode {
+    width: u32,
+    height: u32,
+    fps: f64,
+}
+fn supported_mode(diagnostics: &str) -> Option<CameraMode> {
+    diagnostics
+        .lines()
+        .filter_map(|line| {
+            let (prefix, range) = line.split_once("@[")?;
+            let (width, height) = prefix.split_whitespace().last()?.split_once('x')?;
+            let width = width.parse::<u32>().ok()?;
+            let height = height.parse::<u32>().ok()?;
+            let mut fps = range.split_once(']')?.0.split_whitespace();
+            let min = fps.next()?.parse::<f64>().ok()?;
+            let max = fps.next()?.parse::<f64>().ok()?;
+            if !(2..=8192).contains(&width)
+                || !(2..=4320).contains(&height)
+                || !min.is_finite()
+                || !max.is_finite()
+                || min < 1.0
+                || max < min
+                || max > 240.0
+            {
+                return None;
+            }
+            Some(CameraMode {
+                width,
+                height,
+                fps: 30.0f64.clamp(min, max),
+            })
+        })
+        .max_by_key(|mode| {
+            (
+                mode.width.min(1280) * mode.height.min(720),
+                std::cmp::Reverse(mode.width * mode.height),
+            )
+        })
+}
+fn short_error(error: String) -> String {
+    error
+        .lines()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(500)
+        .collect()
+}
+fn capture_camera(
+    camera: &Camera,
+    sink: &mut VideoSink,
+    mode: Option<CameraMode>,
+) -> Result<(), String> {
     let mut command = crate::bridge_media::ffmpeg_command();
     command.args([
         "-hide_banner",
@@ -216,7 +284,11 @@ pub fn capture_video(id: &str, mut sink: VideoSink) -> Result<(), String> {
         },
     ]);
     if cfg!(target_os = "macos") {
-        command.args(["-framerate", "30"]);
+        let fps = mode.as_ref().map_or(30.0, |mode| mode.fps).to_string();
+        command.args(["-framerate", &fps]);
+        if let Some(mode) = mode {
+            command.args(["-video_size", &format!("{}x{}", mode.width, mode.height)]);
+        }
     }
     command.args(["-i", &camera.selector, "-an", "-vf",
         "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30",
@@ -235,7 +307,10 @@ pub fn capture_video(id: &str, mut sink: VideoSink) -> Result<(), String> {
     let stderr = thread::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
             if let Ok(mut message) = error_reader.lock() {
-                *message = line.chars().take(400).collect();
+                if message.len() < 16 * 1024 {
+                    message.push_str(&line.chars().take(500).collect::<String>());
+                    message.push('\n');
+                }
             }
         }
     });
@@ -277,6 +352,8 @@ pub fn capture_video(id: &str, mut sink: VideoSink) -> Result<(), String> {
             if sink.stop.load(Ordering::Relaxed) {
                 break;
             }
+            // Collect the complete supported-mode list before selecting a retry.
+            drop(_process);
             return Err(format!(
                 "Webcam stopped. Check camera access and whether another app is using it. {}",
                 error.lock().map(|s| s.clone()).unwrap_or_default()
@@ -353,6 +430,25 @@ fn decode_bmp(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chooses_native_camera_modes_including_60fps_virtual_cameras() {
+        let text = "[in#0 @ x] Supported modes:\n[in#0 @ x]   1920x1080@[60.000000 60.000000]fps";
+        assert_eq!(
+            supported_mode(text),
+            Some(CameraMode {
+                width: 1920,
+                height: 1080,
+                fps: 60.0
+            })
+        );
+        assert_eq!(
+            supported_mode("640x480@[15 25]fps\n1280x720@[25 25]fps")
+                .unwrap()
+                .fps,
+            25.0
+        );
+        assert!(supported_mode("999999x999999@[60 60]fps\n640x480@[NaN 30]fps").is_none());
+    }
     #[test]
     fn discovery_excludes_audio_and_screen_and_retains_stable_camera_ids() {
         let cams = parse_devices("[AVFoundation @ x] AVFoundation video devices:\n[AVFoundation @ x] [0] Camera\n[AVFoundation @ x] [1] Capture screen 0\n[AVFoundation @ x] AVFoundation audio devices:\n[AVFoundation @ x] [0] Microphone", true);
