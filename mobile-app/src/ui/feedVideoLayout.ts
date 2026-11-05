@@ -23,6 +23,13 @@ export function feedVideoLayers(targets: TalkTarget[], layout: OperatorLayout,
   return pages;
 }
 
-export function feedVideoHeight(cellWidth: number, screenHeight: number, availableHeight: number, cardHeight: number): number {
-  return Math.max(0, Math.min(260, screenHeight * 0.30, cellWidth * 9 / 16 + 4, availableHeight - cardHeight));
+export function feedVideoHeight(cellWidth: number, screenHeight: number, availableHeight: number, cardHeight: number,
+  landscapeRows = 0, gap = 0): number {
+  const natural = cellWidth * 9 / 16 + 4;
+  const normal = Math.max(0, Math.min(260, screenHeight * 0.30, natural, availableHeight - cardHeight));
+  if (landscapeRows <= 0) return normal;
+  // Use spare height above a short landscape grid while retaining every row
+  // and its full controls, rather than limiting the picture to 30% of the screen.
+  const spare = availableHeight - landscapeRows * cardHeight - (landscapeRows - 1) * gap;
+  return Math.max(normal, Math.min(260, natural, spare));
 }

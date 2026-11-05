@@ -19,7 +19,7 @@ export function FeedVideoPlayer({ streamURL, error, stopped, height }: {
           if (width > 0 && videoHeight > 0) setAspect(width / videoHeight);
         }}
       />
-    </View> : <Text style={styles.notice}>{stopped ? 'Video stopped' : error || 'Waiting for video…'}</Text>}
+    </View> : <Text style={styles.notice}>{stopped ? 'Feed stopped' : error || 'Waiting for video…'}</Text>}
   </View>;
 }
 const styles = StyleSheet.create({

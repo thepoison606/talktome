@@ -11,7 +11,7 @@ function element(tag = 'div') {
     setAttribute(key, value) { this.attributes[key] = value; },
     removeAttribute(key) { delete this.attributes[key]; },
     addEventListener(key, fn) { listeners[key] = fn; },
-    dispatch(key) { return listeners[key]?.({ stopPropagation() {} }); },
+    dispatch(key, event = {}) { return listeners[key]?.({ stopPropagation() {}, ...event }); },
     append(...items) { items.forEach(item => this.appendChild(item)); },
     appendChild(item) { this.children.push(item); if (tag === 'select') this.options.push(item); },
     prepend(item) { this.children.unshift(item); }, replaceChildren() { this.children = []; this.options = []; },
@@ -105,6 +105,20 @@ test('advertising a feed does not receive video until expanded; audio controls s
   assert(!h.panel.hidden); assert.equal(h.row.children[0], h.panel);
   assert(h.row.classList.contains('feed-video-expanded'));
   h.button.dispatch('click'); assert(h.consumers[0].closed); assert(h.panel.hidden);
+});
+
+test('the whole feed card toggles video while buttons, sliders and muted audio remain independent', async () => {
+  const h = harness(); h.controller.announce(h.payload);
+  h.row.dispatch('click'); await tick();
+  assert(!h.panel.hidden);
+  const before = h.events.filter(event => event.event === 'consume').length;
+  for (const control of ['button', 'input', '[role="button"]']) {
+    h.row.dispatch('click', { target: { closest: selector => selector.includes(control) ? {} : null } });
+    assert(!h.panel.hidden, `${control} must keep its own action`);
+  }
+  assert.equal(h.events.filter(event => event.event === 'consume').length, before);
+  h.row.dispatch('click'); assert(h.panel.hidden);
+  h.controller.removeProducer('v1'); h.row.dispatch('click'); assert(h.panel.hidden);
 });
 
 test('Stop and hidden layers release video; background pauses without renegotiating audio', async () => {

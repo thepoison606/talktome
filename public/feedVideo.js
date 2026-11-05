@@ -234,6 +234,7 @@
       state.button.setAttribute('aria-label', `${state.button.title}: ${state.name}`);
       state.panel.hidden = !available || !state.expanded;
       state.row.classList.toggle('feed-video-expanded', available && state.expanded);
+      state.row.classList.toggle('feed-video-available', available);
       state.message.textContent = state.error || (isStopped(state.key) ? 'Feed stopped' : state.consumer ? '' : 'Connecting video…');
       state.message.hidden = !state.message.textContent;
     }
@@ -325,6 +326,7 @@
           state.expanded = !state.expanded; state.error = '';
           render(state); onLayoutChange(key); syncVisibility();
         };
+        state.toggleVideo = toggleVideo;
         state.button.addEventListener('click', toggleVideo);
         state.button.addEventListener('keydown', event => {
           if (state.payload && (event.key === 'Enter' || event.key === ' ')) {
@@ -349,11 +351,20 @@
         };
         state.video.addEventListener('loadedmetadata', syncPictureSize);
         state.video.addEventListener('resize', syncPictureSize);
-        state.video.addEventListener('click', () => {
+        state.video.addEventListener('click', event => {
+          if (!state.error) return;
+          event.stopPropagation();
           state.video.play().then(() => { state.error = ''; render(state); }).catch(() => {});
         });
         state.message = doc.createElement('span'); state.message.setAttribute('role', 'status');
         state.panel.append(state.video, state.message);
+      }
+      if (state.clickRow !== row) {
+        row.addEventListener('click', event => {
+          if (event.defaultPrevented || event.target?.closest?.('button, input, select, textarea, a, [role="button"]')) return;
+          state.toggleVideo(event);
+        });
+        state.clickRow = row;
       }
       row.querySelector('.feed-icon').replaceWith(state.button);
       row.prepend(state.panel); render(state);

@@ -81,7 +81,8 @@ export function OperatorScreen() {
   });
   const replyBeside = layout.replyBeside;
   const videoHeight = feedVideoHeight((listWidth || width - 32) / layout.columns - layout.gap,
-    height, availableHeight, layout.cardHeight);
+    height, availableHeight, layout.cardHeight,
+    layout.landscape ? Math.min(layout.rows, Math.ceil(store.targets.length / layout.columns)) : 0, layout.gap);
   const pages = feedVideoLayers(store.targets, layout, expandedVideos, availableHeight, videoHeight);
   const layers = pages.length;
   const safeLayerIndex = Math.min(layerIndex, layers - 1);

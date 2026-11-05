@@ -26,4 +26,13 @@ describe('inline video layers', () => {
     expect(feedVideoHeight(150, 390, 110, 60)).toBe(50);
     expect(feedVideoHeight(1000, 1000, 700, 72)).toBe(260);
   });
+  it('uses spare landscape height for four targets without losing either target row', () => {
+    const layout = operatorLayout({ width: 844, height: 390, availableHeight: 300 });
+    const videoHeight = feedVideoHeight(310, 390, 300, layout.cardHeight, 2, layout.gap);
+    expect(videoHeight).toBeGreaterThan(390 * 0.30);
+    const pages = feedVideoLayers(targets.slice(0, 4), layout, new Set(['feed-2']), 300, videoHeight);
+    expect(pages).toHaveLength(1);
+    expect(pages[0]).toHaveLength(2);
+    expect(pages[0]!.reduce((sum, row) => sum + row.height, layout.gap)).toBeLessThanOrEqual(300);
+  });
 });
