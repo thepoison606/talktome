@@ -6967,7 +6967,8 @@ let cachedOperatorTargets = null;
       const finish = (result) => {
         if (done) return;
         done = true;
-        if (result?.ok && session?.kind === 'feed') feedVideo.setAllowed(result.allowFeedVideo === true);
+        // A fresh login is acknowledged before session is replaced with the feed identity.
+        if (result?.ok && payload.kind === 'feed') feedVideo.setAllowed(result.allowFeedVideo === true);
         resolve(result || {});
       };
       const timer = setTimeout(() => finish({ error: "register-user timeout" }), timeoutMs);
