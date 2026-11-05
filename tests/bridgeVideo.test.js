@@ -66,3 +66,32 @@ test('cancelling while a video transport is being created never starts native ca
   assert(!calls.some(call=>call.command==='start_bridge_video'));
   assert.equal(session.videoStarting,false);assert.equal(session.producerId,'audio-1');
 });
+
+test('administrator permission prevents native video capture without disabling feed audio', async () => {
+  const { context, session, calls } = runtime();
+  session.port.videoAllowed = false;
+  await context.startManagedVideoPath(session); await context.auditManagedVideoStatus();
+  assert(!calls.some(call => call.command === 'start_bridge_video'));
+  assert.equal(session.producerId, 'audio-1'); assert.equal(session.inputReady, true);
+});
+
+test('feed video overrides survive restart, backups and legacy restores', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'talktome-feed-video-permission-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const run = script => execFileSync(process.execPath, ['-e', `const assert=require('node:assert/strict'); const db=require('./src/server/dbHandler'); ${script}`], {
+    cwd: root, env: { ...process.env, TALKTOME_DATA_DIR: dir }, stdio: 'pipe',
+  });
+  run(`const id=Number(db.createFeed('Camera','test-only'));
+    assert.equal(db.getFeedById(id).allow_feed_video,null);
+    assert.throws(()=>db.updateFeedVideoPermission(id,'true'),/boolean/);
+    db.updateFeedVideoPermission(id,true); const snapshot=db.exportDatabaseSnapshot();
+    db.updateFeedVideoPermission(id,false); db.importDatabaseSnapshot(snapshot);
+    assert.equal(db.getAllFeeds()[0].allow_feed_video,1);`);
+  run(`const id=db.getAllFeeds()[0].id; assert.equal(db.getFeedById(id).allow_feed_video,1);
+    db.updateFeedVideoPermission(id,false); assert.equal(db.getFeedById(id).allow_feed_video,0);
+    const old=db.exportDatabaseSnapshot(); old.feeds.forEach(row=>delete row.allow_feed_video);
+    db.importDatabaseSnapshot(old); assert.equal(db.getFeedById(id).allow_feed_video,null);
+    const bad=db.exportDatabaseSnapshot(); bad.feeds[0].allow_feed_video='false';
+    assert.throws(()=>db.importDatabaseSnapshot(bad),/Invalid feed video permission/);
+    assert.equal(db.getAllFeeds().length,1);`);
+});

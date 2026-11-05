@@ -420,6 +420,7 @@ function getAllFeeds() {
     SELECT
       feeds.id,
       feeds.name,
+      feeds.allow_feed_video,
       COALESCE(feed_bridge_endpoints.enabled, 0) AS bridge_enabled,
       COALESCE(feed_bridge_endpoints.bridge_device, '') AS bridge_device,
       COALESCE(feed_bridge_endpoints.input_device, '') AS bridge_input_device,
@@ -434,7 +435,13 @@ function getAllFeeds() {
 }
 
 function getFeedById(id) {
-  return db.prepare('SELECT id, name FROM feeds WHERE id = ?').get(id) || null;
+  return db.prepare('SELECT id, name, allow_feed_video FROM feeds WHERE id = ?').get(id) || null;
+}
+
+function updateFeedVideoPermission(id, allowed) {
+  if (allowed !== null && typeof allowed !== 'boolean') throw new Error('allowFeedVideo must be boolean or null');
+  return db.prepare('UPDATE feeds SET allow_feed_video = ? WHERE id = ?')
+    .run(allowed === null ? null : allowed ? 1 : 0, id).changes > 0;
 }
 
 function normalizeProductionName(value) {
@@ -1102,7 +1109,7 @@ function exportDatabaseSnapshot() {
       ORDER BY id
     `).all(),
     feeds: db.prepare(`
-      SELECT id, name, password, login_token_hash
+      SELECT id, name, password, login_token_hash, allow_feed_video
       FROM feeds
       ORDER BY id
     `).all(),
@@ -1209,6 +1216,12 @@ function importDatabaseSnapshot(snapshot) {
     throw new Error('Snapshot is missing required collections');
   }
 
+  for (const feed of feeds) {
+    if (feed.allow_feed_video != null && ![0, 1, false, true].includes(feed.allow_feed_video)) {
+      throw new Error('Invalid feed video permission in snapshot');
+    }
+  }
+
   // Validate before deleting any data, including names shared by users and feeds.
   assertUniqueLoginNames([...users, ...feeds]);
 
@@ -1248,8 +1261,8 @@ function importDatabaseSnapshot(snapshot) {
       VALUES (?, ?)
     `);
     const insertFeed = db.prepare(`
-      INSERT INTO feeds (id, name, password, login_token_hash)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO feeds (id, name, password, login_token_hash, allow_feed_video)
+      VALUES (?, ?, ?, ?, ?)
     `);
     const insertMembership = db.prepare(`
       INSERT INTO user_conference (user_id, conference_id)
@@ -1369,7 +1382,8 @@ function importDatabaseSnapshot(snapshot) {
         Number(row.id),
         String(row.name),
         String(row.password),
-        row.login_token_hash ? String(row.login_token_hash) : null
+        row.login_token_hash ? String(row.login_token_hash) : null,
+        row.allow_feed_video == null ? null : row.allow_feed_video ? 1 : 0
       );
     });
 
@@ -2395,6 +2409,7 @@ module.exports = {
   getAllConferences,
   getAllFeeds,
   getFeedById,
+  updateFeedVideoPermission,
   getAllProductions,
   getAllProductionMemberships,
   getProductionById,

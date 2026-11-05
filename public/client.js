@@ -3919,6 +3919,10 @@ document.addEventListener("DOMContentLoaded", () => {
     },
   });
 
+  socket.on('feed-video-permission-updated', ({ allowed } = {}) => {
+    if (session?.kind === 'feed') feedVideo.setAllowed(allowed === true);
+  });
+
   const incomingLevelMonitor = window.TalktomeIncomingAudioLevels.createMonitor({
     getTransport: () => recvTransport,
     getAudioContext: () => {
@@ -6963,6 +6967,7 @@ let cachedOperatorTargets = null;
       const finish = (result) => {
         if (done) return;
         done = true;
+        if (result?.ok && session?.kind === 'feed') feedVideo.setAllowed(result.allowFeedVideo === true);
         resolve(result || {});
       };
       const timer = setTimeout(() => finish({ error: "register-user timeout" }), timeoutMs);

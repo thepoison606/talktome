@@ -1611,7 +1611,7 @@ function renderManagedVideoControls(port, draft) {
     options.push({ id: draft.videoSource, name: `${draft.videoSource} (saved, unavailable)` });
   }
   return `<label class="field-group managed-video-source">Video source (optional)
-    <select data-field="videoSource">${options.map(source => `<option value="${escapeHtml(source.id)}"${source.id === draft.videoSource ? ' selected' : ''}>${escapeHtml(source.name)}</option>`).join('')}</select></label>`;
+    <select data-field="videoSource"${port.videoAllowed === false ? ' disabled title="Video disabled by administrator"' : ''}>${options.map(source => `<option value="${escapeHtml(source.id)}"${source.id === draft.videoSource ? ' selected' : ''}>${escapeHtml(source.name)}</option>`).join('')}</select></label>`;
 }
 
 function renderManagedBridgePorts() {
@@ -1676,7 +1676,7 @@ function renderManagedBridgePorts() {
         ${hasOutput ? `<small>${escapeHtml(formatManagedReturnPathStatus(session))}</small>` : "<span></span>"}
         ${port.kind === "user" ? `<small class="managed-port-input-level" data-managed-input-level${draft.trigger?.mode === "audio-level" ? "" : " hidden"}>Input level: waiting…</small>` : ""}
       </div>` : ""}
-      ${port.kind === "feed" && port.videoSource ? `<small>Video: ${escapeHtml(session?.videoError || (session?.videoFrames ? "Live" : "Waiting for source…"))}</small>` : ""}
+      ${port.kind === "feed" && port.videoSource ? `<small>Video: ${escapeHtml(port.videoAllowed === false ? "Disabled by administrator" : session?.videoError || (session?.videoFrames ? "Live" : "Waiting for source…"))}</small>` : ""}
       ${sessionError ? `<div class="managed-port-error">${escapeHtml(sessionError)}</div>` : ""}
       ${editState.error ? `<div class="managed-port-error">${escapeHtml(editState.error)}</div>` : ""}
       </article>
@@ -2927,12 +2927,12 @@ async function stopManagedVideoPath(session) {
 }
 
 async function startManagedVideoPath(session) {
-  if (session.port.kind !== 'feed' || !session.port.videoSource || !session.sessionId || session.videoStarting || session.videoProducerId) return;
+  if (session.port.kind !== 'feed' || session.port.videoAllowed === false || !session.port.videoSource || !session.sessionId || session.videoStarting || session.videoProducerId) return;
   session.videoStarting = true;
   const revision = session.videoRevision || 0;
   const sourceId = session.port.videoSource;
   const path = managedSessionPath(session);
-  const active = () => revision === (session.videoRevision || 0) && session.sessionId && session.port.videoSource === sourceId;
+  const active = () => revision === (session.videoRevision || 0) && session.sessionId && session.port.videoAllowed !== false && session.port.videoSource === sourceId;
   try {
     const transport = await bridgeApi('POST', path + '/video-send-transport', {});
     if (!active()) { await bridgeApi('DELETE', path + '/video').catch(() => {}); return; }
@@ -2954,7 +2954,7 @@ async function startManagedVideoPath(session) {
 }
 
 async function auditManagedVideoStatus() {
-  const feeds = [...managedSessions.values()].filter(session => session.ready && session.port.kind === 'feed' && session.port.videoSource);
+  const feeds = [...managedSessions.values()].filter(session => session.ready && session.port.kind === 'feed' && session.port.videoAllowed !== false && session.port.videoSource);
   if (!feeds.length) return;
   const statuses = await withTimeout(invoke('get_bridge_video_status'), 3000, 'Video status');
   for (const session of feeds) {
@@ -3145,7 +3145,7 @@ async function reconcileManagedBridgeConfig(config) {
     const previousMode = bridgeTalkTrigger.mode(session.port.trigger?.mode);
     const nextMode = bridgeTalkTrigger.mode(nextPort.trigger?.mode);
     const targetsChanged = !managedTalkTargetsMatch(getManagedTriggerTargets(session.port), getManagedTriggerTargets(nextPort));
-    const videoChanged = session.port.videoSource !== nextPort.videoSource;
+    const videoChanged = session.port.videoSource !== nextPort.videoSource || session.port.videoAllowed !== nextPort.videoAllowed;
     if (videoChanged) await stopManagedVideoPath(session);
     session.port = nextPort;
     if (videoChanged && session.ready) await startManagedVideoPath(session);

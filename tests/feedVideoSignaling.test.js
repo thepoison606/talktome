@@ -23,11 +23,12 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
   const configPath = path.join(dir, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({ tlsMode: 'proxy', httpsPort: port, httpPort: 'off', mdnsHost: 'off',
-    multipleProductions: true, mediaNetworkMode: 'manual', mediaAnnouncedAddress: '127.0.0.1' }));
+    multipleProductions: true, defaultClientSettings: { allowFeedVideo: true }, mediaNetworkMode: 'manual', mediaAnnouncedAddress: '127.0.0.1' }));
   const env = { ...process.env, TALKTOME_DATA_DIR: dir, TALKTOME_CONFIG_PATH: configPath, TALKTOME_NO_WIZARD: '1',
     TALKTOME_TLS_MODE: 'proxy', PORT: String(port), HTTPS_PORT: String(port), HTTP_PORT: 'off', MDNS_HOST: 'off', PUBLIC_IP: '127.0.0.1', COMPANION_API_KEY: 'video-test-only-key' };
   execFileSync(process.execPath, ['-e', `
     const db = require('./src/server/dbHandler');
+    const admin = Number(db.createUser('Video admin', 'test-only')); db.setUserAdminRole(admin, true);
     const feed = Number(db.createFeed('Camera', 'test-only'));
     const production = db.getPrimaryProduction().id;
     db.setProductionFeed(production, feed);
@@ -69,8 +70,23 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
     assert(result.ok, JSON.stringify(result));
     return socket;
   }
+  const adminLogin = await fetch(`${origin}/admin/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Video admin', password: 'test-only' }) });
+  assert.equal(adminLogin.status, 200);
+  const adminCookie = adminLogin.headers.get('set-cookie').split(';')[0];
+  async function admin(method, route, body, expected = 200, authenticated = true) {
+    const response = await fetch(origin + route, { method, headers: {
+      'Content-Type': 'application/json', ...(authenticated ? { Cookie: adminCookie } : {}),
+    }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const result = await response.json(); assert.equal(response.status, expected, JSON.stringify(result)); return result;
+  }
+  assert.equal((await admin('GET', '/feeds'))[0].allow_feed_video, null);
+  assert.equal((await admin('GET', '/feeds'))[0].allowFeedVideo, true);
+  await admin('PUT', `/admin/feeds/${fixture.feed}/feed-video`, { allowFeedVideo: 'true' }, 400);
+  await admin('PUT', '/admin/feeds/999999/feed-video', { allowFeedVideo: true }, 404);
+  await admin('PUT', `/admin/feeds/${fixture.feed}/feed-video`, { allowFeedVideo: true }, 401, false);
   const feed = await login('Camera', true), viewer = await login('Viewer', true), native = await login('Native', false), unassigned = await login('Unassigned', true);
-  const announcements = [], nativeAnnouncements = [], closed = [];
+  const announcements = [], nativeAnnouncements = [], closed = [], permissions = [];
+  feed.on('feed-video-permission-updated', event => permissions.push(event.allowed));
   viewer.on('new-producer', event => announcements.push(event));
   native.on('new-producer', event => nativeAnnouncements.push(event));
   viewer.on('producer-closed', event => closed.push(event));
@@ -103,6 +119,17 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   assert.match((await request(viewer, 'produce', { kind: 'video', appData: { type: 'feed', id: fixture.feed }, rtpParameters: {} })).error, /assigned browser feed/);
   assert.match((await request(feed, 'produce', { kind: 'video', appData: { type: 'feed', id: fixture.feed + 1 }, rtpParameters: {} })).error, /assigned browser feed/);
   assert.match((await request(viewer, 'consume-plain', { producerId: video.id, ip: '127.0.0.1', port: 45999 })).error, /browser WebRTC/);
+  // A changed default immediately withdraws existing video, including consumers,
+  // without stopping the audio producer. An explicit per-feed opt-in overrides it.
+  await admin('PUT', '/admin/settings/default-client', { allowFeedVideo: false });
+  await delay(20);
+  assert(permissions.includes(false));
+  assert(closed.some(p => p.producerId === video.id));
+  assert.deepEqual((await request(viewer, 'request-active-producers')).map(p => p.producerId), [audio.id]);
+  assert.match((await produce('video', 10100)).error, /disabled by the administrator/);
+  await admin('PUT', `/admin/feeds/${fixture.feed}/feed-video`, { allowFeedVideo: true });
+  await delay(20); assert(permissions.includes(true));
+  assert.equal((await admin('GET', '/feeds'))[0].allowFeedVideo, true);
   const replacement = await produce('video', 10003); assert(replacement.id);
   await delay(30);
   assert(closed.some(p => p.producerId === video.id));
@@ -158,6 +185,19 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   const audioReplacement = await api('POST', route + '/producers', audioTransport);
   bridgeActive = await request(viewer, 'request-active-producers');
   assert(bridgeActive.some(p => p.producerId === bridgeVideo.id), 'audio restart retains video');
+  await admin('PUT', `/admin/feeds/${fixture.feed}/feed-video`, { allowFeedVideo: false });
+  await delay(20);
+  assert.deepEqual((await request(viewer, 'request-active-producers')).map(p => p.producerId), [audioReplacement.id]);
+  assert(closed.some(p => p.producerId === bridgeVideo.id));
+  const disabledConfig = await api('GET', '/api/v1/bridge/video-test/config');
+  assert.equal(disabledConfig.ports.find(port => port.kind === 'feed').videoAllowed, false);
+  assert.equal(disabledConfig.ports.find(port => port.kind === 'feed').videoSource, inventory.videoSources[0].id);
+  await api('POST', route + '/video-send-transport', {}, 403);
+  await admin('PUT', '/admin/settings/default-client', { allowFeedVideo: true });
+  assert.equal((await admin('GET', '/feeds'))[0].allowFeedVideo, false, 'explicit off overrides a true default');
+  const reset = await admin('PUT', `/admin/feeds/${fixture.feed}/feed-video`, { allowFeedVideo: null });
+  assert.equal(reset.allow_feed_video, null); assert.equal(reset.allowFeedVideo, true);
+  assert.equal((await api('GET', '/api/v1/bridge/video-test/config')).ports.find(port => port.kind === 'feed').videoAllowed, true);
   await api('DELETE', route + '/video');
   bridgeActive = await request(viewer, 'request-active-producers');
   assert.deepEqual(bridgeActive.map(p => p.producerId), [audioReplacement.id]);

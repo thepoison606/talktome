@@ -416,6 +416,7 @@ ensureColumn("users", "panel_settings", "TEXT NOT NULL DEFAULT '{}'");
 ensureColumn("users", "allow_target_rearrange", "INTEGER");
 ensureColumn("users", "allow_target_add_remove", "INTEGER");
 ensureColumn("feeds", "login_token_hash", "TEXT");
+ensureColumn("feeds", "allow_feed_video", "INTEGER");
 ensureColumn("user_bridge_endpoints", "trigger_mode", "TEXT NOT NULL DEFAULT 'external'");
 ensureColumn("user_bridge_endpoints", "trigger_target_type", "TEXT NOT NULL DEFAULT ''");
 ensureColumn("user_bridge_endpoints", "trigger_target_id", "INTEGER");

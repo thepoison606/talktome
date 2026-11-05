@@ -19,6 +19,7 @@
     const cameraPickerStatus = doc.getElementById('feed-camera-picker-status');
     const preview = doc.getElementById('feed-video-preview');
     const senderStatus = doc.getElementById('feed-video-status');
+    let senderAllowed = false;
     let cameraStream = null, videoProducer = null, sendGeneration = 0;
     let selectedCamera = ''; // Intentionally off after each page load; never silently enable a camera.
     let cameras = [], pickerGeneration = 0, pickerBusy = false, cameraProbe = null;
@@ -36,6 +37,10 @@
     const setSenderStatus = text => { if (senderStatus) senderStatus.textContent = text; };
 
     function updateSourceLabel() {
+      if (sourceButton) {
+        sourceButton.disabled = !senderAllowed;
+        sourceButton.title = senderAllowed ? '' : 'Feed video is disabled by the administrator';
+      }
       if (sourceButton) sourceButton.textContent = !selectedCamera ? 'Off — audio only'
         : selectedCamera === 'default' ? 'Default camera'
         : cameras.find(camera => camera.deviceId === selectedCamera)?.label || 'Selected camera (unavailable)';
@@ -72,7 +77,7 @@
     }
 
     async function openCameraPicker() {
-      if (!enabled || sourceButton.disabled || getSession()?.kind !== 'feed' || cameraPicker.open) return;
+      if (!enabled || !senderAllowed || sourceButton.disabled || getSession()?.kind !== 'feed' || cameraPicker.open) return;
       const generation = ++pickerGeneration;
       pickerBusy = true; cameraChoices.replaceChildren();
       cameraPickerStatus.textContent = 'Loading cameras…';
@@ -121,7 +126,10 @@
 
     async function startSending() {
       stopSending();
-      if (!enabled || !selectedCamera || getSession()?.kind !== 'feed' || !isStreaming()) return;
+      if (!enabled || !senderAllowed || !selectedCamera || getSession()?.kind !== 'feed' || !isStreaming()) {
+        if (!senderAllowed) setSenderStatus('Video disabled by administrator — audio only');
+        return;
+      }
       const generation = sendGeneration;
       let captured = null;
       try {
@@ -162,6 +170,20 @@
         if (generation === sendGeneration) {
           stopSending(); setSenderStatus(`Video unavailable — audio continues: ${error.message}`);
         }
+      }
+    }
+
+    function setAllowed(allowed) {
+      const changed = senderAllowed !== (allowed === true);
+      senderAllowed = allowed === true;
+      updateSourceLabel();
+      if (!senderAllowed) {
+        stopSending();
+        pickerGeneration++;
+        if (cameraPicker?.open) cameraPicker.close();
+        setSenderStatus('Video disabled by administrator — audio only');
+      } else if (changed && isStreaming()) {
+        startSending();
       }
     }
 
@@ -349,7 +371,7 @@
     }
     mediaDevices?.addEventListener?.('devicechange', () => refreshCameras().catch(() => {}));
     doc.addEventListener('visibilitychange', syncVisibility);
-    return { startSending, stopSending, attachTarget, announce, removeProducer, reconcile,
+    return { setAllowed, startSending, stopSending, attachTarget, announce, removeProducer, reconcile,
       pruneTargets, syncVisibility, resetReceiving, consumerClosed,
       hasExpanded: () => Array.from(feeds.values()).some(s => s.payload && s.expanded && s.row?.isConnected) };
   }

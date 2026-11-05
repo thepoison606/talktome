@@ -19,7 +19,7 @@ function element(tag = 'div') {
     showModal() { this.open = true; }, close() { this.open = false; listeners.close?.(); }, focus() {},
   };
 }
-function harness({ deferConsume = false, deferCamera = false, denyCamera = false, permissionGated = false } = {}) {
+function harness({ deferConsume = false, deferCamera = false, denyCamera = false, permissionGated = false, allowed = true } = {}) {
   const events = [], consumers = [], tracks = [], sends = [], callbacks = {}, cameraRequests = [];
   let cameraPermission = !permissionGated;
   const nodes = Object.fromEntries(['feed-video-source', 'feed-video-preview', 'feed-video-status', 'feed-camera-picker', 'feed-camera-picker-list', 'feed-camera-picker-status', 'feed-camera-picker-close'].map(id => [id, element()]));
@@ -63,6 +63,7 @@ function harness({ deferConsume = false, deferCamera = false, denyCamera = false
     isStreaming: () => streaming, isStopped: () => stopped, onLayoutChange() {},
     document: doc, mediaDevices, makeStream: items => ({ items }),
   });
+  controller.setAllowed(allowed);
   const row = element(); const icon = element(); row.querySelector = () => icon;
   let button; icon.replaceWith = replacement => { button = replacement; };
   controller.attachTarget(row, 'feed-7', 'Program');
@@ -198,4 +199,25 @@ test('camera chooser permission denial keeps audio-only selection and offers Off
   assert.match(h.nodes['feed-camera-picker-status'].textContent, /Permission denied/);
   assert.deepEqual(h.nodes['feed-camera-picker-list'].children.map(option => option.value), ['']);
   assert.equal(h.sends.length, 0); assert.equal(h.nodes['feed-video-source'].textContent, 'Off — audio only');
+});
+
+test('disabled feeds cannot request camera access; revoking permission closes video but keeps the selection', async () => {
+  const h = harness({ allowed: false }); h.setStreaming(true);
+  await h.openCameraPicker(); await h.controller.startSending();
+  assert.equal(h.cameraRequests.length, 0); assert.equal(h.sends.length, 0);
+  assert.equal(h.nodes['feed-video-source'].disabled, true);
+  h.controller.setAllowed(true); await h.selectCamera('camera1');
+  assert.equal(h.sends.length, 1);
+  h.controller.setAllowed(false);
+  assert(h.tracks.every(track => track.stopped)); assert(h.sends[0].closed);
+  assert.match(h.nodes['feed-video-status'].textContent, /disabled by administrator/);
+  h.controller.setAllowed(true); await tick();
+  assert.equal(h.sends.length, 2);
+});
+
+test('revoking permission during camera permission closes late tracks without producing video', async () => {
+  const h = harness({ deferCamera: true }); h.setStreaming(true);
+  await h.selectCamera('default'); h.controller.setAllowed(false);
+  h.cameraReady(); await tick(); assert(h.tracks.every(track => track.stopped));
+  assert.equal(h.sends.length, 0);
 });

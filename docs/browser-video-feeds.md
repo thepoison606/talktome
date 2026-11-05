@@ -1,5 +1,13 @@
 # Video feeds (feature preview)
 
+## Enable feed video
+
+**Admin → Config → Client defaults → Allow Feed-Video** controls the inherited permission. It is **off** by default. Each Feed has its own **Allow Feed-Video** switch in **Admin → Feeds**; changing it creates an explicit on/off override. **Use client default** clears the override. This permission is enforced by the server for browser and Bridge publishers, and applies to all receivers of that feed.
+
+Turning video off closes its producers and consumers immediately while feed audio continues. Browser camera tracks are stopped; the Bridge stops its video capture after receiving the updated runtime configuration. Camera/source selections remain saved for re-enabling. A running browser feed resumes its previously selected camera when video is allowed again. Old clients cannot bypass the server permission. Permissions survive restarts and configuration backups; feeds in older backups inherit the default.
+
+At the current 1.2 Mbit/s target, one running feed sends approximately 0.54 GB/hour to the server. Each open player adds approximately 1.2 Mbit/s / 0.54 GB/hour to server outbound traffic, plus protocol overhead. Ten simultaneous players of one feed therefore mean about 12 Mbit/s and 5.4 GB/hour outbound. Actual bitrate varies with content and encoder behavior. Collapsed/background/off-layer players do not subscribe, but a running permitted source still sends its single upstream stream. Video encoding happens in the browser/Bridge and decoding on the receiving device; mediasoup forwards packets without transcoding. CPU/memory limits require a benchmark on the intended server.
+
 ## Send a webcam feed
 
 1. Create a Feed in Admin and assign it to the receiving users in the matrix, as for audio feeds.

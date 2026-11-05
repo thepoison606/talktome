@@ -1,5 +1,5 @@
 const bridgeTalkTrigger = require('../../public/bridgeTalkTrigger');
-const { FEED_VIDEO_CODECS, canPublishFeedMedia, canReceiveFeedVideo } = require("./feedVideoPolicy");
+const { isFeedVideoAllowed, FEED_VIDEO_CODECS, canPublishFeedMedia, canReceiveFeedVideo } = require("./feedVideoPolicy");
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
@@ -181,6 +181,7 @@ const {
   getAllConferences,
   getAllFeeds,
   getFeedById,
+  updateFeedVideoPermission,
   getAllProductions,
   getAllProductionMemberships,
   getProductionById,
@@ -1533,6 +1534,7 @@ function buildBridgeRuntimeConfig(bridgeId) {
       },
       output: null,
       videoSource: row.video_source || "",
+      videoAllowed: feedVideoAllowed(row.feed_id),
       updatedAt: row.updated_at || null,
     };
   });
@@ -2787,6 +2789,34 @@ app.get("/users", requireAdmin, (req, res) => {
   })));
 });
 
+function feedVideoAllowed(feedId) {
+  if (!Number.isInteger(Number(feedId)) || Number(feedId) < 1) return false;
+  return isFeedVideoAllowed(getFeedById(feedId), (loadRuntimeConfig() || {}).defaultClientSettings);
+}
+
+function syncFeedVideoPermissions() {
+  closeUnconfiguredBridgeVideo();
+  for (const peer of peers.values()) {
+    if (peer.kind !== 'feed') continue;
+    const allowed = feedVideoAllowed(peer.feedId);
+    if (!allowed) for (const [id, producer] of peer.producers) {
+      if (producer.kind === 'video') { producer.close(); peer.producers.delete(id); }
+    }
+    peer.socket?.emit('feed-video-permission-updated', { allowed });
+  }
+}
+
+app.put('/admin/feeds/:id/feed-video', requireAdmin, (req, res) => {
+  const feed = getFeedById(req.params.id);
+  if (!feed) return res.status(404).json({ error: 'Feed not found' });
+  const allowed = req.body?.allowFeedVideo;
+  if (allowed !== null && typeof allowed !== 'boolean') return res.status(400).json({ error: 'allowFeedVideo must be boolean or null' });
+  updateFeedVideoPermission(feed.id, allowed);
+  syncFeedVideoPermissions();
+  scheduleAdminStatusBroadcast('feed-video-permission-updated');
+  res.json({ ok: true, allowFeedVideo: feedVideoAllowed(feed.id), allow_feed_video: allowed });
+});
+
 function isTargetRearrangeAllowed(user) {
   return canUserRearrangeTargets(user, (loadRuntimeConfig() || {}).defaultClientSettings);
 }
@@ -2884,7 +2914,8 @@ app.get("/conferences", requireAdmin, (req, res) => {
 });
 
 app.get("/feeds", requireAdmin, (req, res) => {
-  res.json(getAllFeeds());
+  const defaults = resolveDefaultClientSettings((loadRuntimeConfig() || {}).defaultClientSettings);
+  res.json(getAllFeeds().map(feed => ({ ...feed, allowFeedVideo: isFeedVideoAllowed(feed, defaults) })));
 });
 
 app.get("/users/:id/conferences", requireAdmin, (req, res) => {
@@ -4594,6 +4625,7 @@ app.put("/admin/settings/default-client", requireAdmin, (req, res) => {
     };
     const configPath = saveRuntimeConfig(updatedConfig);
     getAllUsers().forEach(emitTargetRearrangePermission);
+    syncFeedVideoPermissions();
     return res.json({
       settings: resolveDefaultClientSettings(settings),
       configured: true,
@@ -4814,6 +4846,7 @@ app.post("/admin/config/import", requireAdmin, (req, res) => {
       }
     }
     saveRuntimeConfig(nextConfig);
+    syncFeedVideoPermissions();
     automaticConfigBackup.settingsChanged({
       createImmediately: normalizeAutomaticBackupSettings(nextConfig.automaticBackup).enabled,
     });
@@ -5519,7 +5552,7 @@ app.post(
 // Video has its own transport: changing or losing an NDI/OMT video source
 // must never close the existing feed audio transport/producer.
 function configuredBridgeVideoSource(session) {
-  if (session.closed || session.kind !== 'feed') return '';
+  if (session.closed || session.kind !== 'feed' || !feedVideoAllowed(session.feedId)) return '';
   return getFeedBridgeEndpointsForDevice(session.bridgeId)
     .find(row => Number(row.feed_id) === Number(session.feedId))?.video_source || '';
 }
@@ -7776,7 +7809,7 @@ function warnIfActiveProducerHasNoRecipients({ producer, speakerSocketId, speake
 
 function mayReceiveFeedVideo(producer, speakerPeer, recipientPeer) {
   return canReceiveFeedVideo({
-    producer, recipient: recipientPeer,
+    producer, recipient: recipientPeer, allowed: feedVideoAllowed(producer?.appData?.id),
     sameProduction: arePeersInSameActiveProduction(speakerPeer, recipientPeer),
     assignedFeedIds: getEffectiveFeedIdsForPeer(recipientPeer),
   });
@@ -8175,6 +8208,7 @@ io.on("connection", (socket) => {
       const profileUserId = normalizedKind === "guest" ? peer.guestProfileUserId : peer.userId;
       callback({
         ok: true,
+        allowFeedVideo: normalizedKind === 'feed' && feedVideoAllowed(peer.feedId),
         allowTargetRearrange: normalizedKind === 'user' && isTargetRearrangeAllowed(getUserById(peer.userId)),
         allowTargetAddRemove: normalizedKind === 'user' && isTargetAddRemoveAllowed(getUserById(peer.userId)),
         productionId: peer.productionId ?? null,
@@ -9004,8 +9038,9 @@ io.on("connection", (socket) => {
             return callback({ error: "Peer not registered" });
           }
 
-          if (!canPublishFeedMedia({ peer, kind, appData })) {
-            return callback({ error: "Video is only supported for the assigned browser feed" });
+          if (!canPublishFeedMedia({ peer, kind, appData, allowed: kind === 'audio' || feedVideoAllowed(peer.feedId) })) {
+            return callback({ error: kind === 'video' && peer.kind === 'feed' && !feedVideoAllowed(peer.feedId)
+              ? 'Feed video is disabled by the administrator' : 'Video is only supported for the assigned browser feed' });
           }
           appData = { ...appData, mediaKind: kind };
 
@@ -9049,6 +9084,10 @@ io.on("connection", (socket) => {
             rtpParameters,
             appData,
           });
+          if (kind === 'video' && !feedVideoAllowed(peer.feedId)) {
+            producer.close();
+            return callback({ error: 'Feed video is disabled by the administrator' });
+          }
           attachProducerMediaDiagnostics(producer, `webrtc:${peer.kind}:${peer.userId ?? peer.feedId ?? socket.id}`);
 
           producer.__startedAt = Date.now();

@@ -14,6 +14,7 @@ const BUILTIN_DEFAULT_CLIENT_SETTINGS = Object.freeze({
   lockMultipleTargets: false,
   allowTargetRearrange: true,
   allowTargetAddRemove: false,
+  allowFeedVideo: false,
 });
 
 const DEFAULT_CLIENT_SETTING_KEYS = Object.freeze(Object.keys(BUILTIN_DEFAULT_CLIENT_SETTINGS));

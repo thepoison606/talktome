@@ -1,11 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { FEED_VIDEO_CODECS, canPublishFeedMedia, canReceiveFeedVideo } = require('../src/server/feedVideoPolicy');
+const { isFeedVideoAllowed, FEED_VIDEO_CODECS, canPublishFeedMedia, canReceiveFeedVideo } = require('../src/server/feedVideoPolicy');
 const { packRows } = require('../public/targetLayers');
 
 test('only an opted-in feed may publish its own video; audio retains existing authorization', () => {
   const peer = { kind: 'feed', feedId: 7, feedVideo: true };
-  const args = { peer, kind: 'video', appData: { type: 'feed', id: 7 } };
+  const args = { allowed: true, peer, kind: 'video', appData: { type: 'feed', id: 7 } };
   assert(canPublishFeedMedia(args));
   for (const patch of [ { peer: { ...peer, feedVideo: false } }, { peer: { ...peer, kind: 'user' } },
     { appData: { type: 'feed', id: 8 } }, { appData: { type: 'user', id: 7 } }, { kind: 'screen' } ]) {
@@ -16,7 +16,7 @@ test('only an opted-in feed may publish its own video; audio retains existing au
 });
 
 test('video cannot leak to other productions, unassigned targets or old/native clients', () => {
-  const args = { producer: { kind: 'video', appData: { type: 'feed', id: 7 } },
+  const args = { allowed: true, producer: { kind: 'video', appData: { type: 'feed', id: 7 } },
     recipient: { kind: 'user', feedVideo: true }, sameProduction: true, assignedFeedIds: [7] };
   assert(canReceiveFeedVideo(args));
   assert(canReceiveFeedVideo({ ...args, recipient: { kind: 'guest', feedVideo: true } }));
@@ -32,4 +32,15 @@ test('a video row moves targets to another layer while remaining rows keep their
   assert.deepEqual(packRows([80, 260, 80, 80], 320, 8), [0, 1, 2, 2]);
   assert.deepEqual(packRows([80, 80, 80, 80], 320, 8), [0, 0, 0, 1]);
   assert.deepEqual(packRows([500, 80], 320, 8), [0, 1]);
+});
+
+test('feed overrides inherit defaults and may explicitly enable or disable video', () => {
+  assert.equal(isFeedVideoAllowed({}), false);
+  assert.equal(isFeedVideoAllowed({}, { allowFeedVideo: true }), true);
+  assert.equal(isFeedVideoAllowed({ allow_feed_video: 0 }, { allowFeedVideo: true }), false);
+  assert.equal(isFeedVideoAllowed({ allow_feed_video: 1 }, { allowFeedVideo: false }), true);
+  assert.equal(isFeedVideoAllowed(null, { allowFeedVideo: true }), false);
+  assert.equal(canPublishFeedMedia({ peer: { kind: 'feed', feedId: 1, feedVideo: true }, kind: 'video', appData: { type: 'feed', id: 1 } }), false);
+  assert.equal(canPublishFeedMedia({ kind: 'audio', allowed: false }), true);
+  assert.equal(canReceiveFeedVideo({ allowed: false, producer: { kind: 'video', appData: { type: 'feed', id: 1 } }, recipient: { kind: 'user', feedVideo: true }, sameProduction: true, assignedFeedIds: [1] }), false);
 });

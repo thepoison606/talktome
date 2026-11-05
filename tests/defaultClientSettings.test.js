@@ -75,3 +75,9 @@ test("incoming meter defaults apply until a user saves an explicit preference", 
   const disabled = resolveDefaultClientSettings({ showIncomingLevels: false });
   assert.equal(resolveUserAudioSettings({ showIncomingLevels: true }, disabled).showIncomingLevels, true);
 });
+
+test('feed video defaults to off and only accepts boolean configuration', () => {
+  assert.equal(resolveDefaultClientSettings({}).allowFeedVideo, false);
+  assert.equal(resolveDefaultClientSettings({ allowFeedVideo: true }).allowFeedVideo, true);
+  assert.throws(() => normalizeConfiguredDefaultClientSettings({ allowFeedVideo: 'true' }, { strict: true }), /boolean/);
+});

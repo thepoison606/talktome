@@ -127,6 +127,7 @@ const defaultClientIncomingLevels = document.getElementById('default-client-inco
 const defaultClientLeftHand = document.getElementById('default-client-left-hand');
 const defaultClientBigMainButton = document.getElementById('default-client-big-main-button');
 const defaultClientLockMultiple = document.getElementById('default-client-lock-multiple');
+const defaultClientAllowFeedVideo = document.getElementById('default-client-allow-feed-video');
 const defaultClientAllowTargetAddRemove = document.getElementById('default-client-allow-target-add-remove');
 const defaultClientAllowTargetRearrange = document.getElementById('default-client-allow-target-rearrange');
 const adminImageLightbox = document.getElementById('admin-image-lightbox');
@@ -3066,6 +3067,25 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
   syncStopTransmissionButtons();
 }
 
+async function saveFeedVideoPermission(feedId, allowed, control) {
+  if (control) control.disabled = true;
+  try {
+    const response = await authedFetch(`/admin/feeds/${feedId}/feed-video`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allowFeedVideo: allowed }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || 'Failed to save feed video permission');
+    await refreshAdminLists({ feeds: true });
+    showMessage('Feed video permission saved', 'success', 'feed');
+  } catch (error) {
+    if (control?.type === 'checkbox') control.checked = !allowed;
+    showMessage(error.message, 'error', 'feed');
+  } finally {
+    if (control) control.disabled = false;
+  }
+}
+
 async function renderFeedList(feeds) {
   const feedList = document.getElementById('feed-list');
   feedList.innerHTML = '';
@@ -3095,6 +3115,15 @@ async function renderFeedList(feeds) {
         </div>
       </div>
       <div class="nested" id="feed-nested-${feed.id}" onclick="event.stopPropagation()">
+        <div class="nested-block feed-video-permission">
+          <label class="admin-switch" title="Allow this feed to transmit video. Audio is unaffected.">
+            <input type="checkbox" role="switch" onchange="saveFeedVideoPermission(${feed.id}, this.checked, this)" ${feed.allowFeedVideo ? 'checked' : ''}>
+            <span class="admin-switch__track" aria-hidden="true"></span>
+            <span>Allow Feed-Video</span>
+          </label>
+          <span class="permission-origin">${feed.allow_feed_video == null ? 'Using client default' : 'Feed override'}</span>
+          ${feed.allow_feed_video == null ? '' : `<button type="button" class="small" onclick="saveFeedVideoPermission(${feed.id}, null, this)">Use client default</button>`}
+        </div>
         <div class="nested-block">
           <form class="bridge-config-form" id="bridge-config-${formKey}" data-bridge-config-key="${formKey}" onsubmit="saveFeedBridgeEndpoint(event, ${feed.id})">
             <label class="admin-switch bridge-input-switch" for="bridge-enabled-${formKey}">
@@ -3405,6 +3434,7 @@ async function loadDefaultClientSettings() {
   if (defaultClientLockMultiple) defaultClientLockMultiple.checked = settings.lockMultipleTargets === true;
   if (defaultClientAllowTargetRearrange) defaultClientAllowTargetRearrange.checked = settings.allowTargetRearrange !== false;
   if (defaultClientAllowTargetAddRemove) defaultClientAllowTargetAddRemove.checked = settings.allowTargetAddRemove === true;
+  if (defaultClientAllowFeedVideo) defaultClientAllowFeedVideo.checked = settings.allowFeedVideo === true;
   return payload;
 }
 
@@ -4703,6 +4733,7 @@ if (defaultClientSettingsForm) {
       lockMultipleTargets: Boolean(defaultClientLockMultiple?.checked),
       allowTargetRearrange: Boolean(defaultClientAllowTargetRearrange?.checked),
       allowTargetAddRemove: Boolean(defaultClientAllowTargetAddRemove?.checked),
+      allowFeedVideo: Boolean(defaultClientAllowFeedVideo?.checked),
     };
 
     if (submitButton) submitButton.disabled = true;
@@ -4715,7 +4746,7 @@ if (defaultClientSettingsForm) {
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to save default client settings');
       await loadDefaultClientSettings();
-      await refreshAdminLists({ users: true });
+      await refreshAdminLists({ users: true, feeds: true });
       showMessage('✅ Default client settings saved', 'success', 'config');
     } catch (error) {
       console.error('Failed to save default client settings:', error);
