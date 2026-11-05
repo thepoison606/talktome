@@ -459,6 +459,12 @@ h3 {
 .managed-port-trigger-grid--simple > :first-child { grid-column: 1 / -1; }
 .managed-port-control--targets { grid-column: 1 / -1; margin-top: .35rem; }
 .managed-port-control .tt-target-picker__chip > span { color: #e2e8f0; font-size: .85rem; font-weight: 400; }
+.managed-port-control .tt-target-picker .tt-target-picker__edit,
+.managed-port-control .tt-target-picker .tt-target-picker__edit:hover {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
 
 .managed-port-control {
   align-content: start;

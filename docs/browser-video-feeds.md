@@ -1,4 +1,4 @@
-# Video feeds (feature preview)
+# Video feeds (v1.6.0)
 
 ## Enable feed video
 
@@ -27,7 +27,7 @@ Closed video windows, videos on another target layer, and backgrounded pages do 
 
 ## Scope and constraints
 
-- Video sources: browser webcam or local webcams/NDI/OMT in the native Bridge. Receivers: web client and iOS/Android apps from this feature branch. Older native apps, audio-only Bridges and headless clients keep their existing audio-only behavior.
+- Video sources: browser webcam or local webcams/NDI/OMT in the native Bridge. Receivers: web client and video-capable iOS/Android apps. Older native apps, audio-only Bridges and headless clients keep their existing audio-only behavior.
 - Only an authenticated Feed may publish its own camera stream. Viewing requires the same effective Feed assignment as audio in the receiver's current production.
 - Browser capture aims for up to 1280×720 at 15 fps and a video bitrate cap of 1.2 Mbit/s. Bridge capture supports up to 1280×720 at 30 fps with a 2.4 Mbit/s target. Actual resolution/rate depends on the camera, browser and available bandwidth. Each open receiver needs additional server outbound bandwidth.
 - The router negotiates VP8 or H.264; it does not transcode. Browser codec compatibility is therefore required. See [mediasoup RTP negotiation](https://mediasoup.org/documentation/v3/mediasoup/rtp-parameters-and-capabilities/).
@@ -42,7 +42,7 @@ Before merging, manually check a real webcam between current Chrome and Safari, 
 
 ## Send a webcam, NDI or OMT feed through the Bridge
 
-Use the Bridge and server from `feature/video-feeds`; older Bridge versions only publish audio. In **Admin → Feeds**, enable **Use this feed as bridge input** and select the Bridge. Keep the audio input and channel selection as before. Under **Video source (optional)**, choose a discovered webcam, NDI or OMT source, then save. The same selector is available on the Feed card inside the native Bridge. **Off** removes only video. For video-only sources, leave the audio input empty.
+Use Bridge and server v1.6.0 or newer; older Bridge versions only publish audio. In **Admin → Feeds**, enable **Use this feed as bridge input** and select the Bridge. Keep the audio input and channel selection as before. Under **Video source (optional)**, choose a discovered webcam, NDI or OMT source, then save. The same selector is available on the Feed card inside the native Bridge. **Off** removes only video. For video-only sources, leave the audio input empty.
 
 Video and audio can come from the same network source or from separate sources (for example an NDI picture and a sound card). The new video path is independent of audio: video failures and video-source changes restart only video. A missing source is retried automatically. Feed video is visible only to assigned, video-capable receivers; older native apps and audio-only Bridges remain audio-only receivers.
 
