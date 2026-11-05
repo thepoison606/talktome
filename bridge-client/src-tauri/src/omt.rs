@@ -1063,19 +1063,31 @@ pub(crate) mod tests {
                 api: Arc::clone(&api),
                 sender,
             };
-            let mut pixels = vec![180u8; 320 * 180 * 4];
+            let mut pixels = vec![180u8; 1280 * 720 * 4];
+            let mut next = Instant::now();
+            let mut frame_number = 0usize;
             while !sender_stop.load(Ordering::Relaxed) {
+                // Move a visible bar across the full 720p picture rather than
+                // benchmarking an unchanging frame that the codec can skip.
+                for y in 0..720 {
+                    for x in 0..1280 {
+                        let value = if (x + frame_number * 12) % 1280 < 80 { 50 } else { 180 };
+                        let offset = (y * 1280 + x) * 4;
+                        pixels[offset..offset + 3].fill(value);
+                    }
+                }
+                frame_number = frame_number.wrapping_add(1);
                 let mut frame = OmtMediaFrame {
                     frame_type: 2,
                     timestamp: -1,
                     codec: i32::from_le_bytes(*b"BGRA"),
-                    width: 320,
-                    height: 180,
-                    stride: 320 * 4,
+                    width: 1280,
+                    height: 720,
+                    stride: 1280 * 4,
                     flags: 0,
-                    frame_rate_n: 15,
+                    frame_rate_n: 30,
                     frame_rate_d: 1,
-                    aspect_ratio: 320.0 / 180.0,
+                    aspect_ratio: 1280.0 / 720.0,
                     color_space: 709,
                     sample_rate: 0,
                     channels: 0,
@@ -1088,7 +1100,8 @@ pub(crate) mod tests {
                     frame_metadata_length: 0,
                 };
                 assert!(unsafe { (api.send)(sender, &mut frame) } >= 0);
-                thread::sleep(Duration::from_millis(67));
+                next += Duration::from_nanos(1_000_000_000 / 30);
+                thread::sleep(next.saturating_duration_since(Instant::now()));
             }
         });
         thread::sleep(Duration::from_millis(750));
@@ -1174,6 +1187,7 @@ pub(crate) fn capture_video_at_address(
             ));
         }
         let length = usize::try_from(frame.data_length).map_err(|_| "Invalid OMT video length")?;
+        sink.set_source_rate(frame.frame_rate_n, frame.frame_rate_d);
         // libomt owns the frame until the next receive; copying never retains its pointer.
         unsafe {
             sink.bgra(

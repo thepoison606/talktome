@@ -1306,26 +1306,39 @@ pub(crate) mod tests {
             type SendVideo = unsafe extern "C" fn(NdiInstance, *const NdiVideoFrame);
             let send: SendVideo =
                 unsafe { *api._library.get(b"NDIlib_send_send_video_v2\0").unwrap() };
-            let mut pixels = vec![180u8; 320 * 180 * 4];
+            let mut pixels = vec![180u8; 1280 * 720 * 4];
+            let mut next = Instant::now();
+            let mut frame_number = 0usize;
             while !sender_stop.load(Ordering::Relaxed) {
+                // Move a visible bar across the full 720p picture rather than
+                // benchmarking an unchanging frame that the codec can skip.
+                for y in 0..720 {
+                    for x in 0..1280 {
+                        let value = if (x + frame_number * 12) % 1280 < 80 { 50 } else { 180 };
+                        let offset = (y * 1280 + x) * 4;
+                        pixels[offset..offset + 3].fill(value);
+                    }
+                }
+                frame_number = frame_number.wrapping_add(1);
                 let frame = NdiVideoFrame {
-                    width: 320,
-                    height: 180,
+                    width: 1280,
+                    height: 720,
                     fourcc: i32::from_le_bytes(*b"BGRA"),
-                    frame_rate_n: 15,
+                    frame_rate_n: 30,
                     frame_rate_d: 1,
                     aspect_ratio: 0.0,
                     frame_format: 1,
                     timecode: NDI_TIMECODE_SYNTHESIZE,
                     data: pixels.as_mut_ptr(),
-                    stride: 320 * 4,
+                    stride: 1280 * 4,
                     metadata: ptr::null(),
                     timestamp: 0,
                 };
                 unsafe {
                     send(sender, &frame);
                 };
-                thread::sleep(Duration::from_millis(67));
+                next += Duration::from_nanos(1_000_000_000 / 30);
+                thread::sleep(next.saturating_duration_since(Instant::now()));
             }
         });
         thread::sleep(Duration::from_millis(750));
@@ -1409,6 +1422,7 @@ pub fn capture_video(
             )
         };
         if kind == 1 {
+            sink.set_source_rate(frame.frame_rate_n, frame.frame_rate_d);
             let result = if [i32::from_le_bytes(*b"BGRA"), i32::from_le_bytes(*b"BGRX")]
                 .contains(&frame.fourcc)
             {

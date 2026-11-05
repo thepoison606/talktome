@@ -14,6 +14,63 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+const MAX_VIDEO_FPS: f64 = 30.0;
+const VIDEO_BITRATE: u32 = 2_400_000;
+
+/// Keep the source cadence (50 -> 25, 59.94 -> 29.97) instead of unevenly
+/// sampling every 67 ms. A small arrival-time tolerance avoids halving 30 fps
+/// sources when consecutive frames arrive just below the nominal interval.
+struct FramePacer {
+    interval: Duration,
+    next: Option<Instant>,
+}
+impl Default for FramePacer {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs_f64(1.0 / MAX_VIDEO_FPS),
+            next: None,
+        }
+    }
+}
+impl FramePacer {
+    fn set_source_rate(&mut self, numerator: i32, denominator: i32) {
+        let source = if numerator > 0 && denominator > 0 {
+            f64::from(numerator) / f64::from(denominator)
+        } else {
+            MAX_VIDEO_FPS
+        };
+        let source = if (1.0..=240.0).contains(&source) {
+            source
+        } else {
+            MAX_VIDEO_FPS
+        };
+        let rate = source / (source / MAX_VIDEO_FPS).ceil();
+        let interval = Duration::from_secs_f64(1.0 / rate);
+        if self.interval != interval {
+            self.interval = interval;
+            self.next = None;
+        }
+    }
+    fn accept(&mut self, now: Instant) -> bool {
+        let tolerance = Duration::from_millis(2);
+        if let Some(next) = self.next {
+            if now + tolerance < next {
+                return false;
+            }
+            // Preserve phase across ordinary jitter, but never catch up with a
+            // burst after a stalled/disconnected source.
+            self.next = Some(if now.saturating_duration_since(next) < self.interval {
+                next + self.interval
+            } else {
+                now + self.interval
+            });
+        } else {
+            self.next = Some(now + self.interval);
+        }
+        true
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoSource {
@@ -62,9 +119,12 @@ pub struct VideoSink {
     sender: SyncSender<RawFrame>,
     pub stop: Arc<AtomicBool>,
     stats: Arc<Counters>,
-    last_copy: Option<Instant>,
+    pacer: FramePacer,
 }
 impl VideoSink {
+    pub fn set_source_rate(&mut self, numerator: i32, denominator: i32) {
+        self.pacer.set_source_rate(numerator, denominator);
+    }
     /// The backend owns `data` until this call returns. Validate geometry before
     /// copying and keep only one queued frame so a slow encoder cannot backlog.
     pub unsafe fn bgra(
@@ -76,12 +136,6 @@ impl VideoSink {
         data_length: Option<usize>,
     ) -> Result<(), String> {
         let now = Instant::now();
-        if self
-            .last_copy
-            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(67))
-        {
-            return Ok(());
-        }
         let (w, h) = (
             usize::try_from(width).unwrap_or(0),
             usize::try_from(height).unwrap_or(0),
@@ -105,12 +159,14 @@ impl VideoSink {
         {
             return Err("Invalid network video buffer length".into());
         }
+        if !self.pacer.accept(now) {
+            return Ok(());
+        }
         let input = unsafe { std::slice::from_raw_parts(data, required) };
         let mut bytes = vec![0; row * h];
         for y in 0..h {
             bytes[y * row..(y + 1) * row].copy_from_slice(&input[y * step..y * step + row]);
         }
-        self.last_copy = Some(now);
         match self.sender.try_send(RawFrame {
             data: bytes,
             width: w,
@@ -190,12 +246,12 @@ impl VideoManager {
             .set_write_timeout(Some(Duration::from_millis(100)))
             .map_err(|e| e.to_string())?;
         let config = EncoderConfig::new()
-            .bitrate(BitRate::from_bps(1_200_000))
-            .max_frame_rate(FrameRate::from_hz(15.0))
+            .bitrate(BitRate::from_bps(VIDEO_BITRATE))
+            .max_frame_rate(FrameRate::from_hz(MAX_VIDEO_FPS as f32))
             .profile(Profile::Baseline)
             .level(Level::Level_3_1)
-            .num_threads(1)
-            .intra_frame_period(IntraFramePeriod::from_num_frames(15));
+            .num_threads(2)
+            .intra_frame_period(IntraFramePeriod::from_num_frames(MAX_VIDEO_FPS as u32));
         let mut encoder = Encoder::with_api_config(openh264::OpenH264API::from_source(), config)
             .map_err(|e| e.to_string())?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -206,7 +262,7 @@ impl VideoManager {
             sender,
             stop: Arc::clone(&stop),
             stats: Arc::clone(&stats),
-            last_copy: None,
+            pacer: FramePacer::default(),
         };
         let capture_stats = Arc::clone(&stats);
         let capture_stop = Arc::clone(&stop);
@@ -477,6 +533,46 @@ pub(crate) mod tests {
     use super::*;
     use openh264::formats::YUVSource;
 
+    #[test]
+    fn frame_pacer_keeps_source_cadence_despite_arrival_jitter() {
+        for (n, d, count, expected) in [
+            (25, 1, 250, 250),
+            (30, 1, 300, 300),
+            (50, 1, 500, 250),
+            (60, 1, 600, 300),
+            (30000, 1001, 300, 300),
+            (60000, 1001, 600, 300),
+        ] {
+            let mut pacer = FramePacer::default();
+            let start = Instant::now();
+            let mut accepted = 0;
+            for frame in 0..count {
+                pacer.set_source_rate(n, d);
+                let jitter = if frame % 2 == 0 { 0.0007 } else { 0.0 };
+                let now =
+                    start + Duration::from_secs_f64(f64::from(frame * d) / f64::from(n) + jitter);
+                accepted += usize::from(pacer.accept(now));
+            }
+            assert_eq!(accepted, expected, "source {n}/{d}");
+        }
+    }
+
+    #[test]
+    fn frame_pacer_resets_after_stalls_and_rate_changes_without_a_burst() {
+        let mut pacer = FramePacer::default();
+        let start = Instant::now();
+        assert!(pacer.accept(start));
+        let resumed = start + Duration::from_secs(5);
+        assert!(pacer.accept(resumed));
+        assert!(!pacer.accept(resumed + Duration::from_millis(5)));
+        pacer.set_source_rate(50, 1);
+        assert!(pacer.accept(resumed + Duration::from_millis(20)));
+        assert!(!pacer.accept(resumed + Duration::from_millis(40)));
+        assert!(pacer.accept(resumed + Duration::from_millis(60)));
+        pacer.set_source_rate(0, 0);
+        assert_eq!(pacer.interval, Duration::from_secs_f64(1.0 / 30.0));
+    }
+
     fn depacketize(packets: &[Vec<u8>]) -> Vec<u8> {
         let mut annex = Vec::new();
         for packet in packets {
@@ -551,7 +647,7 @@ pub(crate) mod tests {
             sender: tx,
             stop: Arc::new(AtomicBool::new(false)),
             stats: Arc::new(Counters::default()),
-            last_copy: None,
+            pacer: FramePacer::default(),
         };
         let small = [0u8; 16];
         assert!(unsafe { sink.bgra(10, 10, 40, small.as_ptr(), Some(small.len())) }.is_err());
@@ -593,6 +689,7 @@ pub(crate) mod tests {
             .env("TALKTOME_VIDEO_TEST_NAME", name)
             .output()
             .expect("start network video probe");
+        print!("{}", String::from_utf8_lossy(&output.stdout));
         assert!(
             output.status.success(),
             "video probe failed: {}\n{}",
@@ -650,7 +747,8 @@ pub(crate) mod tests {
         let mut decoder = openh264::decoder::Decoder::new().unwrap();
         let mut received = Vec::new();
         let mut buffer = [0u8; 2048];
-        let mut decoded = false;
+        let mut decoded = 0;
+        let mut first_picture = None;
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             let Ok(size) = socket.recv(&mut buffer) else {
@@ -662,17 +760,29 @@ pub(crate) mod tests {
             received.push(buffer[..size].to_vec());
             if buffer[1] & 128 != 0 {
                 if let Some(picture) = decoder.decode(&depacketize(&received)).unwrap() {
-                    assert_eq!(picture.dimensions(), (320, 180));
+                    assert_eq!(picture.dimensions(), (1280, 720));
                     assert!(picture.y().iter().any(|value| *value > 50));
-                    decoded = true;
-                    break;
+                    decoded += 1;
+                    let first = *first_picture.get_or_insert_with(Instant::now);
+                    if first.elapsed() >= Duration::from_secs(3) {
+                        let fps = (decoded - 1) as f64 / first.elapsed().as_secs_f64();
+                        println!("{protocol}: decoded {decoded} 720p pictures, {fps:.1} fps");
+                        assert!(
+                            fps >= 24.0,
+                            "network video frame rate too low: {fps:.1} fps"
+                        );
+                        break;
+                    }
                 }
                 received.clear();
             }
         }
         let status = manager.status().unwrap();
         manager.stop_all().unwrap();
-        assert!(decoded, "no decoded network picture: {status:?}");
+        assert!(
+            decoded >= 73,
+            "insufficient decoded network video: {decoded} pictures, {status:?}"
+        );
         assert!(manager.status().unwrap().is_empty());
     }
 }

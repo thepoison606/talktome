@@ -6,7 +6,7 @@
 
 Turning video off closes its producers and consumers immediately while feed audio continues. Browser camera tracks are stopped; the Bridge stops its video capture after receiving the updated runtime configuration. Camera/source selections remain saved for re-enabling. A running browser feed resumes its previously selected camera when video is allowed again. Old clients cannot bypass the server permission. Permissions survive restarts and configuration backups; feeds in older backups inherit the default.
 
-At the current 1.2 Mbit/s target, one running feed sends approximately 0.54 GB/hour to the server. Each open player adds approximately 1.2 Mbit/s / 0.54 GB/hour to server outbound traffic, plus protocol overhead. Ten simultaneous players of one feed therefore mean about 12 Mbit/s and 5.4 GB/hour outbound. Actual bitrate varies with content and encoder behavior. Collapsed/background/off-layer players do not subscribe, but a running permitted source still sends its single upstream stream. Video encoding happens in the browser/Bridge and decoding on the receiving device; mediasoup forwards packets without transcoding. CPU/memory limits require a benchmark on the intended server.
+Browser ingest targets 1.2 Mbit/s (approximately 0.54 GB/hour); Bridge ingest targets 2.4 Mbit/s (approximately 1.08 GB/hour) to support the higher frame rate. Each open player adds the source bitrate to server outbound traffic, plus protocol overhead. Ten simultaneous players of one Bridge feed therefore mean about 24 Mbit/s and 10.8 GB/hour outbound. Actual bitrate varies with content and encoder behavior. Collapsed/background/off-layer players do not subscribe, but a running permitted source still sends its single upstream stream. Video encoding happens in the browser/Bridge and decoding on the receiving device; mediasoup forwards packets without transcoding. CPU/memory limits require a benchmark on the intended server.
 
 ## Send a webcam feed
 
@@ -29,7 +29,7 @@ Closed video windows, videos on another target layer, and backgrounded pages do 
 
 - Video sources: browser webcam or NDI/OMT in the native Bridge. Receivers: web client and iOS/Android apps from this feature branch. Older native apps, audio-only Bridges and headless clients keep their existing audio-only behavior.
 - Only an authenticated Feed may publish its own camera stream. Viewing requires the same effective Feed assignment as audio in the receiver's current production.
-- Capture aims for up to 1280×720 at 15 fps and a video bitrate cap of 1.2 Mbit/s. Actual resolution/rate depends on the camera, browser and available bandwidth. Each open receiver needs additional server outbound bandwidth.
+- Browser capture aims for up to 1280×720 at 15 fps and a video bitrate cap of 1.2 Mbit/s. Bridge capture supports up to 1280×720 at 30 fps with a 2.4 Mbit/s target. Actual resolution/rate depends on the camera, browser and available bandwidth. Each open receiver needs additional server outbound bandwidth.
 - The router negotiates VP8 or H.264; it does not transcode. Browser codec compatibility is therefore required. See [mediasoup RTP negotiation](https://mediasoup.org/documentation/v3/mediasoup/rtp-parameters-and-capabilities/).
 - Video does not change the existing low-latency audio path. Frame-accurate audio/video synchronization is not provided.
 - Screen sharing, recording and mobile camera publishing are outside this preview.
@@ -46,7 +46,7 @@ Use the Bridge and server from `feature/video-feeds`; older Bridge versions only
 
 Video and audio can come from the same network source or from separate sources (for example an NDI picture and a sound card). The new video path is independent of audio: video failures and video-source changes restart only video. A missing source is retried automatically. Feed video is visible only to assigned, video-capable receivers; older native apps and audio-only Bridges remain audio-only receivers.
 
-The Bridge uses the installed NDI Runtime and bundled OMT/VMX runtime. No NDI SDK/runtime is redistributed. It decodes network video to BGRA, scales it to at most 1280×720 at 15 fps, and encodes H.264 Baseline in software at a target of 1.2 Mbit/s. Each source requires an additional network receiver and encoder, so CPU, source bandwidth and memory increase per enabled Feed. This is a preview implementation, not an NDI/OMT passthrough or video output. Progressive sources with square pixels are recommended. Frame-accurate audio/video synchronization is not guaranteed.
+The Bridge uses the installed NDI Runtime and bundled OMT/VMX runtime. No NDI SDK/runtime is redistributed. It decodes network video to BGRA, scales it to at most 1280×720 at 30 fps, and encodes H.264 Baseline in software at a target of 2.4 Mbit/s using two encoder threads. Frame pacing follows the source cadence: 25/30 fps sources retain their rate; 50/60 fps sources use 25/30 fps (including fractional rates such as 29.97). Arrival jitter does not repeatedly reset the frame deadline. A single queued frame bounds encoder backlog; under CPU pressure frames are dropped instead of building latency. Each source requires an additional network receiver and encoder, so CPU, source bandwidth and memory increase per enabled Feed. This is a preview implementation, not an NDI/OMT passthrough or video output. Progressive sources with square pixels are recommended. Frame-accurate audio/video synchronization is not guaranteed.
 
 The H.264 sender uses separate RTP/RTCP from audio, periodic keyframes and sender reports. Its license notices are included in the Bridge's `licenses` resources. Existing audio-only FFmpeg builds do not need video codecs added.
 
@@ -87,3 +87,5 @@ video transport are released. Audio keeps its own transport and existing iOS bac
 playback handoff. Returning to the page reconnects expanded video targets; it does not
 restart feeds that the listener explicitly stopped. This also avoids video SDP changes
 blocking audio reception during Safari's transition into the background.
+
+Bridge frame-rate check (2026-11-05): the 15 fps/67 ms gate was replaced with source-aware pacing up to 30 fps, tested with jittered 25/30/50/60 and fractional-rate sources. All 31 native unit tests pass. Separate-process 720p moving-pattern tests measured 29.9 decoded fps through NDI and 27.4 through OMT, including H.264 encoding, RTP and decoding on the local Mac. These are local synthetic-source results, not a remote-network or multi-feed capacity guarantee. The live OBS source was not discoverable during this check.
