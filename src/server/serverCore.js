@@ -1422,10 +1422,10 @@ function sanitizeBridgeInventory(inventory = {}) {
   return {
     host: normalizeBridgeRegistryText(inventory.host, "unknown"),
     videoSources: (Array.isArray(inventory.videoSources) ? inventory.videoSources : [])
-      .filter(source => /^(ndi|omt):recv:[a-f0-9]{16}$/.test(String(source?.id || '')))
+      .filter(source => /^(ndi|omt|webcam):recv:[a-f0-9]{16}$/.test(String(source?.id || '')))
       .slice(0, 256).map(source => ({
         id: source.id, name: normalizeBridgeRegistryText(source.name, source.id),
-        protocol: source.id.startsWith('ndi:') ? 'ndi' : 'omt',
+        protocol: source.id.split(':')[0],
       })),
     devices: devices.slice(0, 256).map((device, index) => {
       const direction = device?.direction === "output" ? "output" : "input";

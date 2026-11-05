@@ -27,7 +27,7 @@ Closed video windows, videos on another target layer, and backgrounded pages do 
 
 ## Scope and constraints
 
-- Video sources: browser webcam or NDI/OMT in the native Bridge. Receivers: web client and iOS/Android apps from this feature branch. Older native apps, audio-only Bridges and headless clients keep their existing audio-only behavior.
+- Video sources: browser webcam or local webcams/NDI/OMT in the native Bridge. Receivers: web client and iOS/Android apps from this feature branch. Older native apps, audio-only Bridges and headless clients keep their existing audio-only behavior.
 - Only an authenticated Feed may publish its own camera stream. Viewing requires the same effective Feed assignment as audio in the receiver's current production.
 - Browser capture aims for up to 1280×720 at 15 fps and a video bitrate cap of 1.2 Mbit/s. Bridge capture supports up to 1280×720 at 30 fps with a 2.4 Mbit/s target. Actual resolution/rate depends on the camera, browser and available bandwidth. Each open receiver needs additional server outbound bandwidth.
 - The router negotiates VP8 or H.264; it does not transcode. Browser codec compatibility is therefore required. See [mediasoup RTP negotiation](https://mediasoup.org/documentation/v3/mediasoup/rtp-parameters-and-capabilities/).
@@ -40,9 +40,9 @@ Closed video windows, videos on another target layer, and backgrounded pages do 
 
 Before merging, manually check a real webcam between current Chrome and Safari, then the receiver in iPhone Safari and a narrow/landscape viewport. Verify camera switching, audio-only mode, full-height controls, layers, mute/volume, Feed Stop/Start and reconnects. The implementation session's computer-use backend was unavailable, so these visual/device checks are still required.
 
-## Send an NDI or OMT feed through the Bridge
+## Send a webcam, NDI or OMT feed through the Bridge
 
-Use the Bridge and server from `feature/video-feeds`; older Bridge versions only publish audio. In **Admin → Feeds**, enable **Use this feed as bridge input** and select the Bridge. Keep the audio input and channel selection as before. Under **Video source (optional)**, choose a discovered NDI or OMT source, then save. The same selector is available on the Feed card inside the native Bridge. **Off** removes only video. For video-only sources, leave the audio input empty.
+Use the Bridge and server from `feature/video-feeds`; older Bridge versions only publish audio. In **Admin → Feeds**, enable **Use this feed as bridge input** and select the Bridge. Keep the audio input and channel selection as before. Under **Video source (optional)**, choose a discovered webcam, NDI or OMT source, then save. The same selector is available on the Feed card inside the native Bridge. **Off** removes only video. For video-only sources, leave the audio input empty.
 
 Video and audio can come from the same network source or from separate sources (for example an NDI picture and a sound card). The new video path is independent of audio: video failures and video-source changes restart only video. A missing source is retried automatically. Feed video is visible only to assigned, video-capable receivers; older native apps and audio-only Bridges remain audio-only receivers.
 
@@ -89,3 +89,7 @@ For OMT input, both encoders use the original 100 ns presentation timestamps fro
 Bridge frame-rate check (2026-11-05): the 15 fps/67 ms gate was replaced with source-aware pacing up to 30 fps, tested with jittered 25/30/50/60 and fractional-rate sources. All 31 native unit tests pass. Separate-process 720p moving-pattern tests measured 29.9 decoded fps through NDI and 27.4 through OMT, including H.264 encoding, RTP and decoding on the local Mac. These are local synthetic-source results, not a remote-network or multi-feed capacity guarantee. The live OBS source was not discoverable during this check.
 
 OMT synchronization checks (2026-11-05): a real FFmpeg/libopus encode plus local UDP relay preserves the original source clock to within 2 ms in its sender report, even with 240 ms of input delay. Tests also cover delayed video frames sharing the audio clock, source separation, PCM queue gaps, RTP wraparound, matching feed CNAMEs/receive stream IDs, and background video pause without closing audio. The full server/browser suite passes (354 tests). Separate-process 720p NDI and OMT capture/encode/RTP/decode tests still pass. Real-device lip sync remains a required listening/viewing check; test results do not promise frame-accurate sync across arbitrary sources or output hardware.
+
+### Local Bridge webcams
+
+The Bridge discovers macOS cameras through AVFoundation and Windows cameras through DirectShow. Webcams appear in the existing video-source selector as `Webcam · name`. Camera video uses the same 720p/30 fps H.264 encoder and feed-video permissions as network video. The audio input remains separately selectable. Camera access is requested only when a webcam is selected for a running, permitted feed; discovery does not start capture. Use the operating system’s camera privacy settings if access is denied. Off closes the capture process without stopping feed audio. Cameras in use by another application may be unavailable. macOS camera names remain stable across ordinary device-index changes; identical duplicate names cannot distinguish physical units after reordering. Windows uses DirectShow alternative device identifiers. Hardware capture still needs verification on both platforms.

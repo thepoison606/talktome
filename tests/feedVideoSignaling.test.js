@@ -179,19 +179,21 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   }
   const inventory = { host: 'Test', devices: [], videoSources: [
     { id: 'ndi:recv:0123456789abcdef', name: 'NDI · Test', protocol: 'ndi' },
+    { id: 'webcam:recv:abcdef0123456789', name: 'Webcam · Test', protocol: 'invalid' },
     { id: 'file:///tmp/no-video', name: 'Rejected' },
   ] };
   const announced = await api('POST', '/api/v1/bridge/announce', { bridgeId: 'video-test', inventory });
-  assert.equal(announced.bridge.inventory.videoSources.length, 1);
+  assert.equal(announced.bridge.inventory.videoSources.length, 2);
+  assert.equal(announced.bridge.inventory.videoSources[1].protocol, 'webcam');
   const bridge = await api('POST', '/api/v1/bridge/sessions', { bridgeId: 'video-test', portId: `feed-${fixture.feed}` });
   const route = `/api/v1/bridge/sessions/${bridge.sessionId}`;
   await api('POST', route + '/video-send-transport', {}, 403);
   const userBridge = await api('POST', '/api/v1/bridge/sessions', { bridgeId: 'video-test', portId: `user-${fixture.bridgeUser}` });
   await api('POST', `/api/v1/bridge/sessions/${userBridge.sessionId}/video-send-transport`, {}, 403);
   const configured = await api('PUT', `/api/v1/bridge/video-test/ports/feed/${fixture.feed}`, {
-    videoSource: inventory.videoSources[0].id,
+    videoSource: inventory.videoSources[1].id,
   });
-  assert.equal(configured.ports.find(port => port.kind === 'feed').videoSource, inventory.videoSources[0].id);
+  assert.equal(configured.ports.find(port => port.kind === 'feed').videoSource, inventory.videoSources[1].id);
   const audioTransport = await api('POST', route + '/plain-send-transport', {});
   const bridgeAudio = await api('POST', route + '/producers', audioTransport);
   const videoTransport = await api('POST', route + '/video-send-transport', {});
@@ -216,7 +218,7 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   assert(closed.some(p => p.producerId === bridgeVideo.id));
   const disabledConfig = await api('GET', '/api/v1/bridge/video-test/config');
   assert.equal(disabledConfig.ports.find(port => port.kind === 'feed').videoAllowed, false);
-  assert.equal(disabledConfig.ports.find(port => port.kind === 'feed').videoSource, inventory.videoSources[0].id);
+  assert.equal(disabledConfig.ports.find(port => port.kind === 'feed').videoSource, inventory.videoSources[1].id);
   await api('POST', route + '/video-send-transport', {}, 403);
   await admin('PUT', '/admin/settings/default-client', { allowFeedVideo: true });
   assert.equal((await admin('GET', '/feeds'))[0].allowFeedVideo, false, 'explicit off overrides a true default');

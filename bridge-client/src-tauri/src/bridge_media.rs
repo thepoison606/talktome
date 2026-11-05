@@ -34,7 +34,7 @@ const FFMPEG_ENV_VAR: &str = "TALKTOME_FFMPEG";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-fn ffmpeg_command() -> Command {
+pub(crate) fn ffmpeg_command() -> Command {
     let mut command =
         Command::new(resolve_ffmpeg_path().unwrap_or_else(|| PathBuf::from("ffmpeg")));
     configure_ffmpeg_command(&mut command);

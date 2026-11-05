@@ -8,6 +8,7 @@ mod omt;
 mod port_audio_level;
 mod probe;
 mod video_media;
+mod webcam;
 
 use audio::{AudioDeviceSnapshot, AudioInventory};
 use bridge_media::{
@@ -561,6 +562,7 @@ async fn bridge_api_request(
 fn list_video_sources() -> Vec<video_media::VideoSource> {
     let mut sources = ndi::video_sources(Duration::from_millis(250));
     sources.extend(omt::video_sources(Duration::from_millis(250)));
+    sources.extend(webcam::video_sources());
     sources
 }
 #[tauri::command(async)]

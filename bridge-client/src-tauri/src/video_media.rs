@@ -215,6 +215,8 @@ impl VideoManager {
         self.start_with_capture(request, |source, sink| {
             if crate::ndi::is_input_device(&source) {
                 crate::ndi::capture_video(&source, sink)
+            } else if crate::webcam::is_input_device(&source) {
+                crate::webcam::capture_video(&source, sink)
             } else {
                 crate::omt::capture_video(&source, sink)
             }
@@ -238,8 +240,9 @@ impl VideoManager {
         }
         if !crate::ndi::is_input_device(&request.source_id)
             && !crate::omt::is_input_device(&request.source_id)
+            && !crate::webcam::is_input_device(&request.source_id)
         {
-            return Err("Choose an NDI or OMT video source".into());
+            return Err("Choose a webcam, NDI or OMT video source".into());
         }
         let destination = (request.rtp_ip.as_str(), request.rtp_port)
             .to_socket_addrs()

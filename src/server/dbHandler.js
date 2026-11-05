@@ -195,8 +195,8 @@ function normalizeFeedBridgeEndpointConfig(config = {}) {
   const enabled = Boolean(config.enabled);
   const bridgeDevice = normalizeBridgeText(config.bridgeDevice);
   const videoSource = normalizeBridgeText(config.videoSource);
-  if (videoSource && !/^(ndi|omt):recv:[a-f0-9]{16}$/.test(videoSource)) {
-    throw new Error('Video source must be an NDI or OMT input');
+  if (videoSource && !/^(ndi|omt|webcam):recv:[a-f0-9]{16}$/.test(videoSource)) {
+    throw new Error('Video source must be a webcam, NDI or OMT input');
   }
   const inputDevice = normalizeBridgeText(config.inputDevice);
   const inputLeftChannel = normalizeBridgeChannel(config.inputLeftChannel, 'Input left channel');

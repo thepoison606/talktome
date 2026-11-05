@@ -116,13 +116,14 @@ tar -xJf "$FFMPEG_ARCHIVE" -C "$BUILD_ROOT"
     --disable-gpl \
     --disable-nonfree \
     --enable-libopus \
+    --enable-indev=dshow \
     --enable-protocol=file,pipe,rtp,udp \
     --enable-demuxer=pcm_f32le,rtp,sdp \
-    --enable-muxer=pcm_f32le,rtp \
-    --enable-decoder=libopus,opus,pcm_f32le \
-    --enable-encoder=libopus,pcm_f32le \
+    --enable-muxer=pcm_f32le,rtp,image2pipe \
+    --enable-decoder=libopus,opus,pcm_f32le,rawvideo,mjpeg,h264 \
+    --enable-encoder=libopus,pcm_f32le,bmp \
     --enable-parser=opus \
-    --enable-filter=aformat,aresample,anull,volume
+    --enable-filter=aformat,aresample,anull,volume,scale,format,fps
   make -j"$JOBS" ffmpeg.exe
 )
 
