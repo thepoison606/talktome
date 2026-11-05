@@ -127,6 +127,7 @@ const defaultClientIncomingLevels = document.getElementById('default-client-inco
 const defaultClientLeftHand = document.getElementById('default-client-left-hand');
 const defaultClientBigMainButton = document.getElementById('default-client-big-main-button');
 const defaultClientLockMultiple = document.getElementById('default-client-lock-multiple');
+const defaultClientAllowFeedVideo = document.getElementById('default-client-allow-feed-video');
 const defaultClientAllowTargetAddRemove = document.getElementById('default-client-allow-target-add-remove');
 const defaultClientAllowTargetRearrange = document.getElementById('default-client-allow-target-rearrange');
 const adminImageLightbox = document.getElementById('admin-image-lightbox');
@@ -851,6 +852,7 @@ function updateBridgeEndpointDeviceOptions(formKey) {
   const bridgeSelect = document.getElementById(`bridge-device-${formKey}`);
   const inputDeviceSelect = document.getElementById(`bridge-input-device-${formKey}`);
   const outputDeviceSelect = document.getElementById(`bridge-output-device-${formKey}`);
+  const videoSelect = document.getElementById(`bridge-video-source-${formKey}`);
   if (!bridgeSelect || !inputDeviceSelect) return;
 
   const bridge = getBridgeById(bridgeSelect.value);
@@ -871,6 +873,14 @@ function updateBridgeEndpointDeviceOptions(formKey) {
   );
   inputDeviceSelect.disabled = !bridge;
   updateBridgeEndpointPairOptions(formKey, 'input');
+  if (videoSelect) {
+    const selected = videoSelect.value || videoSelect.dataset.savedValue || '';
+    setBridgeSelectOptions(videoSelect, (bridge?.inventory?.videoSources || [])
+      .map(source => ({ value: source.id, label: source.name })), selected, 'Off');
+    videoSelect.disabled = !bridge;
+    videoSelect.onchange = () => { videoSelect.dataset.savedValue = videoSelect.value; };
+  }
+
 
   if (outputDeviceSelect) {
     const outputDevices = (bridge?.inventory?.devices || [])
@@ -3057,6 +3067,25 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
   syncStopTransmissionButtons();
 }
 
+async function saveFeedVideoPermission(feedId, allowed, control) {
+  if (control) control.disabled = true;
+  try {
+    const response = await authedFetch(`/admin/feeds/${feedId}/feed-video`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allowFeedVideo: allowed }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || 'Failed to save feed video permission');
+    await refreshAdminLists({ feeds: true });
+    showMessage('Feed video permission saved', 'success', 'feed');
+  } catch (error) {
+    if (control?.type === 'checkbox') control.checked = !allowed;
+    showMessage(error.message, 'error', 'feed');
+  } finally {
+    if (control) control.disabled = false;
+  }
+}
+
 async function renderFeedList(feeds) {
   const feedList = document.getElementById('feed-list');
   feedList.innerHTML = '';
@@ -3086,7 +3115,14 @@ async function renderFeedList(feeds) {
         </div>
       </div>
       <div class="nested" id="feed-nested-${feed.id}" onclick="event.stopPropagation()">
-        <div class="nested-block">
+        <div class="nested-block feed-video-permission">
+          <label class="admin-switch" title="Allow this feed to transmit video. Audio is unaffected.">
+            <input type="checkbox" role="switch" onchange="saveFeedVideoPermission(${feed.id}, this.checked, this)" ${feed.allowFeedVideo ? 'checked' : ''}>
+            <span class="admin-switch__track" aria-hidden="true"></span>
+            <span>Allow Feed-Video</span>
+          </label>
+        </div>
+        <div class="nested-block feed-bridge-controls">
           <form class="bridge-config-form" id="bridge-config-${formKey}" data-bridge-config-key="${formKey}" onsubmit="saveFeedBridgeEndpoint(event, ${feed.id})">
             <label class="admin-switch bridge-input-switch" for="bridge-enabled-${formKey}">
               <input type="checkbox" id="bridge-enabled-${formKey}" role="switch" ${isBridgeEndpoint ? 'checked' : ''}>
@@ -3111,6 +3147,10 @@ async function renderFeedList(feeds) {
                   <label for="bridge-input-pair-${formKey}">Input channel</label>
                   <select id="bridge-input-pair-${formKey}" data-saved-left="${escapeHtml(valueOrEmpty(feed.bridge_input_left_channel))}" data-saved-right="${escapeHtml(valueOrEmpty(feed.bridge_input_right_channel))}"></select>
                 </div>
+              </div>
+              <div class="field-group">
+                <label for="bridge-video-source-${formKey}">Video source (optional)</label>
+                <select id="bridge-video-source-${formKey}" data-saved-value="${escapeHtml(feed.bridge_video_source || '')}"></select>
               </div>
             </div>
             <button type="submit" class="small">Save</button>
@@ -3392,7 +3432,21 @@ async function loadDefaultClientSettings() {
   if (defaultClientLockMultiple) defaultClientLockMultiple.checked = settings.lockMultipleTargets === true;
   if (defaultClientAllowTargetRearrange) defaultClientAllowTargetRearrange.checked = settings.allowTargetRearrange !== false;
   if (defaultClientAllowTargetAddRemove) defaultClientAllowTargetAddRemove.checked = settings.allowTargetAddRemove === true;
+  if (defaultClientAllowFeedVideo) defaultClientAllowFeedVideo.checked = settings.allowFeedVideo === true;
+  resetDefaultClientApplyAll();
   return payload;
+}
+
+const defaultClientApplyAll = new Map();
+function resetDefaultClientApplyAll() {
+  for (const [input, entry] of defaultClientApplyAll) {
+    entry.original = input.checked;
+    entry.checkbox.checked = false;
+    entry.label.hidden = true;
+  }
+}
+function selectedDefaultClientOverrides() {
+  return [...defaultClientApplyAll.values()].filter(entry => !entry.label.hidden && entry.checkbox.checked).map(entry => entry.key);
 }
 
 function renderAutomaticBackupSettings(settings = {}) {
@@ -4355,6 +4409,7 @@ window.saveFeedBridgeEndpoint = async function(event, feedId) {
     const payload = {
       enabled: Boolean(document.getElementById(`bridge-enabled-${formKey}`)?.checked),
       bridgeDevice: document.getElementById(`bridge-device-${formKey}`)?.value || '',
+      videoSource: document.getElementById(`bridge-video-source-${formKey}`)?.value || '',
       inputDevice: document.getElementById(`bridge-input-device-${formKey}`)?.value || '',
       inputLeftChannel: inputPair.left,
       inputRightChannel: inputPair.right,
@@ -4673,6 +4728,37 @@ if (guestLoginEnabledInput) {
 }
 
 if (defaultClientSettingsForm) {
+  const keys = ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'bigMainButton', 'lockMultipleTargets', 'allowTargetRearrange', 'allowTargetAddRemove', 'allowFeedVideo'];
+  defaultClientSettingsForm.querySelectorAll('.default-client-setting-toggle').forEach((row, index) => {
+    const input = row.querySelector('input[role="switch"]');
+    const text = row.querySelector('span:first-child');
+    text.id = `${input.id}-label`;
+    input.setAttribute('aria-labelledby', text.id);
+    const controls = document.createElement('span');
+    controls.className = 'default-client-setting-controls';
+    const label = document.createElement('label');
+    label.className = 'default-client-apply-all';
+    label.hidden = true;
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    label.append(checkbox, document.createTextNode('Apply to all'));
+    const switchLabel = document.createElement('label');
+    switchLabel.className = 'admin-switch';
+    const oldSwitch = row.querySelector('.admin-switch');
+    switchLabel.append(...oldSwitch.childNodes);
+    oldSwitch.remove();
+    controls.append(label, switchLabel);
+    row.append(controls);
+    const entry = { key: keys[index], label, checkbox, original: input.checked };
+    defaultClientApplyAll.set(input, entry);
+    input.addEventListener('change', () => {
+      label.hidden = input.checked === entry.original;
+      if (label.hidden) checkbox.checked = false;
+    });
+    row.addEventListener('click', event => {
+      if (event.target === row || event.target === text) { input.checked = !input.checked; input.dispatchEvent(new Event('change')); }
+    });
+  });
   defaultClientSettingsForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const submitButton = defaultClientSettingsForm.querySelector('button[type="submit"]');
@@ -4689,6 +4775,7 @@ if (defaultClientSettingsForm) {
       lockMultipleTargets: Boolean(defaultClientLockMultiple?.checked),
       allowTargetRearrange: Boolean(defaultClientAllowTargetRearrange?.checked),
       allowTargetAddRemove: Boolean(defaultClientAllowTargetAddRemove?.checked),
+      allowFeedVideo: Boolean(defaultClientAllowFeedVideo?.checked),
     };
 
     if (submitButton) submitButton.disabled = true;
@@ -4696,12 +4783,12 @@ if (defaultClientSettingsForm) {
       const res = await authedFetch('/admin/settings/default-client', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: JSON.stringify({ ...settings, applyToAll: selectedDefaultClientOverrides() }),
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to save default client settings');
       await loadDefaultClientSettings();
-      await refreshAdminLists({ users: true });
+      await refreshAdminLists({ users: true, feeds: true });
       showMessage('✅ Default client settings saved', 'success', 'config');
     } catch (error) {
       console.error('Failed to save default client settings:', error);

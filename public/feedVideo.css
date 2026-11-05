@@ -1,0 +1,49 @@
+/* The picture sits above the existing target controls; those keep their natural height. */
+#targets-list .feed-video-toggle[role="button"] { cursor: pointer; }
+#targets-list .feed-video-available { cursor: pointer; }
+#targets-list .feed-video-toggle:focus-visible { outline: 2px solid #60a5fa; outline-offset: 3px; }
+.feed-video-panel[hidden], #feed-video-preview[hidden] { display: none; }
+#targets-list li.feed-video-expanded > :not(.feed-video-panel) { grid-row: 2; }
+#targets-list li.feed-video-expanded { row-gap: 0; }
+.feed-video-panel {
+  grid-column: 1 / -1; grid-row: 1; position: relative; background: #000;
+  --feed-video-max-height: min(260px, calc(var(--app-viewport-height, 100dvh) * .30), max(48px, calc(var(--feed-list-height, 100vh) - 110px)));
+  /* Include the same 2px picture frame on every side, without changing the
+     video's content aspect ratio or cropping the source. */
+  width: min(100%, calc(var(--feed-video-max-height) * var(--feed-video-aspect, 1.777778) + 4px));
+  box-sizing: border-box; padding: 2px;
+  height: auto; min-width: 0; justify-self: center;
+}
+.feed-video-panel video { display: block; width: 100%; height: auto; aspect-ratio: var(--feed-video-aspect, 1.777778); object-fit: contain; }
+.feed-video-panel > span { position: absolute; inset: 0; display: grid; place-items: center; padding: .75rem; color: #cbd5e1; pointer-events: none; text-align: center; }
+.feed-video-panel > span[hidden] { display: none; }
+/* Keep the responsive columns; only overflowing grid rows move to another layer. */
+#targets-list.has-expanded-video {
+  overflow: hidden;
+  flex-basis: 0;
+  margin-top: .5rem;
+  justify-content: flex-start;
+  align-content: start;
+}
+#targets-list.has-expanded-video.video-grid-layout { align-items: start; grid-auto-rows: max-content; }
+#feed-video-preview { display: block; width: auto; height: auto; max-width: min(100%, 480px); max-height: 25vh; object-fit: contain; background: #000; margin: .75rem auto; border-radius: .4rem; }
+#feed-video-status { display: block; margin-top: .5rem; color: #94a3b8; font-size: .85rem; }
+
+.feed-banner__settings .device-selector .feed-camera-source {
+  display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+  flex: 0 1 18rem; width: 18rem; max-width: 100%; min-width: 0;
+  margin: 0; padding: .6rem .75rem; font: inherit; font-size: .9rem; text-align: left;
+  background: #111827; color: #e2e8f0; border: 1px solid rgba(148, 163, 184, .4); border-radius: 4px;
+}
+.feed-camera-source::after { content: ''; flex: 0 0 .4rem; height: .4rem; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); }
+.feed-camera-picker { width: min(28rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); box-sizing: border-box; padding: 1rem; border: 1px solid #475569; border-radius: .75rem; background: #111827; color: #e2e8f0; }
+.feed-camera-picker::backdrop { background: #020817b8; }
+.feed-camera-picker header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .5rem; }
+.feed-camera-picker h2 { margin: 0; font-size: 1.1rem; }
+.feed-camera-picker button { width: 100%; margin: .2rem 0; padding: .6rem .75rem; border: 1px solid #334155; border-radius: .4rem; background: #1e293b; color: #e2e8f0; font: inherit; text-align: left; }
+.feed-camera-picker button[aria-pressed="true"] { border-color: #60a5fa; background: #1e3a5f; }
+.feed-camera-picker button:hover { background: #334155; }
+.feed-camera-picker #feed-camera-picker-close { flex: 0 0 2rem; width: 2rem; height: 2rem; padding: 0; border: 0; background: transparent; font-size: 1.5rem; text-align: center; }
+#feed-camera-picker-status { margin: .5rem 0; color: #94a3b8; font-size: .9rem; }
+#feed-camera-picker-status:empty { display: none; }
+.feed-camera-picker :focus-visible, .feed-camera-source:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }

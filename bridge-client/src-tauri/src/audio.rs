@@ -12,6 +12,8 @@ use crate::network_audio;
 pub struct AudioInventory {
     pub host: String,
     pub devices: Vec<AudioDeviceInfo>,
+    #[serde(default, rename = "videoSources")]
+    pub video_sources: Vec<crate::video_media::VideoSource>,
     #[serde(default)]
     pub warnings: Vec<String>,
 }
@@ -136,6 +138,7 @@ pub fn list_audio_devices() -> Result<AudioInventory, String> {
 
     Ok(AudioInventory {
         host: host_name,
+        video_sources: Vec::new(),
         devices,
         warnings,
     })

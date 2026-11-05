@@ -34,7 +34,7 @@ const FFMPEG_ENV_VAR: &str = "TALKTOME_FFMPEG";
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-fn ffmpeg_command() -> Command {
+pub(crate) fn ffmpeg_command() -> Command {
     let mut command =
         Command::new(resolve_ffmpeg_path().unwrap_or_else(|| PathBuf::from("ffmpeg")));
     configure_ffmpeg_command(&mut command);
@@ -156,6 +156,8 @@ pub struct StartBridgeInputRequest {
     pub rtp_port: u16,
     pub payload_type: u8,
     pub ssrc: u32,
+    #[serde(default)]
+    pub cname: String,
     #[serde(default)]
     pub audio_level: PortAudioLevel,
 }
@@ -296,6 +298,7 @@ struct PendingBridgeOutput {
 }
 
 struct BridgeInputRuntime {
+    rtp_relay: Option<crate::media_timing::AudioRtpRelay>,
     stream: BridgeInputStreamRuntime,
     child: Arc<Mutex<Child>>,
     last_error: Arc<Mutex<Option<String>>>,
@@ -624,10 +627,21 @@ impl BridgeMediaManager {
 
 impl BridgeInputRuntime {
     fn start(request: &StartBridgeInputRequest) -> Result<Self, String> {
+        let timing = crate::omt::is_input_device(&request.assignment.device_id).then(|| {
+            Arc::new(Mutex::new(crate::media_timing::AudioTimeline::new(
+                &request.assignment.device_id,
+            )))
+        });
+        let rtp_relay = timing.as_ref().map(|timing| {
+            crate::media_timing::AudioRtpRelay::start(
+                request.rtp_ip.trim(), request.rtp_port, request.ssrc,
+                request.cname.clone(), Arc::clone(timing),
+            )
+        }).transpose()?;
         let destination = format!(
             "rtp://{}:{}?pkt_size=1200",
-            request.rtp_ip.trim(),
-            request.rtp_port
+            if rtp_relay.is_some() { "127.0.0.1" } else { request.rtp_ip.trim() },
+            rtp_relay.as_ref().map(|relay| relay.port()).unwrap_or(request.rtp_port),
         );
         let (sender, receiver) = sync_channel::<Vec<u8>>(8);
         let callback_sender = sender.clone();
@@ -646,6 +660,7 @@ impl BridgeInputRuntime {
         let (stream, input_sample_rate) =
             if network_audio::is_input_device(&request.assignment.device_id) {
                 let runtime = network_audio::start_input(network_audio::InputStartRequest {
+                    timing,
                     device_id: request.assignment.device_id.clone(),
                     left_channel: request.assignment.left_channel,
                     right_channel: request.assignment.right_channel,
@@ -736,6 +751,10 @@ impl BridgeInputRuntime {
                 "-hide_banner",
                 "-loglevel",
                 "warning",
+                "-probesize",
+                "32",
+                "-analyzeduration",
+                "0",
                 "-f",
                 "f32le",
                 "-ar",
@@ -758,6 +777,8 @@ impl BridgeInputRuntime {
                 &request.payload_type.to_string(),
                 "-ssrc",
                 &request.ssrc.to_string(),
+                "-cname",
+                &request.cname,
                 "-f",
                 "rtp",
                 &destination,
@@ -800,6 +821,7 @@ impl BridgeInputRuntime {
         });
 
         Ok(Self {
+            rtp_relay,
             stream,
             child,
             last_error,
@@ -829,6 +851,7 @@ impl BridgeInputRuntime {
         if let Some(stderr_reader) = self.stderr_reader.take() {
             let _ = stderr_reader.join();
         }
+        self.rtp_relay.take();
     }
 }
 
@@ -1434,6 +1457,51 @@ fn read_last_error(last_error: &Arc<Mutex<Option<String>>>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn real_opus_encoder_keeps_the_omt_presentation_clock_in_rtcp() {
+        let output = UdpSocket::bind("127.0.0.1:0").unwrap();
+        output.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let source_time = std::time::SystemTime::now() - Duration::from_millis(240);
+        let mut timeline = crate::media_timing::AudioTimeline::new("real-opus-sync-test");
+        timeline.append(4800, 0, source_time);
+        let relay = crate::media_timing::AudioRtpRelay::start(
+            "127.0.0.1", output.local_addr().unwrap().port(), 1234,
+            "av-sync-test".into(), Arc::new(Mutex::new(timeline))
+        ).unwrap();
+        let destination = format!("rtp://127.0.0.1:{}?pkt_size=1200", relay.port());
+        let mut encoder = ffmpeg_command().args([
+            "-hide_banner", "-loglevel", "error", "-probesize", "32", "-analyzeduration", "0",
+            "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "pipe:0",
+            "-c:a", "libopus", "-application", "voip", "-frame_duration", "20",
+            "-payload_type", "100", "-ssrc", "1234", "-f", "rtp", &destination,
+        ]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
+        let samples = (0..4800 * 2).flat_map(|_| 0.25f32.to_le_bytes()).collect::<Vec<_>>();
+        encoder.stdin.take().unwrap().write_all(&samples).unwrap();
+        let encoded = encoder.wait_with_output().unwrap();
+        assert!(encoded.status.success(), "{}", String::from_utf8_lossy(&encoded.stderr));
+        let mut packet = [0u8; 1500];
+        let mut first_rtp = None;
+        let mut report = None;
+        for _ in 0..12 {
+            let size = output.recv(&mut packet).unwrap();
+            if packet[1] == 200 {
+                assert!(packet[..size].windows(12).any(|name| name == b"av-sync-test"));
+                report = Some(packet[..size].to_vec());
+                break;
+            }
+            first_rtp.get_or_insert(u32::from_be_bytes(packet[4..8].try_into().unwrap()));
+        }
+        let report = report.expect("source-clock sender report");
+        let ntp_seconds = u32::from_be_bytes(report[8..12].try_into().unwrap());
+        let ntp_fraction = u32::from_be_bytes(report[12..16].try_into().unwrap());
+        let report_time = std::time::UNIX_EPOCH + Duration::from_secs(u64::from(ntp_seconds) - 2_208_988_800)
+            + Duration::from_secs_f64(f64::from(ntp_fraction) / 4_294_967_296.0);
+        let reference = u32::from_be_bytes(report[16..20].try_into().unwrap());
+        let first_time = report_time - Duration::from_secs_f64(f64::from(reference.wrapping_sub(first_rtp.unwrap())) / 48_000.0);
+        let error = first_time.duration_since(source_time).unwrap_or_else(|e| e.duration());
+        assert!(error < Duration::from_millis(2), "Opus clock lost source PTS: {error:?}");
+    }
 
     #[test]
     fn only_non_fatal_stream_notifications_are_recoverable() {

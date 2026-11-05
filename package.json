@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node --test tests/*.test.js",
     "start": "node server.js",
+    "release:macos": "python3 scripts/release-macos-local.py",
     "build:mediasoup-client": "node scripts/build-mediasoup-client.js",
     "prebuild:pkg": "node scripts/verify-build-node.js && node scripts/resolve-build-version.js --version-json build-version.json && node scripts/stage-better-sqlite3-binding.js",
     "build:win64": "npm run prebuild:pkg && npx --no-install pkg package.json --sea --targets node24.22.1-win-x64 --output talktome_win64 && node scripts/copy-runtime-deps.js win64",

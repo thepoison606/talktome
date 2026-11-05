@@ -830,12 +830,15 @@
         margin-top: 1.5rem;
       }
 
-      .user-target-controls + .user-bridge-controls {
+      .user-target-controls + .user-bridge-controls,
+      .feed-video-permission + .feed-bridge-controls {
         margin-top: 0.65rem;
       }
 
       .user-target-controls,
-      .user-bridge-controls {
+      .user-bridge-controls,
+      .feed-video-permission,
+      .feed-bridge-controls {
         font-size: 0.9rem;
       }
 
@@ -848,7 +851,8 @@
         color: var(--text);
       }
 
-      .user-bridge-controls .bridge-config-form {
+      .user-bridge-controls .bridge-config-form,
+      .feed-bridge-controls .bridge-config-form {
         margin-top: 0;
       }
 
@@ -880,9 +884,19 @@
       }
 
       .user-target-controls .admin-switch,
-      .user-bridge-controls .field-group > label {
+      .user-bridge-controls .field-group > label,
+      #feeds-section .field-group > label,
+      #feeds-section .admin-switch {
         font-weight: 400;
       }
+
+      .feed-video-permission { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 0.9rem; }
+      .feed-video-permission .admin-switch {
+        margin: 0;
+        color: var(--text);
+        font-family: inherit;
+      }
+      #feeds-section :is(select, input, .admin-switch, .field-group > label) { font-size: 0.9rem; }
 
       .bridge-config-options {
         display: contents;
@@ -1077,12 +1091,24 @@
 
       .default-client-setting-field {
         display: grid;
-        gap: 0.5rem;
-        padding: 0.9rem 1rem;
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: center;
+        min-height: 2.2rem;
+        gap: 1rem;
+        padding: 0.45rem 1rem;
         border: 1px solid var(--border);
         border-radius: 10px;
         background: rgba(15, 23, 42, 0.55);
         min-width: 0;
+      }
+
+      .default-client-settings-form .default-client-setting-field > select {
+        justify-self: end;
+        width: min(100%, 18rem);
+        min-width: 0;
+        height: 1.5rem;
+        padding: 0 0.5rem;
+        font-size: 0.9rem;
       }
 
       .default-client-setting-field > label,
@@ -1100,11 +1126,24 @@
         gap: 1rem;
         border: 1px solid var(--border);
         border-radius: 10px;
-        padding: 0.9rem 1rem;
+        padding: 0.45rem 1rem;
         background: rgba(15, 23, 42, 0.55);
         cursor: pointer;
       }
 
+      .default-client-setting-controls { display: flex; align-items: center; gap: .75rem; }
+      .default-client-apply-all { display: inline-flex; align-items: center; gap: .35rem; font-size: .8rem; color: var(--muted); white-space: nowrap; }
+      /* Reserve the same space before and after revealing Apply to all. */
+      .default-client-apply-all[hidden] { display: inline-flex; visibility: hidden; pointer-events: none; }
+      .default-client-apply-all input[type='checkbox'] {
+        flex: 0 0 1rem;
+        width: 1rem;
+        height: 1rem;
+        padding: 0;
+        margin: 0;
+        box-sizing: border-box;
+        accent-color: var(--primary);
+      }
       .default-client-settings-actions {
         display: flex;
         align-items: center;
@@ -1116,6 +1155,8 @@
       .config-panel input:not([type='file']):not([type='checkbox']),
       .config-panel select,
       #users-section select,
+      #feeds-section select,
+      #feeds-section .bridge-config-form input[type='number'],
       #users-section .bridge-config-form input[type='number'] {
         height: 2.2rem;
         padding-top: 0.3rem;
@@ -4619,56 +4660,56 @@
                 </div>
 
                 <div class="default-client-settings-toggles">
-                  <label class="default-client-setting-toggle">
+                  <div class="default-client-setting-toggle">
                     <span>Dim feeds while speaking</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-dim-self" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle">
+                  </div>
+                  <div class="default-client-setting-toggle">
                     <span>Dim feeds when addressed</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-dim-incoming" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle">
+                  </div>
+                  <div class="default-client-setting-toggle">
                     <span>Audio auto processing</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-audio-processing" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle">
+                  </div>
+                  <div class="default-client-setting-toggle">
                     <span>Play connection sounds</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-connection-sounds" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle">
+                  </div>
+                  <div class="default-client-setting-toggle">
                     <span>Incoming level meters</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-incoming-levels" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle">
+                  </div>
+                  <div class="default-client-setting-toggle">
                     <span>Left-hand mode</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-left-hand" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle" title="Make the main talk button larger until the client saves its own preference.">
+                  </div>
+                  <div class="default-client-setting-toggle" title="Make the main talk button larger until the client saves its own preference.">
                     <span>Big main button</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-big-main-button" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label
+                  </div>
+                  <div
                     class="default-client-setting-toggle"
                     title="Keep locked targets active while temporarily talking to or locking additional targets."
                   >
@@ -4677,21 +4718,28 @@
                       <input type="checkbox" id="default-client-lock-multiple" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle" title="Allow users to change the order of their target buttons. Can be overridden per user.">
+                  </div>
+                  <div class="default-client-setting-toggle" title="Allow users to change the order of their target buttons. Can be overridden per user.">
                     <span>Allow target rearrange</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-allow-target-rearrange" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
-                  <label class="default-client-setting-toggle" title="Allow users to add or remove targets in their production. Can be overridden per user.">
+                  </div>
+                  <div class="default-client-setting-toggle" title="Allow users to add or remove targets in their production. Can be overridden per user.">
                     <span>Allow target add/remove</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-allow-target-add-remove" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
-                  </label>
+                  </div>
+                  <div class="default-client-setting-toggle" title="Allow feeds to transmit video. Can be overridden per feed. Disabled feeds remain audio-only.">
+                    <span>Allow Feed-Video</span>
+                    <span class="admin-switch">
+                      <input type="checkbox" id="default-client-allow-feed-video" role="switch" />
+                      <span class="admin-switch__track" aria-hidden="true"></span>
+                    </span>
+                  </div>
                   <div class="default-client-settings-actions">
                     <button type="submit">Save</button>
                   </div>

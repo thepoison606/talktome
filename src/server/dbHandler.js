@@ -194,6 +194,10 @@ function normalizeBridgeEndpointConfig(config = {}) {
 function normalizeFeedBridgeEndpointConfig(config = {}) {
   const enabled = Boolean(config.enabled);
   const bridgeDevice = normalizeBridgeText(config.bridgeDevice);
+  const videoSource = normalizeBridgeText(config.videoSource);
+  if (videoSource && !/^(ndi|omt|webcam):recv:[a-f0-9]{16}$/.test(videoSource)) {
+    throw new Error('Video source must be a webcam, NDI or OMT input');
+  }
   const inputDevice = normalizeBridgeText(config.inputDevice);
   const inputLeftChannel = normalizeBridgeChannel(config.inputLeftChannel, 'Input left channel');
   const inputRightChannel = normalizeBridgeChannel(config.inputRightChannel, 'Input right channel');
@@ -210,6 +214,7 @@ function normalizeFeedBridgeEndpointConfig(config = {}) {
     enabled,
     bridgeDevice,
     inputDevice,
+    videoSource,
     inputLeftChannel,
     inputRightChannel,
   };
@@ -304,6 +309,11 @@ function getUserAudioSettings(userId) {
 
 function updateUserAudioSettings(userId, settings) {
   const normalized = normalizeUserAudioSettings(settings, { strict: true, partial: true });
+  // Older clients and the audio-only editor do not send layout preferences.
+  if (!Object.prototype.hasOwnProperty.call(normalized, 'bigMainButton')) {
+    const previous = getUserAudioSettings(userId);
+    if (typeof previous?.bigMainButton === 'boolean') normalized.bigMainButton = previous.bigMainButton;
+  }
   const result = db.prepare('UPDATE users SET audio_settings = ? WHERE id = ?')
     .run(JSON.stringify(normalized), userId);
   return result.changes > 0 ? normalized : null;
@@ -396,6 +406,7 @@ function getFeedBridgeEndpointsForDevice(bridgeDevice) {
       feed_bridge_endpoints.input_device,
       feed_bridge_endpoints.input_left_channel,
       feed_bridge_endpoints.input_right_channel,
+      feed_bridge_endpoints.video_source,
       feed_bridge_endpoints.updated_at
     FROM feed_bridge_endpoints
     JOIN feeds ON feeds.id = feed_bridge_endpoints.feed_id
@@ -414,11 +425,13 @@ function getAllFeeds() {
     SELECT
       feeds.id,
       feeds.name,
+      feeds.allow_feed_video,
       COALESCE(feed_bridge_endpoints.enabled, 0) AS bridge_enabled,
       COALESCE(feed_bridge_endpoints.bridge_device, '') AS bridge_device,
       COALESCE(feed_bridge_endpoints.input_device, '') AS bridge_input_device,
       feed_bridge_endpoints.input_left_channel AS bridge_input_left_channel,
       feed_bridge_endpoints.input_right_channel AS bridge_input_right_channel,
+      COALESCE(feed_bridge_endpoints.video_source, '') AS bridge_video_source,
       feed_bridge_endpoints.updated_at AS bridge_updated_at
     FROM feeds
     LEFT JOIN feed_bridge_endpoints ON feed_bridge_endpoints.feed_id = feeds.id
@@ -427,7 +440,13 @@ function getAllFeeds() {
 }
 
 function getFeedById(id) {
-  return db.prepare('SELECT id, name FROM feeds WHERE id = ?').get(id) || null;
+  return db.prepare('SELECT id, name, allow_feed_video FROM feeds WHERE id = ?').get(id) || null;
+}
+
+function updateFeedVideoPermission(id, allowed) {
+  if (allowed !== null && typeof allowed !== 'boolean') throw new Error('allowFeedVideo must be boolean or null');
+  return db.prepare('UPDATE feeds SET allow_feed_video = ? WHERE id = ?')
+    .run(allowed === null ? null : allowed ? 1 : 0, id).changes > 0;
 }
 
 function normalizeProductionName(value) {
@@ -1095,7 +1114,7 @@ function exportDatabaseSnapshot() {
       ORDER BY id
     `).all(),
     feeds: db.prepare(`
-      SELECT id, name, password, login_token_hash
+      SELECT id, name, password, login_token_hash, allow_feed_video
       FROM feeds
       ORDER BY id
     `).all(),
@@ -1160,6 +1179,7 @@ function exportDatabaseSnapshot() {
         input_device,
         input_left_channel,
         input_right_channel,
+        video_source,
         audio_levels,
         updated_at
       FROM feed_bridge_endpoints
@@ -1201,6 +1221,12 @@ function importDatabaseSnapshot(snapshot) {
     throw new Error('Snapshot is missing required collections');
   }
 
+  for (const feed of feeds) {
+    if (feed.allow_feed_video != null && ![0, 1, false, true].includes(feed.allow_feed_video)) {
+      throw new Error('Invalid feed video permission in snapshot');
+    }
+  }
+
   // Validate before deleting any data, including names shared by users and feeds.
   assertUniqueLoginNames([...users, ...feeds]);
 
@@ -1240,8 +1266,8 @@ function importDatabaseSnapshot(snapshot) {
       VALUES (?, ?)
     `);
     const insertFeed = db.prepare(`
-      INSERT INTO feeds (id, name, password, login_token_hash)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO feeds (id, name, password, login_token_hash, allow_feed_video)
+      VALUES (?, ?, ?, ?, ?)
     `);
     const insertMembership = db.prepare(`
       INSERT INTO user_conference (user_id, conference_id)
@@ -1297,9 +1323,10 @@ function importDatabaseSnapshot(snapshot) {
         input_device,
         input_left_channel,
         input_right_channel,
+        video_source,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertProduction = db.prepare(`
       INSERT INTO productions (id, name, is_primary, created_at, updated_at)
@@ -1360,7 +1387,8 @@ function importDatabaseSnapshot(snapshot) {
         Number(row.id),
         String(row.name),
         String(row.password),
-        row.login_token_hash ? String(row.login_token_hash) : null
+        row.login_token_hash ? String(row.login_token_hash) : null,
+        row.allow_feed_video == null ? null : row.allow_feed_video ? 1 : 0
       );
     });
 
@@ -1525,6 +1553,7 @@ function importDatabaseSnapshot(snapshot) {
         bridgeDevice: row.bridge_device,
         productionId: row.production_id,
         inputDevice: row.input_device,
+        videoSource: row.video_source,
         inputLeftChannel: row.input_left_channel,
         inputRightChannel: row.input_right_channel,
       });
@@ -1536,6 +1565,7 @@ function importDatabaseSnapshot(snapshot) {
         normalized.inputDevice,
         normalized.inputLeftChannel,
         normalized.inputRightChannel,
+        normalized.videoSource,
         String(row.updated_at || new Date().toISOString())
       );
       const levels = bridgeAudioLevels.normalize(typeof row.audio_levels === 'string' ? JSON.parse(row.audio_levels) : row.audio_levels);
@@ -1916,7 +1946,11 @@ function updateFeedBridgeEndpoint(feedId, config = {}) {
     throw new Error('Invalid feed id');
   }
 
-  const normalized = normalizeFeedBridgeEndpointConfig(config);
+  // Older Bridges do not send videoSource when editing audio settings.
+  const previous = config.videoSource === undefined
+    ? db.prepare('SELECT video_source FROM feed_bridge_endpoints WHERE feed_id = ?').get(numericFeedId)
+    : null;
+  const normalized = normalizeFeedBridgeEndpointConfig({ ...config, videoSource: config.videoSource ?? previous?.video_source });
   const now = new Date().toISOString();
   const stmt = db.prepare(`
     INSERT INTO feed_bridge_endpoints (
@@ -1927,9 +1961,10 @@ function updateFeedBridgeEndpoint(feedId, config = {}) {
       input_device,
       input_left_channel,
       input_right_channel,
+      video_source,
       updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(feed_id) DO UPDATE SET
       enabled = excluded.enabled,
       bridge_device = excluded.bridge_device,
@@ -1937,6 +1972,7 @@ function updateFeedBridgeEndpoint(feedId, config = {}) {
       input_device = excluded.input_device,
       input_left_channel = excluded.input_left_channel,
       input_right_channel = excluded.input_right_channel,
+      video_source = excluded.video_source,
       updated_at = excluded.updated_at
   `);
 
@@ -1948,6 +1984,7 @@ function updateFeedBridgeEndpoint(feedId, config = {}) {
     normalized.inputDevice,
     normalized.inputLeftChannel,
     normalized.inputRightChannel,
+    normalized.videoSource,
     now
   );
   return result.changes > 0;
@@ -2377,6 +2414,7 @@ module.exports = {
   getAllConferences,
   getAllFeeds,
   getFeedById,
+  updateFeedVideoPermission,
   getAllProductions,
   getAllProductionMemberships,
   getProductionById,

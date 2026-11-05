@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>NSCameraUsageDescription</key>
+  <string>Talktome Bridge uses the selected webcam to send video for an assigned feed.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Talktome Bridge needs audio input access to transmit assigned inputs and operate audio level triggers.</string>
 </dict>

@@ -59,7 +59,8 @@
       "binaries/ffmpeg"
     ],
     "resources": {
-      "resources/omt/": "omt/"
+      "resources/omt/": "omt/",
+      "resources/licenses/": "licenses/"
     }
   }
 }

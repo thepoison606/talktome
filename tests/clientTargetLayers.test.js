@@ -9,7 +9,7 @@ const start = source.indexOf('function getMobileTargetLayerSize()');
 const end = source.indexOf('function emitTargetAudioStateSnapshot(', start);
 assert(start >= 0 && end > start);
 
-function fixture({ heights = Array(12).fill(80), available = 440, landscape = false } = {}) {
+function fixture({ heights = Array(12).fill(80), available = 440, landscape = false, expanded = false, columns = 1 } = {}) {
   const rows = heights.map(height => {
     const classes = new Set();
     return {
@@ -23,14 +23,15 @@ function fixture({ heights = Array(12).fill(80), available = 440, landscape = fa
       getBoundingClientRect: () => ({ height: classes.has('layer-hidden') ? 0 : height }),
     };
   });
-  const list = { clientHeight: available, dataset: {}, scrollTop: 0, querySelectorAll: () => rows };
+  const list = { classList: { contains: name => expanded && name === 'has-expanded-video', toggle() {}, remove() {} }, style: { setProperty() {}, removeProperty() {} }, clientHeight: available, dataset: {}, scrollTop: 0, querySelectorAll: () => rows };
   const button = { setAttribute() {}, textContent: '' };
   const switcher = { hidden: true };
   const context = vm.createContext({
     window: {
+      TalktomeTargetLayers: require('../public/targetLayers'),
       innerWidth: landscape ? 844 : 430,
       matchMedia: query => ({ matches: query.includes('landscape') && landscape }),
-      getComputedStyle: item => item === list ? { rowGap: '8px' } : { marginTop: '0', marginBottom: '0' },
+      getComputedStyle: item => item === list ? { rowGap: '8px', display: columns > 1 ? 'grid' : 'flex', gridTemplateColumns: Array(columns).fill('300px').join(' ') } : { marginTop: '0', marginBottom: '0' },
     },
     document: { getElementById: () => list },
     targetLayerButton: button, targetLayerSwitcher: switcher,
@@ -84,3 +85,29 @@ test('landscape pages also reduce capacity and all targets remain reachable', ()
   assert.equal(seen.size, 7);
   assert.equal(f.button.textContent, 'Layer 1/4');
 });
+
+test('expanded videos pack actual row heights on desktop too and preserve every target', () => {
+  const f = fixture({ heights: [80, 260, 80, 80, 80], available: 440, expanded: true });
+  f.context.window.innerWidth = 1280;
+  f.run('updateTargetLayerControls()');
+  assert.equal(f.button.textContent, 'Layer 1/2');
+  assert.deepEqual(f.rows.map(row => row.classList.contains('layer-hidden')), [false, false, false, true, true]);
+  f.run('advanceTargetLayer()');
+  assert.equal(f.button.textContent, 'Layer 2/2');
+  assert.deepEqual(f.rows.map(row => row.classList.contains('layer-hidden')), [true, true, true, false, false]);
+});
+
+for (const columns of [2, 3, 4]) {
+  test(`expanded video retains ${columns} columns and paginates complete grid rows`, () => {
+    const heights = Array(columns * 3).fill(80);
+    heights[columns] = 260;
+    const f = fixture({ heights, available: 360, expanded: true, columns });
+    f.context.window.innerWidth = 1400;
+    f.run('updateTargetLayerControls()');
+    assert.equal(f.button.textContent, 'Layer 1/2');
+    assert.equal(f.rows.filter(row => !row.classList.contains('layer-hidden')).length, columns * 2);
+    f.run('advanceTargetLayer()');
+    assert.equal(f.rows.filter(row => !row.classList.contains('layer-hidden')).length, columns);
+    assert.deepEqual(f.rows.map(row => row.dataset.layer), heights.map((_, i) => i < columns * 2 ? '0' : '1'));
+  });
+}

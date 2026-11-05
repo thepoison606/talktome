@@ -1,4 +1,27 @@
 :root {
+  /* The shared picker keeps the admin website's blue defaults; the native
+     Bridge uses the same neutral surfaces as its other controls/popovers. */
+  --target-picker-surface: #29292f;
+  --target-picker-border: #62626e;
+  --target-picker-text: #edf2f7;
+  --target-picker-heading: #f7fafc;
+  --target-picker-muted: #aeb8c6;
+  --target-picker-secondary: #b7c1cc;
+  --target-picker-hover-text: #edf2f7;
+  --target-picker-chip-bg: #3a3a40;
+  --target-picker-chip-border: #62626e;
+  --target-picker-control: #3a3a40;
+  --target-picker-control-hover: #494950;
+  --target-picker-search: #242428;
+  --target-picker-divider: #50505a;
+  --target-picker-option-hover: #36363e;
+  --target-picker-selected: #42424a;
+  --target-picker-accent: #b7c1cc;
+  --target-picker-apply: #45454d;
+  --target-picker-apply-border: #74747e;
+  --target-picker-apply-hover: #50505a;
+  --target-picker-backdrop: #0008;
+  --target-picker-focus: #93c5fd;
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: #2b2b2f;
@@ -853,3 +876,7 @@ ul {
 }
 
 .managed-port-control small { color: #9fb0c0; font-size: 0.7rem; }
+
+.managed-video-source { grid-column: 1 / -1; display: grid; gap: 0.25rem; }
+
+.managed-port-card [data-video-status][hidden] { display: none; }

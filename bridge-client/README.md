@@ -116,6 +116,12 @@ Always on applies to the input/send direction. Return audio uses the configured
 conference memberships and output settings. Configuration backups include the mode
 and full target group; older single-target configurations remain supported.
 
+## NDI / OMT video feeds
+
+On the `feature/video-feeds` branch, managed Feed ports also offer **Video source (optional)**. Choose a discovered NDI or OMT source here or in **Admin → Feeds**. The picture is sent to assigned browser users; audio routing stays independent. Select **Off** to remove video without stopping audio. Native mobile video reception and NDI/OMT video outputs are not included.
+
+The software encoder targets up to 720p / 30 fps / 2.4 Mbit/s per Feed, preserving source cadence (50 fps → 25 fps, 60 fps → 30 fps). Multiple feeds add CPU and bandwidth load. OpenH264 and its Rust bindings use BSD-2-Clause licenses; notices are bundled under `licenses/`. See [video setup and validation](../docs/browser-video-feeds.md#send-an-ndi-or-omt-feed-through-the-bridge).
+
 ## OMT Audio
 
 Open Media Transport support is bundled with the macOS and Windows Bridge, so

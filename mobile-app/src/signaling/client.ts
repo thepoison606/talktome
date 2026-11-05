@@ -243,7 +243,7 @@ export class SignalingClient {
   ): Promise<RegisterUserResponse> {
     return this.emitAck<RegisterUserResponse>(
       SocketEvent.registerUser,
-      registerUserPayload(identity, force, productionId, this.platform, this.version),
+      { ...registerUserPayload(identity, force, productionId, this.platform, this.version), feedVideo: true },
     );
   }
 

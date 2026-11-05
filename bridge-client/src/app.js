@@ -441,7 +441,8 @@ function inventorySignature(inventory) {
 
   return JSON.stringify({
     host: inventory.host || "",
-    devices
+    devices,
+    videoSources: inventory.videoSources || []
   });
 }
 
@@ -746,6 +747,7 @@ async function auditManagedSessionDevices() {
       continue;
     }
 
+    if (session.port.kind === "feed" && !session.port.input?.deviceId && session.port.videoSource) continue;
     if (!currentInventory?.devices?.length) continue;
     const inputUnavailableReason = getManagedAssignmentUnavailableReason("input", session.port.input);
     if (inputUnavailableReason) {
@@ -945,6 +947,7 @@ function getManagedPortDraft(port) {
   const draft = managedPortDrafts.get(key) || {};
   const trigger = port.trigger || {};
   return {
+    videoSource: draft.videoSource ?? port.videoSource ?? "",
     input: {
       deviceId: draft.input?.deviceId ?? port.input?.deviceId ?? "",
       leftChannel: draft.input?.leftChannel ?? port.input?.leftChannel ?? null,
@@ -968,9 +971,8 @@ function buildManagedDeviceOptions(direction, selectedDeviceId) {
   const selected = String(selectedDeviceId || "");
   const hasSelected = devices.some((device) => device.id === selected);
   const options = [];
-  if (!selected) {
-    options.push('<option value="">Select device</option>');
-  } else if (!hasSelected) {
+  options.push('<option value="">Select device</option>');
+  if (selected && !hasSelected) {
     options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(`${selected} (saved, unavailable)`)}</option>`);
   }
 
@@ -1387,6 +1389,7 @@ function updateManagedPortDraftFromElement(card) {
   const port = (managedBridgeConfig?.ports || []).find((entry) => bridgePortKey(entry) === key);
   if (!port) return;
   const draft = {
+    videoSource: card.querySelector('[data-field="videoSource"]')?.value || "",
     input: readManagedPortAssignmentFromElement(card, "input"),
     output: bridgePortHasOutput(port)
       ? readManagedPortAssignmentFromElement(card, "output")
@@ -1434,13 +1437,14 @@ async function saveManagedBridgePort(key) {
   const saveRevision = managedPortDraftRevisions.get(key) || 0;
   const draft = managedPortDrafts.get(key) || getManagedPortDraft(port);
 
-  validateManagedPortAssignment(draft.input, "Input");
+  if (draft.input.deviceId || port.kind !== "feed" || !draft.videoSource) validateManagedPortAssignment(draft.input, "Input");
   if (bridgePortHasOutput(port)) {
     validateManagedPortAssignment(draft.output, "Output");
   }
   validateManagedTrigger(draft.trigger);
 
   const payload = {
+    ...(port.kind === "feed" ? { videoSource: draft.videoSource } : {}),
     enabled: true,
     inputDevice: draft.input.deviceId,
     inputLeftChannel: draft.input.leftChannel,
@@ -1599,7 +1603,30 @@ function finishManagedRangeInteraction() {
   window.requestAnimationFrame(renderManagedBridgePorts);
 }
 
+function renderManagedVideoControls(port, draft) {
+  if (port.kind !== 'feed') return '';
+  const sources = currentInventory?.videoSources || [];
+  const options = [{ id: '', name: 'Off' }, ...sources];
+  if (draft.videoSource && !sources.some(source => source.id === draft.videoSource)) {
+    options.push({ id: draft.videoSource, name: `${draft.videoSource} (saved, unavailable)` });
+  }
+  return `<label class="field-group managed-video-source">Video source (optional)
+    <select data-field="videoSource" data-managed-port-control${port.videoAllowed === false ? ' disabled title="Video disabled by administrator"' : ''}>${options.map(source => `<option value="${escapeHtml(source.id)}"${source.id === draft.videoSource ? ' selected' : ''}>${escapeHtml(source.name)}</option>`).join('')}</select></label>`;
+}
+
+function managedFeedVideoStatus(port, session) {
+  if (!port.videoSource) return '';
+  return `Video: ${port.videoAllowed === false ? "Disabled by administrator" : session?.videoError || (session?.videoFrames ? "Live" : "Waiting for source…")}`;
+}
+
 function renderManagedBridgePorts() {
+  // Refresh live labels even while a select has focus and the form cannot be rebuilt.
+  for (const port of managedBridgeConfig?.ports || []) {
+    const status = getManagedPortElement(bridgePortKey(port))?.querySelector('[data-video-status]');
+    if (!status) continue;
+    status.textContent = managedFeedVideoStatus(port, managedSessions.get(bridgePortKey(port)));
+    status.hidden = !status.textContent;
+  }
   if (managedAudioPopover || targetPicker.isOpen()) return;
   const activeElement = document.activeElement;
   const managedControlFocused = (
@@ -1654,12 +1681,14 @@ function renderManagedBridgePorts() {
       <div class="managed-port-routing-grid">
         ${renderManagedAssignmentControls(port, "input", draft.input)}
         ${hasOutput ? renderManagedAssignmentControls(port, "output", draft.output) : ""}
+        ${renderManagedVideoControls(port, draft)}
       </div>
       ${renderManagedTriggerControls(port, draft)}
       ${hasOutput || port.kind === "user" ? `<div class="managed-port-status-row">
         ${hasOutput ? `<small>${escapeHtml(formatManagedReturnPathStatus(session))}</small>` : "<span></span>"}
         ${port.kind === "user" ? `<small class="managed-port-input-level" data-managed-input-level${draft.trigger?.mode === "audio-level" ? "" : " hidden"}>Input level: waiting…</small>` : ""}
       </div>` : ""}
+      ${port.kind === "feed" ? `<small data-video-status${port.videoSource ? "" : " hidden"}>${escapeHtml(managedFeedVideoStatus(port, session))}</small>` : ""}
       ${sessionError ? `<div class="managed-port-error">${escapeHtml(sessionError)}</div>` : ""}
       ${editState.error ? `<div class="managed-port-error">${escapeHtml(editState.error)}</div>` : ""}
       </article>
@@ -1974,7 +2003,10 @@ function getManagedInputLevelMap(status) {
 function updateManagedInputLevelDisplay(session, inputStats) {
   const card = getManagedPortElement(bridgePortKey(session.port));
   const display = card?.querySelector("[data-managed-input-level]");
-  if (!(display instanceof HTMLElement)) return;
+  const popoverLabel = managedAudioPopover?.direction === 'input'
+    && bridgePortKey(managedAudioPopover.port) === bridgePortKey(session.port)
+    ? managedAudioPopover.panel.querySelector('[data-audio-meter-label]') : null;
+  if (!(display instanceof HTMLElement) && !popoverLabel) return;
 
   const rmsDb = Number(inputStats?.rmsDb);
   const capturedFrames = Number(inputStats?.capturedFrames);
@@ -1987,15 +2019,11 @@ function updateManagedInputLevelDisplay(session, inputStats) {
       : !Number.isFinite(rmsDb) ? 'unavailable'
         : elapsed >= MANAGED_INPUT_ACTIVITY_GRACE_MS && rmsDb <= -119.9 ? 'silent' : 'active';
   const previous = session.inputLevelTextUpdate;
-  const popoverLabel = managedAudioPopover?.direction === 'input'
-    && bridgePortKey(managedAudioPopover.port) === bridgePortKey(session.port)
-    ? managedAudioPopover.panel.querySelector('[data-audio-meter-label]') : null;
-  if (previous?.display === display && previous.mode === mode
+  if (previous && previous.display === display && previous.mode === mode
     && now - previous.at < MANAGED_LEVEL_TEXT_REFRESH_MS) {
-    if (popoverLabel) popoverLabel.textContent = display.textContent;
+    if (popoverLabel) popoverLabel.textContent = previous.text;
     return;
   }
-  session.inputLevelTextUpdate = { display, mode, at: now };
   let text;
   let warning = false;
 
@@ -2019,8 +2047,11 @@ function updateManagedInputLevelDisplay(session, inputStats) {
       warning = true;
     }
   }
-  display.textContent = text;
-  display.classList.toggle('warning', warning);
+  session.inputLevelTextUpdate = { display, mode, at: now, text };
+  if (display instanceof HTMLElement) {
+    display.textContent = text;
+    display.classList.toggle('warning', warning);
+  }
   if (popoverLabel) popoverLabel.textContent = text;
 }
 
@@ -2840,6 +2871,7 @@ function createManagedSession(port) {
 }
 
 async function startManagedInputPath(session, { reason = "input-start" } = {}) {
+  if (session.port.kind === 'feed' && !session.port.input?.deviceId && session.port.videoSource) return false;
   if (session.inputReady || session.inputStarting) return session.inputReady;
   if (!session.sessionId) throw new Error("Bridge session is not ready for input");
 
@@ -2868,6 +2900,7 @@ async function startManagedInputPath(session, { reason = "input-start" } = {}) {
         rtpPort: Number(transport.port),
         payloadType: rtp.payloadType,
         ssrc: rtp.ssrc,
+        cname: transport.cname || '',
         audioLevel: getManagedAudioLevel(session.port, 'input')
       }
     });
@@ -2892,6 +2925,71 @@ async function startManagedInputPath(session, { reason = "input-start" } = {}) {
     return false;
   } finally {
     session.inputStarting = false;
+  }
+}
+
+async function stopManagedVideoPath(session) {
+  if (session.port.kind !== "feed") return;
+  session.videoRevision = (session.videoRevision || 0) + 1;
+  await invoke('stop_bridge_video', { streamId: `${session.port.id}:video` }).catch(() => {});
+  if (session.sessionId) await bridgeApi('DELETE', managedSessionPath(session, '/video')).catch(() => {});
+  session.videoProducerId = null;
+  session.videoFrames = 0;
+  session.videoPublished = false;
+  session.videoStartedAt = 0;
+}
+
+async function startManagedVideoPath(session) {
+  if (session.port.kind !== 'feed' || session.port.videoAllowed === false || !session.port.videoSource || !session.sessionId || session.videoStarting || session.videoProducerId) return;
+  session.videoStarting = true;
+  const revision = session.videoRevision || 0;
+  const sourceId = session.port.videoSource;
+  const path = managedSessionPath(session);
+  const active = () => revision === (session.videoRevision || 0) && session.sessionId && session.port.videoAllowed !== false && session.port.videoSource === sourceId;
+  try {
+    const transport = await bridgeApi('POST', path + '/video-send-transport', {});
+    if (!active()) { await bridgeApi('DELETE', path + '/video').catch(() => {}); return; }
+    const producer = await bridgeApi('POST', path + '/video-producer', {});
+    if (!active()) { await bridgeApi('DELETE', path + '/video').catch(() => {}); return; }
+    await invoke('start_bridge_video', { request: { streamId: `${session.port.id}:video`, sourceId,
+      rtpIp: transport.ip, rtpPort: transport.port, payloadType: transport.payloadType, ssrc: transport.ssrc, cname: transport.cname } });
+    if (!active()) { await stopManagedVideoPath(session); return; }
+    session.videoProducerId = producer.id;
+    session.videoStartedAt = Date.now();
+    session.videoError = null;
+  } catch (error) {
+    if (active()) {
+      await stopManagedVideoPath(session);
+      session.videoError = String(error?.message || error);
+      session.videoRetryAt = Date.now() + 5000;
+    }
+  } finally { session.videoStarting = false; }
+}
+
+async function auditManagedVideoStatus() {
+  const feeds = [...managedSessions.values()].filter(session => session.ready && session.port.kind === 'feed' && session.port.videoAllowed !== false && session.port.videoSource);
+  if (!feeds.length) return;
+  const statuses = await withTimeout(invoke('get_bridge_video_status'), 3000, 'Video status');
+  for (const session of feeds) {
+    if (session.videoStarting) continue;
+    if (!session.videoProducerId) {
+      if (!session.videoRetryAt || session.videoRetryAt <= Date.now()) await startManagedVideoPath(session);
+      continue;
+    }
+    const status = statuses.find(entry => entry.streamId === `${session.port.id}:video`);
+    const stalled = Date.now() - session.videoStartedAt > 10000
+      && (!status?.encodedFrames || status.lastFrameAgeMs > 5000);
+    if (status?.error || !status?.running || stalled) {
+      await stopManagedVideoPath(session);
+      session.videoError = status?.error || 'Source unavailable; reconnecting…';
+      session.videoRetryAt = Date.now() + 5000;
+    } else {
+      session.videoFrames = status.encodedFrames;
+      if (session.videoFrames > 0 && !session.videoPublished) {
+        await bridgeApi('POST', managedSessionPath(session, `/producers/${session.videoProducerId}/resume`), {});
+        session.videoPublished = true;
+      }
+    }
   }
 }
 
@@ -2962,6 +3060,7 @@ async function startManagedSession(port, { reuse = false, silentRetry = false, r
       });
     }
     session.ready = true;
+    await startManagedVideoPath(session);
     recordManagedLifecycle(
       session,
       "session-ready",
@@ -2992,6 +3091,7 @@ async function startManagedSession(port, { reuse = false, silentRetry = false, r
 
 async function stopManagedSession(session, { remove = true, reason = "client-stop" } = {}) {
   stopManagedEventStream(session);
+  await stopManagedVideoPath(session);
   for (const output of [...session.outputs.values()]) {
     await stopManagedConsumer(session, output).catch(() => {});
   }
@@ -3058,7 +3158,10 @@ async function reconcileManagedBridgeConfig(config) {
     const previousMode = bridgeTalkTrigger.mode(session.port.trigger?.mode);
     const nextMode = bridgeTalkTrigger.mode(nextPort.trigger?.mode);
     const targetsChanged = !managedTalkTargetsMatch(getManagedTriggerTargets(session.port), getManagedTriggerTargets(nextPort));
+    const videoChanged = session.port.videoSource !== nextPort.videoSource || session.port.videoAllowed !== nextPort.videoAllowed;
+    if (videoChanged) await stopManagedVideoPath(session);
     session.port = nextPort;
+    if (videoChanged && session.ready) await startManagedVideoPath(session);
     session.signature = nextSignature;
     await syncManagedPortAudioLevels(nextPort);
     if ((previousMode !== nextMode || targetsChanged) && previousMode !== 'external') {
@@ -3242,6 +3345,7 @@ async function watchManagedInventory() {
     }
     await auditManagedSessionDevices();
     await auditManagedNativeMediaStatus();
+    await auditManagedVideoStatus();
     renderManagedBridgePorts();
   } catch (error) {
     console.warn("managed inventory watch failed", error);

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { AppState, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import {
   cameraTallyColor,
@@ -19,17 +19,15 @@ import { ConnectionStatusBadge } from './ConnectionStatusBadge';
 import { ChevronIcon, LockIcon, ReplyArrowIcon, WalkieTalkieIcon } from './icons';
 import { endTalkTouches, HoldToTalk, moveTalkTouches } from './HoldToTalk';
 import {
-  chunkTargets,
   COLLAPSED_HEADER_HEIGHT,
   estimateTargetListHeight,
   isCompactOperatorScreen,
   isTabletOperatorScreen,
   operatorLayout,
   shouldOfferHeaderCollapse,
-  targetLayerCount,
-  visibleTargets,
 } from './layers';
 import { openSessionSheet } from './sessionSheetState';
+import { feedVideoHeight, feedVideoLayers } from './feedVideoLayout';
 import { TargetRow } from './TargetRow';
 import { colors } from './theme';
 
@@ -64,6 +62,8 @@ export function OperatorScreen() {
   const [headerCollapsed, setHeaderCollapsed] = useState(compact);
   const [headerHeight, setHeaderHeight] = useState(96);
   const [listHeight, setListHeight] = useState(0);
+  const [listWidth, setListWidth] = useState(0);
+  const [expandedVideos, setExpandedVideos] = useState<Set<string>>(() => new Set());
   const compactRef = useRef(compact);
   const reply = store.replyTarget;
   const mainButton = resolveMainButton({
@@ -80,10 +80,39 @@ export function OperatorScreen() {
     headerCollapsed,
   });
   const replyBeside = layout.replyBeside;
-  const layers = targetLayerCount(store.targets.length, width, height, availableHeight, headerCollapsed);
+  const videoCellWidth = (listWidth || width - 32) / layout.columns - layout.gap;
+  const videoHeight = feedVideoHeight(videoCellWidth,
+    height, availableHeight, layout.cardHeight,
+    layout.landscape ? Math.min(layout.rows, Math.ceil(store.targets.length / layout.columns)) : 0, layout.gap);
+  const maxVideoHeight = Math.min(260, videoCellWidth * 9 / 16 + 4);
+  const pages = feedVideoLayers(store.targets, layout, expandedVideos, availableHeight, videoHeight, maxVideoHeight);
+  const layers = pages.length;
   const safeLayerIndex = Math.min(layerIndex, layers - 1);
-  const page = visibleTargets(store.targets, safeLayerIndex, width, height, availableHeight, headerCollapsed);
-  const grid = chunkTargets(page, layout.columns);
+  const grid = pages[safeLayerIndex]!;
+  const visibleVideoKeys = grid.flatMap(row => row.targets)
+    .filter(target => target.type === 'feed' && expandedVideos.has(talkTargetIdentity(target)))
+    .map(talkTargetIdentity).sort().join(',');
+
+  useEffect(() => {
+    const update = () => session.mediaCoordinator.setVisibleFeedVideos(
+      AppState.currentState === 'active' && store.operatorReady ? visibleVideoKeys.split(',').filter(Boolean) : []);
+    update();
+    const subscription = AppState.addEventListener('change', update);
+    return () => { subscription.remove(); session.mediaCoordinator.setVisibleFeedVideos([]); };
+  }, [visibleVideoKeys, store.operatorReady, store.productionId]);
+
+  useEffect(() => { setExpandedVideos(new Set()); }, [store.productionId, store.activeProfileId]);
+
+  const toggleVideo = (target: TalkTarget) => {
+    const key = talkTargetIdentity(target);
+    const next = new Set(expandedVideos);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    const nextPages = feedVideoLayers(store.targets, layout, next, availableHeight, videoHeight, maxVideoHeight);
+    setExpandedVideos(next);
+    // Expanding a row can move it to the next layer; keep the tapped feed on screen.
+    setLayerIndex(Math.max(0, nextPages.findIndex(page => page.some(row =>
+      row.targets.some(item => talkTargetIdentity(item) === key)))));
+  };
   const offerCollapse =
     headerCollapsed ||
     shouldOfferHeaderCollapse({
@@ -336,11 +365,11 @@ export function OperatorScreen() {
         >
           <View
             style={styles.list}
-            onLayout={(event) => setListHeight(event.nativeEvent.layout.height)}
+            onLayout={(event) => { setListHeight(event.nativeEvent.layout.height); setListWidth(event.nativeEvent.layout.width); }}
           >
             {grid.map((row, rowIndex) => (
-              <View key={`row-${rowIndex}`} style={[styles.gridRow, { height: layout.cardHeight, gap: layout.gap }]}>
-                {row.map((target) => (
+              <View key={`row-${rowIndex}`} style={[styles.gridRow, { height: row.height, gap: layout.gap }]}>
+                {row.targets.map((target) => (
                   <View key={`${target.type}-${target.id}`} style={styles.gridCell}>
                     <TargetRow
                       target={target}
@@ -348,13 +377,19 @@ export function OperatorScreen() {
                       compactLabel={layout.columns > 1 && width / layout.columns < 400}
                       volumeReadout={compact}
                       height={layout.cardHeight}
+                      videoAvailable={store.videoFeedKeys.includes(talkTargetIdentity(target))}
+                      videoExpanded={expandedVideos.has(talkTargetIdentity(target))}
+                      videoHeight={row.videoHeight}
+                      videoStreamURL={store.feedVideos[talkTargetIdentity(target)]?.streamURL}
+                      videoError={store.feedVideos[talkTargetIdentity(target)]?.error}
+                      onToggleVideo={() => toggleVideo(target)}
                       edgeTalkAffordance={!replyBeside && store.edgeTalkAffordance}
                       onOpenConferenceMembers={setConferenceTarget}
                     />
                   </View>
                 ))}
-                {row.length < layout.columns
-                  ? Array.from({ length: layout.columns - row.length }, (_, index) => (
+                {row.targets.length < layout.columns
+                  ? Array.from({ length: layout.columns - row.targets.length }, (_, index) => (
                       <View key={`pad-${rowIndex}-${index}`} style={styles.gridCell} />
                     ))
                   : null}
@@ -564,6 +599,7 @@ const styles = StyleSheet.create({
   },
   gridCell: {
     flex: 1,
+    justifyContent: 'flex-end',
     minWidth: 0,
   },
   reply: {

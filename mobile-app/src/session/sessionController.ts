@@ -131,6 +131,7 @@ export class SessionController {
     subscribe: listener => useSessionStore.subscribe(listener),
     defaultAudioProfile: () => this.serverClientDefaults.audioProfile ?? 'standard',
     applyAudioSettings: async settings => {
+      if (typeof settings.bigMainButton === 'boolean') this.setBigMainButton(settings.bigMainButton);
       this.setLeftHanded(settings.leftHandMode);
       this.setLockMultipleTargets(settings.lockMultipleTargets);
       await this.mediaCoordinator.setOperatorAudio({

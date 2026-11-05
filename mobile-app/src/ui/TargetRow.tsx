@@ -23,6 +23,7 @@ import {
   WEB_AVATAR,
   targetAvatarBackground,
 } from './icons';
+import { FeedVideoPlayer } from './FeedVideoPlayer';
 import { colors } from './theme';
 import { conferenceSpeakingLabel, targetActivity } from './targetActivity';
 import { VolumeOverlay } from './VolumeOverlay';
@@ -35,6 +36,12 @@ type Props = {
   volumeReadout?: boolean;
   height?: number;
   edgeTalkAffordance?: boolean;
+  videoAvailable?: boolean;
+  videoExpanded?: boolean;
+  videoHeight?: number;
+  videoStreamURL?: string;
+  videoError?: string;
+  onToggleVideo?: () => void;
   onOpenConferenceMembers?: (target: TalkTarget) => void;
 };
 
@@ -46,8 +53,11 @@ export function TargetRow({
   height,
   edgeTalkAffordance = false,
   onOpenConferenceMembers,
+  videoAvailable = false, videoExpanded = false, videoHeight = 0,
+  videoStreamURL, videoError, onToggleVideo,
 }: Props) {
   const key = talkTargetIdentity(target);
+  const canToggleVideo = target.type === 'feed' && (videoAvailable || videoExpanded);
   const talking = useSessionStore((state) => state.talkingTargetKeys.includes(key));
   const locked = useSessionStore((state) => state.lockedTargetKeys.includes(key));
   const incomingEntries = useSessionStore((state) => state.incoming.addressedNow);
@@ -111,6 +121,10 @@ export function TargetRow({
           </View>
         ) : null}
       </Pressable>
+    ) : canToggleVideo ? (
+      <View pointerEvents="none" style={[styles.avatar, { backgroundColor: targetAvatarBackground('feed', dimmed) }]}>
+        <Text style={{ fontSize: 22 }}>📺</Text>
+      </View>
     ) : (
       <View style={[styles.avatar, { backgroundColor: targetAvatarBackground(target.type, dimmed) }]}>
         {target.type === 'feed' ? (
@@ -157,7 +171,7 @@ export function TargetRow({
         </HoldToTalk>
       );
     }
-    return <View style={style}>{children}</View>;
+    return <View pointerEvents={canToggleVideo ? "none" : "auto"} style={style}>{children}</View>;
   };
 
   const talkZone = wrapTalk(
@@ -205,10 +219,20 @@ export function TargetRow({
   ];
 
   return (
-    <View style={rowStyle}>
+    <View style={videoExpanded ? [styles.videoCard, speaking && styles.rowSpeaking, dimmed && styles.rowOffline,
+      height != null && { height: height + videoHeight }] : height != null ? { height } : undefined}>
+      {canToggleVideo ? <Pressable
+        accessibilityRole="button" accessibilityLabel={`${videoExpanded ? 'Hide' : 'Show'} video, ${target.label}`}
+        accessibilityState={{ expanded: videoExpanded }} onPress={onToggleVideo}
+        style={StyleSheet.absoluteFill}
+      /> : null}
+      {videoExpanded ? <View pointerEvents="none"><FeedVideoPlayer streamURL={videoStreamURL} error={videoError}
+        stopped={feedStopped} height={Math.max(0, videoHeight - 2)} /></View> : null}
+    <View pointerEvents={canToggleVideo ? "box-none" : "auto"} style={[rowStyle, videoExpanded && { flex: 0, borderWidth: 0, borderRadius: 0, backgroundColor: 'transparent', opacity: 1 }]}>
       {avatar}
       {talkZone}
       <View
+        pointerEvents={canToggleVideo ? "box-none" : "auto"}
         style={[
           styles.meterCluster,
           leftHanded && styles.meterClusterLeft,
@@ -229,6 +253,7 @@ export function TargetRow({
         />
       </View>
       {talkControl}
+    </View>
       <VolumeOverlay
         visible={volumeOpen}
         title={target.label}
@@ -248,6 +273,8 @@ export function TargetRow({
 }
 
 const styles = StyleSheet.create({
+  videoCard: { borderRadius: 6, overflow: 'hidden', backgroundColor: '#1f2937',
+    borderWidth: 1, borderColor: 'transparent' },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

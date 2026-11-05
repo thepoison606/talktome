@@ -6,7 +6,7 @@ const path = require('node:path');
 const root = require('./helpers/projectRoot');
 const audioMeter = require('../public/audioMeter');
 
-function fixture() {
+function fixture({ cardLevel = true } = {}) {
   const source = fs.readFileSync(path.join(root, 'bridge-client/src/app.js'), 'utf8');
   class Element {
     textContent = '';
@@ -26,7 +26,7 @@ function fixture() {
     MANAGED_LEVEL_TEXT_REFRESH_MS: 250,
     managedAudioPopover: { direction: 'input', port: session.port, panel: { querySelector: () => popoverLabel } },
     bridgePortKey: () => 'user:7',
-    getManagedPortElement: () => ({ querySelector: () => display }),
+    getManagedPortElement: () => cardLevel === 'absent' ? null : ({ querySelector: () => cardLevel ? display : null }),
     getManagedAudioLevel: port => ({ muted: port.muted }),
   });
   vm.runInContext(source.slice(source.indexOf('function updateManagedInputLevelDisplay('), source.indexOf('async function sendManagedCommandResult(')), context);
@@ -75,6 +75,25 @@ test('input dBFS numbers refresh slowly while mute changes remain immediate', ()
   setTime(10_270);
   update({ rmsDb: -40, capturedFrames: 5000 });
   assert.equal(display.textContent, 'Input level: -40.0 dBFS');
+});
+
+for (const cardLevel of [false, 'absent']) test(`feed input popover updates with ${cardLevel === 'absent' ? 'no card during rerender' : 'no card-level label'}`, () => {
+  const { popoverLabel, session, update, setTime } = fixture({ cardLevel });
+  session.port.kind = 'feed';
+  popoverLabel.textContent = 'Waiting for audio…';
+  update({ rmsDb: -35, capturedFrames: 1000 });
+  assert.equal(popoverLabel.textContent, 'Input level: -35.0 dBFS');
+  setTime(10_050);
+  update({ rmsDb: -30, capturedFrames: 2000 });
+  assert.equal(popoverLabel.textContent, 'Input level: -35.0 dBFS', 'keep the same text refresh interval without a card label');
+  setTime(10_250);
+  update({ rmsDb: -30, capturedFrames: 3000 });
+  assert.equal(popoverLabel.textContent, 'Input level: -30.0 dBFS');
+  session.port.muted = true;
+  setTime(10_260);
+  update({ rmsDb: -120, capturedFrames: 4000 });
+  assert.match(popoverLabel.textContent, /Muted/);
+  assert.doesNotMatch(popoverLabel.textContent, /Waiting|permission/);
 });
 
 test('popover input levels show RMS with throttled numbers and reveal fixed color bands', async () => {

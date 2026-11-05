@@ -24,6 +24,7 @@ pub enum NetworkAudioOutputRuntime {
 }
 
 pub struct InputStartRequest {
+    pub timing: Option<Arc<Mutex<crate::media_timing::AudioTimeline>>>,
     pub device_id: String,
     pub left_channel: u16,
     pub right_channel: u16,
@@ -351,6 +352,7 @@ pub fn start_input(request: InputStartRequest) -> Result<NetworkAudioInputRuntim
     }
     if omt::is_input_device(&request.device_id) {
         return omt::OmtInputRuntime::start(
+            request.timing,
             request.device_id,
             request.left_channel,
             request.right_channel,
