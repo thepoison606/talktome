@@ -14,7 +14,7 @@ feedback and sharing how you use Talktome.
 ## Features
 
 - Browser-based intercom with direct targets, conferences, reply and talk lock.
-- Native mobile apps for [iOS]() 
+- Native mobile apps for [iOS](https://apps.apple.com/app/id6827440765).
 - Admin UI for users, feeds, conferences, target order, network config, RTC port range, backups, Guest login and panel remote control.
 - Program feeds audio/video (NDI, OMT, Webcam)
 - Camera tally and remote control through Bitfocus Companion, HTTP API, module and keyboard shortcuts.
