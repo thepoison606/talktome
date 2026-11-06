@@ -1,6 +1,6 @@
 # Talktome
 
-Local WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
+WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
 
 <img src="public/images/iphone_ipad.png" alt="Talktome mobile UI" width="800">
 
@@ -14,8 +14,9 @@ feedback and sharing how you use Talktome.
 ## Features
 
 - Browser-based intercom with direct targets, conferences, reply and talk lock.
+- Native mobile apps for [iOS]() 
 - Admin UI for users, feeds, conferences, target order, network config, RTC port range, backups, Guest login and panel remote control.
-- Program-audio feeds with volume and mute controls, plus optional browser webcam video.
+- Program feeds audio/video (NDI, OMT, Webcam)
 - Camera tally and remote control through Bitfocus Companion, HTTP API, module and keyboard shortcuts.
 - Bridge Desktop Application to integrate NDI, OMT, hardware intercom systems, audio interfaces and mixing consoles.
 - Headless client that turns a Raspberry Pi (or any small Linux board) into an intercom panel with Elgato Stream Deck keys and dials, GPIO tally and PTT, and a web admin UI.
