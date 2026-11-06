@@ -2636,6 +2636,53 @@
         pointer-events: none;
       }
 
+      .target-matrix__user-label {
+        display: flex;
+        align-items: center;
+        gap: 0.2rem;
+      }
+
+      .target-matrix__user-label > span {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .target-matrix .matrix-connect {
+        display: inline-flex;
+        flex: 0 0 1.4rem;
+        align-items: center;
+        justify-content: center;
+        width: 1.4rem;
+        height: 1.4rem;
+        min-height: 0;
+        padding: 0;
+        border: 0;
+        border-radius: 0.25rem;
+        background: transparent;
+        color: var(--muted);
+        box-shadow: none;
+        cursor: pointer;
+      }
+
+      .target-matrix .matrix-connect svg { width: 1rem; height: 1rem; }
+      .target-matrix .matrix-connect:hover { color: #60a5fa; }
+      .target-matrix .matrix-connect:focus-visible { outline: 2px solid #60a5fa; outline-offset: 1px; }
+      .target-matrix .matrix-connect:disabled { opacity: 0.4; cursor: wait; }
+
+      .target-matrix .matrix-connect--all {
+        position: absolute;
+        z-index: 2;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 1.8rem;
+        height: 1.8rem;
+        background: #172033;
+      }
+
       .target-matrix__corner-label {
         position: absolute;
         z-index: 1;

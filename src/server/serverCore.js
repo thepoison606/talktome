@@ -216,6 +216,7 @@ const {
   getConfiguredBridgeTargetsForUser,
   getBridgePanelTargetsForUser,
   addProductionTarget,
+  connectProductionMatrixTargets,
   removeProductionTarget,
   updateProductionTargetOrder,
   deleteUser,
@@ -3510,6 +3511,30 @@ app.delete("/admin/productions/:productionId/users/:userId", requireProductionMa
   } catch (err) {
     res.status(400).json({ error: err.message || "Failed to remove production member" });
   }
+});
+
+function connectMatrixTargets(req, res, productionId) {
+  try {
+    const result = connectProductionMatrixTargets(productionId, req.body?.userId ?? null);
+    for (const userId of result.userIds) notifyTargetChange(userId);
+    for (const conferenceId of result.conferenceIds) notifyConferenceMembersChanged(conferenceId);
+    if (result.conferenceIds.length) broadcastRuntimeUserStates('matrix-targets-connected');
+    res.json(result);
+  } catch (err) {
+    res.status(err.statusCode || 400).json({ error: err.message || 'Failed to connect matrix targets' });
+  }
+}
+
+app.post('/admin/matrix/connect-all', requireAdmin, (req, res) => {
+  try {
+    connectMatrixTargets(req, res, getSingleProductionMembershipScope());
+  } catch (err) {
+    res.status(err.statusCode || 400).json({ error: err.message });
+  }
+});
+
+app.post('/admin/productions/:productionId/targets/connect-all', requireProductionManager, (req, res) => {
+  connectMatrixTargets(req, res, req.productionId);
 });
 
 app.post("/admin/productions/:productionId/users/:userId/targets", requireProductionManager, (req, res) => {

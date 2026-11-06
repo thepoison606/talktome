@@ -1030,6 +1030,43 @@ function addProductionTarget(productionId, userId, targetType, targetId) {
   add();
 }
 
+function connectProductionMatrixTargets(productionId, userId = null) {
+  const pid = Number(productionId);
+  if (!Number.isSafeInteger(pid) || !getProductionById(pid)) throw new Error('Production not found');
+  const connect = db.transaction(() => {
+    const members = getProductionMembers(pid);
+    const uid = userId === null ? null : Number(userId);
+    if (uid !== null && (!Number.isSafeInteger(uid) || !members.some(user => user.id === uid))) {
+      throw new Error('User is not a member of this production');
+    }
+    const rows = uid === null ? members : members.filter(user => user.id === uid);
+    const columns = [
+      ...members.filter(user => !user.is_guest_profile).map(user => ({ targetType: 'user', targetId: user.id })),
+      ...getProductionConferences(pid).map(conference => ({ targetType: 'conference', targetId: conference.id })),
+      ...getProductionFeeds(pid).map(feed => ({ targetType: 'feed', targetId: feed.id })),
+    ];
+    const userIds = new Set();
+    const conferenceIds = new Set();
+    let connections = 0;
+    for (const user of rows) {
+      const existing = new Map(getProductionTargets(user.id, pid).map(target => [
+        `${target.targetType}:${target.targetId}`, target,
+      ]));
+      for (const target of columns) {
+        if (target.targetType === 'user' && target.targetId === user.id) continue;
+        const current = existing.get(`${target.targetType}:${target.targetId}`);
+        if (current?.bridgeManaged || (current && (target.targetType !== 'conference' || current.canTalk))) continue;
+        addProductionTarget(pid, user.id, target.targetType, target.targetId);
+        connections++;
+        userIds.add(user.id);
+        if (target.targetType === 'conference') conferenceIds.add(target.targetId);
+      }
+    }
+    return { connections, userIds: [...userIds], conferenceIds: [...conferenceIds] };
+  });
+  return connect();
+}
+
 function removeProductionTarget(productionId, userId, targetType, targetId) {
   assertBridgeTargetEditable(userId, targetType, targetId);
   if (targetType === 'conference') {
@@ -2449,6 +2486,7 @@ module.exports = {
   getBridgePanelTargetsForUser,
   getPrimaryProductionTargets,
   addProductionTarget,
+  connectProductionMatrixTargets,
   removeProductionTarget,
   updateProductionTargetOrder,
   createUser,

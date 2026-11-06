@@ -2250,6 +2250,65 @@ function renderProductionMembers(payload) {
   ].join('');
 }
 
+function matrixConnectButton(user = null) {
+  const hint = user ? `Connect all targets for ${user.name}` : 'Connect all users to all targets in this matrix';
+  return `<button type="button" class="matrix-connect${user ? '' : ' matrix-connect--all'}"
+    data-matrix-connect="${user ? user.id : 'all'}" data-user-name="${escapeHtml(user?.name || '')}"
+    title="${escapeHtml(hint)}" aria-label="${escapeHtml(hint)}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M10 13a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1l-1.7 1.7M14 11a5 5 0 0 0-7.1 0l-3 3a5 5 0 0 0 7.1 7.1l1.7-1.7" />
+    </svg></button>`;
+}
+
+function matrixUserHeading(user) {
+  return `<th class="target-matrix__user-name" scope="row"><div class="target-matrix__user-label"><span title="${escapeHtml(user.name)}">${escapeHtml(user.name)}</span>${matrixConnectButton(user)}</div></th>`;
+}
+
+let matrixConnectBusy = false;
+async function handleMatrixConnectAll(container, button) {
+  if (matrixConnectBusy || button.disabled) return;
+  const production = container === productionTargetMatrixContainer;
+  const productionId = production ? selectedProductionId : null;
+  const userId = button.dataset.matrixConnect === 'all' ? null : Number(button.dataset.matrixConnect);
+  const scope = production ? selectedProductionPayload?.production?.name || 'this production' : 'this matrix';
+  const subject = userId === null ? `all users in ${scope}` : button.dataset.userName;
+  matrixConnectBusy = true;
+  const disabled = [];
+  try {
+    if (!await adminConfirm(
+      `Connect all available targets for ${subject}? Conferences will be set to talk and listen. Existing connections and Bridge-managed points are kept.`,
+      { title: 'Connect all targets', confirmLabel: 'Connect all' }
+    )) return;
+    if (production && selectedProductionId !== productionId) return;
+    for (const node of container.querySelectorAll('button:not(:disabled)')) {
+      node.disabled = true;
+      disabled.push(node);
+    }
+    const response = await productionRequest(production
+      ? `/admin/productions/${productionId}/targets/connect-all`
+      : '/admin/matrix/connect-all', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId }),
+    });
+    const result = await response.json();
+    if (production) {
+      if (selectedProductionId === productionId) await loadProductionDetail(productionId, { preferredOrderUserId: productionOrderUser?.value });
+    } else {
+      for (const id of result.userIds) {
+        cacheUserTargetAssignments(id, await fetchJSON(`/users/${id}/targets`));
+        scheduleUserTargetEditorRefresh(id);
+      }
+      renderTargetMatrix(currentAdminCatalog.users, currentAdminCatalog.conferences, currentAdminCatalog.feeds);
+      for (const id of result.conferenceIds) for (const uid of result.userIds) scheduleConferenceMembershipEditorRefresh(id, uid);
+    }
+    showMessage(`${result.connections} target connection${result.connections === 1 ? '' : 's'} added.`, 'success', 'matrix');
+  } catch (error) {
+    showMessage(error.message || 'Failed to connect targets', 'error', 'matrix');
+  } finally {
+    for (const node of disabled) node.disabled = false;
+    matrixConnectBusy = false;
+  }
+}
+
 function renderProductionTargetMatrix(payload) {
   if (!productionTargetMatrixContainer) return;
   const rowUsers = payload.members;
@@ -2304,13 +2363,13 @@ function renderProductionTargetMatrix(payload) {
         </td>
       `;
     }).join('');
-    return `<tr><th class="target-matrix__user-name" scope="row">${escapeHtml(user.name)}</th>${cells}</tr>`;
+    return `<tr>${matrixUserHeading(user)}${cells}</tr>`;
   }).join('');
   const matrixTableWidth = 7.5 + (columns.length * 1.9);
   productionTargetMatrixContainer.innerHTML = `
     <table class="target-matrix" style="--matrix-table-width: ${matrixTableWidth}rem">
       <colgroup><col class="target-matrix__profile-column" />${columns.map(() => '<col class="target-matrix__target-col" />').join('')}</colgroup>
-      <thead><tr><th class="target-matrix__corner" rowspan="2" scope="col"><span class="target-matrix__corner-label target-matrix__corner-label--users">Users</span><span class="target-matrix__corner-label target-matrix__corner-label--targets">Targets</span></th>${groupHeaders}</tr><tr>${columnHeaders}</tr></thead>
+      <thead><tr><th class="target-matrix__corner" rowspan="2" scope="col"><span class="target-matrix__corner-label target-matrix__corner-label--users">Users</span><span class="target-matrix__corner-label target-matrix__corner-label--targets">Targets</span>${matrixConnectButton()}</th>${groupHeaders}</tr><tr>${columnHeaders}</tr></thead>
       <tbody>${bodyRows}</tbody>
     </table>
   `;
@@ -2674,7 +2733,7 @@ function renderTargetMatrix(users, conferences, feeds) {
     }).join('');
     return `
       <tr>
-        <th class="target-matrix__user-name" scope="row">${escapeHtml(user.name)}</th>
+        ${matrixUserHeading(user)}
         ${cells}
       </tr>
     `;
@@ -2695,6 +2754,7 @@ function renderTargetMatrix(users, conferences, feeds) {
           <th class="target-matrix__corner" rowspan="2" scope="col" aria-label="Users by targets">
             <span class="target-matrix__corner-label target-matrix__corner-label--users">Users</span>
             <span class="target-matrix__corner-label target-matrix__corner-label--targets">Targets</span>
+            ${matrixConnectButton()}
           </th>
           ${groupHeaders}
         </tr>
@@ -5465,6 +5525,11 @@ function setupMatrixInteractions(container, toggleSelector, toggleHandler) {
   };
 
   container.addEventListener('click', (event) => {
+    const connect = event.target.closest('[data-matrix-connect]');
+    if (connect) {
+      handleMatrixConnectAll(container, connect);
+      return;
+    }
     const toggle = event.target.closest(toggleSelector);
     if (!toggle) return;
     if (suppressPointerClick) {
