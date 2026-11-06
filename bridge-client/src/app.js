@@ -113,6 +113,7 @@ let bridgeSettingsApplyQueued = false;
 const managedSessions = new Map();
 const nativeEventStreamSessions = new Map();
 const managedPortDrafts = new Map();
+const managedSelectValues = new WeakMap();
 const managedPortEditStates = new Map();
 const managedPortDraftRevisions = new Map();
 const managedPortAutoSaveTimers = new Map();
@@ -1327,15 +1328,19 @@ function buildManagedTriggerTargetOptions(port, triggerDraft, { includeUnavailab
   return [...options].map(([value, option]) => ({ value, ...option }));
 }
 
+function managedTriggerHint(mode) {
+  return mode === 'always-on'
+    ? 'Sends continuously to all selected targets. Resumes after reconnects. Change mode to stop.'
+    : mode === 'audio-level' ? 'Sends to all selected targets when the input exceeds the threshold.'
+      : 'Targets are supplied by API / Companion commands.';
+}
+
 function renderManagedTriggerControls(port, draft) {
   if (port.kind !== 'user') return '';
   const trigger = draft.trigger || {};
   const mode = bridgeTalkTrigger.mode(trigger.mode);
   const threshold = Number(trigger.thresholdDb ?? MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB);
-  const hint = mode === 'always-on'
-    ? 'Sends continuously to all selected targets. Resumes after reconnects. Change mode to stop.'
-    : mode === 'audio-level' ? 'Sends to all selected targets when the input exceeds the threshold.'
-      : 'Targets are supplied by API / Companion commands.';
+  const hint = managedTriggerHint(mode);
   return `<div class="managed-port-trigger-grid ${mode !== 'audio-level' ? 'managed-port-trigger-grid--simple' : ''}">
     <label class="managed-port-control"><span>Talk trigger</span>
       <select data-managed-port-control data-field="triggerMode">
@@ -1517,6 +1522,35 @@ async function runManagedPortAutoSave(key) {
   }
 }
 
+function listenForSelectValueChange(select, callback) {
+  let lastValue = select.value;
+  const onSelection = () => {
+    if (select.value === lastValue) return;
+    lastValue = select.value;
+    callback();
+  };
+  select.addEventListener('input', onSelection);
+  select.addEventListener('change', onSelection);
+}
+
+function syncManagedTriggerControls(card, mode) {
+  // Update dependent fields without replacing the focused native select.
+  // WebView2 may defer `change` until blur, but sends `input` on selection.
+  card.querySelector('.managed-port-trigger-grid')?.classList.toggle(
+    'managed-port-trigger-grid--simple', mode !== 'audio-level'
+  );
+  const threshold = card.querySelector('.managed-port-control--threshold');
+  if (threshold) threshold.hidden = mode !== 'audio-level';
+  const targets = card.querySelector('.managed-port-control--targets');
+  if (targets) {
+    targets.hidden = mode === 'external';
+    const label = targets.querySelector('span[title]');
+    if (label) label.title = `${managedTriggerHint(mode)} Targets are global. Selected conferences also open return audio; mute or adjust it in the Panel.`;
+  }
+  const meter = card.querySelector('[data-managed-input-level]');
+  if (meter) meter.hidden = mode !== 'audio-level';
+}
+
 function handleManagedPortControlChange(event) {
   const control = event.target;
   if (
@@ -1527,6 +1561,12 @@ function handleManagedPortControlChange(event) {
   }
   const card = control.closest("[data-managed-port-key]");
   if (!(card instanceof HTMLElement)) return;
+  const isSelect = control instanceof HTMLSelectElement;
+  if (isSelect) {
+    // A later change/blur must not save again or reset the newly chosen channels.
+    if (managedSelectValues.get(control) === control.value) return;
+    managedSelectValues.set(control, control.value);
+  }
   const portKey = card.dataset.managedPortKey || "";
 
   const field = control.dataset.field || "";
@@ -1579,10 +1619,10 @@ function handleManagedPortControlChange(event) {
     }
   }
   if (field === 'triggerMode') {
-    renderManagedBridgePorts();
+    syncManagedTriggerControls(card, bridgeTalkTrigger.mode(control.value));
     requestBridgeWindowResize();
   }
-  if (event.type === "change") {
+  if (isSelect || event.type === "change") {
     scheduleManagedPortAutoSave(portKey);
   }
 }
@@ -3871,23 +3911,23 @@ function renderPortRow(row) {
   row.refs.label.addEventListener("input", () => {
     row.label = row.refs.label.value.trim() || row.id;
   });
-  row.refs.inputDevice.addEventListener("change", () => {
+  listenForSelectValueChange(row.refs.inputDevice, () => {
     row.inputDeviceId = row.refs.inputDevice.value;
     populatePairSelect(row.inputDeviceId, row.refs.inputPair, row.inputPair);
     row.inputPair = row.refs.inputPair.value;
     updatePortControlState(row);
   });
-  row.refs.outputDevice.addEventListener("change", () => {
+  listenForSelectValueChange(row.refs.outputDevice, () => {
     row.outputDeviceId = row.refs.outputDevice.value;
     populatePairSelect(row.outputDeviceId, row.refs.outputPair, row.outputPair);
     row.outputPair = row.refs.outputPair.value;
     updatePortControlState(row);
   });
-  row.refs.inputPair.addEventListener("change", () => {
+  listenForSelectValueChange(row.refs.inputPair, () => {
     row.inputPair = row.refs.inputPair.value;
     updatePortControlState(row);
   });
-  row.refs.outputPair.addEventListener("change", () => {
+  listenForSelectValueChange(row.refs.outputPair, () => {
     row.outputPair = row.refs.outputPair.value;
     updatePortControlState(row);
   });
