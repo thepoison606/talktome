@@ -301,18 +301,19 @@ export function OperatorScreen() {
                   {store.identity?.name ?? 'talktome'}
                 </Text>
                 <ConnectionStatusBadge health={connection} compact={compact} />
+                {tallyLabel && tallyColor ? (
+                  <Text
+                    accessibilityLabel={tallyLabel === 'PGM' ? 'On program' : 'On preview'}
+                    numberOfLines={1}
+                    style={[styles.tallyChip, { color: tallyColor }]}
+                  >
+                    {tallyLabel}
+                  </Text>
+                ) : null}
               </View>
               {productionLabel ? (
                 <Text style={styles.production} numberOfLines={1}>
                   {productionLabel}
-                </Text>
-              ) : null}
-              {tallyLabel && tallyColor ? (
-                <Text
-                  accessibilityLabel={tallyLabel === 'PGM' ? 'On program' : 'On preview'}
-                  style={[styles.tallyChip, { color: tallyColor }]}
-                >
-                  {tallyLabel}
                 </Text>
               ) : null}
             </Pressable>
@@ -485,7 +486,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   tallyChip: {
-    marginTop: 4,
+    flexShrink: 0,
     fontSize: 13,
     fontWeight: '800',
     letterSpacing: 1.2,
