@@ -1820,6 +1820,7 @@
 
       .admin-action-dialog__actions {
         display: flex;
+        flex-wrap: wrap;
         justify-content: flex-end;
         gap: 0.65rem;
       }
@@ -2096,7 +2097,7 @@
       .entity-layout,
       .production-layout {
         display: grid;
-        grid-template-columns: minmax(18rem, 26rem) minmax(0, 1fr);
+        grid-template-columns: minmax(16.2rem, 23.4rem) minmax(0, 1fr);
         align-items: start;
         gap: 1rem;
       }
@@ -4840,6 +4841,7 @@
         <div id="admin-action-dialog-error" class="admin-action-dialog__error is-hidden" aria-live="polite"></div>
         <div class="admin-action-dialog__actions">
           <button type="button" id="admin-action-dialog-cancel" class="admin-action-dialog__cancel">Cancel</button>
+          <button type="button" id="admin-action-dialog-alternative" class="is-hidden">Disconnect all</button>
           <button type="submit" id="admin-action-dialog-confirm" class="admin-action-dialog__confirm">Confirm</button>
         </div>
       </form>

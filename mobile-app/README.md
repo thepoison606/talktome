@@ -10,6 +10,8 @@ The app includes:
   Hold several target buttons at once to address them together; releasing one
   button leaves the others active. Main/Reply and target cards own separate holds.
 - Server remote-panel control and synchronized operator preferences.
+- Drag target handles in Edit targets to reorder them, with edge scrolling and automatic saving.
+  The order is shared with the browser for the selected production.
 - Live speaker names on conference cards, including listen-only conferences.
 - Automatic reconnect with cancellation of superseded connection attempts.
 - Admin Status diagnostics: installed app version/build, active audio output, battery

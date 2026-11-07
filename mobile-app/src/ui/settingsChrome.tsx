@@ -51,6 +51,17 @@ export function useSettingsStyles(): SettingsStyles {
   return useSettingsTheme().styles;
 }
 
+export function SettingsButton({ onPress, children, disabled = false, ...props }: {
+  onPress: () => void;
+  children: ReactNode;
+  disabled?: boolean;
+  accessibilityLabel?: string;
+  hitSlop?: number;
+  style?: StyleProp<ViewStyle>;
+}) {
+  return <Pressable {...props} onPress={onPress} disabled={disabled} accessibilityRole="button">{children}</Pressable>;
+}
+
 type HeaderProps = {
   title: string;
   backLabel?: string;
@@ -66,9 +77,9 @@ export function SettingsHeader({ title, backLabel = 'Settings', onBack, onDone, 
   return (
     <View style={[styles.header, compact && styles.headerCompact]}>
       {onBack ? (
-        <Pressable onPress={onBack} accessibilityRole="button" hitSlop={8}>
+        <SettingsButton onPress={onBack} hitSlop={8}>
           <Text style={styles.navLink}>‹ {backLabel}</Text>
-        </Pressable>
+        </SettingsButton>
       ) : (
         <Text style={[styles.title, compact && styles.titleCompact]} numberOfLines={1}>
           {title}
@@ -80,13 +91,13 @@ export function SettingsHeader({ title, backLabel = 'Settings', onBack, onDone, 
         </Text>
       ) : null}
       {onAdd ? (
-        <Pressable onPress={onAdd} accessibilityRole="button" accessibilityLabel="Add targets" hitSlop={8}>
+        <SettingsButton onPress={onAdd} accessibilityLabel="Add targets" hitSlop={8}>
           <Text style={[styles.done, { fontSize: 26 }]}>＋</Text>
-        </Pressable>
+        </SettingsButton>
       ) : onDone ? (
-        <Pressable onPress={onDone} accessibilityRole="button">
+        <SettingsButton onPress={onDone}>
           <Text style={styles.done}>Done</Text>
-        </Pressable>
+        </SettingsButton>
       ) : (
         <View style={styles.doneSpacer} />
       )}
@@ -192,7 +203,7 @@ export function SettingsActionRow({
 }) {
   const styles = useSettingsStyles();
   return (
-    <Pressable style={styles.row} onPress={onPress} disabled={disabled} accessibilityRole="button">
+    <SettingsButton style={styles.row} onPress={onPress} disabled={disabled}>
       <Text
         style={[
           styles.actionLabel,
@@ -202,7 +213,7 @@ export function SettingsActionRow({
       >
         {label}
       </Text>
-    </Pressable>
+    </SettingsButton>
   );
 }
 
@@ -455,24 +466,11 @@ function makeSettingsStyles(palette: SettingsPalette) {
       fontSize: 13,
       paddingTop: 2,
     },
-    orderButtons: {
-      flexDirection: 'row',
-      alignItems: 'center',
-    },
     orderButton: {
       width: 44,
       height: 44,
       alignItems: 'center',
       justifyContent: 'center',
-    },
-    orderArrow: {
-      color: palette.link,
-      fontSize: 22,
-      fontWeight: '600',
-      lineHeight: 24,
-    },
-    orderArrowDisabled: {
-      color: palette.disabled,
     },
   });
 }

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SessionConflictError } from '../auth/errors';
 import type { MediaEngine } from '../media/engine';
 import type { OperatorIdentity, Production } from '../protocol';
 import { PANEL_AUDIO_DEFAULTS } from '../protocol/remotePanel';
@@ -58,6 +59,32 @@ function fixture({ serverDefaults = false } = {}) {
 }
 
 describe('panel registration in the native session', () => {
+  it('keeps the QR token when retrying after a session conflict', async () => {
+    const { c } = fixture();
+    const token = 'qr-token-for-regression';
+    const tokenLogin = vi.fn(async (_token: string) => identity);
+    const passwordLogin = vi.fn();
+    const internal = c as unknown as {
+      prepareHttp(server: string): void;
+      probeAndHealth(): Promise<void>;
+      attachSessionCookie(server: string): Promise<void>;
+    };
+    vi.spyOn(internal, 'prepareHttp').mockImplementation(() => {
+      c.api = { loginToken: tokenLogin, login: passwordLogin } as unknown as NonNullable<typeof c.api>;
+    });
+    vi.spyOn(internal, 'probeAndHealth').mockResolvedValue();
+    vi.spyOn(internal, 'attachSessionCookie').mockResolvedValue();
+    mocks.registration = { conflict: true, existing: { name: identity.name } };
+    await expect(c.loginWithToken({ serverAddress: 'https://example.test', token })).rejects.toBeInstanceOf(SessionConflictError);
+    expect(c.rememberedPassword()).toBe('');
+    mocks.registration = { ok: true };
+    await c.takeOver();
+    expect(tokenLogin.mock.calls).toEqual([[token], [token]]);
+    expect(passwordLogin).not.toHaveBeenCalled();
+    expect(vi.mocked(c.persistCurrentProfile)).toHaveBeenCalledWith(token);
+    expect(useSessionStore.getState().operatorReady).toBe(true);
+  });
+
   it('inherits the big main button default until the user explicitly changes it', async () => {
     const { c, internal } = fixture({ serverDefaults: true });
     c.api = { defaultClientSettings: async () => ({ bigMainButton: true }) } as unknown as NonNullable<typeof c.api>;

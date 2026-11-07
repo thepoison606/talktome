@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 const fixture = vi.hoisted(() => ({
   os: 'android', state: {} as Record<string, unknown>, effects: [] as (() => unknown)[],
   back: null as null | (() => boolean), cancelled: 0,
+  sheet: { open: false, dismissGestureEnabled: true },
 }));
 vi.mock('react', async original => ({ ...await original<typeof import('react')>(),
   useEffect: (effect: () => unknown) => { fixture.effects.push(effect); },
@@ -28,7 +29,7 @@ vi.mock('../session/store', () => ({
     fixture.cancelled++; fixture.state.addingProfile = false;
   } },
 }));
-vi.mock('./sessionSheetState', () => ({ closeSessionSheet: vi.fn(), useSessionSheetOpen: (selector: (state: object) => unknown) => selector({open:false}) }));
+vi.mock('./sessionSheetState', () => ({ closeSessionSheet: vi.fn(), useSessionSheetOpen: (selector: (state: object) => unknown) => selector(fixture.sheet) }));
 vi.mock('./LoginScreen', () => ({ LoginScreen: 'Login' }));
 vi.mock('./ProfilePickerScreen', () => ({ ProfilePickerScreen: 'Profiles' }));
 vi.mock('./OperatorScreen', () => ({ OperatorScreen: 'Operator' }));
@@ -51,6 +52,7 @@ function screens(tree: unknown): Element[] {
 }
 
 beforeEach(() => {
+  fixture.sheet = { open: false, dismissGestureEnabled: true };
   fixture.os = 'android'; fixture.effects = []; fixture.back = null; fixture.cancelled = 0;
   fixture.state = { hydrated:true, identity:null, operatorReady:false, status:'idle', paused:false,
     addingProfile:false, profiles:[{id:'first'}], cameraTally:{pgm:false,pvw:false} };
@@ -77,5 +79,21 @@ describe('profile navigation', () => {
     expect(login).toBeDefined();
     (login?.props.onDismissed as () => void)();
     expect(fixture.cancelled).toBe(1);
+  });
+});
+
+
+describe('iOS session-sheet gesture ownership', () => {
+  it('locks modal dismissal for target sorting and restores it for normal settings', () => {
+    fixture.os = 'ios';
+    fixture.state.identity = { kind: 'user', id: 1 };
+    fixture.state.operatorReady = true;
+    fixture.sheet = { open: true, dismissGestureEnabled: false };
+    const modal = () => elements(AppContent()).find(e => e.type === 'NativeScreen' && e.props.screenId === 'sheet')!;
+    expect(modal().props.gestureEnabled).toBe(false);
+    expect(modal().props.preventNativeDismiss).toBe(true);
+    fixture.sheet.dismissGestureEnabled = true;
+    expect(modal().props.gestureEnabled).toBe(true);
+    expect(modal().props.preventNativeDismiss).toBe(false);
   });
 });

@@ -1031,9 +1031,17 @@ function addProductionTarget(productionId, userId, targetType, targetId) {
 }
 
 function connectProductionMatrixTargets(productionId, userId = null) {
+  return updateProductionMatrixTargets(productionId, userId, false);
+}
+
+function disconnectProductionMatrixTargets(productionId, userId = null) {
+  return updateProductionMatrixTargets(productionId, userId, true);
+}
+
+function updateProductionMatrixTargets(productionId, userId, disconnect) {
   const pid = Number(productionId);
   if (!Number.isSafeInteger(pid) || !getProductionById(pid)) throw new Error('Production not found');
-  const connect = db.transaction(() => {
+  const update = db.transaction(() => {
     const members = getProductionMembers(pid);
     const uid = userId === null ? null : Number(userId);
     if (uid !== null && (!Number.isSafeInteger(uid) || !members.some(user => user.id === uid))) {
@@ -1055,8 +1063,14 @@ function connectProductionMatrixTargets(productionId, userId = null) {
       for (const target of columns) {
         if (target.targetType === 'user' && target.targetId === user.id) continue;
         const current = existing.get(`${target.targetType}:${target.targetId}`);
-        if (current?.bridgeManaged || (current && (target.targetType !== 'conference' || current.canTalk))) continue;
-        addProductionTarget(pid, user.id, target.targetType, target.targetId);
+        if (current?.bridgeManaged) continue;
+        if (disconnect) {
+          if (!current) continue;
+          removeProductionTarget(pid, user.id, target.targetType, target.targetId);
+        } else {
+          if (current && (target.targetType !== 'conference' || current.canTalk)) continue;
+          addProductionTarget(pid, user.id, target.targetType, target.targetId);
+        }
         connections++;
         userIds.add(user.id);
         if (target.targetType === 'conference') conferenceIds.add(target.targetId);
@@ -1064,7 +1078,7 @@ function connectProductionMatrixTargets(productionId, userId = null) {
     }
     return { connections, userIds: [...userIds], conferenceIds: [...conferenceIds] };
   });
-  return connect();
+  return update();
 }
 
 function removeProductionTarget(productionId, userId, targetType, targetId) {
@@ -2487,6 +2501,7 @@ module.exports = {
   getPrimaryProductionTargets,
   addProductionTarget,
   connectProductionMatrixTargets,
+  disconnectProductionMatrixTargets,
   removeProductionTarget,
   updateProductionTargetOrder,
   createUser,

@@ -217,6 +217,7 @@ const {
   getBridgePanelTargetsForUser,
   addProductionTarget,
   connectProductionMatrixTargets,
+  disconnectProductionMatrixTargets,
   removeProductionTarget,
   updateProductionTargetOrder,
   deleteUser,
@@ -3513,28 +3514,41 @@ app.delete("/admin/productions/:productionId/users/:userId", requireProductionMa
   }
 });
 
-function connectMatrixTargets(req, res, productionId) {
+function updateMatrixTargets(req, res, productionId, disconnect = false) {
   try {
-    const result = connectProductionMatrixTargets(productionId, req.body?.userId ?? null);
+    const update = disconnect ? disconnectProductionMatrixTargets : connectProductionMatrixTargets;
+    const result = update(productionId, req.body?.userId ?? null);
     for (const userId of result.userIds) notifyTargetChange(userId);
     for (const conferenceId of result.conferenceIds) notifyConferenceMembersChanged(conferenceId);
-    if (result.conferenceIds.length) broadcastRuntimeUserStates('matrix-targets-connected');
+    if (result.conferenceIds.length) broadcastRuntimeUserStates(disconnect ? 'matrix-targets-disconnected' : 'matrix-targets-connected');
     res.json(result);
   } catch (err) {
-    res.status(err.statusCode || 400).json({ error: err.message || 'Failed to connect matrix targets' });
+    res.status(err.statusCode || 400).json({ error: err.message || 'Failed to update matrix targets' });
   }
 }
 
 app.post('/admin/matrix/connect-all', requireAdmin, (req, res) => {
   try {
-    connectMatrixTargets(req, res, getSingleProductionMembershipScope());
+    updateMatrixTargets(req, res, getSingleProductionMembershipScope());
   } catch (err) {
     res.status(err.statusCode || 400).json({ error: err.message });
   }
 });
 
 app.post('/admin/productions/:productionId/targets/connect-all', requireProductionManager, (req, res) => {
-  connectMatrixTargets(req, res, req.productionId);
+  updateMatrixTargets(req, res, req.productionId);
+});
+
+app.post('/admin/matrix/disconnect-all', requireAdmin, (req, res) => {
+  try {
+    updateMatrixTargets(req, res, getSingleProductionMembershipScope(), true);
+  } catch (err) {
+    res.status(err.statusCode || 400).json({ error: err.message });
+  }
+});
+
+app.post('/admin/productions/:productionId/targets/disconnect-all', requireProductionManager, (req, res) => {
+  updateMatrixTargets(req, res, req.productionId, true);
 });
 
 app.post("/admin/productions/:productionId/users/:userId/targets", requireProductionManager, (req, res) => {

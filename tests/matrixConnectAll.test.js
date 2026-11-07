@@ -68,6 +68,21 @@ test('bulk connections are scoped, additive, idempotent, and transactional', t =
     assert.equal(managed.bridgeManaged, true);
     assert.equal(managed.manualAssigned, false);
     assert.equal(sql.prepare('SELECT COUNT(*) AS n FROM production_user_conference WHERE production_id = ? AND user_id = ?').get(fresh, a).n, 0);
+    assert.throws(() => d.disconnectProductionMatrixTargets(p, outsider), /not a member/);
+    assert.throws(() => d.disconnectProductionMatrixTargets(999999), /not found/);
+    d.setProductionConferenceListenOnly(p, b, c);
+    const otherRow = d.getProductionTargets(b, p);
+    assert.equal(d.disconnectProductionMatrixTargets(p, a).connections, 2);
+    assert.equal(d.getProductionTargets(a, p).length, 1); // Bridge conference remains.
+    assert.deepEqual(d.getProductionTargets(b, p), otherRow);
+    assert.equal(d.getProductionTargets(a, fresh).length, 3); // Other production is untouched.
+    assert.equal(d.disconnectProductionMatrixTargets(p).connections, 7);
+    assert.equal(d.getProductionTargets(b, p).length, 0); // Includes listen-only conferences.
+    assert.equal(d.disconnectProductionMatrixTargets(p).connections, 0);
+    sql.exec("CREATE TRIGGER reject_bulk_remove BEFORE DELETE ON production_user_targets WHEN OLD.target_type = 'feed' BEGIN SELECT RAISE(ABORT, 'test rollback'); END");
+    assert.throws(() => d.disconnectProductionMatrixTargets(fresh, a), /test rollback/);
+    assert.equal(d.getProductionTargets(a, fresh).length, 3);
+
   `], { cwd: root, env: { ...process.env, TALKTOME_DATA_DIR: dir }, stdio: 'pipe' });
 });
 
@@ -105,6 +120,44 @@ test('confirmation connects the selected row or whole matrix without sending a c
   }
 });
 
+
+test('dialog defaults to Connect all on submit and keeps Disconnect all as a separate button', async () => {
+  const nodes = new Map();
+  let focused;
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id, {
+      classList: { add() {}, remove() {}, toggle() {} },
+      parentElement: { classList: { toggle() {} } },
+      setAttribute() {}, reset() {}, focus() { focused = id; },
+      addEventListener(event, callback) { this[event] = callback; },
+    });
+    return nodes.get(id);
+  };
+  const context = vm.createContext({
+    document: { getElementById: node, body: node('body'), addEventListener() {} },
+    window: { requestAnimationFrame(callback) { callback(); }, setTimeout() {} },
+  });
+  vm.runInContext(source.slice(source.indexOf('const adminActionDialog ='), source.indexOf('function syncExpandedAdminBarOffset(')), context);
+  const options = { confirmLabel: 'Connect all', alternativeLabel: 'Disconnect all' };
+  const connected = context.openAdminActionDialog(options);
+  assert.equal(focused, 'admin-action-dialog-confirm');
+  node('admin-action-dialog-form').submit({ preventDefault() {} });
+  assert.equal(await connected, true);
+  const disconnected = context.openAdminActionDialog(options);
+  node('admin-action-dialog-alternative').click();
+  assert.equal(await disconnected, 'alternative');
+  const html = fs.readFileSync(path.join(root, 'public/admin.html'), 'utf8');
+  assert.match(html, /type="button" id="admin-action-dialog-cancel"[^>]*>Cancel<\/button>\s*<button type="button" id="admin-action-dialog-alternative"[^>]*>Disconnect all<\/button>\s*<button type="submit" id="admin-action-dialog-confirm"/);
+});
+
+test('disconnect choice removes connections for the selected row or whole matrix', async () => {
+  for (const id of ['all', '12']) {
+    const f = uiFixture('alternative');
+    await f.context.handleMatrixConnectAll(f.container, { dataset: { matrixConnect: id, userName: 'Alice' } });
+    assert.equal(f.confirmations[0].options.alternativeLabel, 'Disconnect all');
+    assert.deepEqual(f.requests, [{ url: '/admin/matrix/disconnect-all', body: { userId: id === 'all' ? null : 12 } }]);
+  }
+});
 
 test('HTTP bulk connections require admin access and respect production-manager scope', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'talktome-matrix-http-'));
@@ -177,9 +230,20 @@ test('HTTP bulk connections require admin access and respect production-manager 
   const all = await post(ownEndpoint, {}, manager);
   assert.equal(all.status, 200);
   assert.equal((await all.json()).connections, 1);
+  const disconnectEndpoint = ownEndpoint.replace('connect-all', 'disconnect-all');
+  assert.equal((await post(disconnectEndpoint)).status, 401);
+  assert.equal((await post('/admin/matrix/disconnect-all', {}, manager)).status, 403);
+  assert.equal((await post(`/admin/productions/${ids.other}/targets/disconnect-all`, {}, manager)).status, 403);
+  assert.equal((await post(disconnectEndpoint, { userId: 999999 }, manager)).status, 400);
+  const disconnected = await post(disconnectEndpoint, { userId: ids.manager }, manager);
+  assert.equal(disconnected.status, 200);
+  assert.equal((await disconnected.json()).connections, 1);
+  assert.equal((await (await post(disconnectEndpoint, {}, manager)).json()).connections, 1);
   const admin = await login('admin');
   assert.equal((await post('/admin/matrix/connect-all', {}, admin)).status, 409);
+  assert.equal((await post('/admin/matrix/disconnect-all', {}, admin)).status, 409);
   config.multipleProductions = false;
   fs.writeFileSync(configPath, JSON.stringify(config));
   assert.equal((await post('/admin/matrix/connect-all', {}, admin)).status, 200);
+  assert.equal((await post('/admin/matrix/disconnect-all', {}, admin)).status, 200);
 });

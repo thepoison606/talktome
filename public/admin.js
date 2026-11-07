@@ -145,6 +145,7 @@ const adminActionDialogInput = document.getElementById('admin-action-dialog-inpu
 const adminActionDialogPasswordToggle = document.getElementById('admin-action-dialog-password-toggle');
 const adminActionDialogError = document.getElementById('admin-action-dialog-error');
 const adminActionDialogCancel = document.getElementById('admin-action-dialog-cancel');
+const adminActionDialogAlternative = document.getElementById('admin-action-dialog-alternative');
 const adminActionDialogConfirm = document.getElementById('admin-action-dialog-confirm');
 
 let activeAdminActionDialog = null;
@@ -184,6 +185,7 @@ function openAdminActionDialog({
   inputType = 'text',
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
+  alternativeLabel = '',
   danger = false,
   required = false,
   minLength = 0,
@@ -223,6 +225,8 @@ function openAdminActionDialog({
     adminActionDialogPasswordToggle.title = 'Show password';
     adminActionDialogCancel.textContent = cancelLabel;
     adminActionDialogCancel.classList.toggle('is-hidden', !canCancel);
+    adminActionDialogAlternative.textContent = alternativeLabel;
+    adminActionDialogAlternative.classList.toggle('is-hidden', !alternativeLabel);
     adminActionDialogConfirm.textContent = confirmLabel;
     adminActionDialogConfirm.classList.toggle('danger', Boolean(danger));
     showAdminActionDialogError('');
@@ -291,6 +295,7 @@ adminActionDialogForm?.addEventListener('submit', (event) => {
   closeAdminActionDialog(true);
 });
 
+adminActionDialogAlternative?.addEventListener('click', () => closeAdminActionDialog('alternative'));
 adminActionDialogCancel?.addEventListener('click', () => closeAdminActionDialog(null));
 adminActionDialog?.addEventListener('pointerdown', (event) => {
   if (event.target === adminActionDialog && activeAdminActionDialog?.canCancel) {
@@ -2275,18 +2280,21 @@ async function handleMatrixConnectAll(container, button) {
   matrixConnectBusy = true;
   const disabled = [];
   try {
-    if (!await adminConfirm(
-      `Connect all available targets for ${subject}? Conferences will be set to talk and listen. Existing connections and Bridge-managed points are kept.`,
-      { title: 'Connect all targets', confirmLabel: 'Connect all' }
-    )) return;
+    const action = await adminConfirm(
+      `Connect all available targets for ${subject}? Conferences will be set to talk and listen. Existing connections are kept when connecting. Disconnect all removes the connections in this scope. Bridge-managed points are kept.`,
+      { title: 'Connect all targets', confirmLabel: 'Connect all', alternativeLabel: 'Disconnect all' }
+    );
+    if (!action) return;
+    const disconnect = action === 'alternative';
+    const operation = disconnect ? 'disconnect-all' : 'connect-all';
     if (production && selectedProductionId !== productionId) return;
     for (const node of container.querySelectorAll('button:not(:disabled)')) {
       node.disabled = true;
       disabled.push(node);
     }
     const response = await productionRequest(production
-      ? `/admin/productions/${productionId}/targets/connect-all`
-      : '/admin/matrix/connect-all', {
+      ? `/admin/productions/${productionId}/targets/${operation}`
+      : `/admin/matrix/${operation}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId }),
     });
     const result = await response.json();
@@ -2300,9 +2308,9 @@ async function handleMatrixConnectAll(container, button) {
       renderTargetMatrix(currentAdminCatalog.users, currentAdminCatalog.conferences, currentAdminCatalog.feeds);
       for (const id of result.conferenceIds) for (const uid of result.userIds) scheduleConferenceMembershipEditorRefresh(id, uid);
     }
-    showMessage(`${result.connections} target connection${result.connections === 1 ? '' : 's'} added.`, 'success', 'matrix');
+    showMessage(`${result.connections} target connection${result.connections === 1 ? '' : 's'} ${disconnect ? 'removed' : 'added'}.`, 'success', 'matrix');
   } catch (error) {
-    showMessage(error.message || 'Failed to connect targets', 'error', 'matrix');
+    showMessage(error.message || 'Failed to update target connections', 'error', 'matrix');
   } finally {
     for (const node of disabled) node.disabled = false;
     matrixConnectBusy = false;

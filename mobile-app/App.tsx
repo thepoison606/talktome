@@ -93,6 +93,7 @@ export function AppContent() {
   const loginOverProfiles = screen === 'login' && profiles.length > 0;
   // iOS presents the session sheet in the stack; Android uses the overlay below.
   const sheetOpen = useSessionSheetOpen((state) => state.open) && screen === 'operator';
+  const sheetDismissGestureEnabled = useSessionSheetOpen(state => state.dismissGestureEnabled);
   const sheetColor = settingsPalette(settingsScheme(scheme)).sheet;
   let pages: Page[] = [screen];
   if (loginOverProfiles) {
@@ -140,7 +141,8 @@ export function AppContent() {
                     screenId={page}
                     headerConfig={HIDDEN_HEADER}
                     {...sheetPresentation()}
-                    gestureEnabled
+                    gestureEnabled={sheetDismissGestureEnabled}
+                    preventNativeDismiss={!sheetDismissGestureEnabled}
                     fullScreenSwipeEnabled={false}
                     onDismissed={closeSessionSheet}
                     contentStyle={Platform.OS === 'ios' && Platform.isPad ? null : { backgroundColor: sheetColor }}
