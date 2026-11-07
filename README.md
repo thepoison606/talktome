@@ -104,19 +104,6 @@ request address before falling back to a media address.
 The Admin `Config` page can restart the server. Docker deployments use their
 configured restart policy (as in the examples above).
 
-### macOS Test Builds
-
-Unsigned macOS test builds downloaded from GitHub may be blocked by Gatekeeper.
-To remove the quarantine flag once after installing or extracting:
-
-```bash
-xattr -dr com.apple.quarantine "/Applications/Talktome Server.app"
-xattr -dr com.apple.quarantine "/Applications/Talktome Bridge.app"
-```
-
-Use the first command for the Talktome server app and the second command for the
-native Bridge app.
-
 ### Versioning and releases
 
 Git release tags are the single source of truth for every Server, Bridge,
