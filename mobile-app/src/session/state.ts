@@ -32,7 +32,6 @@ export type SessionUiState = {
   allowInsecureLocalTLS: boolean;
   leftHanded: boolean;
   lockMultipleTargets: boolean;
-  edgeTalkAffordance: boolean;
   /** Empty string means Reply. A talk-target identity pins the bottom button. */
   mainButtonTargets: Record<string, string>;
   watchTargetSelections: WatchTargetSelections;
@@ -134,7 +133,6 @@ export const initialState: SessionUiState = {
   allowInsecureLocalTLS: false,
   leftHanded: false,
   lockMultipleTargets: false,
-  edgeTalkAffordance: true,
   mainButtonTargets: {},
   watchTargetSelections: {},
   bigMainButton: false,

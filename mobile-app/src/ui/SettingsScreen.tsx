@@ -427,15 +427,6 @@ function LayoutSettingsPage({
           full="Replaces the plus/minus buttons in the volume overlay and conference member list with a slider."
           compact="Uses a slider instead of plus/minus."
         />
-        <SettingsSwitchRow
-          label="Thumb-edge talk control"
-          value={store.edgeTalkAffordance}
-          onValueChange={(value) => session.setEdgeTalkAffordance(value)}
-        />
-        <SettingsHint
-          full="Moves the walkie-talkie to the phone’s edge so you can hit it with a thumb. Talkable cards always show the icon; this only widens the hit target. Listen-only rows keep the empty slot so the other icons stay put. The extra edge target is hidden in phone landscape, where cards use two columns."
-          compact="Widens the walkie toward the phone edge. Hidden in phone landscape."
-        />
       </SettingsSection>
     </>
   );

@@ -25,8 +25,6 @@ export type ProfileBundle = {
   leftHanded?: boolean;
   /** Undefined until the user toggles it, so a server default can apply. */
   lockMultipleTargets?: boolean;
-  /** Undefined means the default: edge talk affordance on. */
-  edgeTalkAffordance?: boolean;
   /** Profile+production key → talk-target identity. Missing key means Reply. */
   mainButtonTargets?: Record<string, string>;
   /** Profile+production key → selected Watch targets; missing key means all. */

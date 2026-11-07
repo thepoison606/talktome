@@ -197,7 +197,6 @@ export class SessionController {
       productionName: last?.productionName ?? null,
       leftHanded: bundle.leftHanded ?? false,
       lockMultipleTargets: bundle.lockMultipleTargets ?? false,
-      edgeTalkAffordance: bundle.edgeTalkAffordance !== false,
       mainButtonTargets: bundle.mainButtonTargets ?? {},
       watchTargetSelections: bundle.watchTargetSelections ?? {},
       bigMainButton: bundle.bigMainButton === true,
@@ -702,7 +701,6 @@ export class SessionController {
       allowInsecureLocalTLS: next.allowInsecureLocalTLS,
       leftHanded: next.leftHanded,
       lockMultipleTargets: next.lockMultipleTargets,
-      edgeTalkAffordance: next.edgeTalkAffordance,
       mainButtonTargets: next.mainButtonTargets,
       watchTargetSelections: next.watchTargetSelections,
       bigMainButton: next.bigMainButton,
@@ -788,7 +786,6 @@ export class SessionController {
     return {
       leftHanded: this.leftHandedExplicit ? state.leftHanded : undefined,
       lockMultipleTargets: this.lockMultipleTargetsExplicit ? state.lockMultipleTargets : undefined,
-      edgeTalkAffordance: state.edgeTalkAffordance,
       mainButtonTargets: state.mainButtonTargets,
       watchTargetSelections: state.watchTargetSelections,
       bigMainButton: this.bigMainButtonExplicit ? state.bigMainButton : undefined,
@@ -840,11 +837,6 @@ export class SessionController {
     useSessionStore.setState({ watchTargetSelections });
     this.persistLayout();
     this.background.syncPresence();
-  }
-
-  setEdgeTalkAffordance(edgeTalkAffordance: boolean): void {
-    useSessionStore.setState({ edgeTalkAffordance });
-    this.persistLayout();
   }
 
   persistLayout(): void {

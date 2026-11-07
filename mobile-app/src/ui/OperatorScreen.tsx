@@ -384,7 +384,7 @@ export function OperatorScreen() {
                       videoStreamURL={store.feedVideos[talkTargetIdentity(target)]?.streamURL}
                       videoError={store.feedVideos[talkTargetIdentity(target)]?.error}
                       onToggleVideo={() => toggleVideo(target)}
-                      edgeTalkAffordance={!replyBeside && store.edgeTalkAffordance}
+                      edgeTalkAffordance={!replyBeside}
                       onOpenConferenceMembers={setConferenceTarget}
                     />
                   </View>
