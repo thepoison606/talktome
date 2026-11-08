@@ -27,6 +27,7 @@ import { closeSessionSheet, useSessionSheetOpen } from './src/ui/sessionSheetSta
 import { SessionSheet } from './src/ui/SettingsScreen';
 import { settingsPalette, settingsScheme } from './src/ui/settingsTheme';
 import { colors } from './src/ui/theme';
+import { requestKeyboardFocus } from './src/keyboard/focus';
 
 export default function App() {
   return (
@@ -164,6 +165,7 @@ export function AppContent() {
                   gestureEnabled={pushed}
                   fullScreenSwipeEnabled
                   hideKeyboardOnSwipe
+                  onAppear={() => { if (page === 'operator') requestKeyboardFocus(); }}
                   onDismissed={() => {
                     if (page === 'login') {
                       session.cancelAddProfile();

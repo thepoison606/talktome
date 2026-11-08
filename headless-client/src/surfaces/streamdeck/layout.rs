@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::audio::mixer::format_volume_db;
+use crate::audio::mixer::format_volume_percent;
 use crate::state::{ConferenceMemberInfo, ConnectionState, ProductionInfo, Snapshot, TargetInfo};
 use crate::talk::TargetKey;
 
@@ -71,7 +71,9 @@ pub mod palette {
     pub const REPLY: Rgb = Rgb(30, 64, 175);
     /// Selection and active layer (`#3b82f6`).
     pub const SELECTED: Rgb = Rgb(59, 130, 246);
-    /// Warning (`#f59e0b`).
+    /// Persistent server failure (`#ef4444`).
+    pub const SERVER_UNAVAILABLE: Rgb = Rgb(239, 68, 68);
+    /// Other connection/media warnings (`#f59e0b`).
     pub const STATUS_BAD: Rgb = Rgb(245, 158, 11);
     /// Web client program tally (`#e00000`).
     pub const ON_AIR: Rgb = Rgb(224, 0, 0);
@@ -177,9 +179,11 @@ pub enum Role {
     VolumeUp,
     VolumeDown,
     MuteSelected,
+    SystemVolume,
     /// Index into `Snapshot::productions` on the production page.
     Production(usize),
     ClearLocks,
+    Restart,
     /// A menu entry that opens one of the menu's sub-pages.
     Menu(MenuPage),
     /// Index into `info_lines` on the info page (read-only).
@@ -207,6 +211,7 @@ fn menu_entries(geometry: &Geometry) -> Vec<Role> {
         Role::Menu(MenuPage::Productions),
         Role::ClearLocks,
         Role::Menu(MenuPage::Info),
+        Role::Restart,
     ]);
     entries
 }
@@ -220,6 +225,7 @@ pub fn volume_in_menu(geometry: &Geometry) -> bool {
 /// What a Stream Deck + / + XL encoder currently controls.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EncoderBinding<'a> {
+    SystemVolume(&'a crate::audio::system_volume::SystemVolume),
     Target(&'a TargetInfo),
     Member {
         conference: TargetKey,
@@ -252,6 +258,7 @@ pub struct KeySpec {
 /// Deck-local interaction state (not part of the shared snapshot).
 #[derive(Debug, Clone)]
 pub struct DeckState {
+    pub system_volume_selected: bool,
     pub page: usize,
     pub encoder_page: usize,
     pub volume_layer: bool,
@@ -280,6 +287,7 @@ pub const LISTEN_ONLY_NOTICE: Duration = Duration::from_secs(4);
 impl Default for DeckState {
     fn default() -> Self {
         Self {
+            system_volume_selected: false,
             page: 0,
             encoder_page: 0,
             volume_layer: false,
@@ -417,6 +425,7 @@ impl DeckState {
         self.close_member_layer();
         self.close_menu();
         self.volume_layer = true;
+        self.system_volume_selected = snapshot.system_volume.is_some();
         self.touch_volume_layer();
         if self.selected.is_none() {
             self.selected = snapshot.targets.first().map(|t| t.key);
@@ -462,7 +471,10 @@ impl DeckState {
     }
 
     pub fn clamp_pages(&mut self, geometry: &Geometry, snapshot: &Snapshot) {
-        let target_count = snapshot.targets.len();
+        if snapshot.system_volume.is_none() {
+            self.system_volume_selected = false;
+        }
+        let target_count = volume_roles(snapshot, self).len();
         let pages = page_count(geometry, target_count);
         self.page = self.page.min(pages.saturating_sub(1));
         let member_count = self
@@ -738,8 +750,8 @@ fn layer_page_counts(
         )
     } else {
         (
-            page_count(geometry, snapshot.targets.len()),
-            encoder_page_count(geometry, snapshot.targets.len()),
+            page_count(geometry, volume_roles(snapshot, state).len()),
+            encoder_page_count(geometry, volume_roles(snapshot, state).len()),
         )
     }
 }
@@ -847,7 +859,7 @@ fn command_roles(
 
 fn member_appearance(member: &ConferenceMemberInfo, state: &DeckState) -> Appearance {
     let mut appearance = Appearance::simple(&member.name, palette::IDLE);
-    appearance.subtitle = format_volume_db(member.volume);
+    appearance.subtitle = format_volume_percent(member.volume);
     appearance.bar = Some(member.volume);
     if state.member_selected == Some(member.user_id) {
         appearance.background = palette::SELECTED;
@@ -874,14 +886,15 @@ fn member_appearance(member: &ConferenceMemberInfo, state: &DeckState) -> Appear
 }
 
 fn target_appearance(target: &TargetInfo, state: &DeckState, snapshot: &Snapshot) -> Appearance {
-    let volume_label = format_volume_db(target.volume);
+    let volume_label = format_volume_percent(target.volume);
     let mut appearance = Appearance::simple(&target.name, palette::IDLE);
     if state.volume_layer {
-        appearance.background = if state.selected == Some(target.key) {
-            palette::SELECTED
-        } else {
-            palette::IDLE
-        };
+        appearance.background =
+            if !state.system_volume_selected && state.selected == Some(target.key) {
+                palette::SELECTED
+            } else {
+                palette::IDLE
+            };
         appearance.subtitle = volume_label;
         appearance.bar = Some(target.volume);
         if target.muted {
@@ -902,7 +915,7 @@ fn target_appearance(target: &TargetInfo, state: &DeckState, snapshot: &Snapshot
         palette::IDLE,
     );
     // Listen-only keys (feeds and listen-only conferences) show their level
-    // as a bar; the dB value only appears on the volume layer.
+    // as a bar; the percentage only appears on the volume layer.
     let listen_only_conference = !target.can_talk && matches!(target.key, TargetKey::Conference(_));
     if !target.can_talk && !listen_only_conference {
         appearance.bar = Some(target.volume);
@@ -975,6 +988,17 @@ fn production_appearance(production: &ProductionInfo, snapshot: &Snapshot) -> Ap
 }
 
 fn status_appearance(snapshot: &Snapshot, state: &DeckState) -> Appearance {
+    let unavailable =
+        snapshot.server_not_responding || snapshot.connection == ConnectionState::Disconnected;
+    if unavailable && state.menu.is_none() {
+        let mut appearance = Appearance::simple("Server unavailable", palette::SERVER_UNAVAILABLE);
+        appearance.subtitle = state
+            .local_ip
+            .clone()
+            .unwrap_or_else(|| snapshot.user_name.clone());
+        appearance.footer = "MENU".into();
+        return appearance;
+    }
     if let Some(menu) = state.menu {
         let (title, subtitle) = match menu {
             MenuPage::Root => ("MENU", "close"),
@@ -983,6 +1007,10 @@ fn status_appearance(snapshot: &Snapshot, state: &DeckState) -> Appearance {
         };
         let mut appearance = Appearance::simple(title, palette::MENU);
         appearance.footer = subtitle.into();
+        if unavailable {
+            appearance.subtitle = "Server unavailable".into();
+            appearance.background = palette::SERVER_UNAVAILABLE;
+        }
         return appearance;
     }
     let mut appearance = Appearance::simple(
@@ -1140,6 +1168,25 @@ fn appearance_for_role(
     encoder_pages: usize,
 ) -> Appearance {
     match role {
+        Role::SystemVolume => {
+            let Some(volume) = &snapshot.system_volume else {
+                return Appearance::blank();
+            };
+            let mut a = Appearance::simple(
+                "MAIN",
+                if state.system_volume_selected {
+                    palette::SELECTED
+                } else {
+                    palette::CONTROL
+                },
+            );
+            a.subtitle = format!("{}%", (volume.volume * 100.0).round());
+            a.bar = Some(volume.volume);
+            if volume.muted {
+                a.badge = Some(Badge::Muted);
+            }
+            a
+        }
         Role::Status => status_appearance(snapshot, state),
         Role::Reply => reply_appearance(snapshot),
         Role::VolumeToggle => {
@@ -1183,6 +1230,25 @@ fn appearance_for_role(
         Role::VolumeUp => Appearance::simple("+", palette::CONTROL),
         Role::VolumeDown => Appearance::simple("−", palette::CONTROL),
         Role::MuteSelected => {
+            if state.volume_layer && state.system_volume_selected {
+                if !snapshot
+                    .system_volume
+                    .as_ref()
+                    .is_some_and(|v| v.mute_supported)
+                {
+                    let mut a = Appearance::simple("—", palette::CONTROL);
+                    a.subtitle = "No hardware mute".into();
+                    return a;
+                }
+                let muted = snapshot.system_volume.as_ref().is_some_and(|v| v.muted);
+                let mut a =
+                    Appearance::simple(if muted { "HEAR" } else { "MUTE" }, palette::CONTROL);
+                a.subtitle = "MAIN".into();
+                if muted {
+                    a.badge = Some(Badge::Muted);
+                }
+                return a;
+            }
             if state.member_layer {
                 let member = state.member_conference.and_then(|conference| {
                     conference_members(snapshot, conference)
@@ -1258,6 +1324,11 @@ fn appearance_for_role(
             .get(index)
             .map(|production| production_appearance(production, snapshot))
             .unwrap_or_else(Appearance::blank),
+        Role::Restart => {
+            let mut a = Appearance::simple("RESTART", palette::MENU);
+            a.subtitle = "hold 2s".into();
+            a
+        }
         Role::ClearLocks => {
             // Same look as CHANGE / production; greyed while nothing is locked.
             let mut a = Appearance::simple("CLEAR", palette::MENU);
@@ -1385,6 +1456,25 @@ pub fn layout(
                 }
             }
         }
+    } else if state.volume_layer && snapshot.system_volume.is_some() {
+        let roles = volume_roles(snapshot, state);
+        let per_page = target_slots(geometry).len().max(1);
+        let page = state
+            .page
+            .min(page_count(geometry, roles.len()).saturating_sub(1));
+        let shown: Vec<Role> = roles
+            .into_iter()
+            .skip(page * per_page)
+            .take(per_page)
+            .collect();
+        for (slot, role) in occupied_target_slots(geometry, shown.len())
+            .into_iter()
+            .zip(shown)
+        {
+            keys[slot as usize].role = role;
+            keys[slot as usize].appearance =
+                appearance_for_role(role, snapshot, state, key_pages, encoder_pages);
+        }
     } else {
         let shown = page_targets(geometry, state, &snapshot.targets);
         let slots = occupied_target_slots(geometry, shown.len());
@@ -1402,7 +1492,14 @@ pub fn layout(
     // The menu still works offline (INFO helps to find out why).
     if state.menu.is_none() && connection_lost(snapshot) {
         for key in &mut keys {
-            if !matches!(key.role, Role::Status | Role::Empty) {
+            let local_volume = key.role == Role::SystemVolume
+                || (state.volume_layer
+                    && state.system_volume_selected
+                    && matches!(
+                        key.role,
+                        Role::VolumeUp | Role::VolumeDown | Role::MuteSelected
+                    ));
+            if !local_volume && !matches!(key.role, Role::Status | Role::Empty) {
                 key.appearance.go_offline();
             }
         }
@@ -1454,6 +1551,39 @@ pub fn encoder_bindings<'a>(
     if state.menu.is_some() {
         return vec![None; geometry.encoders as usize];
     }
+    if state.volume_layer && snapshot.system_volume.is_some() {
+        let roles = volume_roles(snapshot, state);
+        let bind = |role: Role| match role {
+            Role::SystemVolume => snapshot
+                .system_volume
+                .as_ref()
+                .map(EncoderBinding::SystemVolume),
+            Role::Target(key) => snapshot.target(key).map(EncoderBinding::Target),
+            _ => None,
+        };
+        if geometry.encoders_follow_bottom_row() {
+            let per_page = target_slots(geometry).len().max(1);
+            let page = state
+                .page
+                .min(page_count(geometry, roles.len()).saturating_sub(1));
+            let shown: Vec<Role> = roles
+                .into_iter()
+                .skip(page * per_page)
+                .take(per_page)
+                .collect();
+            return bottom_row_items(geometry, &shown)
+                .into_iter()
+                .map(|r| r.and_then(bind))
+                .collect();
+        }
+        let per_page = geometry.encoders as usize;
+        let page = state
+            .encoder_page
+            .min(encoder_page_count(geometry, roles.len()).saturating_sub(1));
+        return (0..per_page)
+            .map(|i| roles.get(page * per_page + i).copied().and_then(bind))
+            .collect();
+    }
     if state.member_layer {
         let Some(conference) = state.member_conference else {
             return vec![None; geometry.encoders as usize];
@@ -1495,6 +1625,15 @@ pub fn encoder_bindings<'a>(
                 .map(EncoderBinding::Target)
         })
         .collect()
+}
+
+fn volume_roles(snapshot: &Snapshot, state: &DeckState) -> Vec<Role> {
+    let mut roles = Vec::new();
+    if state.volume_layer && snapshot.system_volume.is_some() {
+        roles.push(Role::SystemVolume);
+    }
+    roles.extend(snapshot.targets.iter().map(|t| Role::Target(t.key)));
+    roles
 }
 
 #[cfg(test)]
@@ -1611,7 +1750,7 @@ mod tests {
         assert!(feed.bar.is_some());
         assert!(listen_conference.bar.is_none());
         assert!(talk_conference.bar.is_none());
-        // Names only in normal operation; dB values on the volume layer.
+        // Names only in normal operation; percentages on the volume layer.
         assert_eq!(feed.subtitle, "");
         let volume_layer = DeckState {
             volume_layer: true,
@@ -1619,7 +1758,7 @@ mod tests {
         };
         let feed_volume = target_appearance(&snapshot.targets[2], &volume_layer, &snapshot);
         assert!(
-            feed_volume.subtitle.ends_with("dB"),
+            feed_volume.subtitle.ends_with("%"),
             "{}",
             feed_volume.subtitle
         );
@@ -1800,7 +1939,7 @@ mod tests {
             &DeckState::default(),
             &options(),
         );
-        assert_eq!(keys[0].appearance.background, palette::STATUS_BAD);
+        assert_eq!(keys[0].appearance.background, palette::SERVER_UNAVAILABLE);
         for key in keys
             .iter()
             .filter(|key| !matches!(key.role, Role::Status | Role::Empty))
@@ -1837,16 +1976,16 @@ mod tests {
             &DeckState::default(),
             &options(),
         );
-        // Offline the status key shows our address under the panel name.
-        assert_eq!(keys[0].appearance.title, "Cam 1");
-        assert_eq!(keys[0].appearance.subtitle, "no IP");
+        // The failure is explicit; IP remains useful and stale tally cannot hide it.
+        assert_eq!(keys[0].appearance.title, "Server unavailable");
+        assert_eq!(keys[0].appearance.subtitle, "Cam 1");
         let state = DeckState {
             local_ip: Some("192.0.2.10".into()),
             ..DeckState::default()
         };
         let keys = layout(&geometry("neo"), &snapshot, &state, &options());
         assert_eq!(keys[0].appearance.subtitle, "192.0.2.10");
-        assert_eq!(keys[0].appearance.background, palette::STATUS_BAD);
+        assert_eq!(keys[0].appearance.background, palette::SERVER_UNAVAILABLE);
         snapshot.on_air = true;
         let keys = layout(
             &geometry("neo"),
@@ -1854,7 +1993,32 @@ mod tests {
             &DeckState::default(),
             &options(),
         );
-        assert_eq!(keys[0].appearance.subtitle, "ON AIR");
+        assert_eq!(keys[0].appearance.title, "Server unavailable");
+    }
+
+    #[test]
+    fn server_failure_stays_visible_in_volume_and_menu_and_beats_stale_tally() {
+        let mut snapshot = snapshot(1);
+        snapshot.connection = ConnectionState::Disconnected;
+        snapshot.on_air = true;
+        snapshot.preview = true;
+        for volume_layer in [false, true] {
+            let state = DeckState {
+                volume_layer,
+                ..DeckState::default()
+            };
+            let appearance = status_appearance(&snapshot, &state);
+            assert_eq!(appearance.title, "Server unavailable");
+            assert_eq!(appearance.background, palette::SERVER_UNAVAILABLE);
+        }
+        let state = DeckState {
+            menu: Some(MenuPage::Root),
+            ..DeckState::default()
+        };
+        let appearance = status_appearance(&snapshot, &state);
+        assert_eq!(appearance.title, "MENU");
+        assert_eq!(appearance.subtitle, "Server unavailable");
+        assert_eq!(appearance.background, palette::SERVER_UNAVAILABLE);
     }
 
     #[test]
@@ -1884,7 +2048,7 @@ mod tests {
     }
 
     #[test]
-    fn menu_root_lists_production_clear_and_info() {
+    fn menu_root_lists_production_clear_info_and_guarded_restart() {
         let mut snapshot = with_productions(3);
         snapshot.connection = ConnectionState::Ready;
         snapshot.audio_ok = true;
@@ -1900,6 +2064,8 @@ mod tests {
         assert_eq!(keys[5].role, Role::Menu(MenuPage::Productions));
         assert_eq!(keys[6].role, Role::ClearLocks);
         assert_eq!(keys[7].role, Role::Menu(MenuPage::Info));
+        assert_eq!(keys[8].role, Role::Restart);
+        assert_eq!(keys[8].appearance.subtitle, "hold 2s");
         // Menu keys share one look: MENU colour, short title, small
         // second word (CHANGE / production, CLEAR / locks).
         assert_eq!(keys[5].appearance.title, "CHANGE");
@@ -1933,12 +2099,12 @@ mod tests {
             let keys = layout(&geometry(name), &snapshot, &state, &options());
             let entries = keys
                 .iter()
-                .filter(|key| matches!(key.role, Role::Menu(_) | Role::ClearLocks))
+                .filter(|key| matches!(key.role, Role::Menu(_) | Role::ClearLocks | Role::Restart))
                 .count();
-            assert_eq!(entries, 3, "{name}");
+            assert_eq!(entries, 4, "{name}");
             assert!(!keys.iter().any(|key| key.role == Role::NextPage), "{name}");
         }
-        // Mini: VOLUME joins the menu, so four entries page with NEXT.
+        // Mini: VOLUME joins the menu, so five entries page with NEXT.
         let mini = geometry("mini");
         let keys = layout(&mini, &snapshot, &state, &options());
         assert_eq!(keys[2].role, Role::NextPage);
@@ -1955,6 +2121,7 @@ mod tests {
         *state.key_page_mut() = 1;
         let keys = layout(&mini, &snapshot, &state, &options());
         assert_eq!(keys[3].role, Role::Menu(MenuPage::Info));
+        assert_eq!(keys[4].role, Role::Restart);
     }
 
     #[test]
@@ -2788,5 +2955,103 @@ mod tests {
             Some(EncoderBinding::Member { member, .. }) if member.user_id == 2
         ));
         assert_eq!(bindings[3], None);
+    }
+
+    #[test]
+    fn system_main_volume_is_only_in_vol_and_keeps_target_and_dial_paging_aligned() {
+        let mut snapshot = snapshot(12);
+        snapshot.system_volume = Some(crate::audio::system_volume::SystemVolume {
+            volume: 0.42,
+            muted: false,
+            mute_supported: true,
+            control: "Master".into(),
+        });
+        for model in ["mini", "mk2", "plus", "xl"] {
+            let geometry = geometry(model);
+            let mut state = DeckState::default();
+            let options = LayoutOptions::default();
+            assert!(!layout(&geometry, &snapshot, &state, &options)
+                .iter()
+                .any(|k| k.role == Role::SystemVolume));
+            state.toggle_volume_layer(&snapshot);
+            let keys = layout(&geometry, &snapshot, &state, &options);
+            let main = keys.iter().find(|k| k.role == Role::SystemVolume).unwrap();
+            assert_eq!(main.appearance.title, "MAIN");
+            assert_eq!(main.appearance.subtitle, "42%");
+            assert!(state.system_volume_selected);
+            assert_eq!(main.appearance.background, palette::SELECTED);
+            assert!(keys
+                .iter()
+                .filter(|key| matches!(key.role, Role::Target(_)))
+                .all(|key| key.appearance.background != palette::SELECTED));
+            // Selecting a target replaces MAIN; selecting MAIN again replaces
+            // the remembered target without losing its selection for later.
+            state.system_volume_selected = false;
+            let target_keys = layout(&geometry, &snapshot, &state, &options);
+            assert_eq!(
+                target_keys
+                    .iter()
+                    .filter(|key| matches!(key.role, Role::Target(_))
+                        && key.appearance.background == palette::SELECTED)
+                    .count(),
+                1
+            );
+            assert_ne!(
+                target_keys
+                    .iter()
+                    .find(|key| key.role == Role::SystemVolume)
+                    .unwrap()
+                    .appearance
+                    .background,
+                palette::SELECTED
+            );
+            state.system_volume_selected = true;
+            let main_keys = layout(&geometry, &snapshot, &state, &options);
+            assert_eq!(
+                main_keys
+                    .iter()
+                    .filter(
+                        |key| matches!(key.role, Role::Target(_) | Role::SystemVolume)
+                            && key.appearance.background == palette::SELECTED
+                    )
+                    .count(),
+                1
+            );
+            let capacity = target_slots(&geometry).len();
+            assert_eq!(
+                layer_page_counts(&geometry, &snapshot, &state).0,
+                13_usize.div_ceil(capacity)
+            );
+            if model == "plus" {
+                let bindings = encoder_bindings(&geometry, &state, &snapshot);
+                assert!(matches!(bindings[0], Some(EncoderBinding::SystemVolume(_))));
+                assert!(
+                    matches!(bindings[1], Some(EncoderBinding::Target(t)) if t.key == snapshot.targets[0].key)
+                );
+                state.page = 1;
+                let bindings = encoder_bindings(&geometry, &state, &snapshot);
+                assert!(
+                    matches!(bindings[0], Some(EncoderBinding::Target(t)) if t.key == snapshot.targets[3].key)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn main_control_disappears_when_output_has_no_hardware_volume() {
+        let snapshot = snapshot(2);
+        let geometry = geometry("plus");
+        let mut state = DeckState {
+            volume_layer: true,
+            system_volume_selected: true,
+            ..DeckState::default()
+        };
+        state.clamp_pages(&geometry, &snapshot);
+        assert!(!state.system_volume_selected);
+        assert!(
+            !layout(&geometry, &snapshot, &state, &LayoutOptions::default())
+                .iter()
+                .any(|k| k.role == Role::SystemVolume)
+        );
     }
 }

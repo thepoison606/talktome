@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:ios-audio-routes": "bash scripts/test-ios-audio-routes.sh",
+    "test:ios-keyboard": "bash scripts/test-ios-keyboard.sh",
     "test:watch": "vitest",
     "test:watch-gestures": "bash scripts/test-watch-gestures.sh"
   },

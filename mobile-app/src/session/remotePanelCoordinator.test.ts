@@ -44,6 +44,20 @@ function fixture() {
 }
 
 describe('native remote panel', () => {
+  it('applies and reports web-compatible keyboard preferences when the native keyboard host is present', async () => {
+    const f = fixture();
+    const apply = vi.fn(async () => {});
+    f.host.applyHotkeys = apply;
+    const binding = { type: 'code', value: 'KeyA', label: 'A', id: 'code:KeyA' };
+    f.host.readHotkeys = () => ({ 'user:9': binding });
+    const key = 'targetHotkeys:1:production:7';
+    await f.register({ revision: 2, storage: { [key]: JSON.stringify({ 'user:9': binding }) } });
+    expect(apply).toHaveBeenCalledWith(expect.objectContaining({ [key]: JSON.stringify({ 'user:9': binding }) }));
+    expect(JSON.parse(f.panel.report()!.storage[key]!)).toEqual({ 'user:9': binding });
+    expect(await f.panel.handleCommand({ kind: 'preferences', patch: { [key]: '{}' } })).toMatchObject({ ok: true });
+    expect(await f.panel.handleCommand({ kind: 'preferences', patch: { [key]: 'invalid-json' } })).toMatchObject({ ok: false });
+  });
+
   it('restores and applies an explicit main-button override while accepting older settings without it', async () => {
     const f = fixture(); await f.register();
     expect(await f.panel.handleCommand({ kind: 'audio-settings', settings: { ...PANEL_AUDIO_DEFAULTS, bigMainButton: true } })).toMatchObject({ ok: true });

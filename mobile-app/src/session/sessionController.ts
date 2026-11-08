@@ -65,6 +65,8 @@ import {
 import { canAnnounceConnectionRecovery, createConnectionCues, transportReportsLoss } from './connectionCues';
 import { normalizeWatchTargetKeys } from '../watch/selection';
 import { mainButtonStorageKey } from './mainButton';
+import { readKeyOverrides, wireKeyOverrides } from '../keyboard/bindings';
+import { hydrateKeyboardPreferences, saveKeyboardOverrides, useKeyboardPreferences } from '../keyboard/preferences';
 import { targetOrderPayload } from './targetOrder';
 import { createServerHeartbeat } from './serverHeartbeat';
 import { BackgroundCoordinator } from './backgroundCoordinator';
@@ -154,6 +156,26 @@ export class SessionController {
       await this.persistCurrentProfile();
     },
     systemAudioRouting: Platform.OS === 'ios' && hasSystemRoutePicker(),
+    readHotkeys: productionId => {
+      const state = useSessionStore.getState();
+      const overrides = useKeyboardPreferences.getState().scopes[mainButtonStorageKey(state.activeProfileId, productionId)];
+      return overrides === undefined ? undefined : wireKeyOverrides(overrides);
+    },
+    applyHotkeys: async storage => {
+      await hydrateKeyboardPreferences();
+      const state = useSessionStore.getState();
+      if (!state.activeProfileId || !state.identity) return;
+      const prefix = `targetHotkeys:${state.identity.id}`;
+      for (const key of Object.keys(useKeyboardPreferences.getState().scopes)) {
+        if (key.startsWith(`${state.activeProfileId}:`)) saveKeyboardOverrides(key, {});
+      }
+      for (const [key, value] of Object.entries(storage)) {
+        if (key !== prefix && !key.startsWith(`${prefix}:production:`)) continue;
+        const productionId = key === prefix ? null : Number(key.slice(`${prefix}:production:`.length));
+        if (productionId !== null && !Number.isFinite(productionId)) continue;
+        saveKeyboardOverrides(mainButtonStorageKey(state.activeProfileId, productionId), readKeyOverrides(JSON.parse(value)));
+      }
+    },
     selectAudioRoute: id => this.mediaCoordinator.selectAudioDevice(id),
     selectProduction: async id => {
       const production = useSessionStore.getState().productions.find(item => item.id === id);

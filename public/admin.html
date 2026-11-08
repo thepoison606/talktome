@@ -2039,6 +2039,24 @@
         opacity: 0.6;
       }
 
+      .is-target-reordering {
+        position: relative;
+      }
+
+      .is-target-reordering::after {
+        content: '';
+        position: absolute;
+        top: var(--target-drop-y);
+        left: 0;
+        right: 0;
+        height: 3px;
+        border-radius: 2px;
+        background: var(--primary);
+        transform: translateY(-50%);
+        pointer-events: none;
+        z-index: 2;
+      }
+
       .production-order-list.is-touch-reordering,
       .item-list.is-touch-reordering {
         user-select: none;
@@ -3143,8 +3161,8 @@
       .status-col--version { width: 7.5%; }
       .status-col--output { width: 8.5%; }
       .status-col--battery { width: 6%; }
-      .status-col--network { width: 6%; }
-      .status-col--address { width: 8%; }
+      .status-col--network { width: 5.5%; }
+      .status-col--address { width: 8.5%; }
       .status-col--rtt { width: 4%; }
       .status-col--loss { width: 4%; }
       .status-col--connected { width: 7.5%; }
@@ -3157,8 +3175,8 @@
       .status-table--with-production .status-col--version { width: 7%; }
       .status-table--with-production .status-col--output { width: 8%; }
       .status-table--with-production .status-col--battery { width: 6%; }
-      .status-table--with-production .status-col--network { width: 6%; }
-      .status-table--with-production .status-col--address { width: 8%; }
+      .status-table--with-production .status-col--network { width: 5.5%; }
+      .status-table--with-production .status-col--address { width: 8.5%; }
       .status-table--with-production .status-col--rtt { width: 4%; }
       .status-table--with-production .status-col--loss { width: 4%; }
       .status-table--with-production .status-col--connected { width: 6.5%; }

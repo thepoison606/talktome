@@ -31,6 +31,7 @@ vi.mock('./settingsChrome', () => ({ SettingsThemeProvider: 'Theme', SettingsHea
 vi.mock('./ArrangeTargetsPage', () => ({ ArrangeTargetsPage: 'Editor' }));
 vi.mock('./VolumeSlider', () => ({}));
 vi.mock('./IosSystemRoutePicker', () => ({}));
+vi.mock('../keyboard/NativeKeyboard', () => ({ hardwareKeyboardAvailable: true, NativeKeyboard: 'NativeKeyboard' }));
 import { SessionSheet } from './SettingsScreen';
 type Element = ReactElement<Record<string, unknown>>;
 function elements(value: unknown): Element[] {

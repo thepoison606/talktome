@@ -18,8 +18,40 @@ use super::resample::{FromInternal, ToInternal};
 use super::{device_label, device_pcm_id, find_device};
 use crate::config::AudioConfig;
 
+/// Audio with its capture time, so control-plane stalls cannot replay old speech.
+#[derive(Debug)]
+pub struct CapturedFrame {
+    pub samples: Vec<f32>,
+    pub captured: Instant,
+}
+
+impl CapturedFrame {
+    pub fn new(samples: Vec<f32>) -> Self {
+        Self {
+            samples,
+            captured: Instant::now(),
+        }
+    }
+
+    pub fn newest(mut self, queued: &mut mpsc::Receiver<Self>) -> Option<Self> {
+        // Preserve normal batches (e.g. two 5-ms frames from a 10-ms ALSA
+        // callback). Catch up only after an actual scheduling/control stall.
+        if self.captured.elapsed() >= Duration::from_millis(40) {
+            while let Ok(newer) = queued.try_recv() {
+                self = newer;
+            }
+        }
+        self.is_fresh().then_some(self)
+    }
+
+    pub fn is_fresh(&self) -> bool {
+        self.captured.elapsed() <= Duration::from_millis(80)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioStatus {
+    pub system_volume: Option<super::system_volume::SystemVolume>,
     pub capture_ok: bool,
     pub playback_ok: bool,
     pub capture_device: Option<String>,
@@ -73,6 +105,7 @@ pub fn is_virtual_device(device: &Option<String>) -> bool {
 }
 
 pub struct AudioIo {
+    pub system_volume: super::system_volume::Control,
     stop: Arc<AtomicBool>,
     pub status: watch::Receiver<AudioStatus>,
     pub devices: DeviceSwitch,
@@ -86,12 +119,13 @@ impl AudioIo {
         config: AudioConfig,
         frame_samples: usize,
         mixer: Arc<Mutex<Mixer>>,
-        frames: mpsc::Sender<Vec<f32>>,
+        frames: mpsc::Sender<CapturedFrame>,
         processing: Arc<ProcessingControl>,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let snapshot = processing.snapshot();
         let (status_tx, status_rx) = watch::channel(AudioStatus {
+            system_volume: None,
             capture_ok: false,
             playback_ok: false,
             capture_device: None,
@@ -104,6 +138,8 @@ impl AudioIo {
         let thread_stop = stop.clone();
         let devices = DeviceSwitch::default();
         let thread_devices = devices.clone();
+        let system_volume = super::system_volume::Control::default();
+        let thread_system_volume = system_volume.clone();
         let thread = thread::Builder::new()
             .name("talktome-audio".into())
             .spawn(move || {
@@ -116,10 +152,12 @@ impl AudioIo {
                     status_tx,
                     thread_stop,
                     thread_devices,
+                    thread_system_volume,
                 )
             })
             .expect("spawning audio thread");
         Self {
+            system_volume,
             stop,
             status: status_rx,
             devices,
@@ -162,7 +200,7 @@ fn run_tone_generator(
     frequency: f32,
     frame_samples: usize,
     processor: Arc<Mutex<Processor>>,
-    frames: mpsc::Sender<Vec<f32>>,
+    frames: mpsc::Sender<CapturedFrame>,
     stop: Arc<AtomicBool>,
 ) {
     let mut phase = 0f32;
@@ -189,7 +227,7 @@ fn run_tone_generator(
         pending.extend_from_slice(&processed);
         while pending.len() >= frame_samples {
             let frame: Vec<f32> = pending.drain(..frame_samples).collect();
-            let _ = frames.try_send(frame);
+            let _ = frames.try_send(CapturedFrame::new(frame));
         }
         next += frame_duration;
         let now = Instant::now();
@@ -241,11 +279,12 @@ fn run_supervisor(
     mut config: AudioConfig,
     frame_samples: usize,
     mixer: Arc<Mutex<Mixer>>,
-    frames: mpsc::Sender<Vec<f32>>,
+    frames: mpsc::Sender<CapturedFrame>,
     processing: Arc<ProcessingControl>,
     status_tx: watch::Sender<AudioStatus>,
     stop: Arc<AtomicBool>,
     devices: DeviceSwitch,
+    system_volume: super::system_volume::Control,
 ) {
     let mut capture_wanted = wanted(&config.input_device);
     let mut playback_wanted = wanted(&config.output_device);
@@ -394,6 +433,7 @@ fn run_supervisor(
             config.output_device.clone()
         };
         let status = AudioStatus {
+            system_volume: system_volume.poll(playback.as_ref().and_then(|p| p.card)),
             capture_ok: !capture_wanted || capture.is_some(),
             playback_ok: !playback_wanted || playback.is_some(),
             capture_device,
@@ -406,7 +446,7 @@ fn run_supervisor(
         if *status_tx.borrow() != status {
             let _ = status_tx.send(status);
         }
-        thread::sleep(Duration::from_millis(250));
+        system_volume.wait(Duration::from_millis(250));
     }
     drop(capture);
     drop(playback);
@@ -447,6 +487,7 @@ impl StreamActivity {
 }
 
 struct OpenStream {
+    card: Option<i32>,
     name: String,
     failed: Arc<AtomicBool>,
     activity: Arc<StreamActivity>,
@@ -529,6 +570,8 @@ impl HealthLog {
             capture_peak_dbfs = peak_dbfs(self.capture.peak),
             sources = mixer.sources,
             active_sources = mixer.active_sources,
+            receive_buffered_ms = mixer.buffered_ms,
+            receive_target_ms = mixer.target_ms,
             packets = mixer
                 .packets_matched
                 .saturating_sub(self.mixer.packets_matched),
@@ -685,7 +728,7 @@ fn build_capture_stream(
     frame_samples: usize,
     processor: &Arc<Mutex<Processor>>,
     control: &Arc<ProcessingControl>,
-    frames: &mpsc::Sender<Vec<f32>>,
+    frames: &mpsc::Sender<CapturedFrame>,
     failed: &Arc<AtomicBool>,
     activity: &Arc<StreamActivity>,
 ) -> Result<Stream> {
@@ -705,6 +748,7 @@ fn build_capture_stream(
     let mut pending: Vec<f32> = Vec::with_capacity(frame_samples * 4);
 
     let mut handle_samples = move |samples: &[f32]| {
+        let captured = Instant::now();
         control
             .observe_capture_period_ms(callback_period_ms(samples.len() / channels.max(1), rate));
         mono.clear();
@@ -727,7 +771,10 @@ fn build_capture_stream(
         while pending.len() >= frame_samples {
             let frame: Vec<f32> = pending.drain(..frame_samples).collect();
             // Never block the audio thread; drop frames if the encoder lags.
-            let _ = frames.try_send(frame);
+            let _ = frames.try_send(CapturedFrame {
+                samples: frame,
+                captured,
+            });
         }
     };
 
@@ -852,7 +899,7 @@ fn open_capture(
     frame_samples: usize,
     processor: Arc<Mutex<Processor>>,
     control: Arc<ProcessingControl>,
-    frames: mpsc::Sender<Vec<f32>>,
+    frames: mpsc::Sender<CapturedFrame>,
 ) -> Result<OpenStream> {
     let host = cpal::default_host();
     let device = pick_device(&host, &config.input_device, true)?;
@@ -890,6 +937,7 @@ fn open_capture(
         period_ms
     );
     Ok(OpenStream {
+        card: None,
         name,
         failed,
         activity,
@@ -906,6 +954,13 @@ fn open_playback(
 ) -> Result<OpenStream> {
     let host = cpal::default_host();
     let device = pick_device(&host, &config.output_device, false)?;
+    // Resolve through ALSA's actual PCM route, including dmix/asound aliases.
+    // An unresolved route exposes no control rather than using the default card.
+    let card = alsa::PCM::new(&device_pcm_id(&device), alsa::Direction::Playback, true)
+        .and_then(|pcm| pcm.info())
+        .ok()
+        .map(|info| info.get_card())
+        .filter(|c| *c >= 0);
     let name = format!("{} ({})", device_label(&device), device_pcm_id(&device));
     let supported = choose_config(&device, false).context("no usable playback configuration")?;
     let channels = supported.channels() as usize;
@@ -939,6 +994,7 @@ fn open_playback(
         period_ms
     );
     Ok(OpenStream {
+        card,
         name,
         failed,
         activity,
@@ -957,6 +1013,39 @@ mod tests {
         note_stream_error, peak_dbfs, requested_buffer_size, stalled_for, tone_frequency,
         wav_sink_path, StreamActivity,
     };
+
+    #[test]
+    fn capture_backlog_keeps_only_the_newest_fresh_frame() {
+        use super::CapturedFrame;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let stale = CapturedFrame {
+            samples: vec![1.0],
+            captured: std::time::Instant::now() - std::time::Duration::from_millis(500),
+        };
+        tx.try_send(CapturedFrame::new(vec![2.0])).unwrap();
+        tx.try_send(CapturedFrame::new(vec![3.0])).unwrap();
+        assert_eq!(stale.newest(&mut rx).unwrap().samples, vec![3.0]);
+        assert!(rx.try_recv().is_err());
+        tx.try_send(CapturedFrame::new(vec![5.0])).unwrap();
+        let normal = CapturedFrame::new(vec![4.0]);
+        assert_eq!(normal.newest(&mut rx).unwrap().samples, vec![4.0]);
+        assert_eq!(rx.try_recv().unwrap().samples, vec![5.0]);
+        let stale = CapturedFrame {
+            samples: vec![1.0],
+            captured: std::time::Instant::now() - std::time::Duration::from_millis(500),
+        };
+        assert!(stale.newest(&mut rx).is_none());
+    }
+
+    #[test]
+    fn stale_microphone_audio_is_never_fresh_after_a_control_stall() {
+        let frame = super::CapturedFrame {
+            samples: vec![0.0; 240],
+            captured: std::time::Instant::now() - std::time::Duration::from_millis(500),
+        };
+        assert!(!frame.is_fresh());
+        assert!(super::CapturedFrame::new(vec![0.0; 240]).is_fresh());
+    }
 
     #[test]
     fn a_stream_without_callbacks_counts_as_stalled_after_two_seconds() {

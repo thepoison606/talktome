@@ -25,6 +25,8 @@ export type RemotePanelHost = {
   applyConferenceListen(state: ConferenceListenState): Promise<void>;
   applyStoppedFeeds(keys: string[]): Promise<void>;
   applyMainButtons(targets: Record<string, string>): Promise<void>;
+  applyHotkeys?(storage: Record<string, string>): Promise<void>;
+  readHotkeys?(productionId: number | null): unknown;
   selectAudioRoute(id: string): Promise<void>;
   selectProduction(id: number): Promise<void>;
   refreshTargets(): Promise<void>;
@@ -173,6 +175,8 @@ export class RemotePanelCoordinator {
     const mainIdentity = state.mainButtonTargets[mainKey];
     const wireMainKey = `mainButtonTarget:user:${userId}:${productionId ?? 'default'}`;
     if (mainIdentity) storage[wireMainKey] = mainIdentity; else delete storage[wireMainKey];
+    const hotkeys = this.host.readHotkeys?.(productionId);
+    if (hotkeys !== undefined) storage[`targetHotkeys:${userId}${productionId == null ? '' : `:production:${productionId}`}`] = JSON.stringify(hotkeys);
     if (productionId != null) storage[`activeProduction:${userId}`] = String(productionId);
     else delete storage[`activeProduction:${userId}`];
     const output = state.audioRoutes.find(route => route.selected);
@@ -388,7 +392,10 @@ export class RemotePanelCoordinator {
     const userId = positiveId(this.host.state().identity?.id)!;
     for (const [key, value] of Object.entries(patch)) {
       if (!this.preferenceKey(key, userId)) throw new Error('Client preference belongs to another user.');
-      if (key.startsWith('targetHotkeys:')) throw new Error('Keyboard shortcuts are not available on mobile.');
+      if (key.startsWith('targetHotkeys:')) {
+        if (!this.host.applyHotkeys) throw new Error('Keyboard shortcuts require an updated mobile app.');
+        if (value !== null) jsonObject(value);
+      }
       if ((key === 'preferredAudioInputDeviceId' && value) || (key === 'preferredAudioInputDeviceExplicit' && value === 'true')) throw new Error('Mobile microphone selection is managed by the audio route.');
     }
   }
@@ -417,6 +424,8 @@ export class RemotePanelCoordinator {
     this.ensureCurrent(epoch);
     this.pendingMainButtons = true;
     await this.applyMainButtons();
+    this.ensureCurrent(epoch);
+    await this.host.applyHotkeys?.(this.storage);
     this.ensureCurrent(epoch);
     const routeId = this.storage.preferredAudioOutputDeviceId;
     if (applyOutput && verifyRoute && routeId === '') throw new Error('Choose a specific mobile audio route.');

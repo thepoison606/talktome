@@ -19,7 +19,6 @@ use elgato_streamdeck::DeviceStateUpdate;
 use image::{DynamicImage, RgbImage};
 use tokio::sync::watch;
 
-use crate::audio::mixer::step_volume_db;
 use crate::config::{StreamDeckConfig, StreamDeckDeviceConfig, TalkConfig};
 use crate::state::{
     Bus, Command, ConferenceMemberInfo, DeckDialView, DeckInput, DeckKeyView, DeckStatus,
@@ -518,8 +517,10 @@ fn role_label(role: Role) -> String {
         Role::MuteSelected => "mute-selected".into(),
         Role::Production(index) => format!("production:{index}"),
         Role::ClearLocks => "clear-locks".into(),
+        Role::Restart => "restart".into(),
         Role::Menu(page) => format!("menu:{}", menu_label(page)),
         Role::Info(index) => format!("info:{index}"),
+        Role::SystemVolume => "system-volume".into(),
         Role::Empty => "empty".into(),
     }
 }
@@ -575,7 +576,7 @@ fn key_item_count(geometry: &Geometry, snapshot: &Snapshot, state: &DeckState) -
             .map(|key| conference_members(snapshot, key).len())
             .unwrap_or(0)
     } else {
-        snapshot.targets.len()
+        snapshot.targets.len() + usize::from(state.volume_layer && snapshot.system_volume.is_some())
     }
 }
 
@@ -588,14 +589,64 @@ fn cycle_page(page: &mut usize, pages: usize, forward: bool) {
     };
 }
 
+fn restart_hold_confirmed(
+    held: Duration,
+    menu: Option<MenuPage>,
+    current_role: Option<Role>,
+) -> bool {
+    held >= Duration::from_secs(2)
+        && menu == Some(MenuPage::Root)
+        && current_role == Some(Role::Restart)
+}
+
+fn restart_hold_deadline(
+    pressed: &HashMap<u8, PressedKey>,
+    menu: Option<MenuPage>,
+    keys: &[KeySpec],
+) -> Option<Instant> {
+    pressed
+        .iter()
+        .filter(|(key, press)| {
+            press.role == Role::Restart
+                && restart_hold_confirmed(
+                    Duration::from_secs(2),
+                    menu,
+                    keys.get(**key as usize).map(|spec| spec.role),
+                )
+        })
+        .map(|(_, press)| press.since + Duration::from_secs(2))
+        .min()
+}
+
+fn take_due_restart(
+    pressed: &mut HashMap<u8, PressedKey>,
+    menu: Option<MenuPage>,
+    keys: &[KeySpec],
+    now: Instant,
+) -> bool {
+    let due: Vec<u8> = pressed
+        .iter()
+        .filter(|(key, press)| {
+            press.role == Role::Restart
+                && restart_hold_confirmed(
+                    now.saturating_duration_since(press.since),
+                    menu,
+                    keys.get(**key as usize).map(|spec| spec.role),
+                )
+        })
+        .map(|(key, _)| *key)
+        .collect();
+    for key in &due {
+        pressed.remove(key);
+    }
+    !due.is_empty()
+}
+
 #[derive(Clone, Copy)]
 enum BoundEncoder {
+    SystemVolume,
     Target(TargetKey),
-    Member {
-        conference: TargetKey,
-        user_id: i64,
-        volume: f32,
-    },
+    Member { conference: TargetKey, user_id: i64 },
 }
 
 /// What a dial held past `MEMBER_HOLD` does.
@@ -631,11 +682,11 @@ fn bound_encoder(
         .copied()
         .flatten()
     {
+        Some(EncoderBinding::SystemVolume(_)) => Some(BoundEncoder::SystemVolume),
         Some(EncoderBinding::Target(target)) => Some(BoundEncoder::Target(target.key)),
         Some(EncoderBinding::Member { conference, member }) => Some(BoundEncoder::Member {
             conference,
             user_id: member.user_id,
-            volume: member.volume,
         }),
         None => None,
     }
@@ -756,7 +807,22 @@ async fn run_device(
             })
             .map(|(_, since)| *since + MEMBER_HOLD)
             .min();
+        let restart_at = restart_hold_deadline(&pressed, state.menu, &keys);
         tokio::select! {
+            _ = async {
+                match restart_at {
+                    Some(at) => tokio::time::sleep_until(at.into()).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                // Consume the hold now: a later ButtonUp cannot trigger it again.
+                if take_due_restart(&mut pressed, state.menu, &keys, Instant::now()) {
+                    if let Some(restart) = &bus.restart {
+                        tracing::warn!(event = "streamdeck-restart");
+                        restart.request();
+                    }
+                }
+            }
             _ = async {
                 match member_hold_at {
                     Some(at) => tokio::time::sleep_until(at.into()).await,
@@ -793,6 +859,9 @@ async fn run_device(
             }
             _ = blink.tick() => {
                 state.blink_phase = !state.blink_phase;
+                if state.menu == Some(MenuPage::Root) && pressed.iter().any(|(key, press)| press.role == Role::Restart && keys.get(*key as usize).is_some_and(|spec| spec.role == Role::Restart)) {
+                    state.touch_layer();
+                }
                 if state.expire_volume_layer(volume_timeout)
                     || state.expire_member_layer(volume_timeout)
                     || state.expire_menu(volume_timeout)
@@ -847,8 +916,13 @@ async fn run_device(
                     let role = spec.role;
                     let reselect = layout::volume_in_menu(&geometry)
                         && match role {
+                            Role::SystemVolume => {
+                                state.volume_layer && state.system_volume_selected
+                            }
                             Role::Target(target) => {
-                                state.volume_layer && state.selected == Some(target)
+                                state.volume_layer
+                                    && !state.system_volume_selected
+                                    && state.selected == Some(target)
                             }
                             Role::Member { user_id, .. } => {
                                 state.member_layer && state.member_selected == Some(user_id)
@@ -876,6 +950,7 @@ async fn run_device(
                         }
                         Role::Target(target) => {
                             if state.volume_layer {
+                                state.system_volume_selected = false;
                                 state.selected = Some(target);
                                 state.touch_volume_layer();
                                 relayout = true;
@@ -946,44 +1021,38 @@ async fn run_device(
                         }
                         Role::VolumeUp | Role::VolumeDown => {
                             let delta = if role == Role::VolumeUp {
-                                config.volume_step_db()
+                                config.volume_step_linear()
                             } else {
-                                -config.volume_step_db()
+                                -config.volume_step_linear()
                             };
                             if state.member_layer {
                                 state.touch_member_layer();
                                 if let (Some(conference), Some(user_id)) =
                                     (state.member_conference, state.member_selected)
                                 {
-                                    let current = conference_members(&snapshot, conference)
-                                        .iter()
-                                        .find(|member| member.user_id == user_id)
-                                        .map(|member| member.volume)
-                                        .unwrap_or(1.0);
                                     let _ = bus
                                         .commands
-                                        .send(Command::MemberVolumeSet {
+                                        .send(Command::MemberVolumeStep {
                                             conference,
                                             user_id,
-                                            volume: step_volume_db(current, delta),
+                                            delta,
                                         })
                                         .await;
                                 }
+                            } else if state.system_volume_selected && state.volume_layer {
+                                state.touch_volume_layer();
+                                let _ = bus
+                                    .commands
+                                    .send(Command::SystemVolume(
+                                        crate::audio::system_volume::Action::Step(delta),
+                                    ))
+                                    .await;
                             } else {
                                 state.touch_volume_layer();
                                 if let Some(target) = state.selected {
-                                    let current = snapshot
-                                        .targets
-                                        .iter()
-                                        .find(|t| t.key == target)
-                                        .map(|t| t.volume)
-                                        .unwrap_or(1.0);
                                     let _ = bus
                                         .commands
-                                        .send(Command::VolumeSet {
-                                            target,
-                                            volume: step_volume_db(current, delta),
-                                        })
+                                        .send(Command::VolumeStep { target, delta })
                                         .await;
                                 }
                             }
@@ -1000,6 +1069,20 @@ async fn run_device(
                                             conference,
                                             user_id,
                                         })
+                                        .await;
+                                }
+                            } else if state.system_volume_selected && state.volume_layer {
+                                state.touch_volume_layer();
+                                if snapshot
+                                    .system_volume
+                                    .as_ref()
+                                    .is_some_and(|v| v.mute_supported)
+                                {
+                                    let _ = bus
+                                        .commands
+                                        .send(Command::SystemVolume(
+                                            crate::audio::system_volume::Action::ToggleMute,
+                                        ))
                                         .await;
                                 }
                             } else {
@@ -1026,6 +1109,7 @@ async fn run_device(
                             let _ = bus.commands.send(Command::ClearLocks).await;
                             state.touch_layer();
                         }
+                        Role::Restart => state.touch_layer(),
                         Role::Menu(page) => {
                             if page == MenuPage::Info {
                                 state.local_ip = local_ip_towards(&snapshot.server_url).await;
@@ -1034,6 +1118,11 @@ async fn run_device(
                             relayout = true;
                         }
                         Role::Info(_) => state.touch_layer(),
+                        Role::SystemVolume => {
+                            state.system_volume_selected = true;
+                            state.touch_volume_layer();
+                            relayout = true;
+                        }
                         Role::Empty => {}
                     }
                 }
@@ -1043,6 +1132,22 @@ async fn run_device(
                     };
                     let held = now.duration_since(press.since);
                     match press.role {
+                        Role::Restart => {
+                            // Fallback if ButtonUp and the deadline become
+                            // ready in the same poll. The timer consumes an
+                            // already-fired hold, so it cannot run twice.
+                            if restart_hold_confirmed(
+                                held,
+                                state.menu,
+                                keys.get(key as usize).map(|spec| spec.role),
+                            ) {
+                                if let Some(restart) = &bus.restart {
+                                    tracing::warn!(event = "streamdeck-restart");
+                                    restart.request();
+                                }
+                            }
+                            state.touch_layer();
+                        }
                         Role::Status => {
                             if held >= STATUS_HOLD {
                                 let pages = page_count(
@@ -1103,6 +1208,25 @@ async fn run_device(
                                 relayout = true;
                             }
                         }
+                        Role::SystemVolume if state.volume_layer => {
+                            if held >= MUTE_HOLD
+                                && snapshot
+                                    .system_volume
+                                    .as_ref()
+                                    .is_some_and(|v| v.mute_supported)
+                            {
+                                let _ = bus
+                                    .commands
+                                    .send(Command::SystemVolume(
+                                        crate::audio::system_volume::Action::ToggleMute,
+                                    ))
+                                    .await;
+                                state.touch_volume_layer();
+                            } else if held < MUTE_HOLD && press.reselect {
+                                state.close_volume_layer();
+                                relayout = true;
+                            }
+                        }
                         Role::VolumeToggle if volume_toggle_defers_to_release(&geometry) => {
                             if held >= MUTE_HOLD {
                                 relayout = state.open_member_layer(&snapshot, None);
@@ -1115,37 +1239,37 @@ async fn run_device(
                     }
                 }
                 DeviceStateUpdate::EncoderTwist(encoder, ticks) => {
-                    let delta = config.volume_step_db() * ticks as f32;
+                    let delta = config.volume_step_linear() * ticks as f32;
                     match bound_encoder(&geometry, &state, &snapshot, encoder) {
-                        Some(BoundEncoder::Target(target)) => {
-                            let current = snapshot
-                                .targets
-                                .iter()
-                                .find(|t| t.key == target)
-                                .map(|t| t.volume)
-                                .unwrap_or(1.0);
+                        Some(BoundEncoder::SystemVolume) => {
+                            state.touch_volume_layer();
                             let _ = bus
                                 .commands
-                                .send(Command::VolumeSet {
-                                    target,
-                                    volume: step_volume_db(current, delta),
-                                })
+                                .send(Command::SystemVolume(
+                                    crate::audio::system_volume::Action::Step(delta),
+                                ))
+                                .await;
+                        }
+                        Some(BoundEncoder::Target(target)) => {
+                            let _ = bus
+                                .commands
+                                .send(Command::VolumeStep { target, delta })
                                 .await;
                         }
                         Some(BoundEncoder::Member {
                             conference,
                             user_id,
-                            volume,
+                            ..
                         }) => {
                             if state.member_layer {
                                 state.touch_member_layer();
                             }
                             let _ = bus
                                 .commands
-                                .send(Command::MemberVolumeSet {
+                                .send(Command::MemberVolumeStep {
                                     conference,
                                     user_id,
-                                    volume: step_volume_db(volume, delta),
+                                    delta,
                                 })
                                 .await;
                         }
@@ -1161,6 +1285,21 @@ async fn run_device(
                     };
                     let held = now.duration_since(since);
                     match bound_encoder(&geometry, &state, &snapshot, encoder) {
+                        Some(BoundEncoder::SystemVolume) => {
+                            state.touch_volume_layer();
+                            if snapshot
+                                .system_volume
+                                .as_ref()
+                                .is_some_and(|v| v.mute_supported)
+                            {
+                                let _ = bus
+                                    .commands
+                                    .send(Command::SystemVolume(
+                                        crate::audio::system_volume::Action::ToggleMute,
+                                    ))
+                                    .await;
+                            }
+                        }
                         Some(BoundEncoder::Member {
                             conference,
                             user_id,
@@ -1239,6 +1378,21 @@ async fn run_device(
                             y as u32 * encoders / h.max(1)
                         };
                         match bound_encoder(&geometry, &state, &snapshot, index as u8) {
+                            Some(BoundEncoder::SystemVolume) => {
+                                if snapshot
+                                    .system_volume
+                                    .as_ref()
+                                    .is_some_and(|v| v.mute_supported)
+                                {
+                                    let _ = bus
+                                        .commands
+                                        .send(Command::SystemVolume(
+                                            crate::audio::system_volume::Action::ToggleMute,
+                                        ))
+                                        .await;
+                                }
+                                state.touch_volume_layer();
+                            }
                             Some(BoundEncoder::Target(target)) => {
                                 let _ = bus.commands.send(Command::MuteToggle(target)).await;
                             }
@@ -1279,6 +1433,13 @@ async fn run_device(
             }
             state.clamp_pages(&geometry, &snapshot);
             keys = layout::layout(&geometry, &snapshot, &state, &options);
+            pressed.retain(|key, press| {
+                press.role != Role::Restart
+                    || (state.menu == Some(MenuPage::Root)
+                        && keys
+                            .get(*key as usize)
+                            .is_some_and(|spec| spec.role == Role::Restart))
+            });
         }
         let keys_changed = render_all(
             &device,
@@ -1492,17 +1653,23 @@ fn dial_views(geometry: &Geometry, state: &DeckState, snapshot: &Snapshot) -> Ve
         .into_iter()
         .enumerate()
         .map(|(index, binding)| match binding {
+            Some(EncoderBinding::SystemVolume(volume)) => DeckDialView {
+                index: index as u8,
+                role: "system-volume".into(),
+                title: "MAIN".into(),
+                subtitle: format!("{}%", (volume.volume * 100.0).round()),
+            },
             Some(EncoderBinding::Target(target)) => DeckDialView {
                 index: index as u8,
                 role: target.key.to_string(),
                 title: target.name.clone(),
-                subtitle: crate::audio::mixer::format_volume_db(target.volume),
+                subtitle: crate::audio::mixer::format_volume_percent(target.volume),
             },
             Some(EncoderBinding::Member { conference, member }) => DeckDialView {
                 index: index as u8,
                 role: format!("{conference}/user:{}", member.user_id),
                 title: member.name.clone(),
-                subtitle: crate::audio::mixer::format_volume_db(member.volume),
+                subtitle: crate::audio::mixer::format_volume_percent(member.volume),
             },
             None => DeckDialView {
                 index: index as u8,
@@ -1673,6 +1840,16 @@ async fn render_lcd(
         encoder_bindings(geometry, state, snapshot)
             .into_iter()
             .map(|binding| match binding {
+                Some(EncoderBinding::SystemVolume(volume)) => StripSegment {
+                    title: "MAIN".into(),
+                    volume: volume.volume,
+                    muted: volume.muted,
+                    background: if volume.muted {
+                        palette::MUTED
+                    } else {
+                        palette::CONTROL
+                    },
+                },
                 Some(EncoderBinding::Target(target)) => StripSegment {
                     title: target.name.clone(),
                     volume: target.volume,
@@ -1687,8 +1864,8 @@ async fn render_lcd(
                     }),
                 },
                 Some(EncoderBinding::Member { member, .. }) => StripSegment {
-                    title: member.name.clone(),
                     volume: member.volume,
+                    title: member.name.clone(),
                     muted: member.muted,
                     background: strip_background(StripState {
                         offline,
@@ -1763,6 +1940,124 @@ fn strip_arrows(geometry: &Geometry, state: &DeckState, snapshot: &Snapshot) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn restart_fires_at_the_deadline_without_release_and_only_once() {
+        use super::{
+            restart_hold_deadline, take_due_restart, Appearance, KeySpec, MenuPage, PressedKey,
+            Role,
+        };
+        use std::{
+            collections::HashMap,
+            time::{Duration, Instant},
+        };
+        let now = Instant::now();
+        let keys = vec![KeySpec {
+            role: Role::Restart,
+            appearance: Appearance::blank(),
+        }];
+        let mut pressed = HashMap::from([(
+            0,
+            PressedKey {
+                role: Role::Restart,
+                since: now,
+                reselect: false,
+            },
+        )]);
+        assert_eq!(
+            restart_hold_deadline(&pressed, Some(MenuPage::Root), &keys),
+            Some(now + Duration::from_secs(2))
+        );
+        assert!(!take_due_restart(
+            &mut pressed,
+            Some(MenuPage::Root),
+            &keys,
+            now + Duration::from_millis(1999)
+        ));
+        assert!(take_due_restart(
+            &mut pressed,
+            Some(MenuPage::Root),
+            &keys,
+            now + Duration::from_secs(2)
+        ));
+        assert!(
+            pressed.is_empty(),
+            "release after restart must have no remaining action"
+        );
+        assert!(!take_due_restart(
+            &mut pressed,
+            Some(MenuPage::Root),
+            &keys,
+            now + Duration::from_secs(3)
+        ));
+    }
+
+    #[test]
+    fn releasing_restart_early_cancels_its_deadline() {
+        use super::{
+            restart_hold_deadline, take_due_restart, Appearance, KeySpec, MenuPage, PressedKey,
+            Role,
+        };
+        use std::{
+            collections::HashMap,
+            time::{Duration, Instant},
+        };
+        let now = Instant::now();
+        let keys = vec![KeySpec {
+            role: Role::Restart,
+            appearance: Appearance::blank(),
+        }];
+        let mut pressed = HashMap::from([(
+            0,
+            PressedKey {
+                role: Role::Restart,
+                since: now,
+                reselect: false,
+            },
+        )]);
+        pressed.remove(&0); // ButtonUp before the timeout.
+        assert_eq!(
+            restart_hold_deadline(&pressed, Some(MenuPage::Root), &keys),
+            None
+        );
+        assert!(!take_due_restart(
+            &mut pressed,
+            Some(MenuPage::Root),
+            &keys,
+            now + Duration::from_secs(3)
+        ));
+    }
+
+    #[test]
+    fn restart_requires_two_seconds_and_the_same_visible_menu_key() {
+        use super::{restart_hold_confirmed, MenuPage, Role};
+        use std::time::Duration;
+        assert!(!restart_hold_confirmed(
+            Duration::from_millis(1999),
+            Some(MenuPage::Root),
+            Some(Role::Restart)
+        ));
+        assert!(restart_hold_confirmed(
+            Duration::from_secs(2),
+            Some(MenuPage::Root),
+            Some(Role::Restart)
+        ));
+        assert!(!restart_hold_confirmed(
+            Duration::from_secs(3),
+            None,
+            Some(Role::Restart)
+        ));
+        assert!(!restart_hold_confirmed(
+            Duration::from_secs(3),
+            Some(MenuPage::Root),
+            Some(Role::Empty)
+        ));
+        assert!(!restart_hold_confirmed(
+            Duration::from_secs(3),
+            Some(MenuPage::Info),
+            Some(Role::Restart)
+        ));
+    }
+
     use super::{
         dial_hold_action, effective_key_size, geometry_for, kind_from_name, lcd_logical_size,
         local_ip_towards, palette, strip_arrows, strip_background, BoundEncoder, DeckState,
@@ -1893,7 +2188,6 @@ mod tests {
         let member = BoundEncoder::Member {
             conference,
             user_id: 7,
-            volume: 1.0,
         };
         assert_eq!(dial_hold_action(true, Some(member)), DialHold::CloseMembers);
         assert_eq!(dial_hold_action(true, None), DialHold::CloseMembers);

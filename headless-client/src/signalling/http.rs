@@ -72,6 +72,7 @@ impl ServerApi {
     pub fn new(base: Url, tls: Arc<rustls::ClientConfig>) -> Result<Self> {
         let client = reqwest::Client::builder()
             .use_preconfigured_tls((*tls).clone())
+            .connect_timeout(Duration::from_secs(2))
             .timeout(Duration::from_secs(15))
             .user_agent(format!("talktome-headless/{}", crate::VERSION))
             .build()

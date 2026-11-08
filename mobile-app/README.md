@@ -12,6 +12,16 @@ The app includes:
 - Server remote-panel control and synchronized operator preferences.
 - Drag target handles in Edit targets to reorder them, with edge scrolling and automatic saving.
   The order is shared with the browser for the selected production.
+- Hardware keyboard PTT on iOS/iPadOS and Android: hold 1–9 for talkable targets
+  in list order, or Space for the configured Main button. Release stops that
+  key's hold; multiple keys and number-pad digits work independently. Configure
+  keys under Layout → Keyboard shortcuts by selecting an action and pressing a
+  key, or reset individual/all bindings. Custom keys follow target identities
+  when reordered and are scoped to the profile and production. User hotkeys
+  also round-trip through the server's web/remote-panel preference format.
+  Settings, text entry, app/window focus loss and disconnect release keyboard
+  holds. Command/Ctrl/Alt combinations remain available to the operating system.
+  Installing this feature requires a native app rebuild.
 - Live speaker names on conference cards, including listen-only conferences.
 - Automatic reconnect with cancellation of superseded connection attempts.
 - Admin Status diagnostics: installed app version/build, active audio output, battery

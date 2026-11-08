@@ -5,6 +5,7 @@
 
 mod auth;
 mod config_api;
+mod panel_ui;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -68,6 +69,10 @@ pub async fn run(
     });
 
     let protected = Router::new()
+        .route("/panel", get(panel_ui::page))
+        .route("/local-panel.js", get(panel_ui::local_transport))
+        .route("/api/local-panel", post(local_panel))
+        .route("/login/options", get(local_login_options))
         .route("/api/status", get(status))
         .route(
             "/api/config",
@@ -88,11 +93,13 @@ pub async fn run(
     let app = Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
+        .route("/panel-assets/{*path}", get(panel_ui::asset))
         .route("/app.js", get(app_js))
         .route("/style.css", get(style_css))
         .route("/talktome-icon.png", get(talktome_icon))
         .route("/apple-touch-icon.png", get(apple_touch_icon))
         .route("/favicon.ico", get(talktome_icon))
+        .route("/images/{*path}", get(panel_ui::image))
         .route("/images/walkie-talkies-white.png", get(walkie_icon))
         .route("/images/speaker-white.png", get(speaker_on_icon))
         .route("/images/speaker-muted.png", get(speaker_muted_icon))
@@ -565,6 +572,41 @@ async fn streamdeck_input(
 // ---------------------------------------------------------------------------
 // Remote talk / audio control
 // ---------------------------------------------------------------------------
+
+async fn local_login_options(State(state): State<Shared>) -> Json<serde_json::Value> {
+    Json(
+        json!({ "appVersion": state.ctx.bus.snapshots.borrow().server_version,
+        "guestLogin": { "enabled": false }, "sso": { "enabled": false } }),
+    )
+}
+
+async fn local_panel(
+    State(state): State<Shared>,
+    Json(command): Json<serde_json::Value>,
+) -> Response {
+    let (reply, result) = tokio::sync::oneshot::channel();
+    let request = crate::state::PanelRequest {
+        command,
+        reply: Mutex::new(Some(reply)),
+    };
+    if state
+        .ctx
+        .bus
+        .commands
+        .send(Command::LocalPanel(Arc::new(request)))
+        .await
+        .is_err()
+    {
+        return client_error(StatusCode::SERVICE_UNAVAILABLE, "Client is not running");
+    }
+    match tokio::time::timeout(Duration::from_secs(5), result).await {
+        Ok(Ok(result)) => Json(result).into_response(),
+        _ => client_error(
+            StatusCode::GATEWAY_TIMEOUT,
+            "Client did not confirm the change",
+        ),
+    }
+}
 
 #[derive(Deserialize)]
 struct TalkBody {

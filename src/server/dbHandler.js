@@ -19,8 +19,8 @@ function hashBrowserSessionToken(token) {
 
 function saveBrowserSession(token, session = {}) {
   const tokenHash = hashBrowserSessionToken(token);
-  const kind = session.kind === 'feed' ? 'feed' : session.kind === 'user' ? 'user' : null;
-  const identityId = Number(kind === 'user' ? session.userId : session.feedId);
+  const kind = ['feed', 'user', 'admin'].includes(session.kind) ? session.kind : null;
+  const identityId = Number(kind === 'feed' ? session.feedId : session.userId);
   const createdAt = Number(session.createdAt);
   const expiresAt = Number(session.expiresAt);
   if (!tokenHash || !kind || !Number.isInteger(identityId) || identityId < 1) {
@@ -63,7 +63,7 @@ function getBrowserSessionByToken(token) {
   if (!row) return null;
   return {
     kind: row.kind,
-    userId: row.kind === 'user' ? Number(row.identity_id) : undefined,
+    userId: ['user', 'admin'].includes(row.kind) ? Number(row.identity_id) : undefined,
     feedId: row.kind === 'feed' ? Number(row.identity_id) : undefined,
     name: row.name,
     source: row.source,

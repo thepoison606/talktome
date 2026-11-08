@@ -102,6 +102,7 @@
                 <h2>Connection</h2>
                 <span id="conn-state" class="badge">offline</span>
               </header>
+              <p id="conn-error" class="connection-error is-hidden" role="status"></p>
               <dl class="kv" id="conn-details"></dl>
             </article>
           </div>
@@ -171,11 +172,7 @@
       </section>
 
       <section id="view-remote" class="view is-hidden">
-        <ul id="targets-list"></ul>
-        <p id="targets-empty" class="muted remote-empty is-hidden">No targets assigned to this user yet. Assign them in Talktome Admin.</p>
-        <div class="reply-bar">
-          <button id="reply" type="button" data-label="🔊 REPLY" aria-label="Reply" disabled></button>
-        </div>
+        <iframe id="remote-panel" title="Talktome remote control" allow="autoplay"></iframe>
       </section>
 
       <section id="view-deck" class="view is-hidden">
@@ -209,25 +206,6 @@
         </article>
       </section>
     </main>
-
-    <div
-      id="conference-members-modal"
-      class="conference-members-modal"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="conference-members-modal-description"
-      hidden
-    >
-      <section class="conference-members-modal__card">
-        <p id="conference-members-modal-description" class="conference-members-modal__description">
-          Choose who you hear in this conference.
-        </p>
-        <div id="conference-members-modal-list" class="conference-members-list"></div>
-        <footer class="conference-members-modal__footer">
-          <button id="conference-members-modal-done" class="conference-members-modal__done" type="button">Done</button>
-        </footer>
-      </section>
-    </div>
 
     <script src="/app.js?v=__VERSION__"></script>
   </body>

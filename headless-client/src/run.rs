@@ -58,8 +58,12 @@ pub async fn run(loaded: LoadedConfig) -> Result<RunOutcome> {
     let state::Channels {
         commands: cmd_rx,
         snapshots: snapshot_tx,
-        bus,
+        mut bus,
     } = state::channels(Snapshot::initial(&config.instance, &config.user.name));
+    bus.restart = Some(state::RestartRequest::new(
+        restart_requested.clone(),
+        shutdown_tx.clone(),
+    ));
 
     let mut tasks = tokio::task::JoinSet::new();
     tasks.spawn(mirror_audio_status(
@@ -103,6 +107,7 @@ pub async fn run(loaded: LoadedConfig) -> Result<RunOutcome> {
         config.clone(),
         config_path.clone(),
         SessionIo {
+            system_volume: audio_io.system_volume.clone(),
             commands: cmd_rx,
             snapshots: snapshot_tx,
             mixer,

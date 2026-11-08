@@ -2,7 +2,7 @@
   function create() {
     if (location.pathname !== '/panel') return null;
     const userId = Number(new URLSearchParams(location.search).get('userId'));
-    const socket = io('/panel', { autoConnect: false, reconnectionDelay: 500, reconnectionDelayMax: 5000 });
+    const socket = root.TalktomeLocalPanel?.socket || io('/panel', { autoConnect: false, reconnectionDelay: 500, reconnectionDelayMax: 5000 });
     let applying = false;
     let pendingPatch = {};
     let patchTimer = null;
@@ -67,6 +67,7 @@
         pendingPatch = {};
         heldInputs.clear();
         socket.disconnect();
+        if (root.TalktomeLocalPanel?.close) return root.TalktomeLocalPanel.close();
         try { root.close(); } catch {}
         // Browsers may refuse to close a manually opened or restored tab.
         setTimeout(() => {

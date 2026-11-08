@@ -75,6 +75,13 @@ create `cam2.toml`, give it its own user, audio devices and GPIO lines, and
 start `talktome-headless@cam2`. When more than one Stream Deck is attached,
 bind each instance with `streamdeck.serial`.
 
+Every new server connection authenticates again: Companion tokens are held in
+server memory and do not survive its restart, even before their advertised
+expiry. After a previously successful connection, retry waits grow from 1 to
+2 to at most 3 seconds, plus less than 250 ms jitter. Before the first successful
+registration they still back off to 30 seconds. HTTP connection establishment
+times out after 2 seconds; the full HTTP request may take up to 15 seconds.
+
 With `health.port` set (off by default), `GET http://<health.bind>:<health.port>/healthz`
 (`health.bind` defaults to `127.0.0.1`) returns `200` while the client is
 registered with both media transports connected, its audio devices are open
@@ -108,8 +115,16 @@ desktops:
   socket (path, optional loopback TCP, connected clients), Stream Deck and service
   details. Disconnect and reconnect tones follow **Play connection sounds**
   (`audio.play_connection_sounds`, default on). An admin `playConnectionSounds`
-  update applies immediately.
-- **Remote Control**: the same talk layout as the Talktome web client — destination
+  update applies immediately and is saved to the configuration file when one
+  is in use. Disabling sounds locally and using Save + Restart stays muted;
+  an older enabled value from the server cannot re-enable them during login.
+  A deliberate live Admin update can turn them on again.
+- **Remote Control**: embeds the actual shared `public/index.html`, `client.js`
+  and `/panel` UI assets at build time. A local transport adapter uses this
+  instance's authenticated API and the same panel-command handler as server
+  Admin. The UI therefore stays available without the server and shares its
+  rendering, gestures, hotkeys and menus instead of maintaining a second copy.
+  Target ordering remains managed in server Admin. It provides destination
   rows with icon, name, volume, mute and hold-to-talk (slide left to lock), a
   reply bar, and conference **Members** for per-person hear/mute and level.
   Talk is disabled when that user is offline. The reply bar follows the last
@@ -117,6 +132,9 @@ desktops:
   `TALKTOME_TALK_MAIN_TARGET`) pins it to a user or conference, matching the
   web client Main button. A pin that is not in this user’s destinations does
   not fall back to another target.
+  Leaving the tab or page releases this browser's held talk inputs without
+  releasing an unrelated physical input. Local API requests that time out
+  before handling cannot apply later.
 - **Stream Deck**: live rendering of the attached deck; keys, dials and touch
   points can be operated from the browser and behave like the hardware.
 - **Settings**: every configuration value as a form (audio devices are listed
@@ -224,6 +242,20 @@ sets all four explicitly, so in a copied file either use the Settings switch
 `network = "mobile"`; a leftover `jitter_max_ms = 120` would make the
 mobile start depth fail validation.
 
+Receive jitter uses the 48 kHz RTP clock and actual packet arrival times.
+Talk-spurt timestamp jumps reset the playout depth instead of treating pauses
+as network stalls. Receive decoding runs separately from signalling requests.
+After a control stall, capture queues catch up to fresh audio instead of replaying
+old microphone frames; the send RTP clock also advances across pauses.
+The periodic `audio-health` log includes `receive_buffered_ms` and
+`receive_target_ms` (the maximum depths across streams) for latency diagnosis.
+
+The server Admin status page receives the build version at registration and
+device reports every five seconds (actual playback device and the IPv4 route's
+network type). Unknown network types and packet loss before any packets have
+been measured stay unavailable; a measured loss of zero is reported as 0%.
+Device detection runs separately so DNS cannot hold up live audio.
+
 `audio.device_period_ms` (default 10) is the ALSA period; the
 device buffer is two of those. `0` keeps the driver default, which on
 many cards is several times larger.
@@ -285,6 +317,12 @@ server-side mute. The conference fader still scales the whole conference.
   than keys (small decks). The menu closes by itself after
   `streamdeck.volume_layer_timeout_s`. Holding status 2 s still pages the
   keys.
+- **MENU → RESTART**: holding the key for two seconds restarts the headless
+  client immediately, without waiting for release. Releasing it earlier cancels
+  the action; the same RESTART key must remain visible in the menu while held.
+  It uses the same graceful
+  restart as the local web interface, including under systemd, and works while
+  the server is unavailable. It does not reboot the device.
 - Remaining keys are targets in the same order as the web client: **left to
   right, top to bottom**. Targets start on the row right under the
   command row; when there are fewer targets than keys, the empty keys are at
@@ -293,14 +331,36 @@ server-side mute. The conference fader still scales the whole conference.
   to; pressing a feed toggles its mute. Pressing a listen-only conference
   shows **LISTEN ONLY** on that key instead.
 - `VOL` opens the volume layer: the command row becomes **VOL, MUTE, −, +**
-  from the left (status is hidden) and **targets do not move**. On the Mini
+  from the left (status is hidden). On the Mini
   it is **−, +, NEXT**: open it from MENU → VOLUME, close it by tapping the
   selected target again or let it time out. Tap a target to select it; holding a target 600 ms toggles
-  its mute. Steps use `streamdeck.volume_step_db`
-  (default 3 dB). With more targets than keys, **NEXT** pages them: it
+  its mute. Deck bars and readouts use a linear 0–100% scale. Steps use
+  `streamdeck.volume_step_percent` (default 5 percentage points); this also
+  applies to MAIN and member levels. With more targets than keys, **NEXT** pages them: it
   takes Reply's key on an MK.2 and MUTE's key on a Neo / Stream Deck +.
   The layer closes after
   `streamdeck.volume_layer_timeout_s`; paging keeps it open.
+- When the selected audio output exposes an ALSA hardware playback control,
+  `VOL` adds **MAIN** before the targets and initially selects it. Its percentage
+  controls the real sound-card output, including other applications; target
+  and conference-member levels stay unchanged. Use **− / +** in 5 percentage-point
+  steps, or the corresponding dial on a Stream Deck +. Hardware mute is available
+  through **MUTE**, holding MAIN, or pressing its dial when the control supports it.
+  MAIN also works while disconnected from the server. Unsupported, virtual or
+  ambiguous outputs have no MAIN entry; no software-gain fallback is applied.
+  Detection uses the selected output card's ALSA controls, independent of board
+  names: Master, PCM, Playback, DAC or Digital, then a single unambiguous
+  playback-only control. This includes the WM8960's shared Playback control and
+  the TLV320AIC3104's PCM control (reSpeaker 2-Mics Pi HAT V2). Microphone gain,
+  ALC and speaker boost controls are not used as fallback master controls.
+  MAIN input wakes the audio supervisor immediately. Target and member dial
+  steps are accumulated against current audio state, independent of display
+  updates; display snapshots are limited to roughly 30 updates per second.
+  The admin user's **Audio settings** menu exposes the same live device control
+  while the client is online. Changes apply immediately, independently of the
+  settings dialog's Save/Cancel buttons. Mixer changes made outside Talktome
+  are reflected in both menus. System volume is not saved in the user's profile
+  or overwritten at login.
 - Conference **member mix** uses the same overlay pattern. **MEMBERS** is
   added on decks that still have a free command-row cell (MK.2, Original,
   XL, Plus XL). Neo and Plus open the layer with a **long-press on VOL**,

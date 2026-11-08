@@ -163,7 +163,7 @@ pub async fn send_tone(
                     if phase > std::f32::consts::TAU { phase -= std::f32::consts::TAU; }
                 }
                 let packet = encoder.encode(&pcm)?;
-                send.write_frame(packet, Duration::from_millis(frame_ms as u64)).await?;
+                send.write_frame(packet, Duration::from_millis(frame_ms as u64), std::time::Instant::now()).await?;
                 frames += 1;
             }
             Some(event) = rtc_rx.recv() => log_rtc_event(&event),

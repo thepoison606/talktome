@@ -769,11 +769,25 @@ app.use(express.static(publicDir));
 const ADMIN_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const BROWSER_SESSION_COOKIE = "talktome_session";
 const BROWSER_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
-const adminSessions = new Map();
+const adminSessions = createBrowserSessionStore({
+  ttlMs: ADMIN_SESSION_TTL_MS,
+  persistence: {
+    read(token) {
+      const session = getBrowserSessionByToken(token);
+      return session?.kind === 'admin' ? session : null;
+    },
+    write: saveBrowserSession,
+    remove: deleteBrowserSession,
+    purgeExpired: purgeExpiredBrowserSessions,
+  },
+});
 const browserSessions = createBrowserSessionStore({
   ttlMs: BROWSER_SESSION_TTL_MS,
   persistence: {
-    read: getBrowserSessionByToken,
+    read(token) {
+      const session = getBrowserSessionByToken(token);
+      return session && ['user', 'feed'].includes(session.kind) ? session : null;
+    },
     write: saveBrowserSession,
     remove: deleteBrowserSession,
     purgeExpired: purgeExpiredBrowserSessions,
@@ -807,14 +821,23 @@ function parseCookieHeader(header) {
 function getAdminSession(req) {
   const cookies = parseCookieHeader(req.headers.cookie || "");
   const token = cookies.admin_session;
-  if (!token) return null;
-  const session = adminSessions.get(token);
-  if (!session) return null;
-  if (session.expiresAt <= Date.now()) {
-    adminSessions.delete(token);
+  return getAdminSessionByToken(token);
+}
+
+function getAdminSessionByToken(token) {
+  const result = adminSessions.get(token);
+  if (!result) return null;
+  // Permissions are current database state, never privileges restored from a
+  // saved session. Revoked or deleted accounts lose access immediately.
+  const user = getUserById(result.session.userId);
+  const productionAdmin = user && getProductionsForUser(user.id).some(production => production.isAdmin);
+  if (!user || user.is_guest_profile || (!user.is_admin && !productionAdmin)) {
+    adminSessions.revoke(token);
     return null;
   }
-  return { token, session };
+  return { token: result.token, session: { ...result.session,
+    isGlobalAdmin: !!user.is_admin, isSuperAdmin: !!user.is_superadmin,
+  } };
 }
 
 function getBrowserSessionFromCookieHeader(cookieHeader) {
@@ -866,13 +889,9 @@ function createFeedBrowserSession(res, feed, source = "password") {
 }
 
 function createAdminSession(user) {
-  const token = crypto.randomBytes(32).toString("hex");
-  adminSessions.set(token, {
+  const { token } = adminSessions.create({
+    kind: 'admin',
     userId: user.id,
-    isGlobalAdmin: !!user.is_admin,
-    isSuperAdmin: !!user.is_superadmin,
-    createdAt: Date.now(),
-    expiresAt: Date.now() + ADMIN_SESSION_TTL_MS,
   });
   return token;
 }
@@ -2895,6 +2914,7 @@ app.get('/admin/users/:id/audio-settings', requireAdmin, (req, res) => {
     targets: getUserAudioSettingTargets(user.id),
     bridgeTargets: getBridgeTargetsForUser(user.id),
     configuredAsBridge: Boolean(user.bridge_enabled),
+    systemVolume: remotePanels.snapshot(user.id).runtime?.systemVolume ?? null,
   });
 });
 
@@ -2911,6 +2931,22 @@ app.put('/admin/users/:id/audio-settings', requireAdmin, (req, res) => {
     res.json({ ok: true, settings: resolved });
   } catch (error) {
     res.status(400).json({ error: error.message || 'Invalid audio settings' });
+  }
+});
+
+app.get('/admin/users/:id/system-volume', requireAdmin, (req, res) => {
+  try {
+    res.json({ systemVolume: remotePanels.snapshot(req.params.id).runtime?.systemVolume ?? null });
+  } catch (error) {
+    res.status(404).json({ error: error.message });
+  }
+});
+
+app.put('/admin/users/:id/system-volume', requireAdmin, async (req, res) => {
+  try {
+    res.json({ systemVolume: await remotePanels.systemVolume(req.params.id, req.body) });
+  } catch (error) {
+    res.status(400).json({ error: error.message || 'Unable to change device volume' });
   }
 });
 
@@ -3287,7 +3323,7 @@ app.post("/admin/login", (req, res) => {
 app.post("/admin/logout", requireAdminSession, (req, res) => {
   if (req.adminToken) {
     closeAdminStatusStreamsForToken(req.adminToken, "logged-out");
-    adminSessions.delete(req.adminToken);
+    adminSessions.revoke(req.adminToken);
   }
   res.clearCookie("admin_session", { httpOnly: true, sameSite: "lax", secure: true });
   res.sendStatus(204);
@@ -3312,7 +3348,7 @@ app.get("/admin/me", (req, res) => {
     ? getProductionsForUser(user.id).filter((production) => production.isAdmin)
     : [];
   if (!user || (!user.is_admin && productionAdminOf.length === 0)) {
-    adminSessions.delete(result.token);
+    adminSessions.revoke(result.token);
     res.clearCookie("admin_session", { httpOnly: true, sameSite: "lax", secure: true });
     return res.status(401).json({ error: "Not authenticated" });
   }
@@ -4251,8 +4287,8 @@ app.get("/admin/status/events", requireAdmin, (req, res) => {
   });
 
   stream.heartbeat = setInterval(() => {
-    const session = adminSessions.get(stream.token);
-    if (!session || session.expiresAt <= Date.now()) {
+    const session = getAdminSessionByToken(stream.token)?.session;
+    if (!session?.isGlobalAdmin) {
       closeAdminStatusStreamsForToken(stream.token);
       return;
     }

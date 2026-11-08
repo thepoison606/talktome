@@ -3,6 +3,7 @@ import type { TalkTarget } from '../protocol';
 import type { SessionController } from './sessionController';
 import { TalkCoordinator } from './talkCoordinator';
 import { createHoldGesture } from '../talk/holdGesture';
+import { keyAssignments, KeyboardHolds } from '../keyboard/bindings';
 
 const store = vi.hoisted(() => ({ state: {} as Record<string, unknown> }));
 vi.mock('./state', () => ({ HOLD_HINT: 'Hold to talk', useSessionStore: { getState: () => store.state, setState: (patch: Record<string, unknown>) => { Object.assign(store.state, patch); } } }));
@@ -19,6 +20,31 @@ function fixture() {
 }
 
 describe('panel Talk ownership', () => {
+  it('releases a keyboard key during microphone startup and does not start late', async () => {
+    const { c, talk, media } = fixture();
+    let ready!: () => void;
+    c.background.prepareAudioForTalk.mockImplementation(() => new Promise<void>(resolve => { ready = resolve; }));
+    const pending: Promise<void>[] = [];
+    const keys = new KeyboardHolds((target, key) => { pending.push(talk.pressTalk(target, key)); }, key => { pending.push(talk.releaseTalk(undefined, key)); });
+    keys.event('Digit1', true, keyAssignments([a], {}, null, null));
+    keys.reset();
+    ready(); await Promise.all(pending);
+    expect(c.talkingTargets).toEqual([]);
+    expect(media.startTalking).not.toHaveBeenCalled();
+  });
+
+  it('keyboard focus loss releases keyboard inputs while preserving a separately held touch target', async () => {
+    const { c, talk } = fixture();
+    await talk.pressTalk(b, 'touch:1');
+    const pending: Promise<void>[] = [];
+    const keys = new KeyboardHolds((target, key) => { pending.push(talk.pressTalk(target, key)); }, key => { pending.push(talk.releaseTalk(undefined, key)); });
+    keys.event('Digit1', true, keyAssignments([a], {}, null, null));
+    await Promise.all(pending.splice(0));
+    expect(c.talkingTargets).toEqual([b, a]);
+    keys.reset(); await Promise.all(pending);
+    expect(c.talkingTargets).toEqual([b]);
+  });
+
   it('adds a second touch target while the first remains live and releases only the lifted finger', async () => {
     for (const first of [0, 1]) {
       const { c, talk, media } = fixture();

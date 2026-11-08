@@ -7,6 +7,7 @@ pub mod jitter;
 pub mod mixer;
 pub mod processing;
 pub mod resample;
+pub mod system_volume;
 pub mod vox;
 
 use anyhow::Result;

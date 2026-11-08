@@ -174,7 +174,8 @@ pub struct AudioConfig {
     pub dim_when_addressed: bool,
     /// Play the disconnect and reconnect tones. Same as the web client's
     /// "Play connection sounds" switch. A live `playConnectionSounds` value
-    /// in `user-audio-settings-updated` overrides this until restart.
+    /// in `user-audio-settings-updated` applies immediately and is saved when
+    /// a configuration file is in use. A local mute survives registration.
     #[serde(default = "default_play_connection_sounds")]
     pub play_connection_sounds: bool,
     /// `lan` (default) or `mobile`; see [`NetworkPreset`].
@@ -260,13 +261,16 @@ pub struct StreamDeckConfig {
     pub mock: Option<String>,
     pub brightness: u8,
     pub font_path: PathBuf,
-    /// Legacy linear volume step (0–1). Ignored when `volume_step_db` is set,
-    /// or when this value is ≤ 1 (treated as the old fraction and replaced by
-    /// a 3 dB tick).
+    /// Legacy linear step (0–1), used by the deck when no percent step is
+    /// configured. Old values above 1 remain a GPIO/local-API dB step.
     pub volume_step: f32,
-    /// Volume change per Stream Deck key/dial tick, in dB.
+    /// Legacy/default dB step for GPIO and the local API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume_step_db: Option<f32>,
+    /// Stream Deck key/dial change in percentage points. Legacy dB steps
+    /// remain available to GPIO/local API; the deck uses a linear scale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_step_percent: Option<f32>,
     pub volume_layer_timeout_s: u64,
     /// Target key for the left Stream Deck Pedal switch (`user:4`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -301,6 +305,18 @@ pub struct StreamDeckDeviceConfig {
 }
 
 impl StreamDeckConfig {
+    pub fn volume_step_linear(&self) -> f32 {
+        self.volume_step_percent
+            .map(|value| value / 100.0)
+            .unwrap_or_else(|| {
+                if self.volume_step > 0.0 && self.volume_step <= 1.0 {
+                    self.volume_step
+                } else {
+                    0.05
+                }
+            })
+    }
+
     /// Devices this instance should open: the `devices` list, or one device
     /// built from the legacy top-level serial/mock/pedal fields.
     pub fn resolved_devices(&self) -> Vec<StreamDeckDeviceConfig> {
@@ -626,6 +642,7 @@ impl Default for StreamDeckConfig {
             font_path: PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
             volume_step: 0.05,
             volume_step_db: None,
+            volume_step_percent: None,
             volume_layer_timeout_s: 8,
             pedal_left: None,
             pedal_target: None,
@@ -1188,6 +1205,11 @@ impl Config {
         if self.streamdeck.brightness > 100 {
             bail!("streamdeck.brightness must be between 0 and 100");
         }
+        if let Some(percent) = self.streamdeck.volume_step_percent {
+            if !(1.0..=100.0).contains(&percent) {
+                bail!("streamdeck.volume_step_percent must be between 1 and 100");
+            }
+        }
         if let Some(db) = self.streamdeck.volume_step_db {
             if !(0.25..=12.0).contains(&db) {
                 bail!("streamdeck.volume_step_db must be between 0.25 and 12");
@@ -1336,6 +1358,23 @@ mod tests {
             "server": { "url": "https://talktome.local:8443" },
             "user": { "name": "Cam 1", "password": "secret" }
         })
+    }
+
+    #[test]
+    fn streamdeck_percent_steps_are_linear_and_old_db_config_does_not_change_them() {
+        let mut config = Config::default();
+        config.user.name = "test".into();
+        config.user.password = "test".into();
+        assert_eq!(config.streamdeck.volume_step_linear(), 0.05);
+        config.streamdeck.volume_step_db = Some(3.0);
+        assert_eq!(config.streamdeck.volume_step_linear(), 0.05);
+        config.streamdeck.volume_step_percent = Some(2.0);
+        assert_eq!(config.streamdeck.volume_step_linear(), 0.02);
+        assert!(config.validate().is_ok());
+        config.streamdeck.volume_step_percent = Some(0.0);
+        assert!(config.validate().is_err());
+        config.streamdeck.volume_step_percent = Some(f32::NAN);
+        assert!(config.validate().is_err());
     }
 
     #[test]

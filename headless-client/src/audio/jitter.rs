@@ -36,8 +36,8 @@ pub struct StreamBuffer {
     decoder: OpusDecoder,
     pcm: VecDeque<f32>,
     next_seq: Option<u16>,
-    /// `next_seq - 1` without wrap-around, to place packets on a timeline.
-    last_ext_seq: i64,
+    last_timestamp: Option<u32>,
+    media_samples: i64,
     frame_samples: usize,
     min_samples: usize,
     /// Depth a new stream starts at and keeps for its first `DELAY_WINDOW_MS`.
@@ -88,7 +88,8 @@ impl StreamBuffer {
             decoder: OpusDecoder::new()?,
             pcm: VecDeque::with_capacity(per_ms * (max_ms as usize + 120)),
             next_seq: None,
-            last_ext_seq: 0,
+            last_timestamp: None,
+            media_samples: 0,
             frame_samples: per_ms * 20,
             min_samples,
             start_samples,
@@ -109,12 +110,10 @@ impl StreamBuffer {
         self.last_packet
     }
 
-    #[cfg(test)]
     pub fn buffered_ms(&self) -> u32 {
         (self.pcm.len() * 1000 / SAMPLE_RATE as usize) as u32
     }
 
-    #[cfg(test)]
     pub fn target_ms(&self) -> u32 {
         (self.target_samples * 1000 / SAMPLE_RATE as usize) as u32
     }
@@ -124,13 +123,49 @@ impl StreamBuffer {
         self.primed
     }
 
-    pub fn push(&mut self, seq: u16, payload: &[u8]) -> Result<()> {
-        let now_ms = self.epoch.elapsed().as_secs_f64() * 1000.0;
-        self.push_at(seq, payload, now_ms)
+    pub fn push(
+        &mut self,
+        seq: u16,
+        timestamp: u32,
+        payload: &[u8],
+        arrived: Instant,
+    ) -> Result<()> {
+        let now_ms = arrived.saturating_duration_since(self.epoch).as_secs_f64() * 1000.0;
+        self.push_rtp_at(seq, timestamp, payload, now_ms)
     }
 
-    /// `push` with an explicit arrival time (ms since the buffer was made).
+    #[cfg(test)]
     fn push_at(&mut self, seq: u16, payload: &[u8], now_ms: f64) -> Result<()> {
+        self.push_rtp_at(seq, u32::from(seq) * 960, payload, now_ms)
+    }
+
+    fn push_rtp_at(&mut self, seq: u16, timestamp: u32, payload: &[u8], now_ms: f64) -> Result<()> {
+        let gap = self
+            .next_seq
+            .map(|expected| seq.wrapping_sub(expected))
+            .unwrap_or(0);
+        if gap >= 0x8000 {
+            self.stats.dropped_late += 1;
+            return Ok(());
+        }
+        if let Some(previous) = self.last_timestamp {
+            let delta = timestamp.wrapping_sub(previous) as i32;
+            let expected = (usize::from(gap) + 1) * self.frame_samples;
+            // A timestamp jump without corresponding missing packets is a new
+            // talk spurt / DTX interval, not network jitter or lost speech.
+            if delta <= 0 || delta as usize > expected + self.frame_samples {
+                self.pcm.clear();
+                self.delays.clear();
+                self.primed = false;
+                self.concealing = 0;
+                self.target_samples = self.start_samples;
+                self.first_arrival_ms = Some(now_ms);
+                self.media_samples = 0;
+            } else {
+                self.media_samples += i64::from(delta);
+            }
+        }
+        self.last_timestamp = Some(timestamp);
         self.last_packet = Instant::now();
         self.concealing = 0;
         if let Some(samples) = self.decoder.packet_samples(payload) {
@@ -160,13 +195,11 @@ impl StreamBuffer {
                     self.append(&pcm);
                     self.stats.concealed += 1;
                 }
-                self.last_ext_seq += gap as i64;
             } else {
                 // Late or duplicate packet.
                 self.stats.dropped_late += 1;
                 return Ok(());
             }
-            self.last_ext_seq += 1;
         }
         self.note_arrival(now_ms);
         let pcm = self.decoder.decode(payload, false)?.to_vec();
@@ -189,8 +222,7 @@ impl StreamBuffer {
         } else {
             self.min_samples
         };
-        let frame_ms = self.frame_samples as f64 * 1000.0 / SAMPLE_RATE as f64;
-        let relative = now_ms - self.last_ext_seq as f64 * frame_ms;
+        let relative = now_ms - self.media_samples as f64 * 1000.0 / SAMPLE_RATE as f64;
         self.delays.push_back((now_ms, relative));
         while self
             .delays
@@ -336,6 +368,68 @@ mod tests {
                 encoder.encode(&frame).unwrap()
             })
             .collect()
+    }
+
+    #[test]
+    fn speaking_again_after_a_pause_does_not_create_400ms_of_jitter() {
+        let mut buffer = StreamBuffer::new(20, 400).unwrap();
+        let packets = tone_packets(4);
+        for seq in 0..3u16 {
+            buffer
+                .push_rtp_at(
+                    seq,
+                    u32::from(seq) * 960,
+                    &packets[seq as usize],
+                    f64::from(seq) * 20.0,
+                )
+                .unwrap();
+            buffer.mix_into(&mut [0.0; 960], 1.0);
+        }
+        buffer.mix_into(&mut vec![0.0; 48000], 1.0);
+        assert!(!buffer.is_active());
+        // Sequence numbers remain consecutive while the RTP clock includes
+        // the pause (paused producer / Opus DTX).
+        buffer.push_rtp_at(3, 96000, &packets[3], 2000.0).unwrap();
+        assert_eq!(buffer.target_ms(), 20);
+        assert_eq!(buffer.buffered_ms(), 20);
+        assert!(
+            buffer.is_active(),
+            "resume at normal depth on the first packet"
+        );
+        assert_eq!(buffer.stats.lost, 0);
+    }
+
+    #[test]
+    fn rtp_clock_and_sequence_wrap_do_not_look_like_a_pause() {
+        let packets = tone_packets(3);
+        let mut buffer = StreamBuffer::new(20, 400).unwrap();
+        for (seq, timestamp, at, packet) in [
+            (65534, u32::MAX - 959, 0.0, &packets[0]),
+            (65535, 0, 20.0, &packets[1]),
+            (0, 960, 40.0, &packets[2]),
+        ] {
+            buffer.push_rtp_at(seq, timestamp, packet, at).unwrap();
+        }
+        assert_eq!(buffer.buffered_ms(), 60);
+        assert_eq!(buffer.target_ms(), 20);
+        assert_eq!(buffer.stats.lost, 0);
+    }
+
+    #[test]
+    fn changed_opus_packet_duration_uses_the_rtp_clock_not_sequence_times_duration() {
+        let mut buffer = StreamBuffer::new(20, 400).unwrap();
+        let twenty = tone_packets(1);
+        let mut encoder = OpusEncoder::new(5, 64000, false).unwrap();
+        let five = encoder.encode(&vec![0.2; 240]).unwrap();
+        buffer.push_rtp_at(0, 0, &twenty[0], 0.0).unwrap();
+        buffer.push_rtp_at(1, 960, &five, 20.0).unwrap();
+        for seq in 2..100u16 {
+            let timestamp = 960 + (u32::from(seq) - 1) * 240;
+            buffer
+                .push_rtp_at(seq, timestamp, &five, f64::from(timestamp) / 48.0)
+                .unwrap();
+            assert_eq!(buffer.target_ms(), 20);
+        }
     }
 
     #[test]

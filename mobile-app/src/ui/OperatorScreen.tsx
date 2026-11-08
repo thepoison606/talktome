@@ -30,6 +30,7 @@ import { openSessionSheet } from './sessionSheetState';
 import { feedVideoHeight, feedVideoLayers } from './feedVideoLayout';
 import { TargetRow } from './TargetRow';
 import { colors } from './theme';
+import { KeyboardShortcuts } from '../keyboard/KeyboardShortcuts';
 
 /** Launch and short dropouts reconnect on their own; only warn when an accessory stays away. */
 const ACCESSORY_NOTICE_DELAY_MS = 5000;
@@ -272,6 +273,7 @@ export function OperatorScreen() {
         headerCollapsed && styles.screenPeek,
       ]}
     >
+      <KeyboardShortcuts />
       <View style={{ flex: 1 }} accessibilityElementsHidden={audioMenuOpen} importantForAccessibility={audioMenuOpen ? 'no-hide-descendants' : 'auto'}>
         {headerCollapsed ? (
           <Pressable

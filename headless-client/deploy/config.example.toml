@@ -106,7 +106,9 @@ enabled = true
 # serial = "AL12K3456789"   # bind to one deck when several are attached
 brightness = 60
 font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-# dB change per VOL +/− key and encoder tick. Legacy volume_step 0–1 becomes 3 dB.
+# Percentage points per Stream Deck VOL +/− key and encoder tick.
+volume_step_percent = 5
+# GPIO/local API default step (dB), independent of the deck:
 volume_step_db = 3
 volume_layer_timeout_s = 8
 # Pedal: right switch is always Reply; left and middle are assignable.

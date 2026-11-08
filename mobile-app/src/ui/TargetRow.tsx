@@ -25,6 +25,7 @@ import {
 } from './icons';
 import { FeedVideoPlayer } from './FeedVideoPlayer';
 import { colors } from './theme';
+import { useKeyboardActivity } from '../keyboard/activity';
 import { conferenceSpeakingLabel, targetActivity } from './targetActivity';
 import { VolumeOverlay } from './VolumeOverlay';
 import { VolumeRing } from './VolumeRing';
@@ -59,6 +60,7 @@ export function TargetRow({
   const key = talkTargetIdentity(target);
   const canToggleVideo = target.type === 'feed' && (videoAvailable || videoExpanded);
   const talking = useSessionStore((state) => state.talkingTargetKeys.includes(key));
+  const keyboardHeld = useKeyboardActivity(state => state.targetKeys.includes(key));
   const locked = useSessionStore((state) => state.lockedTargetKeys.includes(key));
   const incomingEntries = useSessionStore((state) => state.incoming.addressedNow);
   const incoming = incomingEntries.some((entry) => incomingHighlightsTarget(entry, target));
@@ -180,7 +182,7 @@ export function TargetRow({
     `Talk to ${target.label}`,
   );
 
-  const edgeIconColor = talking ? colors.talking : dimmed ? 'rgba(255,255,255,0.28)' : colors.text;
+  const edgeIconColor = talking || keyboardHeld ? colors.talking : dimmed ? 'rgba(255,255,255,0.28)' : colors.text;
   const talkSlotStyle = [styles.talkControl, edgeTalkAffordance && styles.edgeTalk];
 
   const talkControl = target.type === 'feed' ? (
@@ -212,9 +214,9 @@ export function TargetRow({
     styles.row,
     leftHanded && styles.rowLeft,
     tight && styles.rowCompact,
-    talking && styles.rowTalking,
-    speaking && !talking && styles.rowSpeaking,
     dimmed && styles.rowOffline,
+    (talking || keyboardHeld) && styles.rowTalking,
+    speaking && !talking && !keyboardHeld && styles.rowSpeaking,
     height != null ? { height, minHeight: height, flex: 1, paddingVertical: tight ? 4 : 8 } : null,
   ];
 

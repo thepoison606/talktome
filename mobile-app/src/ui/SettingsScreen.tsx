@@ -44,11 +44,13 @@ import { settingsPalette, settingsScheme } from './settingsTheme';
 import { ArrangeTargetsPage, arrangeKind } from './ArrangeTargetsPage';
 import { VolumeSlider } from './VolumeSlider';
 import { IosSystemRoutePicker, iosSystemRoutePickerAvailable } from './IosSystemRoutePicker';
+import { KeyboardSettingsPage } from './KeyboardSettingsPage';
 
 type SettingsPage =
   | { kind: 'session' }
   | { kind: 'profiles' }
   | { kind: 'layout' }
+  | { kind: 'keyboard' }
   | { kind: 'main-button' }
   | { kind: 'arrange' }
   | { kind: 'add-targets' }
@@ -128,6 +130,7 @@ export function SessionSheet({ onClose }: { onClose: () => void }) {
     onClose,
     onOpenProfiles: () => push({ kind: 'profiles' }),
     onOpenLayout: () => push({ kind: 'layout' }),
+    onOpenKeyboard: () => push({ kind: 'keyboard' }),
     onOpenMainButton: () => push({ kind: 'main-button' }),
     onOpenArrange: () => push({ kind: 'arrange' }),
     onOpenAddTargets: () => push({ kind: 'add-targets' }),
@@ -293,6 +296,7 @@ function SettingsSheet({
   onDimSliding,
   onOpenProfiles,
   onOpenLayout,
+  onOpenKeyboard,
   onOpenMainButton,
   onOpenArrange,
   onOpenAddTargets,
@@ -312,6 +316,7 @@ function SettingsSheet({
   onDimSliding: (active: boolean) => void;
   onOpenProfiles: () => void;
   onOpenLayout: () => void;
+  onOpenKeyboard: () => void;
   onOpenMainButton: () => void;
   onOpenArrange: () => void;
   onOpenAddTargets: () => void;
@@ -352,9 +357,10 @@ function SettingsSheet({
           {page.kind === 'profiles' ? <ProfilesPage onClose={onClose} /> : null}
 
           {page.kind === 'layout' ? (
-            <LayoutSettingsPage onOpenMainButton={onOpenMainButton} onOpenArrange={onOpenArrange} />
+            <LayoutSettingsPage onOpenMainButton={onOpenMainButton} onOpenArrange={onOpenArrange} onOpenKeyboard={onOpenKeyboard} />
           ) : null}
           {page.kind === 'main-button' ? <MainButtonSettingsPage /> : null}
+          {page.kind === 'keyboard' ? <KeyboardSettingsPage /> : null}
           {page.kind === 'add-targets' ? <AddTargetsPage /> : null}
           {page.kind === 'audio' ? <AudioSettingsPage onDimSliding={onDimSliding} /> : null}
 
@@ -388,6 +394,8 @@ function headerForPage(page: SettingsPage, deviceName?: string): { title: string
       return { title: 'Profiles', backLabel: 'Session' };
     case 'layout':
       return { title: 'Layout', backLabel: 'Session' };
+    case 'keyboard':
+      return { title: 'Keyboard shortcuts', backLabel: 'Layout' };
     case 'main-button':
       return { title: 'Main button target', backLabel: 'Layout' };
     case 'arrange':
@@ -412,9 +420,11 @@ function headerForPage(page: SettingsPage, deviceName?: string): { title: string
 function LayoutSettingsPage({
   onOpenMainButton,
   onOpenArrange,
+  onOpenKeyboard,
 }: {
   onOpenMainButton: () => void;
   onOpenArrange: () => void;
+  onOpenKeyboard: () => void;
 }) {
   const store = useSessionStore();
   const audio = store.operatorAudio;
@@ -430,27 +440,16 @@ function LayoutSettingsPage({
     <>
       <SettingsSection>
         <SettingsSwitchRow
-          label="Left-handed"
+          label="Left-handed mode"
           value={store.leftHanded}
           onValueChange={(value) => session.setLeftHanded(value)}
         />
-        <SettingsHint
-          full="Moves the volume ring and the phone-landscape Reply column to the left, and slides right to lock — same as the web client. Tablets keep Reply on the bottom."
-          compact="Volume and phone-landscape Reply move left. Slide right to lock."
-        />
         <SettingsNavRow label="Main button target" value={main.label} onPress={onOpenMainButton} />
-        <SettingsHint
-          full="Chooses what the bottom button does. Reply follows the last caller. A named target always talks to that target. Cards still talk on their own, same as the web client."
-          compact="Sets the bottom button. Cards still talk on their own."
-        />
+        <SettingsNavRow label="Keyboard shortcuts" value="1–9 · Space" onPress={onOpenKeyboard} />
         <SettingsSwitchRow
           label="Big main button"
           value={store.bigMainButton}
           onValueChange={(value) => session.setBigMainButton(value)}
-        />
-        <SettingsHint
-          full="Makes the bottom button taller so it is harder to miss. Off until you turn it on."
-          compact="Taller bottom button. Off until you turn it on."
         />
         {canArrange ? (
           <SettingsNavRow label="Edit targets" onPress={onOpenArrange} />
@@ -461,7 +460,7 @@ function LayoutSettingsPage({
           onValueChange={(value) => session.setLockMultipleTargets(value)}
         />
         <SettingsHint
-          full="Slide-to-lock adds targets to the locked set instead of replacing it. Tap a locked card to drop just that target — same as the web client."
+          full="Slide-to-lock adds targets to the locked set instead of replacing it. Tap a locked card to drop just that target."
           compact="Slide-to-lock adds targets. Tap a locked card to drop it."
         />
         <SettingsSwitchRow

@@ -32,6 +32,7 @@ vi.mock('../session/store', () => ({
 vi.mock('./sessionSheetState', () => ({ closeSessionSheet: vi.fn(), useSessionSheetOpen: (selector: (state: object) => unknown) => selector(fixture.sheet) }));
 vi.mock('./LoginScreen', () => ({ LoginScreen: 'Login' }));
 vi.mock('./ProfilePickerScreen', () => ({ ProfilePickerScreen: 'Profiles' }));
+vi.mock('../keyboard/KeyboardShortcuts', () => ({ KeyboardShortcuts: 'KeyboardShortcuts' }));
 vi.mock('./OperatorScreen', () => ({ OperatorScreen: 'Operator' }));
 vi.mock('./PausedScreen', () => ({ PausedScreen: 'Paused' }));
 vi.mock('./ProductionPickerScreen', () => ({ ProductionPickerScreen: 'Productions' }));
@@ -39,6 +40,7 @@ vi.mock('./SettingsScreen', () => ({ SessionSheet: 'Sheet' }));
 vi.mock('./settingsTheme', () => ({ settingsPalette: () => ({sheet:'#111'}), settingsScheme: () => 'dark' }));
 
 import { AppContent } from '../../App';
+import { useKeyboardFocus } from '../keyboard/focus';
 
 type Element = ReactElement<Record<string, unknown>>;
 function elements(value: unknown): Element[] {
@@ -59,6 +61,20 @@ beforeEach(() => {
 });
 
 describe('profile navigation', () => {
+  it('requests keyboard focus after the native operator screen reappears from settings', () => {
+    fixture.os = 'ios';
+    fixture.state.identity = { kind: 'user', id: 1 };
+    fixture.state.operatorReady = true;
+    const screen = elements(AppContent()).find(element => element.type === 'NativeScreen' && element.props.screenId === 'operator')!;
+    const before = useKeyboardFocus.getState().request;
+    (screen.props.onAppear as () => void)();
+    expect(useKeyboardFocus.getState().request).toBe(before + 1);
+    // A later appearance after dismissing the sheet must refocus again,
+    // even though signaling and the session's ready state never changed.
+    (screen.props.onAppear as () => void)();
+    expect(useKeyboardFocus.getState().request).toBe(before + 2);
+  });
+
   it('keeps saved profiles visible during startup connection on iOS', () => {
     fixture.os = 'ios';
     fixture.state.status = 'connecting';

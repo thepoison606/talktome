@@ -139,7 +139,7 @@ impl Renderer {
                 subtitle_scale,
                 (w - 2 * margin) as f32,
             );
-            // Over a volume bar the subtitle (dB value) sits at the bottom,
+            // Over a volume bar the subtitle (percentage) sits at the bottom,
             // right above it, like on the touch strip; else under the title.
             let sub_top = ((appearance.bar.is_some() || appearance.subtitle_low) && has_subtitle)
                 .then(|| text_bottom as f32 - font.as_scaled(PxScale::from(sub_scale)).ascent());
@@ -267,7 +267,7 @@ impl Renderer {
             if segment.background == palette::GROUND {
                 continue;
             }
-            let bar_h = (seg_h as f32 * 0.12).max(4.0) as u32;
+            let bar_h = (seg_h as f32 * 0.18).max(6.0) as u32;
             let bar_y = y0 + seg_h - margin - bar_h;
             draw_bar(
                 &mut image,
@@ -285,6 +285,13 @@ impl Renderer {
                     palette::BAR
                 },
             );
+            // Quarter marks make the linear position readable at a glance.
+            for fraction in [0.25, 0.5, 0.75] {
+                let x = x0 + margin + ((seg_w - 2 * margin) as f32 * fraction) as u32;
+                for y in bar_y + 2..bar_y + bar_h.saturating_sub(2) {
+                    blend_pixel(&mut image, x, y, palette::IDLE_TEXT, 0.25);
+                }
+            }
             if let Some(font) = &self.font {
                 let foreground = if segment.background == palette::OFFLINE {
                     palette::OFFLINE_TEXT
@@ -307,10 +314,10 @@ impl Renderer {
                 let subtitle = if segment.muted {
                     "MUTED".to_string()
                 } else {
-                    crate::audio::mixer::format_volume_db(segment.volume)
+                    crate::audio::mixer::format_volume_percent(segment.volume)
                 };
-                let sub_scale = (seg_h as f32 * 0.22).max(9.0);
-                // Bottom-aligned: the dB value sits just above the bar,
+                let sub_scale = (seg_h as f32 * 0.24).max(9.0);
+                // Bottom-aligned: the percentage sits just above the bar,
                 // the name stays at the top.
                 let sub_top = bar_y as f32
                     - (margin as f32 / 2.0).max(2.0)
@@ -522,7 +529,7 @@ fn draw_bar(image: &mut RgbImage, x: u32, y: u32, w: u32, h: u32, level: f32, co
     fill_round_rect(image, x, y, w, h, h / 2, palette::BAR_TRACK);
     let filled = (w as f32 * level.clamp(0.0, 1.0)) as u32;
     if filled > 0 {
-        fill_round_rect(image, x, y, filled.max(h), h, h / 2, color);
+        fill_round_rect(image, x, y, filled, h, h.min(filled) / 2, color);
     }
 }
 
@@ -693,6 +700,20 @@ fn draw_text_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_small_percentage_is_not_drawn_as_a_large_minimum_fill() {
+        let mut image = RgbImage::new(100, 20);
+        draw_bar(&mut image, 0, 0, 100, 12, 0.02, palette::BAR);
+        assert_eq!(
+            image.get_pixel(1, 6).0,
+            [palette::BAR.0, palette::BAR.1, palette::BAR.2]
+        );
+        assert_ne!(
+            image.get_pixel(4, 6).0,
+            [palette::BAR.0, palette::BAR.1, palette::BAR.2]
+        );
+    }
 
     fn renderer() -> Renderer {
         let path = Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf");

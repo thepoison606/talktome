@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
@@ -75,6 +75,8 @@ pub enum RtcEvent {
 pub struct RxPacket {
     pub consumer_id: String,
     pub sequence: u16,
+    pub timestamp: u32,
+    pub arrived: Instant,
     pub payload: Bytes,
 }
 
@@ -332,10 +334,37 @@ fn usable_ip_filter(ip: IpAddr) -> bool {
     }
 }
 
+#[derive(Default)]
+struct SendTimeline {
+    previous: Option<(Instant, Duration)>,
+}
+
+impl SendTimeline {
+    fn gap(&mut self, captured: Instant, duration: Duration) -> Duration {
+        let gap = self
+            .previous
+            .map(|(previous, frame)| {
+                captured
+                    .saturating_duration_since(previous)
+                    .saturating_sub(frame)
+            })
+            .unwrap_or_default();
+        self.previous = Some((captured, duration));
+        // Normal callback batching and scheduling jitter must not change the
+        // media clock. Actual pauses/control stalls must advance it.
+        if gap >= Duration::from_millis(40) {
+            gap
+        } else {
+            Duration::ZERO
+        }
+    }
+}
+
 /// The send transport with its single warm "talk" producer.
 pub struct SendTransport {
     pc: Arc<RTCPeerConnection>,
     track: Arc<TrackLocalStaticSample>,
+    timeline: Mutex<SendTimeline>,
     pub transport_id: String,
     pub producer_id: String,
     /// ICE server URLs actually handed to webrtc-rs (for diagnostics).
@@ -454,6 +483,7 @@ impl SendTransport {
         Ok(Self {
             pc,
             track,
+            timeline: Mutex::new(SendTimeline::default()),
             transport_id: info.id,
             producer_id,
             ice_servers: if effective.is_empty() {
@@ -501,9 +531,26 @@ impl SendTransport {
     }
 
     /// Writes one encoded Opus frame; dropped while not talking.
-    pub async fn write_frame(&self, opus: Bytes, duration: Duration) -> Result<()> {
+    pub async fn write_frame(
+        &self,
+        opus: Bytes,
+        duration: Duration,
+        captured: Instant,
+    ) -> Result<()> {
         if !self.talking.load(Ordering::Relaxed) || self.closed.load(Ordering::Relaxed) {
             return Ok(());
+        }
+        let mut timeline = self.timeline.lock().await;
+        let gap = timeline.gap(captured, duration);
+        if !gap.is_zero() {
+            // An empty Opus sample advances RTP time without emitting packets
+            // or claiming sequence-number loss during a deliberate pause.
+            self.track
+                .write_sample(&Sample {
+                    duration: gap,
+                    ..Default::default()
+                })
+                .await?;
         }
         self.track
             .write_sample(&Sample {
@@ -617,6 +664,8 @@ impl RecvTransport {
                                 let out = RxPacket {
                                     consumer_id: consumer_id.clone(),
                                     sequence: packet.header.sequence_number,
+                                    timestamp: packet.header.timestamp,
+                                    arrived: Instant::now(),
                                     payload: packet.payload,
                                 };
                                 if rx_packets.send(out).await.is_err() {
@@ -878,6 +927,57 @@ mod tests {
     use super::{opus_fmtp_line, LinkStats};
     use tokio::time::Instant;
     use webrtc::stats::{RTCStatsType, RemoteInboundRTPStats, StatsReport, StatsReportType};
+
+    #[test]
+    fn send_clock_advances_across_pauses_but_not_callback_batching() {
+        let now = std::time::Instant::now();
+        let frame = std::time::Duration::from_millis(5);
+        let mut timeline = super::SendTimeline::default();
+        assert!(timeline.gap(now, frame).is_zero());
+        assert!(timeline.gap(now, frame).is_zero());
+        assert!(timeline
+            .gap(now + std::time::Duration::from_millis(10), frame)
+            .is_zero());
+        assert_eq!(
+            timeline.gap(now + std::time::Duration::from_millis(510), frame),
+            std::time::Duration::from_millis(495)
+        );
+    }
+
+    #[test]
+    fn empty_opus_sample_advances_timestamp_without_creating_packet_loss() {
+        use webrtc::rtp::{
+            codecs::opus::OpusPayloader,
+            packetizer::{new_packetizer, Packetizer},
+            sequence::new_random_sequencer,
+        };
+        let mut packetizer = new_packetizer(
+            1200,
+            111,
+            1,
+            Box::new(OpusPayloader),
+            Box::new(new_random_sequencer()),
+            48000,
+        );
+        let payload = bytes::Bytes::from_static(&[0xf8, 0xff, 0xfe]);
+        let before = packetizer.packetize(&payload, 960).unwrap();
+        assert!(packetizer
+            .packetize(&bytes::Bytes::new(), 96000)
+            .unwrap()
+            .is_empty());
+        let after = packetizer.packetize(&payload, 960).unwrap();
+        assert_eq!(
+            after[0].header.sequence_number,
+            before[0].header.sequence_number.wrapping_add(1)
+        );
+        assert_eq!(
+            after[0]
+                .header
+                .timestamp
+                .wrapping_sub(before[0].header.timestamp),
+            96960
+        );
+    }
 
     fn remote_inbound(rtt_ms: Option<f64>, received: u64, lost: i64) -> StatsReportType {
         StatsReportType::RemoteInboundRTP(RemoteInboundRTPStats {

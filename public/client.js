@@ -23,7 +23,7 @@ const socket = remotePanel?.socket || io({
   timeout: 10000,
 });
 
-const connectionSounds = createConnectionSounds(() => ensureAudioContext());
+const connectionSounds = createConnectionSounds(() => ensureAudioContext(), remotePanel ? async () => ({ ok: false }) : undefined);
 connectionSounds.setBackground(document.visibilityState === 'hidden');
 document.addEventListener('visibilitychange', () => {
   connectionSounds.setBackground(document.visibilityState === 'hidden');
@@ -341,7 +341,7 @@ let allowTargetAddRemove = false;
 function canEditTargets() { return canArrangeTargets() || (session.kind === 'user' && allowTargetAddRemove); }
 
 function canArrangeTargets() {
-  return session.kind === 'user' && (Boolean(remotePanel) || allowTargetRearrange);
+  return session.kind === 'user' && remotePanel?.state?.capabilities?.rearrangeTargets !== false && (Boolean(remotePanel) || allowTargetRearrange);
 }
 
 function applyTargetRearrangePermission(allowed, addRemove = false) {

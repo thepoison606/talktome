@@ -1,6 +1,7 @@
 //! Shared runtime state published to surfaces and the commands they send back.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use serde::Serialize;
@@ -149,6 +150,7 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_version: Option<String>,
     pub audio_ok: bool,
+    pub system_volume: Option<crate::audio::system_volume::SystemVolume>,
     pub targets: Vec<TargetInfo>,
     /// Effective Reply / Main destination (pin when assigned, else last incoming).
     pub reply_target: Option<TargetKey>,
@@ -197,6 +199,7 @@ impl Snapshot {
             preview: false,
             server_version: None,
             audio_ok: false,
+            system_volume: None,
             targets: Vec::new(),
             reply_target: None,
             reply_name: None,
@@ -419,8 +422,31 @@ pub enum InputSource {
     Companion(String),
 }
 
+#[derive(Debug)]
+pub struct PanelRequest {
+    pub command: serde_json::Value,
+    pub reply: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<serde_json::Value>>>,
+}
+
+impl PanelRequest {
+    pub fn is_pending(&self) -> bool {
+        self.reply
+            .lock()
+            .ok()
+            .is_some_and(|reply| reply.as_ref().is_some_and(|r| !r.is_closed()))
+    }
+
+    pub fn respond(&self, value: serde_json::Value) {
+        if let Some(reply) = self.reply.lock().ok().and_then(|mut r| r.take()) {
+            let _ = reply.send(value);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Command {
+    LocalPanel(Arc<PanelRequest>),
+    SystemVolume(crate::audio::system_volume::Action),
     TalkPress {
         source: InputSource,
         target: TargetRef,
@@ -436,6 +462,11 @@ pub enum Command {
     MuteToggle(TargetKey),
     VolumeStep {
         target: TargetKey,
+        delta: f32,
+    },
+    MemberVolumeStep {
+        conference: TargetKey,
+        user_id: i64,
         delta: f32,
     },
     VolumeSet {
@@ -592,9 +623,31 @@ pub enum DeckInput {
 /// surfaces, the web UI and audio.
 #[derive(Clone)]
 pub struct Bus {
+    pub restart: Option<RestartRequest>,
     pub commands: mpsc::Sender<Command>,
     pub snapshots: watch::Receiver<Arc<Snapshot>>,
     pub hardware: Arc<RwLock<Hardware>>,
+}
+
+/// The same graceful shutdown/re-exec path used by the local web interface.
+/// A surface can request it even while the signaling connection is pending.
+#[derive(Clone)]
+pub struct RestartRequest {
+    requested: Arc<AtomicBool>,
+    shutdown: Arc<watch::Sender<bool>>,
+}
+
+impl RestartRequest {
+    pub fn new(requested: Arc<AtomicBool>, shutdown: Arc<watch::Sender<bool>>) -> Self {
+        Self {
+            requested,
+            shutdown,
+        }
+    }
+    pub fn request(&self) {
+        self.requested.store(true, Ordering::Relaxed);
+        let _ = self.shutdown.send(true);
+    }
 }
 
 pub struct Channels {
@@ -607,6 +660,7 @@ pub fn channels(initial: Snapshot) -> Channels {
     let (cmd_tx, cmd_rx) = mpsc::channel(256);
     let (snap_tx, snap_rx) = watch::channel(Arc::new(initial));
     let bus = Bus {
+        restart: None,
         commands: cmd_tx,
         snapshots: snap_rx,
         hardware: Arc::new(RwLock::new(Hardware::default())),
@@ -615,5 +669,19 @@ pub fn channels(initial: Snapshot) -> Channels {
         commands: cmd_rx,
         snapshots: snap_tx,
         bus,
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+    #[test]
+    fn restart_requests_a_graceful_exit_and_reexec_without_waiting_for_signaling() {
+        let requested = Arc::new(AtomicBool::new(false));
+        let (shutdown, receive) = watch::channel(false);
+        let restart = RestartRequest::new(requested.clone(), Arc::new(shutdown));
+        restart.request();
+        assert!(requested.load(Ordering::Relaxed));
+        assert!(*receive.borrow());
     }
 }

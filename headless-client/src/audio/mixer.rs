@@ -34,13 +34,13 @@ pub fn volume_to_db(volume: f32) -> f32 {
     }
 }
 
-pub fn format_volume_db(volume: f32) -> String {
-    let db = volume_to_db(volume);
-    if db <= MUTE_DB {
-        "-inf dB".into()
+pub fn format_volume_percent(volume: f32) -> String {
+    let volume = if volume.is_finite() {
+        volume.clamp(0.0, 1.0)
     } else {
-        format!("{db:.0} dB")
-    }
+        0.0
+    };
+    format!("{:.0}%", volume * 100.0)
 }
 
 pub fn step_volume_db(current: f32, delta_db: f32) -> f32 {
@@ -86,6 +86,8 @@ pub struct MixerHealth {
     pub active_sources: usize,
     pub packets_matched: u64,
     pub packets_unmatched: u64,
+    pub buffered_ms: u32,
+    pub target_ms: u32,
 }
 
 impl Mixer {
@@ -191,11 +193,29 @@ impl Mixer {
         }
     }
 
+    #[cfg(test)]
     pub fn push_packet(&mut self, consumer_id: &str, seq: u16, payload: &[u8]) -> Result<bool> {
+        self.push_rtp_packet(
+            consumer_id,
+            seq,
+            u32::from(seq) * 960,
+            payload,
+            std::time::Instant::now(),
+        )
+    }
+
+    pub fn push_rtp_packet(
+        &mut self,
+        consumer_id: &str,
+        seq: u16,
+        timestamp: u32,
+        payload: &[u8],
+        arrived: std::time::Instant,
+    ) -> Result<bool> {
         match self.sources.get_mut(consumer_id) {
             Some(source) => {
                 self.packets_matched += 1;
-                source.buffer.push(seq, payload)?;
+                source.buffer.push(seq, timestamp, payload, arrived)?;
                 Ok(true)
             }
             None => {
@@ -299,6 +319,19 @@ impl Mixer {
                 .count(),
             packets_matched: self.packets_matched,
             packets_unmatched: self.packets_unmatched,
+            buffered_ms: self
+                .sources
+                .values()
+                .map(|s| s.buffer.buffered_ms())
+                .max()
+                .unwrap_or(0),
+            target_ms: self
+                .sources
+                .values()
+                .filter(|s| s.buffer.is_active())
+                .map(|s| s.buffer.target_ms())
+                .max()
+                .unwrap_or(0),
         }
     }
 
@@ -357,6 +390,15 @@ mod tests {
 
     fn rms(samples: &[f32]) -> f32 {
         (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn deck_percentages_match_the_linear_bar_position() {
+        assert_eq!(format_volume_percent(0.5), "50%");
+        assert_eq!(format_volume_percent(0.0), "0%");
+        assert_eq!(format_volume_percent(1.0), "100%");
+        assert_eq!(format_volume_percent(1.2), "100%");
+        assert_eq!(format_volume_percent(f32::NAN), "0%");
     }
 
     #[test]
@@ -423,8 +465,8 @@ mod tests {
         assert_eq!(volume_to_db(0.0), MUTE_DB);
         let quieter = step_volume_db(1.0, -6.0);
         assert!((volume_to_db(quieter) + 6.0).abs() < 0.05);
-        assert_eq!(format_volume_db(1.0), "0 dB");
-        assert_eq!(format_volume_db(0.0), "-inf dB");
+        assert_eq!(format_volume_percent(1.0), "100%");
+        assert_eq!(format_volume_percent(0.0), "0%");
     }
 
     #[test]

@@ -1092,6 +1092,7 @@ async function authedFetch(url, options) {
     adminState.mustChangePassword = false;
     adminState.userId = null;
     adminState.name = '';
+    showLogin('Session expired. Please sign in again.');
     throw new Error('Unauthorized');
   }
   return res;
@@ -2405,9 +2406,13 @@ function renderProductionOrder(payload, preferredUserId = null) {
 function initProductionTargetOrdering(userId, list) {
   const items = [...list.querySelectorAll('.draggable-target')];
   items.forEach((item) => {
-    item.addEventListener('dragstart', () => item.classList.add('dragging'));
+    item.addEventListener('dragstart', () => {
+      item.classList.add('dragging');
+      showTargetDropIndicator(list, item);
+    });
     item.addEventListener('dragend', () => {
       item.classList.remove('dragging');
+      clearTargetDropIndicator(list);
       saveProductionTargetOrder(userId, list);
     });
   });
@@ -2419,6 +2424,7 @@ function initProductionTargetOrdering(userId, list) {
     const afterElement = getDragAfterElement(list, event.clientY);
     if (!afterElement) list.appendChild(dragging);
     else if (afterElement !== dragging) list.insertBefore(dragging, afterElement);
+    showTargetDropIndicator(list, dragging);
   };
   if (list._productionDragOverHandler) {
     list.removeEventListener('dragover', list._productionDragOverHandler);
@@ -2426,7 +2432,10 @@ function initProductionTargetOrdering(userId, list) {
   list._productionDragOverHandler = onDragOver;
   list.addEventListener('dragover', onDragOver);
   if (!list._productionDropReady) {
-    list.addEventListener('drop', (event) => event.preventDefault());
+    list.addEventListener('drop', (event) => {
+      event.preventDefault();
+      clearTargetDropIndicator(list);
+    });
     list._productionDropReady = true;
   }
   initTouchTargetOrdering(list, () => saveProductionTargetOrder(userId, list));
@@ -3803,9 +3812,13 @@ async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
 function initTargetOrdering(userId, ul) {
   const items = [...ul.querySelectorAll('.draggable-target')];
   items.forEach(item => {
-    item.addEventListener('dragstart', () => item.classList.add('dragging'));
+    item.addEventListener('dragstart', () => {
+      item.classList.add('dragging');
+      showTargetDropIndicator(ul, item);
+    });
     item.addEventListener('dragend', () => {
       item.classList.remove('dragging');
+      clearTargetDropIndicator(ul);
       saveTargetOrder(userId, ul);
     });
   });
@@ -3820,13 +3833,30 @@ function initTargetOrdering(userId, ul) {
     } else if (afterElement !== dragging) {
       ul.insertBefore(dragging, afterElement);
     }
+    showTargetDropIndicator(ul, dragging);
   };
 
   if (ul._dragOverHandler) ul.removeEventListener('dragover', ul._dragOverHandler);
   ul._dragOverHandler = onDragOver;
   ul.addEventListener('dragover', onDragOver);
-  ul.addEventListener('drop', e => e.preventDefault());
+  ul.addEventListener('drop', e => {
+    e.preventDefault();
+    clearTargetDropIndicator(ul);
+  });
   initTouchTargetOrdering(ul, () => saveTargetOrder(userId, ul));
+}
+
+function showTargetDropIndicator(list, item) {
+  list.classList.add('is-target-reordering');
+  const listBox = list.getBoundingClientRect();
+  const itemBox = item.getBoundingClientRect();
+  const top = itemBox.top - listBox.top + list.scrollTop - list.clientTop;
+  list.style.setProperty('--target-drop-y', `${top}px`);
+}
+
+function clearTargetDropIndicator(list) {
+  list.classList.remove('is-target-reordering');
+  list.style.removeProperty('--target-drop-y');
 }
 
 function getDragAfterElement(container, y) {
@@ -3852,6 +3882,7 @@ function initTouchTargetOrdering(list, onCommit) {
     session = null;
     item.classList.remove('dragging');
     list.classList.remove('is-touch-reordering');
+    clearTargetDropIndicator(list);
     try {
       handle.releasePointerCapture(event.pointerId);
     } catch {}
@@ -3879,6 +3910,7 @@ function initTouchTargetOrdering(list, onCommit) {
     };
     item.classList.add('dragging');
     list.classList.add('is-touch-reordering');
+    showTargetDropIndicator(list, item);
     try {
       handle.setPointerCapture(event.pointerId);
     } catch {}
@@ -3892,6 +3924,7 @@ function initTouchTargetOrdering(list, onCommit) {
     if (!afterElement) list.appendChild(session.item);
     else if (afterElement !== session.item) list.insertBefore(session.item, afterElement);
     if (session.item.nextSibling !== previousNextSibling) session.moved = true;
+    showTargetDropIndicator(list, session.item);
 
     const edge = 56;
     if (event.clientY < edge) window.scrollBy(0, -12);
@@ -5654,6 +5687,67 @@ const userAudioSettingsNotice = document.getElementById('user-audio-settings-not
 const userAudioSettingsError = document.getElementById('user-audio-settings-error');
 const userAudioSettingsSave = document.getElementById('user-audio-settings-save');
 let editingAudioSettingsUserId = null;
+let systemVolumeTimer = null;
+let systemVolumeBusy = false;
+
+function renderSystemVolume(value) {
+  const container = document.getElementById('admin-system-volume-controls');
+  if (!container || systemVolumeBusy || container.querySelector('input:active')) return;
+  const slider = document.getElementById('admin-system-volume');
+  const mute = document.getElementById('admin-system-mute');
+  if (value && slider && Boolean(mute) === Boolean(value.muteSupported)) {
+    slider.value = String(Math.round(value.volume * 100));
+    document.getElementById('admin-system-volume-value').textContent = `${slider.value}%`;
+    if (mute) mute.checked = value.muted;
+    return;
+  }
+  container.innerHTML = value ? `
+    <div class="user-audio-settings-range"><label class="user-audio-settings-range__label" for="admin-system-volume"><span>Device main volume</span><output id="admin-system-volume-value">${Math.round(value.volume * 100)}%</output></label><input id="admin-system-volume" type="range" min="0" max="100" step="1" value="${Math.round(value.volume * 100)}"></div>
+    ${value.muteSupported ? `<label class="user-audio-settings-switch"><span>Mute device output</span><span class="admin-switch"><input id="admin-system-mute" type="checkbox" role="switch" ${value.muted ? 'checked' : ''}><span class="admin-switch__track" aria-hidden="true"></span></span></label>` : ''}
+    <div class="setting-meta">Controls the device output, including other applications. Changes apply immediately.</div>
+  ` : '';
+  document.getElementById('admin-system-volume')?.addEventListener('input', event => {
+    document.getElementById('admin-system-volume-value').textContent = `${event.target.value}%`;
+  });
+  document.getElementById('admin-system-volume')?.addEventListener('change', event => {
+    void changeSystemVolume({ volume: Number(event.target.value) / 100 });
+  });
+  document.getElementById('admin-system-mute')?.addEventListener('change', event => {
+    void changeSystemVolume({ muted: event.target.checked });
+  });
+}
+
+async function refreshSystemVolume(userId) {
+  try {
+    const response = await authedFetch(`/admin/users/${userId}/system-volume`);
+    const payload = await response.json();
+    if (response.ok && editingAudioSettingsUserId === userId) renderSystemVolume(payload.systemVolume);
+  } catch { /* Keep the current control on a transient network failure. */ }
+}
+
+async function changeSystemVolume(command) {
+  const userId = editingAudioSettingsUserId;
+  if (!userId || systemVolumeBusy) return;
+  systemVolumeBusy = true;
+  const controls = document.getElementById('admin-system-volume-controls');
+  controls?.querySelectorAll('input').forEach(input => { input.disabled = true; });
+  try {
+    const response = await authedFetch(`/admin/users/${userId}/system-volume`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Unable to change device volume');
+  } catch (error) {
+    if (editingAudioSettingsUserId === userId) {
+      userAudioSettingsError.textContent = error.message;
+      userAudioSettingsError.classList.remove('is-hidden');
+    }
+  } finally {
+    systemVolumeBusy = false;
+    controls?.querySelectorAll('input').forEach(input => { input.disabled = false; });
+    if (editingAudioSettingsUserId === userId) void refreshSystemVolume(userId);
+  }
+}
 
 function renderUserAudioSettingsFields(settings, targets = []) {
   const settingsApi = window.TalktomeUserAudioSettings;
@@ -5667,6 +5761,7 @@ function renderUserAudioSettingsFields(settings, targets = []) {
     return `<option value="${escapeHtml(identity)}" ${identity === settings.voiceTriggerTarget ? 'selected' : ''}>${escapeHtml(target.name)} (${typeLabel})</option>`;
   }).join('');
   userAudioSettingsFields.innerHTML = `
+    <div id="admin-system-volume-controls"></div>
     <div class="user-audio-settings-row"><label for="admin-audio-profile">Audio profile</label><select id="admin-audio-profile">${options(settingsApi.AUDIO_PROFILES, settings.audioProfile, (value) => ({ 'ultra-low': 'Ultra low (5 ms frame)', low: 'Low (10 ms frame)', standard: 'Standard (20 ms frame)' }[value]))}</select></div>
     <div class="user-audio-settings-row"><label for="admin-dim-amount">Dim amount</label><select id="admin-dim-amount">${options(settingsApi.DIM_AMOUNT_DB_OPTIONS, settings.dimAmountDb, (value) => `${value} dB`)}</select></div>
     <label class="user-audio-settings-switch"><span>Dim feeds while speaking</span><span class="admin-switch"><input id="admin-dim-speaking" type="checkbox" role="switch" ${checked('dimFeedsWhileSpeaking')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
@@ -5690,6 +5785,7 @@ function renderUserAudioSettingsFields(settings, targets = []) {
 }
 
 async function openUserAudioSettings(userId, userName) {
+  clearInterval(systemVolumeTimer);
   editingAudioSettingsUserId = Number(userId);
   userAudioSettingsTitle.textContent = `Audio settings · ${userName}`;
   userAudioSettingsFields.innerHTML = '<div class="setting-meta">Loading…</div>';
@@ -5704,6 +5800,10 @@ async function openUserAudioSettings(userId, userName) {
     if (editingAudioSettingsUserId !== Number(userId)) return;
     userAudioSettingsNotice?.classList.toggle('is-hidden', !payload.configuredAsBridge);
     renderUserAudioSettingsFields(payload.settings, payload.targets);
+    renderSystemVolume(payload.systemVolume);
+    systemVolumeTimer = setInterval(() => {
+      if (!systemVolumeBusy) void refreshSystemVolume(Number(userId));
+    }, 2000);
     userAudioSettingsSave.disabled = false;
   } catch (error) {
     userAudioSettingsFields.innerHTML = '';
@@ -5713,6 +5813,8 @@ async function openUserAudioSettings(userId, userName) {
 }
 
 function closeUserAudioSettings() {
+  clearInterval(systemVolumeTimer);
+  systemVolumeTimer = null;
   editingAudioSettingsUserId = null;
   userAudioSettingsDialog.classList.add('is-hidden');
 }
