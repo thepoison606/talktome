@@ -1,12 +1,23 @@
 import { applySetCookieHeaders, cookieHeader, readSetCookieHeaders, type CookieMap } from './cookieJar';
 import { fetchWithLocalNetworkRetry } from './localNetworkRetry';
 
+// Includes the iOS LAN permission retries (10.5 seconds in total).
+export const HTTP_REQUEST_TIMEOUT_MS = 15_000;
+
+export class HttpRequestTimeoutError extends Error {
+  constructor() {
+    super('The server did not respond in time. Check the server address and network connection, then try again.');
+    this.name = 'HttpRequestTimeoutError';
+  }
+}
+
 export type HttpClientOptions = {
   baseUrl: string;
   getCookies: () => CookieMap;
   setCookies: (next: CookieMap) => void;
   fetchImpl?: typeof fetch;
   retryLocalNetworkErrors?: boolean;
+  signal?: AbortSignal;
 };
 
 export class TalkToMeHttp {
@@ -28,13 +39,42 @@ export class TalkToMeHttp {
       headers,
     };
     const url = joinUrl(this.options.baseUrl, path);
-    const response = this.options.retryLocalNetworkErrors
-      ? await fetchWithLocalNetworkRetry(fetchImpl, url, request)
-      : await fetchImpl(url, request);
+    const controller = new AbortController();
+    const abort = () => controller.abort(init.signal?.reason);
+    const abortSession = () => controller.abort(this.options.signal?.reason);
+    init.signal?.addEventListener('abort', abort, { once: true });
+    this.options.signal?.addEventListener('abort', abortSession, { once: true });
+    if (init.signal?.aborted) abort();
+    if (this.options.signal?.aborted) abortSession();
+    request.signal = controller.signal;
 
-    const next = applySetCookieHeaders(this.options.getCookies(), readSetCookieHeaders(response.headers));
-    this.options.setCookies(next);
-    return response;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: () => void = () => {};
+    const cancelled = new Promise<never>((_, reject) => {
+      onAbort = () => reject(controller.signal.reason ?? new Error('Request cancelled.'));
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+      if (controller.signal.aborted) onAbort();
+      timer = setTimeout(() => controller.abort(new HttpRequestTimeoutError()), HTTP_REQUEST_TIMEOUT_MS);
+    });
+    try {
+      if (controller.signal.aborted) return await cancelled;
+      // Race explicitly: a native networking implementation may not settle fetch
+      // promptly after abort. Late replies must not update the session cookie jar.
+      const response = await Promise.race([
+        this.options.retryLocalNetworkErrors
+          ? fetchWithLocalNetworkRetry(fetchImpl, url, request)
+          : fetchImpl(url, request),
+        cancelled,
+      ]);
+      const next = applySetCookieHeaders(this.options.getCookies(), readSetCookieHeaders(response.headers));
+      this.options.setCookies(next);
+      return response;
+    } finally {
+      clearTimeout(timer);
+      init.signal?.removeEventListener('abort', abort);
+      this.options.signal?.removeEventListener('abort', abortSession);
+      controller.signal.removeEventListener('abort', onAbort);
+    }
   }
 }
 

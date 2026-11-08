@@ -3,7 +3,7 @@ import { AppState, Platform } from 'react-native';
 import { ApiClient } from '../auth/apiClient';
 import type { CookieMap } from '../auth/cookieJar';
 import { SessionConflictError, SessionCookieUnavailableError, TlsUntrustedError } from '../auth/errors';
-import { TalkToMeHttp } from '../auth/http';
+import { HttpRequestTimeoutError, TalkToMeHttp } from '../auth/http';
 import { LocalNetworkUnavailableError } from '../auth/localNetworkRetry';
 import { hasSessionCookie, readNativeCookies } from '../auth/nativeCookies';
 import {
@@ -93,6 +93,7 @@ export class SessionController {
   private pendingPassword?: string;
   private pendingLoginToken = false;
   private reconnecting = false;
+  private profileAttempt: AbortController | null = null;
   private reconnectFailures = 0;
   /** Intentional logout, pause, or profile leave. Suppresses connection tones. */
   private sessionEnding = false;
@@ -267,12 +268,16 @@ export class SessionController {
     force?: boolean;
   }): Promise<void> {
     this.pendingPassword = input.password;
+    const attempt = this.profileAttempt;
     this.pendingLoginToken = false;
     this.beginConnect(input.serverAddress, input.username, input.rememberPassword);
     await this.probeAndHealth();
+    if (attempt?.signal.aborted) return;
     useSessionStore.setState({ statusMessage: 'Signing in…' });
     const identity = await this.requireApi().login(input.username, input.password);
-    await this.attachSessionCookie(input.serverAddress);
+    if (attempt?.signal.aborted) return;
+    await this.attachSessionCookie(input.serverAddress, attempt?.signal);
+    if (attempt?.signal.aborted) return;
     if (!(await this.finishIdentity(identity, input.force === true))) return;
     await this.persistCurrentProfile(input.password);
   }
@@ -284,23 +289,30 @@ export class SessionController {
     force?: boolean;
   }): Promise<void> {
     this.pendingPassword = input.token;
+    const attempt = this.profileAttempt;
     this.pendingLoginToken = true;
     this.beginConnect(input.serverAddress, useSessionStore.getState().username, input.rememberPassword ?? true);
     await this.probeAndHealth();
+    if (attempt?.signal.aborted) return;
     useSessionStore.setState({ statusMessage: 'Signing in with login link…' });
     const identity = await this.requireApi().loginToken(input.token);
+    if (attempt?.signal.aborted) return;
     useSessionStore.setState({ username: identity.name });
-    await this.attachSessionCookie(input.serverAddress);
+    await this.attachSessionCookie(input.serverAddress, attempt?.signal);
+    if (attempt?.signal.aborted) return;
     if (!(await this.finishIdentity(identity, input.force === true))) return;
     await this.persistCurrentProfile(input.token);
   }
 
   async loginGuest(input: { serverAddress: string; displayName?: string; force?: boolean }): Promise<void> {
+    const attempt = this.profileAttempt;
     this.pendingLoginToken = false;
     this.beginConnect(input.serverAddress, input.displayName ?? useSessionStore.getState().username, false);
     await this.probeAndHealth();
+    if (attempt?.signal.aborted) return;
     useSessionStore.setState({ statusMessage: 'Signing in as guest…' });
     const identity = await this.requireApi().loginGuest(input.displayName);
+    if (attempt?.signal.aborted) return;
     if (!(await this.finishIdentity(identity, input.force === true))) return;
     await this.persistCurrentProfile();
   }
@@ -463,11 +475,15 @@ export class SessionController {
   }
 
   async connectProfile(profileId: string): Promise<void> {
+    if (this.profileAttempt) return;
     const profile = useSessionStore.getState().profiles.find((item) => item.id === profileId);
     if (!profile) {
       throw new Error('Profile not found.');
     }
     const password = await passwordForProfile(profile.id);
+    if (this.profileAttempt) return;
+    const attempt = new AbortController();
+    this.profileAttempt = attempt;
     this.pendingPassword = password;
     this.pendingLoginToken = Boolean(profile.loginToken);
     useSessionStore.setState({
@@ -509,6 +525,7 @@ export class SessionController {
         rememberPassword: profile.rememberPassword,
       });
     } catch (error) {
+      if (this.profileAttempt !== attempt || attempt.signal.aborted) return;
       if (error instanceof SessionConflictError) {
         useSessionStore.setState({
           addingProfile: true,
@@ -522,13 +539,27 @@ export class SessionController {
         useSessionStore.setState({ addingProfile: true, status: 'idle' });
         return;
       }
-      useSessionStore.setState({
-        status: 'idle',
-        paused: false,
-        addingProfile: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      try {
+        if (this.signaling || this.media || useSessionStore.getState().identity) {
+          await this.teardownSession();
+        }
+      } finally {
+        this.applyDisconnectedState({ paused: false, addingProfile: false, statusMessage: '' });
+        useSessionStore.setState({ error: error instanceof Error ? error.message : String(error) });
+      }
+    } finally {
+      if (this.profileAttempt === attempt) this.profileAttempt = null;
     }
+  }
+
+  cancelProfileConnection(): void {
+    // Once registered, startup hands over to production/media setup.
+    if (!this.profileAttempt || useSessionStore.getState().identity) return;
+    this.profileAttempt.abort();
+    this.profileAttempt = null;
+    this.signaling?.disconnect();
+    this.signaling = null;
+    this.applyDisconnectedState({ paused: false, addingProfile: false, statusMessage: '' });
   }
 
   async reconnectLastProfile(): Promise<void> {
@@ -1090,9 +1121,10 @@ export class SessionController {
     this.prepareHttp(serverAddress);
   }
 
-  private async attachSessionCookie(serverAddress: string): Promise<void> {
+  private async attachSessionCookie(serverAddress: string, signal?: AbortSignal): Promise<void> {
     const parsed = parseServerAddress(serverAddress);
     const nativeCookies = await readNativeCookies(parsed.baseUrl);
+    if (signal?.aborted) return;
     this.cookies = { ...this.cookies, ...nativeCookies };
     if (requiresBrowserSessionCookie(this.serverAppVersion) && !hasSessionCookie(this.cookies)) {
       throw new SessionCookieUnavailableError();
@@ -1107,6 +1139,7 @@ export class SessionController {
     this.http = new TalkToMeHttp({
       baseUrl: parsed.baseUrl,
       retryLocalNetworkErrors: Platform.OS === 'ios',
+      signal: this.profileAttempt?.signal,
       getCookies: () => this.cookies,
       setCookies: (next) => {
         this.cookies = next;
@@ -1124,7 +1157,8 @@ export class SessionController {
       this.serverAppVersion = health.appVersion;
       useSessionStore.setState({ serverAppVersion: health.appVersion ?? null });
     } catch (error) {
-      if (error instanceof LocalNetworkUnavailableError) throw error;
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      if (error instanceof LocalNetworkUnavailableError || error instanceof HttpRequestTimeoutError) throw error;
       if (!looksLikeTlsFailure(error)) {
         useSessionStore.setState({
           statusMessage: 'Health check failed; trying login anyway.',

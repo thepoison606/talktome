@@ -1,4 +1,4 @@
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { visibleProductionName } from '../protocol';
 import { session, useSessionStore } from '../session/store';
@@ -11,6 +11,7 @@ export function ProfilePickerScreen() {
   const lastProfileId = useSessionStore((state) => state.activeProfileId);
   const busy = useSessionStore((state) => state.status === 'connecting');
   const error = useSessionStore((state) => state.error);
+  const statusMessage = useSessionStore((state) => state.statusMessage);
 
   return (
     <View style={styles.screen}>
@@ -31,10 +32,17 @@ export function ProfilePickerScreen() {
                 <Text style={styles.name}>{profile.username}</Text>
                 <Text style={styles.server}>{profile.serverAddress}</Text>
                 {production ? <Text style={styles.production}>{production}</Text> : null}
+                {busy && profile.id === lastProfileId ? (
+                  <View style={styles.connection} accessibilityLiveRegion="polite">
+                    <ActivityIndicator size="small" color={colors.accent} />
+                    <Text style={styles.server}>{statusMessage || 'Connecting…'}</Text>
+                  </View>
+                ) : null}
               </Pressable>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Remove ${profile.username}`}
+                disabled={busy}
                 onPress={() => {
                   Alert.alert('Remove profile?', `${profile.username}\n${profile.serverAddress}`, [
                     { text: 'Cancel', style: 'cancel' },
@@ -57,8 +65,15 @@ export function ProfilePickerScreen() {
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
+      {busy ? (
+        <Pressable accessibilityRole="button" onPress={() => session.cancelProfileConnection()} style={styles.add}>
+          <Text style={styles.addText}>Cancel connection</Text>
+        </Pressable>
+      ) : null}
+
       <Pressable
         accessibilityRole="button"
+        disabled={busy}
         onPress={() => session.startAddProfile({ openScanner: true })}
         style={styles.add}
       >
@@ -67,7 +82,7 @@ export function ProfilePickerScreen() {
           <Text style={styles.addText}>Scan QR code</Text>
         </View>
       </Pressable>
-      <Pressable accessibilityRole="button" onPress={() => session.startAddProfile()} style={styles.add}>
+      <Pressable accessibilityRole="button" disabled={busy} onPress={() => session.startAddProfile()} style={styles.add}>
         <Text style={styles.addText}>Add profile</Text>
       </Pressable>
       <PrivacyPolicyLink />
@@ -160,5 +175,11 @@ const styles = StyleSheet.create({
   },
   busy: {
     opacity: 0.6,
+  },
+  connection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
   },
 });

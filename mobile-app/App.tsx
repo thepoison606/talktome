@@ -74,8 +74,10 @@ export function AppContent() {
   }, [identity]);
 
   let screen: Screen;
-  if (!hydrated || (status === 'connecting' && !identity && !operatorReady && !addingProfile)) {
+  if (!hydrated) {
     screen = 'loading';
+  } else if (status === 'connecting' && !identity && !operatorReady && !addingProfile) {
+    screen = profiles.length > 0 ? 'profiles' : 'loading';
   } else if (identity && operatorReady) {
     screen = 'operator';
   } else if (identity && status === 'choose-production') {

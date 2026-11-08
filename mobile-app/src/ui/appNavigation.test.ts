@@ -59,6 +59,14 @@ beforeEach(() => {
 });
 
 describe('profile navigation', () => {
+  it('keeps saved profiles visible during startup connection on iOS', () => {
+    fixture.os = 'ios';
+    fixture.state.status = 'connecting';
+    expect(screens(AppContent()).map(element => element.props.screen)).toEqual(['profiles']);
+    fixture.state.hydrated = false;
+    expect(screens(AppContent()).map(element => element.props.screen)).toEqual(['loading']);
+  });
+
   it('keeps Android Add profile in a single interactive RN page and handles hardware Back', () => {
     expect(screens(AppContent()).map(element => element.props.screen)).toEqual(['profiles']);
     fixture.state.addingProfile = true;

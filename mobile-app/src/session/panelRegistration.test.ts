@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionConflictError } from '../auth/errors';
+import { HTTP_REQUEST_TIMEOUT_MS } from '../auth/http';
 import type { MediaEngine } from '../media/engine';
 import type { OperatorIdentity, Production } from '../protocol';
 import { PANEL_AUDIO_DEFAULTS } from '../protocol/remotePanel';
@@ -59,6 +60,87 @@ function fixture({ serverDefaults = false } = {}) {
 }
 
 describe('panel registration in the native session', () => {
+  it('cancels an unreachable profile immediately and ignores its late reply after a new attempt', async () => {
+    vi.useFakeTimers();
+    let reply!: (response: Response) => void;
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise(resolve => { reply = resolve; }));
+    vi.stubGlobal('fetch', fetchImpl);
+    const { c } = fixture();
+    const profile = {
+      id: 'offline', serverAddress: 'https://192.168.1.250', username: 'Guest', rememberPassword: false,
+      guest: { guestId: 'g-1', guestProfileUserId: 1, name: 'Guest' },
+    };
+    useSessionStore.setState({ profiles: [profile] });
+    try {
+      const first = c.connectProfile(profile.id);
+      await vi.advanceTimersByTimeAsync(1);
+      c.cancelProfileConnection();
+      expect(useSessionStore.getState()).toMatchObject({ status: 'idle', error: null, identity: null });
+      expect(fetchImpl.mock.calls[0]![1]!.signal!.aborted).toBe(true);
+      const lateReply = reply;
+      const second = c.connectProfile(profile.id);
+      await vi.advanceTimersByTimeAsync(1);
+      await first;
+      lateReply(new Response(JSON.stringify({ ok: true })));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(useSessionStore.getState()).toMatchObject({ status: 'connecting', error: null, identity: null });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(mocks.connect).not.toHaveBeenCalled();
+      c.cancelProfileConnection();
+      await second;
+      expect(useSessionStore.getState().status).toBe('idle');
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns an unreachable IP to Profiles after the HTTP deadline without attempting login', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise(() => {}));
+    vi.stubGlobal('fetch', fetchImpl);
+    const { c } = fixture();
+    const profile = {
+      id: 'offline', serverAddress: 'https://192.168.1.250', username: 'Guest', rememberPassword: false,
+      guest: { guestId: 'g-1', guestProfileUserId: 1, name: 'Guest' },
+    };
+    useSessionStore.setState({ profiles: [profile] });
+    try {
+      const connecting = c.connectProfile(profile.id);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(useSessionStore.getState().status).toBe('connecting');
+      await vi.advanceTimersByTimeAsync(HTTP_REQUEST_TIMEOUT_MS);
+      await connecting;
+      expect(useSessionStore.getState()).toMatchObject({
+        status: 'idle', identity: null, operatorReady: false, addingProfile: false, profiles: [profile],
+        error: expect.stringContaining('did not respond in time'),
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(String(fetchImpl.mock.calls[0]![0])).toContain('/api/v1/health');
+      expect(mocks.connect).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears a partial identity after profile startup fails so navigation can leave the spinner', async () => {
+    const { c } = fixture();
+    const profile = {
+      id: 'partial', serverAddress: 'https://example.test', username: 'Guest', rememberPassword: false,
+      guest: { guestId: 'g-1', guestProfileUserId: 1, name: 'Guest' },
+    };
+    useSessionStore.setState({ profiles: [profile] });
+    vi.spyOn(c, 'loginGuest').mockImplementation(async () => {
+      useSessionStore.setState({ status: 'connecting', identity, operatorReady: false });
+      throw new Error('Startup failed');
+    });
+    const teardown = vi.spyOn(c as unknown as { teardownSession(): Promise<void> }, 'teardownSession').mockResolvedValue();
+    await c.connectProfile(profile.id);
+    expect(teardown).toHaveBeenCalledOnce();
+    expect(useSessionStore.getState()).toMatchObject({ status: 'idle', identity: null, operatorReady: false, error: 'Startup failed' });
+  });
+
   it('keeps the QR token when retrying after a session conflict', async () => {
     const { c } = fixture();
     const token = 'qr-token-for-regression';
