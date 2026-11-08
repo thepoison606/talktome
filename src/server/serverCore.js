@@ -6295,7 +6295,7 @@ app.put("/users/:id", requireAdmin, (req, res) => {
   try {
     const success = updateUserName(req.params.id, name);
     if (!success) return res.status(404).json({ error: "User not found" });
-    scheduleAdminStatusBroadcast("user-renamed");
+    notifyTargetRenamed('user', req.params.id);
     res.sendStatus(204);
   } catch (err) {
     if (err.code === "SQLITE_CONSTRAINT_UNIQUE" || err.message.includes("UNIQUE")) {
@@ -6423,10 +6423,9 @@ app.put('/feeds/:id', requireAdmin, (req, res) => {
   }
 
   try {
-    const listeners = getUsersForFeed(req.params.id) || [];
     const updated = updateFeedName(req.params.id, name.trim());
     if (!updated) return res.status(404).json({ error: 'Feed not found' });
-    listeners.forEach(({ user_id }) => notifyTargetChange(user_id));
+    notifyTargetRenamed('feed', req.params.id);
     res.sendStatus(204);
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE' || err.message.includes('UNIQUE')) {
@@ -6536,6 +6535,29 @@ function notifyBridgeTargetsChanged(userId, previousTargets) {
   const conferences = new Set([...previousTargets, ...getConfiguredBridgeTargetsForUser(userId)]
     .filter(target => target.targetType === 'conference').map(target => target.targetId));
   for (const conferenceId of conferences) notifyConferenceMembersChanged(conferenceId);
+}
+
+function notifyTargetRenamed(kind, id) {
+  const target = kind === 'user' ? getUserById(id) : getFeedById(id);
+  if (!target) return;
+  for (const peer of peers.values()) {
+    const peerTargetId = kind === 'user' ? peer.userId : peer.feedId;
+    if (peer.kind === kind && String(peerTargetId) === String(id)) {
+      peer.name = target.name;
+    }
+    // Names are global. Refresh each client's effective targets, including
+    // production-scoped assignments and guest profiles, through the usual API.
+    if (isOperatorPeer(peer)) peer.socket.emit('user-targets-updated');
+  }
+  for (const user of getCompanionAddressableUsers()) {
+    remotePanels.publish(user.id);
+    emitCompanionEvent('user-targets-updated', {
+      at: new Date().toISOString(),
+      userId: Number(user.id),
+    });
+  }
+  emitUserListToOperators();
+  broadcastRuntimeUserStates(`${kind}-renamed`);
 }
 
 function notifyTargetChange(userId) {
