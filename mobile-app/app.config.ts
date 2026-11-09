@@ -6,7 +6,7 @@ const iosSigning = resolveIosSigning(__dirname);
 const config: ExpoConfig = {
   name: 'TalkToMe',
   slug: 'talktome',
-  version: process.env.TALKTOME_MOBILE_VERSION || '1.1.1',
+  version: process.env.TALKTOME_MOBILE_VERSION || '1.1.2',
   orientation: 'default',
   icon: './assets/icon.png',
   userInterfaceStyle: 'automatic',
@@ -15,7 +15,7 @@ const config: ExpoConfig = {
     supportsTablet: true,
     icon: './assets/icon.png',
     bundleIdentifier: iosSigning.bundleIdentifier,
-    buildNumber: process.env.TALKTOME_MOBILE_BUILD_NUMBER || '60',
+    buildNumber: process.env.TALKTOME_MOBILE_BUILD_NUMBER || '61',
     appleTeamId: iosSigning.appleTeamId,
     entitlements: {
       'com.apple.security.application-groups': [iosSigning.appGroup],
@@ -51,7 +51,7 @@ const config: ExpoConfig = {
   android: {
     // Android Java packages cannot contain a hyphen.
     package: process.env.TALKTOME_ANDROID_PACKAGE || 'com.talktome.mobile',
-    versionCode: Number(process.env.TALKTOME_MOBILE_BUILD_NUMBER || 60),
+    versionCode: Number(process.env.TALKTOME_MOBILE_BUILD_NUMBER || 61),
     adaptiveIcon: {
       backgroundColor: '#000000',
       foregroundImage: './assets/android-icon-foreground.png',
