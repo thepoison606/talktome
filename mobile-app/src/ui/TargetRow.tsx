@@ -29,6 +29,7 @@ import { useKeyboardActivity } from '../keyboard/activity';
 import { conferenceSpeakingLabel, targetActivity } from './targetActivity';
 import { VolumeOverlay } from './VolumeOverlay';
 import { VolumeRing } from './VolumeRing';
+import { beginVolumeAdjustment, endVolumeAdjustment, moveVolumeAdjustment, useVolumeAdjustment } from './volumeAdjustmentState';
 
 type Props = {
   target: TalkTarget;
@@ -58,6 +59,9 @@ export function TargetRow({
   videoStreamURL, videoError, onToggleVideo,
 }: Props) {
   const key = talkTargetIdentity(target);
+  const activeVolumeKey = useVolumeAdjustment(state => state.active?.key);
+  const adjustingVolume = activeVolumeKey === key;
+  const otherVolumeAdjusting = activeVolumeKey != null && !adjustingVolume;
   const canToggleVideo = target.type === 'feed' && (videoAvailable || videoExpanded);
   const talking = useSessionStore((state) => state.talkingTargetKeys.includes(key));
   const keyboardHeld = useKeyboardActivity(state => state.targetKeys.includes(key));
@@ -217,12 +221,13 @@ export function TargetRow({
     dimmed && styles.rowOffline,
     (talking || keyboardHeld) && styles.rowTalking,
     speaking && !talking && !keyboardHeld && styles.rowSpeaking,
+    adjustingVolume && styles.rowAdjusting,
     height != null ? { height, minHeight: height, flex: 1, paddingVertical: tight ? 4 : 8 } : null,
   ];
 
   return (
-    <View style={videoExpanded ? [styles.videoCard, speaking && styles.rowSpeaking, dimmed && styles.rowOffline,
-      height != null && { height: height + videoHeight }] : height != null ? { height } : undefined}>
+    <View style={[otherVolumeAdjusting && { opacity: 0.3 }, videoExpanded ? [styles.videoCard, speaking && styles.rowSpeaking, dimmed && styles.rowOffline,
+      height != null && { height: height + videoHeight }] : height != null ? { height } : undefined]}>
       {canToggleVideo ? <Pressable
         accessibilityRole="button" accessibilityLabel={`${videoExpanded ? 'Hide' : 'Show'} video, ${target.label}`}
         accessibilityState={{ expanded: videoExpanded }} onPress={onToggleVideo}
@@ -252,6 +257,13 @@ export function TargetRow({
           }
           onPress={() => setVolumeOpen(true)}
           onDoublePress={() => session.toggleTargetMuted(target)}
+          onAdjustBegin={point => {
+            const current = useSessionStore.getState().audioPreferences[key] ?? DEFAULT_AUDIO_PREFERENCE;
+            return beginVolumeAdjustment({ key, title: target.label, level: current.volume, muted: current.muted,
+              origin: point, onChange: volume => session.setTargetVolume(target, volume) });
+          }}
+          onAdjustMove={point => moveVolumeAdjustment(key, point)}
+          onAdjustEnd={() => endVolumeAdjustment(key)}
         />
       </View>
       {talkControl}
@@ -290,6 +302,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'transparent',
     overflow: 'hidden',
+  },
+  rowAdjusting: {
+    opacity: 1,
+    borderColor: colors.accent,
+    backgroundColor: '#12334a',
   },
   rowLeft: {
     flexDirection: 'row-reverse',
