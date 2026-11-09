@@ -139,7 +139,7 @@ impl Renderer {
                 subtitle_scale,
                 (w - 2 * margin) as f32,
             );
-            // Over a volume bar the subtitle (percentage) sits at the bottom,
+            // Over a volume bar the subtitle (level) sits at the bottom,
             // right above it, like on the touch strip; else under the title.
             let sub_top = ((appearance.bar.is_some() || appearance.subtitle_low) && has_subtitle)
                 .then(|| text_bottom as f32 - font.as_scaled(PxScale::from(sub_scale)).ascent());
@@ -285,13 +285,6 @@ impl Renderer {
                     palette::BAR
                 },
             );
-            // Quarter marks make the linear position readable at a glance.
-            for fraction in [0.25, 0.5, 0.75] {
-                let x = x0 + margin + ((seg_w - 2 * margin) as f32 * fraction) as u32;
-                for y in bar_y + 2..bar_y + bar_h.saturating_sub(2) {
-                    blend_pixel(&mut image, x, y, palette::IDLE_TEXT, 0.25);
-                }
-            }
             if let Some(font) = &self.font {
                 let foreground = if segment.background == palette::OFFLINE {
                     palette::OFFLINE_TEXT
@@ -314,10 +307,14 @@ impl Renderer {
                 let subtitle = if segment.muted {
                     "MUTED".to_string()
                 } else {
-                    crate::audio::mixer::format_volume_percent(segment.volume)
+                    if segment.percent {
+                        crate::audio::mixer::format_volume_percent(segment.volume)
+                    } else {
+                        crate::audio::mixer::format_volume_db(segment.volume)
+                    }
                 };
                 let sub_scale = (seg_h as f32 * 0.24).max(9.0);
-                // Bottom-aligned: the percentage sits just above the bar,
+                // Bottom-aligned: the level sits just above the bar,
                 // the name stays at the top.
                 let sub_top = bar_y as f32
                     - (margin as f32 / 2.0).max(2.0)
@@ -386,6 +383,7 @@ pub fn draw_strip_arrows(image: &mut RgbImage, arrows: StripArrows) {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StripSegment {
+    pub percent: bool,
     pub title: String,
     pub volume: f32,
     pub muted: bool,
@@ -860,12 +858,14 @@ mod tests {
         let renderer = renderer();
         let segments = vec![
             StripSegment {
+                percent: false,
                 title: "Crew".into(),
                 volume: 0.9,
                 muted: false,
                 background: palette::IDLE,
             },
             StripSegment {
+                percent: false,
                 title: "Cam 2".into(),
                 volume: 0.3,
                 muted: true,

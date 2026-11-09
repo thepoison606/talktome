@@ -886,3 +886,5 @@ ul {
 .managed-video-source { grid-column: 1 / -1; display: grid; gap: 0.25rem; }
 
 .managed-port-card [data-video-status][hidden] { display: none; }
+
+.local-tls-choice { margin-top: 0.65rem; white-space: normal; font-size: 0.8rem; }

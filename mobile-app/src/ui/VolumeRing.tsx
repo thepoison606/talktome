@@ -1,13 +1,13 @@
 import { useEffect, useRef } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppState, StyleSheet, Text, View } from 'react-native';
 
 import { VOLUME_METER_TICKS, formatLinearLevelDbShort, volumeMeterFill } from '../protocol';
 import { SpeakerIcon } from './icons';
 import { colors } from './theme';
+import { createVolumeHoldGesture, type VolumePoint } from './volumeHoldGesture';
 
 const START_DEG = 218;
 const SWEEP_DEG = 284;
-const DOUBLE_PRESS_MS = 280;
 
 type Props = {
   level: number;
@@ -18,6 +18,9 @@ type Props = {
   accessibilityLabel: string;
   onPress?: () => void;
   onDoublePress?: () => void;
+  onAdjustBegin?: (point: VolumePoint) => boolean;
+  onAdjustMove?: (point: VolumePoint) => void;
+  onAdjustEnd?: () => void;
 };
 
 export function VolumeRing({
@@ -29,8 +32,11 @@ export function VolumeRing({
   accessibilityLabel,
   onPress,
   onDoublePress,
+  onAdjustBegin, onAdjustMove, onAdjustEnd,
 }: Props) {
-  const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gesture = useRef(createVolumeHoldGesture()).current;
+  const callbacks = useRef({ onPress, onDoublePress, onAdjustBegin, onAdjustMove, onAdjustEnd });
+  callbacks.current = { onPress, onDoublePress, onAdjustBegin, onAdjustMove, onAdjustEnd };
   const size = compact ? 44 : 52;
   const filled = muted ? 0 : Math.round(volumeMeterFill(level) * VOLUME_METER_TICKS);
   const accent = muted ? colors.danger : dimmed ? 'rgba(255,255,255,0.38)' : colors.accent;
@@ -39,29 +45,9 @@ export function VolumeRing({
   const readout = variant === 'readout';
 
   useEffect(() => {
-    return () => {
-      if (pending.current) {
-        clearTimeout(pending.current);
-      }
-    };
-  }, []);
-
-  const handlePress = () => {
-    if (!onDoublePress) {
-      onPress?.();
-      return;
-    }
-    if (pending.current) {
-      clearTimeout(pending.current);
-      pending.current = null;
-      onDoublePress();
-      return;
-    }
-    pending.current = setTimeout(() => {
-      pending.current = null;
-      onPress?.();
-    }, DOUBLE_PRESS_MS);
-  };
+    const sub = AppState.addEventListener('change', state => { if (state !== 'active') gesture.cancel(); });
+    return () => { sub.remove(); gesture.cancel(); };
+  }, [gesture]);
 
   const face = readout ? (
     <View
@@ -123,16 +109,29 @@ export function VolumeRing({
   }
 
   return (
-    <Pressable
+    <View
+      accessible
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
-      accessibilityHint={onDoublePress ? 'Double tap to mute or unmute' : undefined}
-      onPress={handlePress}
+      accessibilityHint={onAdjustBegin ? 'Tap for volume controls, double tap to mute, or hold and slide up or down to adjust' : onDoublePress ? 'Double tap to mute or unmute' : undefined}
+      onAccessibilityTap={onPress}
+      onStartShouldSetResponder={() => true}
+      onResponderTerminationRequest={() => !gesture.isAdjusting()}
+      onResponderGrant={event => gesture.start(event.nativeEvent, {
+        onTap: () => callbacks.current.onPress?.(),
+        onDoubleTap: onDoublePress ? () => callbacks.current.onDoublePress?.() : undefined,
+        onBegin: onAdjustBegin ? point => callbacks.current.onAdjustBegin?.(point) ?? false : undefined,
+        onMove: point => callbacks.current.onAdjustMove?.(point),
+        onEnd: () => callbacks.current.onAdjustEnd?.(),
+      })}
+      onResponderMove={event => event.nativeEvent.changedTouches.forEach(touch => gesture.move(touch))}
+      onResponderRelease={event => { gesture.move(event.nativeEvent); gesture.end(event.nativeEvent.identifier); }}
+      onResponderTerminate={() => gesture.cancel()}
       hitSlop={6}
       style={box}
     >
       {face}
-    </Pressable>
+    </View>
   );
 }
 

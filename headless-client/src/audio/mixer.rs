@@ -34,6 +34,15 @@ pub fn volume_to_db(volume: f32) -> f32 {
     }
 }
 
+pub fn format_volume_db(volume: f32) -> String {
+    let db = volume_to_db(volume);
+    if db <= MUTE_DB {
+        "-inf dB".into()
+    } else {
+        format!("{db:.1} dB")
+    }
+}
+
 pub fn format_volume_percent(volume: f32) -> String {
     let volume = if volume.is_finite() {
         volume.clamp(0.0, 1.0)
@@ -390,6 +399,15 @@ mod tests {
 
     fn rms(samples: &[f32]) -> f32 {
         (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn target_db_readouts_match_web_mobile_amplitude() {
+        assert_eq!(format_volume_db(0.9), "-0.9 dB");
+        assert_eq!(format_volume_db(1.0), "0.0 dB");
+        assert_eq!(format_volume_db(0.5), "-6.0 dB");
+        assert_eq!(format_volume_db(0.0), "-inf dB");
+        assert_eq!(format_volume_db(f32::NAN), "-inf dB");
     }
 
     #[test]

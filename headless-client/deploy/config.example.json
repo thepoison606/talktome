@@ -34,7 +34,7 @@
     "jitter_min_ms": 20,
     "jitter_max_ms": 400,
     "reopen_ms": 2000,
-    "default_volume_db": 0
+    "default_volume": 0.9
   },
   "vox": {
     "enabled": false,
@@ -62,6 +62,7 @@
     "brightness": 60,
     "font_path": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "volume_step_db": 3,
+    "volume_step_percent": 4,
     "volume_layer_timeout_s": 8,
     "pedal_left": null,
     "pedal_target": null

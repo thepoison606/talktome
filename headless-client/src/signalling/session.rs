@@ -3288,19 +3288,19 @@ mod tests {
             session
                 .handle_offline_command(Command::VolumeStep {
                     target,
-                    delta: 0.05,
+                    delta: 0.04,
                 })
                 .await;
             session
                 .handle_offline_command(Command::MemberVolumeStep {
                     conference: TargetKey::Conference(7),
                     user_id: 8,
-                    delta: 0.05,
+                    delta: 0.04,
                 })
                 .await;
         }
-        assert!((session.audio.level(target).volume - 0.6).abs() < 0.0001);
-        assert!((session.audio.member_level(7, 8).volume - 0.6).abs() < 0.0001);
+        assert!((session.audio.level(target).volume - 0.5).abs() < 0.0001);
+        assert!((session.audio.member_level(7, 8).volume - 0.5).abs() < 0.0001);
         session
             .handle_offline_command(Command::VolumeStep { target, delta: 2.0 })
             .await;
@@ -3317,10 +3317,10 @@ mod tests {
             .handle_offline_command(Command::MemberVolumeStep {
                 conference: TargetKey::Conference(7),
                 user_id: 8,
-                delta: 0.05,
+                delta: 0.04,
             })
             .await;
-        assert_eq!(session.audio.member_level(7, 8).volume, 0.05);
+        assert_eq!(session.audio.member_level(7, 8).volume, 0.04);
     }
 
     #[tokio::test]

@@ -11,6 +11,10 @@ WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
 Join our [Discord server](https://discord.gg/x5Q27F7HK) for discussions, questions,
 feedback and sharing how you use Talktome.
 
+If Talktome helps you, you can support its development with a coffee.
+
+<a href="https://buymeacoffee.com/talktome_intercom"><img src="public/images/buy-me-a-coffee.png" alt="Buy Talktome a coffee" width="100"></a>
+
 ## Features
 
 - Browser-based intercom with direct targets, conferences, reply and talk lock.
@@ -360,6 +364,10 @@ Auth:
 
 - API key via `x-api-key: <KEY>` or `Authorization: Bearer <KEY>`
 - User-scoped token via `POST /api/v1/companion/auth/login`
+
+Authentication uses `Authorization: Bearer <token>` or `X-API-Key` headers.
+API keys in URL query parameters are no longer accepted. Socket.IO clients
+must use the handshake `auth` payload or authentication headers.
 
 Main endpoints:
 

@@ -29,6 +29,7 @@ import {
 import { openSessionSheet } from './sessionSheetState';
 import { feedVideoHeight, feedVideoLayers } from './feedVideoLayout';
 import { TargetRow } from './TargetRow';
+import { VolumeAdjustmentHUD } from './VolumeAdjustmentHUD';
 import { colors } from './theme';
 import { KeyboardShortcuts } from '../keyboard/KeyboardShortcuts';
 
@@ -404,6 +405,7 @@ export function OperatorScreen() {
 
         <ConferenceMembersModal target={conferenceTarget} onClose={() => setConferenceTarget(null)} />
       </View>
+      <VolumeAdjustmentHUD />
       {audioMenuOpen ? <AudioRouteMenu onClose={() => setAudioMenuOpen(false)} /> : null}
     </View>
   );

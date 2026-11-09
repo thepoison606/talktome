@@ -33,11 +33,12 @@ function runtime() {
   let now=1000; const calls=[];
   const port={id:'feed-1',kind:'feed',videoSource:'ndi:recv:0123456789abcdef'};
   const session={port,sessionId:'session-1',ready:true,producerId:'audio-1',inputReady:true};
-  const context=vm.createContext({ Map, Date:{now:()=>now}, managedSessions:new Map([['feed-1',session]]),
+  const context=vm.createContext({ Map, managedEventStreamsNeedRestart:false, Date:{now:()=>now}, managedSessions:new Map([['feed-1',session]]),
     withTimeout:p=>p, managedSessionPath:(s,suffix='')=>`/sessions/${s.sessionId}${suffix}`,
     invoke:async(command,payload)=>{calls.push({command,payload}); return [];},
     bridgeApi:async(method,url)=>{calls.push({method,url}); return url.endsWith('video-producer')?{id:'video-1'}:{ip:'127.0.0.1',port:40000,payloadType:102,ssrc:1111,cname:'feed-1'};},
   });
+  vm.runInContext(source.slice(source.indexOf('async function restartManagedEventStreamsIfNeeded('),source.indexOf('async function startManagedEventStream(')),context);
   vm.runInContext(source.slice(source.indexOf('async function stopManagedVideoPath('),source.indexOf('async function startManagedSession(')),context);
   return {context,session,calls,advance:ms=>now+=ms};
 }

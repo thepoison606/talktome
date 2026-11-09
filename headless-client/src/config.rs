@@ -312,7 +312,7 @@ impl StreamDeckConfig {
                 if self.volume_step > 0.0 && self.volume_step <= 1.0 {
                     self.volume_step
                 } else {
-                    0.05
+                    0.04
                 }
             })
     }
@@ -640,7 +640,7 @@ impl Default for StreamDeckConfig {
             mock: None,
             brightness: 60,
             font_path: PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
-            volume_step: 0.05,
+            volume_step: 0.04,
             volume_step_db: None,
             volume_step_percent: None,
             volume_layer_timeout_s: 8,
@@ -1365,9 +1365,10 @@ mod tests {
         let mut config = Config::default();
         config.user.name = "test".into();
         config.user.password = "test".into();
-        assert_eq!(config.streamdeck.volume_step_linear(), 0.05);
+        assert_eq!(config.audio.default_volume_linear(), 0.9);
+        assert_eq!(config.streamdeck.volume_step_linear(), 0.04);
         config.streamdeck.volume_step_db = Some(3.0);
-        assert_eq!(config.streamdeck.volume_step_linear(), 0.05);
+        assert_eq!(config.streamdeck.volume_step_linear(), 0.04);
         config.streamdeck.volume_step_percent = Some(2.0);
         assert_eq!(config.streamdeck.volume_step_linear(), 0.02);
         assert!(config.validate().is_ok());
@@ -1676,10 +1677,10 @@ mod tests {
     fn file_differs_from_running_ignores_float_json_shape() {
         let running = from_document(minimal_json()).unwrap();
         let mut file = serde_json::to_value(&running).unwrap();
-        file["streamdeck"]["volume_step"] = serde_json::json!(0.05);
+        file["streamdeck"]["volume_step"] = serde_json::json!(0.04);
         assert!(
             !file_differs_from_running(&file, &running),
-            "0.05 in the file must match the running f32 volume_step"
+            "0.04 in the file must match the running f32 volume_step"
         );
         file["user"]["name"] = serde_json::json!("Studio");
         assert!(file_differs_from_running(&file, &running));
