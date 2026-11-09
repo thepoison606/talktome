@@ -4,14 +4,14 @@ const path = require("node:path");
 const test = require("node:test");
 const { verifyBuildNode } = require("../scripts/verify-build-node");
 
-test("standalone builds reject Node versions without the October security fixes", () => {
-  for (const version of ["22.23.4", "24.18.1", "24.22.0", "25.0.0", "26.12.1", "24.22.1-rc.1"]) {
+test("standalone builds reject runtimes below the build baseline and other Node majors", () => {
+  for (const version of ["22.23.4", "24.18.1", "24.22.0", "24.22.1", "25.0.0", "26.12.1", "24.22.2-rc.1"]) {
     assert.throws(() => verifyBuildNode(version), /standalone builds require Node/);
   }
 });
 
-test("standalone builds accept patched Node 24 versions", () => {
-  for (const version of ["24.22.1", "24.22.2", "24.23.0"]) {
+test("standalone builds accept the pinned Node runtime and newer Node 24 versions", () => {
+  for (const version of ["24.22.2", "24.22.3", "24.23.0"]) {
     assert.doesNotThrow(() => verifyBuildNode(version));
   }
 });
