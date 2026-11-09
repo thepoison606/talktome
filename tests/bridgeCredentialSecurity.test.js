@@ -103,3 +103,45 @@ test('queued keychain writes preserve the last edit even when reverting to the s
   assert.deepEqual(written, ['edited', 'original']);
   assert.equal(store.get(url).apiKey, 'original');
 });
+
+test('changing the TLS choice stops existing native streams before applying new settings', async () => {
+  const source = fs.readFileSync(require.resolve('../bridge-client/src/app.js'), 'utf8');
+  const start = source.indexOf('allowInsecureTlsInput.addEventListener("change"');
+  let listener, finishStop; const events = [];
+  const ctx = {
+    allowInsecureTlsInput: { checked: false, addEventListener: (_, fn) => { listener = fn; } },
+    credentialServer: () => url,
+    localStorage: { setItem() {} },
+    managedSessions: new Map([['one', { ready: true }]]),
+    managedEventStreamsNeedRestart: false,
+    stopManagedEventStream: () => new Promise(resolve => { finishStop = () => { events.push('stopped'); resolve(); }; }),
+    scheduleBridgeSettingsApply: () => events.push('apply'),
+  };
+  vm.runInNewContext(source.slice(start, source.indexOf('window.addEventListener("beforeunload"', start)), ctx);
+  const pending = listener();
+  assert.deepEqual(events, []);
+  finishStop(); await pending;
+  assert.deepEqual(events, ['stopped', 'apply']);
+  assert.equal(ctx.managedEventStreamsNeedRestart, true);
+});
+
+test('restarted native streams use fresh IDs so late events cannot affect the new connection', async () => {
+  const source = fs.readFileSync(require.resolve('../bridge-client/src/app.js'), 'utf8');
+  const start = source.indexOf('async function startNativeManagedEventStream(');
+  const ids = [];
+  const context = {
+    invoke: async (_, args) => ids.push(args.request.streamId), listen: true,
+    ensureNativeBridgeEventListener: async () => true,
+    getBridgeCredential: () => 'test-token',
+    bridgeAllowsUntrustedTls: () => false,
+    normalizeServerUrl: value => value,
+    serverUrlInput: { value: url },
+    managedSessionPath: () => '/api/v1/bridge/sessions/session/events/stream',
+    nativeEventStreamSessions: new Map(), nextManagedEventStreamVersion: 0,
+  };
+  vm.runInNewContext(source.slice(start, source.indexOf('function stopManagedEventStream(', start)), context);
+  const session = { sessionId: 'session', port: { id: 'port' }, inputStreamId: 'input' };
+  await context.startNativeManagedEventStream(session);
+  await context.startNativeManagedEventStream(session);
+  assert.equal(ids.length, 2); assert.notEqual(ids[0], ids[1]);
+});

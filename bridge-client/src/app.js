@@ -57,6 +57,8 @@ const STORAGE_KEYS = {
 };
 const bridgeCredentials = createCredentialStore(invoke, localStorage, STORAGE_KEYS);
 let credentialInputServer = "";
+let managedEventStreamsNeedRestart = false;
+let nextManagedEventStreamVersion = 0;
 
 const MANAGED_EVENT_FALLBACK_POLL_MS = 250;
 // This timer only reads the lightweight device snapshot. Full format discovery
@@ -2537,7 +2539,7 @@ async function startNativeManagedEventStream(session) {
   const listenerReady = await ensureNativeBridgeEventListener();
   if (!listenerReady) return false;
 
-  const streamId = `${session.port.id}:events:${session.sessionId}`;
+  const streamId = `${session.port.id}:events:${session.sessionId}:${++nextManagedEventStreamVersion}`;
   session.eventStreamId = streamId;
   nativeEventStreamSessions.set(streamId, session);
   await invoke("start_bridge_event_stream", {
@@ -2555,10 +2557,11 @@ async function startNativeManagedEventStream(session) {
 }
 
 function stopManagedEventStream(session) {
+  let stopped = Promise.resolve();
   if (session?.eventStreamId) {
     const streamId = session.eventStreamId;
     nativeEventStreamSessions.delete(streamId);
-    invoke?.("stop_bridge_event_stream", { streamId }).catch(() => {});
+    stopped = invoke?.("stop_bridge_event_stream", { streamId }).catch(() => {}) || stopped;
     session.eventStreamId = null;
   }
   if (session?.eventSource) {
@@ -2568,10 +2571,19 @@ function stopManagedEventStream(session) {
   if (session) {
     session.eventStreamActive = false;
   }
+  return stopped;
+}
+
+async function restartManagedEventStreamsIfNeeded() {
+  if (!managedEventStreamsNeedRestart) return;
+  managedEventStreamsNeedRestart = false;
+  for (const session of managedSessions.values()) {
+    if (session.ready && !session.eventStreamId) await startManagedEventStream(session);
+  }
 }
 
 async function startManagedEventStream(session) {
-  stopManagedEventStream(session);
+  await stopManagedEventStream(session);
   try {
     if (await startNativeManagedEventStream(session)) {
       return true;
@@ -3215,6 +3227,7 @@ async function reconcileManagedBridgeConfig(config) {
       await startManagedSession(port, { reuse: true, silentRetry: true, reason: "config-retry" });
     }
   }
+  await restartManagedEventStreamsIfNeeded();
   renderManagedBridgePorts();
 }
 
@@ -4278,9 +4291,11 @@ window.addEventListener("pointercancel", finishManagedRangeInteraction);
   });
   input.addEventListener("change", () => scheduleBridgeSettingsApply(0));
 });
-allowInsecureTlsInput.addEventListener("change", () => {
+allowInsecureTlsInput.addEventListener("change", async () => {
   const serverUrl = credentialServer();
   if (serverUrl) localStorage.setItem(`talktome:bridge-tls-insecure:${serverUrl}`, String(allowInsecureTlsInput.checked));
+  await Promise.all([...managedSessions.values()].map(stopManagedEventStream));
+  managedEventStreamsNeedRestart = true;
   scheduleBridgeSettingsApply(0);
 });
 window.addEventListener("beforeunload", () => {
