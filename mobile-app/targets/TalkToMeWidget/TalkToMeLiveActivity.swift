@@ -35,7 +35,7 @@ struct TalkToMeLiveActivity: Widget {
         DynamicIslandExpandedRegion(.leading) {
           VStack(alignment: .leading, spacing: 4) {
             TalkToMeMark(size: 32, filled: true)
-            Text("TalkToMe")
+            Text("Talktome")
               .font(.caption2.weight(.semibold))
               .foregroundStyle(.secondary)
           }
@@ -85,7 +85,7 @@ struct TalkToMeLockScreenView: View {
       HStack(spacing: 12) {
         VStack(alignment: .leading, spacing: 4) {
           TalkToMeMark(size: 36, filled: true)
-          Text("TalkToMe")
+          Text("Talktome")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)
         }

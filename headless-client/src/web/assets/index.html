@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b1120" />
+    <title>Talktome Headless</title>
+    <link rel="stylesheet" href="/style.css?v=__VERSION__" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/talktome-icon.png?v=__VERSION__" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=__VERSION__" />
+  </head>
+  <body data-version="__VERSION__">
+    <div id="login-overlay" class="login-overlay is-hidden">
+      <form id="login-form" class="login-card" autocomplete="on">
+        <div class="login-brand">
+          <img class="brand-mark" src="/talktome-icon.png?v=__VERSION__" width="44" height="44" alt="" />
+          <div>
+            <h1 class="login-title">Talktome Headless</h1>
+            <p class="login-subtitle" id="login-instance"></p>
+          </div>
+        </div>
+        <label class="field">
+          <span>User</span>
+          <input type="text" name="username" value="admin" autocomplete="username" readonly />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input type="password" name="password" autocomplete="current-password" required autofocus />
+        </label>
+        <button type="submit" class="btn btn-primary btn-block">Login</button>
+        <p id="login-message" class="form-message" role="alert"></p>
+      </form>
+    </div>
+
+    <div id="password-dialog" class="dialog is-hidden" role="dialog" aria-modal="true" aria-labelledby="password-title">
+      <form id="password-form" class="dialog-panel">
+        <h2 id="password-title">Change admin password</h2>
+        <p id="password-intro" class="muted">The default password is in use. Choose a new one before continuing.</p>
+        <label class="field">
+          <span>Current password</span>
+          <input type="password" name="current" autocomplete="current-password" required />
+        </label>
+        <label class="field">
+          <span>New password</span>
+          <input type="password" name="new" autocomplete="new-password" minlength="6" required />
+        </label>
+        <label class="field">
+          <span>Repeat new password</span>
+          <input type="password" name="repeat" autocomplete="new-password" minlength="6" required />
+        </label>
+        <p id="password-message" class="form-message" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" class="btn" id="password-cancel">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save password</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="confirm-dialog" class="dialog is-hidden" role="dialog" aria-modal="true">
+      <div class="dialog-panel">
+        <h2 id="confirm-title">Restart service?</h2>
+        <p id="confirm-text" class="muted"></p>
+        <div class="dialog-actions">
+          <button type="button" class="btn" id="confirm-cancel">Cancel</button>
+          <button type="button" class="btn btn-danger" id="confirm-ok">Restart</button>
+        </div>
+      </div>
+    </div>
+
+    <header id="topbar" class="topbar is-hidden">
+      <div class="topbar__brand">
+        <img class="brand-mark" src="/talktome-icon.png?v=__VERSION__" width="36" height="36" alt="" />
+        <div class="topbar__titles">
+          <strong id="topbar-instance">Talktome Headless</strong>
+          <span id="topbar-user" class="muted"></span>
+        </div>
+      </div>
+      <nav class="topbar__nav" aria-label="Sections">
+        <a href="#status" data-view="status">Status</a>
+        <a href="#remote" data-view="remote"><span class="nav-wide">Remote Control</span><span class="nav-narrow">Remote</span></a>
+        <a href="#deck" data-view="deck">Stream Deck</a>
+        <a href="#settings" data-view="settings">Settings</a>
+      </nav>
+      <div class="topbar__actions">
+        <span id="badge-connection" class="badge">offline</span>
+        <span id="badge-onair" class="badge badge-onair is-hidden">ON AIR</span>
+        <span id="badge-preview" class="badge badge-preview is-hidden">PREVIEW</span>
+        <button type="button" class="btn btn-ghost" id="restart-button" title="Restart the service">Restart</button>
+        <button type="button" class="btn btn-ghost" id="logout-button">Logout</button>
+      </div>
+    </header>
+
+    <main id="app" class="is-hidden">
+      <div id="flash" class="flash is-hidden" role="status"></div>
+
+      <section id="view-status" class="view">
+        <div class="grid status-grid">
+          <div class="status-col status-col-connection">
+            <article class="card card-connection">
+              <header class="card-header">
+                <h2>Connection</h2>
+                <span id="conn-state" class="badge">offline</span>
+              </header>
+              <p id="conn-error" class="connection-error is-hidden" role="status"></p>
+              <dl class="kv" id="conn-details"></dl>
+            </article>
+          </div>
+          <div class="status-col status-col-io">
+            <article class="card card-audio">
+              <header class="card-header">
+                <h2>Audio</h2>
+                <span id="audio-state" class="badge">unknown</span>
+              </header>
+              <dl class="kv" id="audio-details"></dl>
+              <div class="meter" aria-label="Input level">
+                <div id="input-meter" class="meter__bar"></div>
+                <span id="input-level" class="meter__label">-∞ dBFS</span>
+              </div>
+            </article>
+
+            <article class="card card-gpio">
+              <header class="card-header">
+                <h2>GPIO</h2>
+                <span id="gpio-state" class="badge">disabled</span>
+              </header>
+              <div id="gpio-error" class="form-message"></div>
+              <h3 class="subheading">Outputs</h3>
+              <div class="table-scroll">
+                <table class="table" id="gpio-outputs">
+                  <thead><tr><th>Output</th><th>Line</th><th>State</th></tr></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+              <h3 class="subheading">Inputs</h3>
+              <div class="table-scroll">
+                <table class="table" id="gpio-inputs">
+                  <thead><tr><th>Line</th><th>Action</th><th>Target</th><th>State</th><th>Events</th></tr></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+          <div class="status-col status-col-system">
+            <article class="card card-service">
+              <header class="card-header">
+                <h2>Service</h2>
+                <span id="service-state" class="badge">running</span>
+              </header>
+              <dl class="kv" id="service-details"></dl>
+            </article>
+
+            <article class="card card-deck">
+              <header class="card-header">
+                <h2>Stream Deck</h2>
+                <span id="deck-state" class="badge">disabled</span>
+              </header>
+              <dl class="kv" id="deck-details"></dl>
+              <a href="#deck" class="btn btn-small" data-view="deck">Open deck view</a>
+            </article>
+
+            <article class="card card-socket">
+              <header class="card-header">
+                <h2>Local socket</h2>
+                <span id="socket-state" class="badge">disabled</span>
+              </header>
+              <div id="socket-error" class="form-message"></div>
+              <dl class="kv" id="socket-details"></dl>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-remote" class="view is-hidden">
+        <iframe id="remote-panel" title="Talktome remote control" allow="autoplay"></iframe>
+      </section>
+
+      <section id="view-deck" class="view is-hidden">
+        <div id="deck-list" class="deck-list"></div>
+        <p id="deck-empty" class="muted">No Stream Deck configured.</p>
+      </section>
+
+      <section id="view-settings" class="view is-hidden">
+        <article class="card">
+          <header class="card-header">
+            <h2>Settings</h2>
+            <div class="card-tools">
+              <button type="button" class="btn btn-small" id="toggle-raw">Raw editor</button>
+              <button type="button" class="btn btn-small" id="change-password-button">Change admin password</button>
+            </div>
+          </header>
+          <p id="settings-path" class="muted small"></p>
+          <div id="settings-env" class="notice is-hidden"></div>
+          <div id="settings-pending" class="notice is-hidden"></div>
+          <form id="settings-form" class="settings-form" autocomplete="off"></form>
+          <div id="raw-editor" class="is-hidden">
+            <p class="muted small">Full configuration document as JSON. It is validated on save and written back in the file's format.</p>
+            <textarea id="raw-json" class="raw-json" spellcheck="false"></textarea>
+          </div>
+          <p id="settings-message" class="form-message" role="alert"></p>
+          <div class="actions">
+            <button type="button" class="btn" id="settings-reload">Reload</button>
+            <button type="button" class="btn btn-primary" id="settings-save">Save</button>
+            <button type="button" class="btn btn-accent" id="settings-save-restart">Save &amp; restart</button>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <script src="/app.js?v=__VERSION__"></script>
+  </body>
+</html>

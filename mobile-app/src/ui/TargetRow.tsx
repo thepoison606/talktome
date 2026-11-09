@@ -23,10 +23,13 @@ import {
   WEB_AVATAR,
   targetAvatarBackground,
 } from './icons';
+import { FeedVideoPlayer } from './FeedVideoPlayer';
 import { colors } from './theme';
+import { useKeyboardActivity } from '../keyboard/activity';
 import { conferenceSpeakingLabel, targetActivity } from './targetActivity';
 import { VolumeOverlay } from './VolumeOverlay';
 import { VolumeRing } from './VolumeRing';
+import { beginVolumeAdjustment, endVolumeAdjustment, moveVolumeAdjustment, useVolumeAdjustment } from './volumeAdjustmentState';
 
 type Props = {
   target: TalkTarget;
@@ -35,6 +38,12 @@ type Props = {
   volumeReadout?: boolean;
   height?: number;
   edgeTalkAffordance?: boolean;
+  videoAvailable?: boolean;
+  videoExpanded?: boolean;
+  videoHeight?: number;
+  videoStreamURL?: string;
+  videoError?: string;
+  onToggleVideo?: () => void;
   onOpenConferenceMembers?: (target: TalkTarget) => void;
 };
 
@@ -46,9 +55,16 @@ export function TargetRow({
   height,
   edgeTalkAffordance = false,
   onOpenConferenceMembers,
+  videoAvailable = false, videoExpanded = false, videoHeight = 0,
+  videoStreamURL, videoError, onToggleVideo,
 }: Props) {
   const key = talkTargetIdentity(target);
+  const activeVolumeKey = useVolumeAdjustment(state => state.active?.key);
+  const adjustingVolume = activeVolumeKey === key;
+  const otherVolumeAdjusting = activeVolumeKey != null && !adjustingVolume;
+  const canToggleVideo = target.type === 'feed' && (videoAvailable || videoExpanded);
   const talking = useSessionStore((state) => state.talkingTargetKeys.includes(key));
+  const keyboardHeld = useKeyboardActivity(state => state.targetKeys.includes(key));
   const locked = useSessionStore((state) => state.lockedTargetKeys.includes(key));
   const incomingEntries = useSessionStore((state) => state.incoming.addressedNow);
   const incoming = incomingEntries.some((entry) => incomingHighlightsTarget(entry, target));
@@ -111,6 +127,10 @@ export function TargetRow({
           </View>
         ) : null}
       </Pressable>
+    ) : canToggleVideo ? (
+      <View pointerEvents="none" style={[styles.avatar, { backgroundColor: targetAvatarBackground('feed', dimmed) }]}>
+        <Text style={{ fontSize: 22 }}>📺</Text>
+      </View>
     ) : (
       <View style={[styles.avatar, { backgroundColor: targetAvatarBackground(target.type, dimmed) }]}>
         {target.type === 'feed' ? (
@@ -157,7 +177,7 @@ export function TargetRow({
         </HoldToTalk>
       );
     }
-    return <View style={style}>{children}</View>;
+    return <View pointerEvents={canToggleVideo ? "none" : "auto"} style={style}>{children}</View>;
   };
 
   const talkZone = wrapTalk(
@@ -166,7 +186,7 @@ export function TargetRow({
     `Talk to ${target.label}`,
   );
 
-  const edgeIconColor = talking ? colors.talking : dimmed ? 'rgba(255,255,255,0.28)' : colors.text;
+  const edgeIconColor = talking || keyboardHeld ? colors.talking : dimmed ? 'rgba(255,255,255,0.28)' : colors.text;
   const talkSlotStyle = [styles.talkControl, edgeTalkAffordance && styles.edgeTalk];
 
   const talkControl = target.type === 'feed' ? (
@@ -198,17 +218,28 @@ export function TargetRow({
     styles.row,
     leftHanded && styles.rowLeft,
     tight && styles.rowCompact,
-    talking && styles.rowTalking,
-    speaking && !talking && styles.rowSpeaking,
     dimmed && styles.rowOffline,
+    (talking || keyboardHeld) && styles.rowTalking,
+    speaking && !talking && !keyboardHeld && styles.rowSpeaking,
+    adjustingVolume && styles.rowAdjusting,
     height != null ? { height, minHeight: height, flex: 1, paddingVertical: tight ? 4 : 8 } : null,
   ];
 
   return (
-    <View style={rowStyle}>
+    <View style={[otherVolumeAdjusting && { opacity: 0.3 }, videoExpanded ? [styles.videoCard, speaking && styles.rowSpeaking, dimmed && styles.rowOffline,
+      height != null && { height: height + videoHeight }] : height != null ? { height } : undefined]}>
+      {canToggleVideo ? <Pressable
+        accessibilityRole="button" accessibilityLabel={`${videoExpanded ? 'Hide' : 'Show'} video, ${target.label}`}
+        accessibilityState={{ expanded: videoExpanded }} onPress={onToggleVideo}
+        style={StyleSheet.absoluteFill}
+      /> : null}
+      {videoExpanded ? <View pointerEvents="none"><FeedVideoPlayer streamURL={videoStreamURL} error={videoError}
+        stopped={feedStopped} height={Math.max(0, videoHeight - 2)} /></View> : null}
+    <View pointerEvents={canToggleVideo ? "box-none" : "auto"} style={[rowStyle, videoExpanded && { flex: 0, borderWidth: 0, borderRadius: 0, backgroundColor: 'transparent', opacity: 1 }]}>
       {avatar}
       {talkZone}
       <View
+        pointerEvents={canToggleVideo ? "box-none" : "auto"}
         style={[
           styles.meterCluster,
           leftHanded && styles.meterClusterLeft,
@@ -226,9 +257,17 @@ export function TargetRow({
           }
           onPress={() => setVolumeOpen(true)}
           onDoublePress={() => session.toggleTargetMuted(target)}
+          onAdjustBegin={point => {
+            const current = useSessionStore.getState().audioPreferences[key] ?? DEFAULT_AUDIO_PREFERENCE;
+            return beginVolumeAdjustment({ key, title: target.label, level: current.volume, muted: current.muted,
+              origin: point, onChange: volume => session.setTargetVolume(target, volume) });
+          }}
+          onAdjustMove={point => moveVolumeAdjustment(key, point)}
+          onAdjustEnd={() => endVolumeAdjustment(key)}
         />
       </View>
       {talkControl}
+    </View>
       <VolumeOverlay
         visible={volumeOpen}
         title={target.label}
@@ -248,6 +287,8 @@ export function TargetRow({
 }
 
 const styles = StyleSheet.create({
+  videoCard: { borderRadius: 6, overflow: 'hidden', backgroundColor: '#1f2937',
+    borderWidth: 1, borderColor: 'transparent' },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -261,6 +302,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'transparent',
     overflow: 'hidden',
+  },
+  rowAdjusting: {
+    opacity: 1,
+    borderColor: colors.accent,
+    backgroundColor: '#12334a',
   },
   rowLeft: {
     flexDirection: 'row-reverse',

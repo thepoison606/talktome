@@ -55,7 +55,7 @@ test('keeps production layouts separate from the global target matrix', () => {
     assert.equal('production_id' in db.getFeedBridgeEndpointsForDevice('test-bridge')[0], false);
     assert.deepEqual(
       db.getBridgeTargetsForUser(anna).map((target) => target.targetType),
-      ['conference']
+      ['user', 'user', 'conference']
     );
 
     const secondProduction = db.createProduction('Evening show');
@@ -83,6 +83,8 @@ test('keeps production layouts separate from the global target matrix', () => {
       db.getProductionTargets(anna, production).map((target) => target.targetType),
       ['conference', 'feed']
     );
+    assert.throws(() => db.setProductionConferenceListenOnly(production, anna, regie), /Configured by Bridge/);
+    db.updateUserBridgeEndpoint(anna, { enabled: false });
     db.setProductionConferenceListenOnly(production, anna, regie);
     assert.equal(
       db.getProductionTargets(anna, production).find((target) => target.targetType === 'conference').canTalk,

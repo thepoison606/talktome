@@ -1,3 +1,4 @@
+import type { FeedVideoSnapshot } from '../media/feedVideoReceiver';
 import { create } from 'zustand';
 import type { WatchTargetSelections } from '../watch/selection';
 
@@ -31,7 +32,6 @@ export type SessionUiState = {
   allowInsecureLocalTLS: boolean;
   leftHanded: boolean;
   lockMultipleTargets: boolean;
-  edgeTalkAffordance: boolean;
   /** Empty string means Reply. A talk-target identity pins the bottom button. */
   mainButtonTargets: Record<string, string>;
   watchTargetSelections: WatchTargetSelections;
@@ -63,6 +63,8 @@ export type SessionUiState = {
   audioPreferences: Record<string, TargetAudioPreference>;
   speakingTargetKeys: string[];
   activeFeedKeys: string[];
+  videoFeedKeys: string[];
+  feedVideos: FeedVideoSnapshot;
   stoppedFeedKeys: string[];
   conferenceListen: ConferenceListenState;
   operatorAudio: OperatorAudioSettings;
@@ -131,7 +133,6 @@ export const initialState: SessionUiState = {
   allowInsecureLocalTLS: false,
   leftHanded: false,
   lockMultipleTargets: false,
-  edgeTalkAffordance: true,
   mainButtonTargets: {},
   watchTargetSelections: {},
   bigMainButton: false,
@@ -162,6 +163,8 @@ export const initialState: SessionUiState = {
   audioPreferences: {},
   speakingTargetKeys: [],
   activeFeedKeys: [],
+  videoFeedKeys: [],
+  feedVideos: {},
   stoppedFeedKeys: [],
   conferenceListen: EMPTY_CONFERENCE_LISTEN,
   operatorAudio: DEFAULT_OPERATOR_AUDIO,

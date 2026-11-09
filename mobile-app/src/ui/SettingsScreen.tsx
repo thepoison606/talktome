@@ -2,6 +2,7 @@ import {
   BackHandler,
   Platform,
   Pressable,
+  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -9,7 +10,7 @@ import {
   useColorScheme,
   useWindowDimensions,
 } from 'react-native';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ScreenStack, ScreenStackItem } from 'react-native-screens';
 
 import { audioSessionStatusLabel } from '../audio/policy';
@@ -18,10 +19,10 @@ import { loadTalkLinkToken } from '../talk/talkLink';
 import { fgsStatusLabel } from '../background/fgs';
 import { FEED_DIM_DB_OPTIONS, dimDbFromSliderPosition, sliderPositionFromDimDb } from '../session/operatorAudio';
 import { mainButtonCandidates, mainButtonStorageKey, resolveMainButton } from '../session/mainButton';
-import { moveTargetOrder } from '../session/targetOrder';
 import { session, useSessionStore } from '../session/store';
-import { useSessionSheetOpen } from './sessionSheetState';
+import { setSessionSheetDismissGestureEnabled, useSessionSheetOpen } from './sessionSheetState';
 import { talkTargetIdentity, type TalkTarget } from '../protocol';
+import { readNativeClientVersion } from '../protocol/clientVersion';
 import { watchTargetCandidates, toggleWatchTarget, WATCH_REPLY_TARGET } from '../watch/selection';
 import { describeWatchRemoteStatus, watchRemoteShortStatus, watchRemoteStatus } from '../watch/native';
 import { PttAddDevicePage, PttDeviceDetailPage, PttDevicesPage } from './PttSettingsScreens';
@@ -40,14 +41,16 @@ import {
   useSettingsTheme,
 } from './settingsChrome';
 import { settingsPalette, settingsScheme } from './settingsTheme';
-import { TrashIcon } from './icons';
+import { ArrangeTargetsPage, arrangeKind } from './ArrangeTargetsPage';
 import { VolumeSlider } from './VolumeSlider';
 import { IosSystemRoutePicker, iosSystemRoutePickerAvailable } from './IosSystemRoutePicker';
+import { KeyboardSettingsPage } from './KeyboardSettingsPage';
 
 type SettingsPage =
   | { kind: 'session' }
   | { kind: 'profiles' }
   | { kind: 'layout' }
+  | { kind: 'keyboard' }
   | { kind: 'main-button' }
   | { kind: 'arrange' }
   | { kind: 'add-targets' }
@@ -81,6 +84,12 @@ export function SessionSheet({ onClose }: { onClose: () => void }) {
     useSessionSheetOpen.getState().start === 'accessories' ? ACCESSORIES_PATH : ROOT_PATH,
   );
   const [sliderDragging, setSliderDragging] = useState(false);
+  const targetEditorIndex = path.findIndex(page => page.kind === 'arrange');
+  const targetEditorOpen = targetEditorIndex >= 0;
+  useLayoutEffect(() => {
+    setSessionSheetDismissGestureEnabled(!targetEditorOpen);
+    return () => setSessionSheetDismissGestureEnabled(true);
+  }, [targetEditorOpen]);
   const sheetColor = settingsPalette(settingsScheme(scheme)).sheet;
 
   useEffect(() => {
@@ -121,6 +130,7 @@ export function SessionSheet({ onClose }: { onClose: () => void }) {
     onClose,
     onOpenProfiles: () => push({ kind: 'profiles' }),
     onOpenLayout: () => push({ kind: 'layout' }),
+    onOpenKeyboard: () => push({ kind: 'keyboard' }),
     onOpenMainButton: () => push({ kind: 'main-button' }),
     onOpenArrange: () => push({ kind: 'arrange' }),
     onOpenAddTargets: () => push({ kind: 'add-targets' }),
@@ -161,6 +171,51 @@ export function SessionSheet({ onClose }: { onClose: () => void }) {
     );
   }
 
+  // Use the same native presentation system as the settings stack. A React Native
+  // Modal around ScreenStack installs two surface touch handlers: every tap is
+  // delivered twice and the second delivery terminates the first responder.
+  const editor = targetEditorOpen ? (
+    <ScreenStackItem
+      key="target-editor-modal"
+      screenId="target-editor-modal"
+      headerConfig={HIDDEN_HEADER}
+      stackPresentation="fullScreenModal"
+      stackAnimation="none"
+      gestureEnabled={false}
+      contentStyle={{ backgroundColor: sheetColor }}
+    >
+      <SafeAreaView style={stackStyles.stack}>
+        <ScreenStack style={stackStyles.stack}>
+          {/* A real parent controller gives UIKit an interactive pop destination. */}
+          <ScreenStackItem
+            screenId="editor-parent"
+            headerConfig={HIDDEN_HEADER}
+            gestureEnabled={false}
+            contentStyle={{ backgroundColor: sheetColor }}
+          >
+            {renderPage(path[targetEditorIndex - 1]!, targetEditorIndex - 1)}
+          </ScreenStackItem>
+          {path.slice(targetEditorIndex).map((page, offset) => {
+            const index = targetEditorIndex + offset;
+            return (
+              <ScreenStackItem
+                key={pageKey(page)}
+                screenId={`editor:${pageKey(page)}`}
+                headerConfig={HIDDEN_HEADER}
+                gestureEnabled
+                fullScreenSwipeEnabled={false}
+                onDismissed={() => dismissedAt(index)}
+                contentStyle={{ backgroundColor: sheetColor }}
+              >
+                {renderPage(page, index)}
+              </ScreenStackItem>
+            );
+          })}
+        </ScreenStack>
+      </SafeAreaView>
+    </ScreenStackItem>
+  ) : null;
+
   const stackView = (
     <ScreenStack style={stackStyles.stack}>
       {/* Empty page under Session: swiping Session away lands here and closes the sheet. */}
@@ -172,13 +227,13 @@ export function SessionSheet({ onClose }: { onClose: () => void }) {
       >
         <View />
       </ScreenStackItem>
-      {path.map((page, index) => (
+      {(targetEditorOpen ? path.slice(0, targetEditorIndex) : path).map((page, index) => (
         <ScreenStackItem
           key={pageKey(page)}
           screenId={pageKey(page)}
           headerConfig={HIDDEN_HEADER}
           gestureEnabled
-          // The dim slider drags sideways, so Audio keeps the back swipe on the screen edge only.
+          // Keep the back swipe on the edge while a page handles its own drag gestures.
           fullScreenSwipeEnabled={page.kind !== 'audio'}
           onDismissed={() => dismissedAt(index)}
           contentStyle={{ backgroundColor: sheetColor }}
@@ -186,35 +241,29 @@ export function SessionSheet({ onClose }: { onClose: () => void }) {
           {renderPage(page, index)}
         </ScreenStackItem>
       ))}
+      {editor}
     </ScreenStack>
   );
 
-  // iPad page sheets cannot be dismissed by tapping beside them, so App.tsx presents this one
-  // transparently and we draw a centered panel over a backdrop that closes on tap.
-  if (Platform.OS === 'ios' && Platform.isPad) {
-    return (
-      <SettingsThemeProvider scheme={scheme}>
-        <View style={padStyles.backdrop}>
-          <Pressable
-            style={StyleSheet.absoluteFill}
-            onPress={onClose}
-            accessibilityRole="button"
-            accessibilityLabel="Close"
-          />
-          <View
-            style={[
-              padStyles.panel,
-              { width: Math.min(PAD_SHEET_MAX_WIDTH, width - 48), height: Math.round(height * 0.86) },
-            ]}
-          >
-            {stackView}
-          </View>
-        </View>
-      </SettingsThemeProvider>
-    );
-  }
+  // iPad page sheets cannot be dismissed by tapping beside them.
+  const content = Platform.OS === 'ios' && Platform.isPad ? (
+    <View style={padStyles.backdrop}>
+      <Pressable
+        style={StyleSheet.absoluteFill}
+        onPress={onClose}
+        accessibilityRole="button"
+        accessibilityLabel="Close"
+      />
+      <View style={[
+        padStyles.panel,
+        { width: Math.min(PAD_SHEET_MAX_WIDTH, width - 48), height: Math.round(height * 0.86) },
+      ]}>
+        {stackView}
+      </View>
+    </View>
+  ) : stackView;
 
-  return <SettingsThemeProvider scheme={scheme}>{stackView}</SettingsThemeProvider>;
+  return <SettingsThemeProvider scheme={scheme}>{content}</SettingsThemeProvider>;
 }
 
 const stackStyles = StyleSheet.create({
@@ -247,6 +296,7 @@ function SettingsSheet({
   onDimSliding,
   onOpenProfiles,
   onOpenLayout,
+  onOpenKeyboard,
   onOpenMainButton,
   onOpenArrange,
   onOpenAddTargets,
@@ -266,6 +316,7 @@ function SettingsSheet({
   onDimSliding: (active: boolean) => void;
   onOpenProfiles: () => void;
   onOpenLayout: () => void;
+  onOpenKeyboard: () => void;
   onOpenMainButton: () => void;
   onOpenArrange: () => void;
   onOpenAddTargets: () => void;
@@ -291,44 +342,46 @@ function SettingsSheet({
         onAdd={page.kind === 'arrange' && store.identity?.kind === 'user' && store.allowTargetAddRemove ? onOpenAddTargets : undefined}
       />
 
-      <ScrollView scrollEnabled={scrollEnabled} style={styles.scroll} contentContainerStyle={styles.body}>
-        {page.kind === 'session' ? (
-          <SessionPage
-            onClose={onClose}
-            onOpenLayout={onOpenLayout}
-            onOpenAudio={onOpenAudio}
-            onOpenAccessories={onOpenAccessories}
-            onOpenDebug={onOpenDebug}
-            onOpenProfiles={onOpenProfiles}
-          />
-        ) : null}
-        {page.kind === 'profiles' ? <ProfilesPage onClose={onClose} /> : null}
+      {page.kind === 'arrange' ? <ArrangeTargetsPage /> : (
+        <ScrollView scrollEnabled={scrollEnabled} style={styles.scroll} contentContainerStyle={styles.body}>
+          {page.kind === 'session' ? (
+            <SessionPage
+              onClose={onClose}
+              onOpenLayout={onOpenLayout}
+              onOpenAudio={onOpenAudio}
+              onOpenAccessories={onOpenAccessories}
+              onOpenDebug={onOpenDebug}
+              onOpenProfiles={onOpenProfiles}
+            />
+          ) : null}
+          {page.kind === 'profiles' ? <ProfilesPage onClose={onClose} /> : null}
 
-        {page.kind === 'layout' ? (
-          <LayoutSettingsPage onOpenMainButton={onOpenMainButton} onOpenArrange={onOpenArrange} />
-        ) : null}
-        {page.kind === 'main-button' ? <MainButtonSettingsPage /> : null}
-        {page.kind === 'arrange' ? <ArrangeTargetsPage /> : null}
-        {page.kind === 'add-targets' ? <AddTargetsPage /> : null}
-        {page.kind === 'audio' ? <AudioSettingsPage onDimSliding={onDimSliding} /> : null}
+          {page.kind === 'layout' ? (
+            <LayoutSettingsPage onOpenMainButton={onOpenMainButton} onOpenArrange={onOpenArrange} onOpenKeyboard={onOpenKeyboard} />
+          ) : null}
+          {page.kind === 'main-button' ? <MainButtonSettingsPage /> : null}
+          {page.kind === 'keyboard' ? <KeyboardSettingsPage /> : null}
+          {page.kind === 'add-targets' ? <AddTargetsPage /> : null}
+          {page.kind === 'audio' ? <AudioSettingsPage onDimSliding={onDimSliding} /> : null}
 
-        {page.kind === 'ptt' ? (
-          <>
-            <PttDevicesPage onAddDevice={onAddDevice} onOpenDevice={onOpenDevice} />
-            {Platform.OS === 'ios' ? <WatchSettingsSection onOpenTargets={onOpenWatchTargets} /> : null}
-          </>
-        ) : null}
+          {page.kind === 'ptt' ? (
+            <>
+              <PttDevicesPage onAddDevice={onAddDevice} onOpenDevice={onOpenDevice} />
+              {Platform.OS === 'ios' ? <WatchSettingsSection onOpenTargets={onOpenWatchTargets} /> : null}
+            </>
+          ) : null}
 
-        {page.kind === 'watch-targets' ? <WatchTargetsSettingsPage /> : null}
+          {page.kind === 'watch-targets' ? <WatchTargetsSettingsPage /> : null}
 
-        {page.kind === 'ptt-add' ? <PttAddDevicePage onBound={showPttList} /> : null}
+          {page.kind === 'ptt-add' ? <PttAddDevicePage onBound={showPttList} /> : null}
 
-        {page.kind === 'ptt-device' ? (
-          <PttDeviceDetailPage deviceId={page.id} onDeleted={showPttList} />
-        ) : null}
+          {page.kind === 'ptt-device' ? (
+            <PttDeviceDetailPage deviceId={page.id} onDeleted={showPttList} />
+          ) : null}
 
-        {page.kind === 'debug' ? <DebugSettingsPage /> : null}
-      </ScrollView>
+          {page.kind === 'debug' ? <DebugSettingsPage /> : null}
+        </ScrollView>
+      )}
     </View>
   );
 }
@@ -341,6 +394,8 @@ function headerForPage(page: SettingsPage, deviceName?: string): { title: string
       return { title: 'Profiles', backLabel: 'Session' };
     case 'layout':
       return { title: 'Layout', backLabel: 'Session' };
+    case 'keyboard':
+      return { title: 'Keyboard shortcuts', backLabel: 'Layout' };
     case 'main-button':
       return { title: 'Main button target', backLabel: 'Layout' };
     case 'arrange':
@@ -365,9 +420,11 @@ function headerForPage(page: SettingsPage, deviceName?: string): { title: string
 function LayoutSettingsPage({
   onOpenMainButton,
   onOpenArrange,
+  onOpenKeyboard,
 }: {
   onOpenMainButton: () => void;
   onOpenArrange: () => void;
+  onOpenKeyboard: () => void;
 }) {
   const store = useSessionStore();
   const audio = store.operatorAudio;
@@ -383,27 +440,16 @@ function LayoutSettingsPage({
     <>
       <SettingsSection>
         <SettingsSwitchRow
-          label="Left-handed"
+          label="Left-handed mode"
           value={store.leftHanded}
           onValueChange={(value) => session.setLeftHanded(value)}
         />
-        <SettingsHint
-          full="Moves the volume ring and the phone-landscape Reply column to the left, and slides right to lock — same as the web client. Tablets keep Reply on the bottom."
-          compact="Volume and phone-landscape Reply move left. Slide right to lock."
-        />
         <SettingsNavRow label="Main button target" value={main.label} onPress={onOpenMainButton} />
-        <SettingsHint
-          full="Chooses what the bottom button does. Reply follows the last caller. A named target always talks to that target. Cards still talk on their own, same as the web client."
-          compact="Sets the bottom button. Cards still talk on their own."
-        />
+        <SettingsNavRow label="Keyboard shortcuts" value="1–9 · Space" onPress={onOpenKeyboard} />
         <SettingsSwitchRow
           label="Big main button"
           value={store.bigMainButton}
           onValueChange={(value) => session.setBigMainButton(value)}
-        />
-        <SettingsHint
-          full="Makes the bottom button taller so it is harder to miss. Off until you turn it on."
-          compact="Taller bottom button. Off until you turn it on."
         />
         {canArrange ? (
           <SettingsNavRow label="Edit targets" onPress={onOpenArrange} />
@@ -414,7 +460,7 @@ function LayoutSettingsPage({
           onValueChange={(value) => session.setLockMultipleTargets(value)}
         />
         <SettingsHint
-          full="Slide-to-lock adds targets to the locked set instead of replacing it. Tap a locked card to drop just that target — same as the web client."
+          full="Slide-to-lock adds targets to the locked set instead of replacing it. Tap a locked card to drop just that target."
           compact="Slide-to-lock adds targets. Tap a locked card to drop it."
         />
         <SettingsSwitchRow
@@ -425,15 +471,6 @@ function LayoutSettingsPage({
         <SettingsHint
           full="Replaces the plus/minus buttons in the volume overlay and conference member list with a slider."
           compact="Uses a slider instead of plus/minus."
-        />
-        <SettingsSwitchRow
-          label="Thumb-edge talk control"
-          value={store.edgeTalkAffordance}
-          onValueChange={(value) => session.setEdgeTalkAffordance(value)}
-        />
-        <SettingsHint
-          full="Moves the walkie-talkie to the phone’s edge so you can hit it with a thumb. Talkable cards always show the icon; this only widens the hit target. Listen-only rows keep the empty slot so the other icons stay put. The extra edge target is hidden in phone landscape, where cards use two columns."
-          compact="Widens the walkie toward the phone edge. Hidden in phone landscape."
         />
       </SettingsSection>
     </>
@@ -470,131 +507,6 @@ function MainButtonSettingsPage() {
         compact="Reply, or pin one target. Saved for this production."
       />
     </SettingsSection>
-  );
-}
-
-function arrangeKind(target: TalkTarget): string {
-  if (target.type === 'conference') {
-    return target.canTalk ? 'Conference' : 'Listen only';
-  }
-  if (target.type === 'feed') {
-    return 'Feed';
-  }
-  return 'User';
-}
-
-function OrderArrow({
-  direction,
-  label,
-  disabled,
-  onPress,
-}: {
-  direction: 'up' | 'down';
-  label: string;
-  disabled: boolean;
-  onPress: () => void;
-}) {
-  const styles = useSettingsStyles();
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled }}
-      disabled={disabled}
-      onPress={onPress}
-      style={styles.orderButton}
-    >
-      <Text style={[styles.orderArrow, disabled && styles.orderArrowDisabled]}>
-        {direction === 'up' ? '↑' : '↓'}
-      </Text>
-    </Pressable>
-  );
-}
-
-function ArrangeTargetsPage() {
-  const targets = useSessionStore((state) => state.targets);
-  const styles = useSettingsStyles();
-  const { palette } = useSettingsTheme();
-  const allowReorder = useSessionStore(state => state.allowTargetRearrange);
-  const allowAddRemove = useSessionStore(state => state.allowTargetAddRemove);
-  const [message, setMessage] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const move = async (index: number, delta: number) => {
-    if (busy || !allowReorder) {
-      return;
-    }
-    const next = moveTargetOrder(targets, index, index + delta);
-    if (!next) {
-      return;
-    }
-    setBusy(true);
-    setMessage('Saving…');
-    try {
-      await session.saveTargetOrder(next);
-      setMessage('Saved');
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Could not save target order');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const remove = async (target: TalkTarget) => {
-    if (busy || !allowAddRemove) return;
-    setBusy(true); setMessage('Saving…');
-    try { await session.editTargetSelection(target, 'remove'); setMessage('Saved'); }
-    catch (error) { setMessage(error instanceof Error ? error.message : 'Could not remove target'); }
-    finally { setBusy(false); }
-  };
-
-  return (
-    <>
-      {targets.length === 0 ? (
-        <SettingsSection>
-          <SettingsFootnote>No targets available.</SettingsFootnote>
-        </SettingsSection>
-      ) : (
-        <SettingsSection style={styles.orderList}>
-          {targets.map((target, index) => (
-            <View
-              key={talkTargetIdentity(target)}
-              style={[styles.orderRow, index > 0 && styles.orderRowDivider]}
-            >
-              <View style={styles.orderText}>
-                <Text style={styles.orderName} numberOfLines={1}>
-                  {target.label}
-                </Text>
-                <Text style={styles.orderKind}>{arrangeKind(target)}</Text>
-              </View>
-              <View style={styles.orderButtons}>
-                {allowReorder ? <OrderArrow
-                  direction="up"
-                  label={`Move ${target.label} up`}
-                  disabled={busy || index === 0}
-                  onPress={() => void move(index, -1)}
-                /> : null}
-                {allowReorder ? <OrderArrow
-                  direction="down"
-                  label={`Move ${target.label} down`}
-                  disabled={busy || index === targets.length - 1}
-                  onPress={() => void move(index, 1)}
-                /> : null}
-                {allowAddRemove ? <Pressable style={styles.orderButton} accessibilityRole="button"
-                  accessibilityLabel={`Remove ${target.label}`} disabled={busy} onPress={() => void remove(target)}>
-                  <TrashIcon color={palette.danger} />
-                </Pressable> : null}
-              </View>
-            </View>
-          ))}
-        </SettingsSection>
-      )}
-      {message ? <SettingsFootnote>{message}</SettingsFootnote> : null}
-      <SettingsHint
-        full="Changes are saved for this production and are shared with the web client."
-        compact="Changes are saved for this production."
-      />
-    </>
   );
 }
 
@@ -805,6 +717,7 @@ function WatchTargetsSettingsPage() {
 
 function DebugSettingsPage() {
   const store = useSessionStore();
+  const [{ clientVersion, clientBuild }] = useState(readNativeClientVersion);
   const [talkLinkToken, setTalkLinkToken] = useState('');
 
   useEffect(() => {
@@ -827,6 +740,10 @@ function DebugSettingsPage() {
 
   return (
     <>
+      <SettingsSection title="App">
+        <SettingsRow label="Version" value={clientVersion || 'Unknown'} />
+        <SettingsRow label="Build" value={clientBuild || 'Unknown'} />
+      </SettingsSection>
       <SettingsSection title="Session">
         <SettingsRow
           label="Background"

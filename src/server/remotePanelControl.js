@@ -94,6 +94,7 @@ function installRemotePanelControl(deps) {
         devices, inputDeviceId: String(runtime.inputDeviceId || '').slice(0, 512),
         outputDeviceId: String(runtime.outputDeviceId || '').slice(0, 512),
         outputSupported: Boolean(runtime.outputSupported),
+        systemVolume: normalizeSystemVolume(runtime.systemVolume),
         talking: Boolean(runtime.talking), targets: Array.isArray(runtime.targets) ? runtime.targets.slice(0, 64) : [],
         lockedTargets: Array.isArray(runtime.lockedTargets) ? runtime.lockedTargets.slice(0, 64) : [],
         micLevel: String(runtime.micLevel || '-inf dB').slice(0, 24),
@@ -118,6 +119,22 @@ function installRemotePanelControl(deps) {
       peer.socket.timeout(5000).emit('panel-command', command, (error, result) => {
         resolve(error ? { ok: false, error: 'Client did not confirm the change' } : result || { ok: false, error: 'Client did not confirm the change' });
       });
+    });
+  }
+  async function systemVolume(userId, command) {
+    validUser(userId);
+    return enqueue(Number(userId), async () => {
+      const peer = findUserPeerByUserId(userId)?.peer;
+      const state = snapshot(userId);
+      if (!peer || !state.runtime?.systemVolume) throw new Error('Device volume is unavailable for this client or output');
+      if (!command || ['volume', 'muted'].filter(key => Object.hasOwn(command, key)).length !== 1) throw new Error('Send either volume or mute');
+      if ('volume' in command && (typeof command.volume !== 'number' || !Number.isFinite(command.volume) || command.volume < 0 || command.volume > 1)) throw new Error('Invalid device volume');
+      if ('muted' in command && (typeof command.muted !== 'boolean' || !state.runtime.systemVolume.muteSupported)) throw new Error('Device mute is unavailable or invalid');
+      // Keep this machine-local; never restore system volume from user settings.
+      const result = await send(peer, { kind: 'system-volume', ...('volume' in command ? { volume: command.volume } : {}), ...('muted' in command ? { muted: command.muted } : {}) });
+      if (result.report) report(peer, result.report);
+      if (!result.ok) throw new Error(result.error || 'Client did not confirm the change');
+      return snapshot(userId).runtime?.systemVolume ?? null;
     });
   }
   async function execute(socket, command = {}) {
@@ -223,6 +240,14 @@ function installRemotePanelControl(deps) {
       }).catch(() => {});
     });
   });
-  return { report, publish, snapshot, savedSettings };
+  return { report, publish, snapshot, savedSettings, systemVolume };
+}
+
+function normalizeSystemVolume(value) {
+  if (!value || typeof value.volume !== 'number' || !Number.isFinite(value.volume) || value.volume < 0 || value.volume > 1) return null;
+  return {
+    volume: value.volume, muted: value.muted === true, muteSupported: value.muteSupported === true,
+    control: String(value.control || '').slice(0, 128),
+  };
 }
 module.exports = { installRemotePanelControl };

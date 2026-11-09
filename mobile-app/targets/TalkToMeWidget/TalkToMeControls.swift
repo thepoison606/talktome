@@ -66,6 +66,6 @@ struct TalkToMeDisconnectControl: ControlWidget {
       }
     }
     .displayName("Disconnect")
-    .description("Disconnect the TalkToMe session.")
+    .description("Disconnect the Talktome session.")
   }
 }

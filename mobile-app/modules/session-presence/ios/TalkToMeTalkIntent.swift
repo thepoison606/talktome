@@ -18,7 +18,7 @@ struct TalkIntent: AppIntent {
 @available(iOS 16.0, *)
 struct DisconnectIntent: AppIntent {
   static var title: LocalizedStringResource = "Disconnect"
-  static var description = IntentDescription("Disconnect the TalkToMe session.")
+  static var description = IntentDescription("Disconnect the Talktome session.")
   static var openAppWhenRun = false
 
   func perform() async throws -> some IntentResult {

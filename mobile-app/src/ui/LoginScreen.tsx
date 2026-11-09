@@ -355,7 +355,7 @@ export function LoginScreen() {
               </Text>
               <Pressable
                 style={styles.takeOver}
-                onPress={() => void submit(true)}
+                onPress={() => void run(() => session.takeOver())}
                 disabled={busy}
                 accessibilityRole="button"
               >

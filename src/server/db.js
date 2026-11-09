@@ -183,6 +183,7 @@ db.exec(`
                                                           trigger_mode         TEXT    NOT NULL DEFAULT 'external',
                                                           trigger_target_type  TEXT    NOT NULL DEFAULT '',
                                                           trigger_target_id    INTEGER,
+                                                          trigger_targets      TEXT,
                                                           trigger_threshold_db REAL    NOT NULL DEFAULT -45,
                                                           updated_at           TEXT    NOT NULL
     );
@@ -415,14 +416,17 @@ ensureColumn("users", "panel_settings", "TEXT NOT NULL DEFAULT '{}'");
 ensureColumn("users", "allow_target_rearrange", "INTEGER");
 ensureColumn("users", "allow_target_add_remove", "INTEGER");
 ensureColumn("feeds", "login_token_hash", "TEXT");
+ensureColumn("feeds", "allow_feed_video", "INTEGER");
 ensureColumn("user_bridge_endpoints", "trigger_mode", "TEXT NOT NULL DEFAULT 'external'");
 ensureColumn("user_bridge_endpoints", "trigger_target_type", "TEXT NOT NULL DEFAULT ''");
 ensureColumn("user_bridge_endpoints", "trigger_target_id", "INTEGER");
+ensureColumn("user_bridge_endpoints", "trigger_targets", "TEXT");
 ensureColumn("user_bridge_endpoints", "trigger_threshold_db", "REAL NOT NULL DEFAULT -45");
 ensureColumn("user_bridge_endpoints", "production_id", "INTEGER REFERENCES productions(id) ON DELETE SET NULL");
 ensureColumn("feed_bridge_endpoints", "production_id", "INTEGER REFERENCES productions(id) ON DELETE SET NULL");
 ensureColumn("user_bridge_endpoints", "audio_levels", "TEXT NOT NULL DEFAULT '{}'");
 ensureColumn("feed_bridge_endpoints", "audio_levels", "TEXT NOT NULL DEFAULT '{}'");
+ensureColumn("feed_bridge_endpoints", "video_source", "TEXT NOT NULL DEFAULT ''");
 
 // Bridge endpoints are global inputs/outputs. Production membership only
 // controls which browser clients can see and use the associated user/feed.

@@ -9,6 +9,7 @@ import {
 } from '../media/visibleProducers';
 import {
   activeFeedKeysFromProducers,
+  isFeedVideoProducer,
   defaultAudioPreference,
   EMPTY_CAMERA_TALLY,
   normalizeAudioPreference,
@@ -38,7 +39,19 @@ import type { SessionController } from './sessionController';
 
 /** Operator media lifecycle: MediaEngine, consumers, audio prep, devices, and preferences. */
 export class MediaCoordinator {
+  private visibleVideoKeys: string[] = [];
   constructor(private readonly c: SessionController) {}
+
+  setVisibleFeedVideos(keys: string[]): void {
+    this.visibleVideoKeys = keys;
+    this.c.media?.setFeedVideoTargets(keys);
+  }
+
+  private bindVideoReceiver(): void {
+    if (!this.c.media) return;
+    this.c.media.onVideoChange = () => useSessionStore.setState({ feedVideos: this.c.media?.feedVideoSnapshot ?? {} });
+    this.c.media.setFeedVideoTargets(this.visibleVideoKeys);
+  }
 
   async enterOperator(production: Production | null): Promise<void> {
     const identity = useSessionStore.getState().identity;
@@ -67,6 +80,7 @@ export class MediaCoordinator {
     if (!this.c.media) {
       this.c.media = new MediaEngine(signaling);
       this.c.media.onConnectionChange = () => this.publishMediaSnapshot();
+      this.bindVideoReceiver();
       this.c.media.setTalkOpusProfile(talkOpusProfile(this.c.remotePanel.audioProfile ?? this.c.serverClientDefaults.audioProfile));
       this.c.media.setAudioPreferences(useSessionStore.getState().audioPreferences);
       this.c.media.setConferenceListen(useSessionStore.getState().conferenceListen);
@@ -127,6 +141,7 @@ export class MediaCoordinator {
     }
     this.c.media = new MediaEngine(signaling);
     this.c.media.onConnectionChange = () => this.publishMediaSnapshot();
+    this.bindVideoReceiver();
     this.c.media.setTalkOpusProfile(talkOpusProfile(this.c.remotePanel.audioProfile ?? this.c.serverClientDefaults.audioProfile));
     this.c.media.setAudioPreferences(useSessionStore.getState().audioPreferences);
     this.c.media.setConferenceListen(useSessionStore.getState().conferenceListen);
@@ -384,6 +399,7 @@ export class MediaCoordinator {
   private publishActiveFeeds(): void {
     useSessionStore.setState({
       activeFeedKeys: activeFeedKeysFromProducers(this.heardProducers()),
+      videoFeedKeys: activeFeedKeysFromProducers(this.heardProducers().filter(isFeedVideoProducer)),
     });
     this.c.background.syncPresence();
   }

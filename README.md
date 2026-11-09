@@ -1,6 +1,6 @@
 # Talktome
 
-Local WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
+WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
 
 <img src="public/images/iphone_ipad.png" alt="Talktome mobile UI" width="800">
 
@@ -11,13 +11,19 @@ Local WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
 Join our [Discord server](https://discord.gg/x5Q27F7HK) for discussions, questions,
 feedback and sharing how you use Talktome.
 
+If Talktome helps you, you can support its development with a coffee.
+
+<a href="https://buymeacoffee.com/talktome_intercom"><img src="public/images/buy-me-a-coffee.png" alt="Buy Talktome a coffee" width="100"></a>
+
 ## Features
 
 - Browser-based intercom with direct targets, conferences, reply and talk lock.
+- Native mobile apps for [iOS](https://apps.apple.com/app/id6827440765) and [Android APK](https://github.com/thepoison606/talktome/releases/download/v1.6.0/talktome-1.6.0-83-android.apk) (Play Store coming soon).
 - Admin UI for users, feeds, conferences, target order, network config, RTC port range, backups, Guest login and panel remote control.
-- Program-audio feeds with volume and mute controls.
+- Program feeds audio/video (NDI, OMT, Webcam)
 - Camera tally and remote control through Bitfocus Companion, HTTP API, module and keyboard shortcuts.
 - Bridge Desktop Application to integrate NDI, OMT, hardware intercom systems, audio interfaces and mixing consoles.
+- Headless client that turns a Raspberry Pi (or any small Linux board) into an intercom panel with Elgato Stream Deck keys and dials, GPIO tally and PTT, and a web admin UI.
 - Optional multiple-production matrices with scoped users, conferences, feeds and production admins.
 
 ## Quick Start
@@ -102,23 +108,10 @@ request address before falling back to a media address.
 The Admin `Config` page can restart the server. Docker deployments use their
 configured restart policy (as in the examples above).
 
-### macOS Test Builds
-
-Unsigned macOS test builds downloaded from GitHub may be blocked by Gatekeeper.
-To remove the quarantine flag once after installing or extracting:
-
-```bash
-xattr -dr com.apple.quarantine "/Applications/Talktome Server.app"
-xattr -dr com.apple.quarantine "/Applications/Talktome Bridge.app"
-```
-
-Use the first command for the Talktome server app and the second command for the
-native Bridge app.
-
 ### Versioning and releases
 
-Git release tags are the single source of truth for every Server, Bridge and
-Docker build. Create a tag such as `v1.2.5` to produce version `1.2.5`; commits
+Git release tags are the single source of truth for every Server, Bridge,
+headless client and Docker build. Create a tag such as `v1.2.5` to produce version `1.2.5`; commits
 after the latest tag receive a development version such as `1.2.5-dev.3`.
 Package, Cargo and Tauri manifests intentionally contain only the neutral
 `0.0.0` placeholder and must not be edited for a release. The shared
@@ -153,7 +146,8 @@ with `--node-version` to inspect its runtime without starting services.
 - `public/`: browser client, Admin UI and shared browser/server settings models.
 - `scripts/`: build, release, container healthcheck and maintenance tools.
 - `server-app/` and `bridge-client/`: native desktop applications.
-- `gateway/`: radio gateway tools.
+- `headless-client/`: Rust intercom panel for Raspberry Pi and other Linux
+  boards, shipped as Debian packages.
 - `vendor/`: locally maintained third-party patches.
 
 ## Configuration
@@ -256,6 +250,23 @@ session cookies require it. Keep the HTTP backend private. WebRTC media still
 uses the configured RTC ports directly (or TURN); an HTTP reverse proxy does
 not forward those media ports. Configure the media network and firewall as usual.
 
+## HTTP request limits
+
+The server applies per-client-IP HTTP limits before parsing JSON or accessing
+files: 6000 requests/minute overall, 600/minute for Admin and legacy user/feed/
+conference routes (including the Panel), and 2400/minute for `/api` routes.
+Login POSTs share a quota of 30 failed requests per 15 minutes across user,
+feed, token, guest, SSO, Admin and Companion logins. Successful logins do not
+consume that quota. Excess requests return HTTP `429` with `Retry-After`.
+
+Client IPs use the same trusted-proxy allowlist as the Status page; untrusted
+forwarded headers cannot change the quota key. IPv6 addresses are grouped by
+`/56` subnet. Limits are shared by clients behind one NAT address. Configure
+`trustedProxies` correctly behind a reverse proxy so unrelated clients do not
+all share its quota. Counters are held in memory per server process and reset
+on restart. Existing SSE streams and WebRTC audio/video are not interrupted
+when an HTTP quota is reached; Socket.IO messages are outside these HTTP limits.
+
 ## Data
 
 State is stored in SQLite `app.db`; config, certificates and generated API keys live in the same app data directory.
@@ -273,7 +284,7 @@ Admin → Config → Backup and restore can also write automatic JSON configurat
 ## Users, Feeds And Guests
 
 - Operators log in at `/` and can talk to assigned users/conferences.
-- Feeds log in at `/`, publish their assigned feed, and cannot talk back.
+- Feeds log in at `/`, publish their assigned feed, and cannot talk back. Browser feeds can optionally publish a webcam; web users open the picture above the feed controls using its camera icon. See [browser video feeds](docs/browser-video-feeds.md).
 - Guests are enabled in Admin `Config`.
 - All Guests share the targets and conference memberships of the generated `Guest` profile.
 - The Guest profile in Admin `Users` provides a shareable login URL and QR code; Guests still choose their own display name when opening it.
@@ -328,14 +339,21 @@ actual membership; users without any Production receive a clear assignment error
 Conference identities remain global and may span Productions. Routing uses each
 connected user's currently loaded Production: speaking to a conference reaches
 all active users whose current Default or Production membership includes that
-conference, even when those users loaded different Productions. A user has only
-one active Talktome session at a time.
+conference, even when those users loaded different Productions. Direct user
+targets likewise reach the user's active session across Productions, and Reply
+can address a caller absent from the recipient's current target list. A user has
+only one active Talktome session at a time.
 
 Production admins may manage the contents, memberships and matrix of their own
 Productions without access to global users, server config, backups or other
 Productions. Only global admins may enable the feature, create, rename or delete
 Productions, or assign Production admins. Bridge endpoints, Bridge feeds and
 personal mute/volume settings remain global and do not select a Production.
+Bridge automatic Talk targets (Audio level / Always on) can select any user or conference on the server. Selected
+conferences also supply return audio. These targets appear as gray, managed
+Matrix crosspoints wherever both endpoints are present; click a gray point to
+open its Bridge configuration. Existing manual assignments survive removal of
+the corresponding Bridge target.
 
 ## Companion and HTTP API
 
@@ -346,6 +364,10 @@ Auth:
 
 - API key via `x-api-key: <KEY>` or `Authorization: Bearer <KEY>`
 - User-scoped token via `POST /api/v1/companion/auth/login`
+
+Authentication uses `Authorization: Bearer <token>` or `X-API-Key` headers.
+API keys in URL query parameters are no longer accepted. Socket.IO clients
+must use the handshake `auth` payload or authentication headers.
 
 Main endpoints:
 
@@ -428,56 +450,15 @@ as outputs. OBS 31 or newer can send and receive them using the official
 requirements are documented in the Bridge client's
 [OMT Audio documentation](bridge-client/README.md#omt-audio).
 
-## Radio Gateway Prototype
+## Headless Client
 
-The repository includes a generic hardware gateway helper for bridging Talktome to an external radio or intercom device. It expects a Linux gateway host with ALSA audio I/O, an audio interface connected to the external device, and an optional GPIO-controlled PTT circuit.
-
-The helper can control PTT through `pinctrl`, monitor receive audio level, and stream bidirectional audio between the external device and a Talktome conference.
-
-Commands:
-
-```bash
-npm run radio:ptt -- 2
-npm run radio:play -- test.wav
-npm run radio:monitor
-npm run radio:record
-npm run radio:calibrate
-TALKTOME_SERVER_URL=https://<SERVER-IP>:8443 TALKTOME_GATEWAY_API_KEY=<COMPANION-API-KEY> TALKTOME_GATEWAY_USER_ID=<USER-ID> TALKTOME_GATEWAY_CONFERENCE_ID=<CONFERENCE-ID> npm run radio:stream
-```
-
-Run `npm run radio:calibrate` on the gateway host to measure idle noise, remote PTT without speech, and quiet speech. It writes `gateway/radio-config.json`; environment variables still override that file.
-
-The streaming gateway authenticates with the Companion API key shown in the
-Admin UI. Set it through `TALKTOME_GATEWAY_API_KEY` (or `COMPANION_API_KEY`)
-before starting `radio:stream`.
-
-Defaults can be configured in `gateway/radio-config.json` or overridden with environment variables:
-
-```bash
-TALKTOME_RADIO_CONFIG=gateway/radio-config.json
-TALKTOME_RADIO_GPIO=17
-TALKTOME_RADIO_AUDIO_DEVICE=plughw:CARD=CODEC,DEV=0
-TALKTOME_RADIO_RX_ON_THRESHOLD=0.002
-TALKTOME_RADIO_RX_OFF_THRESHOLD=0.003
-TALKTOME_RADIO_RX_HANG_MS=600
-TALKTOME_RADIO_RX_PRE_ROLL_MS=500
-TALKTOME_RADIO_RX_RESUME_LEAD_MS=150
-TALKTOME_RADIO_RX_WARMUP_MS=500
-TALKTOME_RADIO_RX_GAIN_DB=6
-TALKTOME_RADIO_TX_ENABLED=true
-TALKTOME_RADIO_TX_RTP_IP=<auto-detected-gateway-ip>
-TALKTOME_RADIO_TX_RTP_PORT=5006
-TALKTOME_RADIO_TX_GAIN_DB=0
-TALKTOME_RADIO_RX_SEGMENTS_DIR=gateway/rx-segments
-TALKTOME_SERVER_URL=https://talktome.local:8443
-TALKTOME_GATEWAY_API_KEY=<COMPANION-API-KEY>
-TALKTOME_GATEWAY_USER_ID=1
-TALKTOME_GATEWAY_CONFERENCE_ID=1
-TALKTOME_GATEWAY_NAME=Radio Gateway
-```
-
-Sync gateway changes from a development machine to a gateway host without pushing to GitHub:
-
-```bash
-TALKTOME_GATEWAY_HOST=user@gateway-host.local npm run gateway:sync
-```
+`talktome-headless` logs in as a normal Talktome user and runs without a
+screen: an Elgato Stream Deck (MK.2, XL, Mini, Neo, +, + XL, Pedal) serves as
+the key panel with talk, reply, locks, volume and conference member mix; GPIO
+lines carry PGM/PRV tally, talk and status lights and PTT inputs; a local web
+UI covers status, settings and a remote control. It is built as `.deb`
+packages for arm64, armhf and amd64 by the Headless Client Builds workflow.
+Installation, configuration and the Stream Deck layout are described in
+[headless-client/README.md](headless-client/README.md); protocol and design
+details are in
+[headless-client/specification.md](headless-client/specification.md).

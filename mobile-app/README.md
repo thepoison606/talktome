@@ -10,6 +10,18 @@ The app includes:
   Hold several target buttons at once to address them together; releasing one
   button leaves the others active. Main/Reply and target cards own separate holds.
 - Server remote-panel control and synchronized operator preferences.
+- Drag target handles in Edit targets to reorder them, with edge scrolling and automatic saving.
+  The order is shared with the browser for the selected production.
+- Hardware keyboard PTT on iOS/iPadOS and Android: hold 1–9 for talkable targets
+  in list order, or Space for the configured Main button. Release stops that
+  key's hold; multiple keys and number-pad digits work independently. Configure
+  keys under Layout → Keyboard shortcuts by selecting an action and pressing a
+  key, or reset individual/all bindings. Custom keys follow target identities
+  when reordered and are scoped to the profile and production. User hotkeys
+  also round-trip through the server's web/remote-panel preference format.
+  Settings, text entry, app/window focus loss and disconnect release keyboard
+  holds. Command/Ctrl/Alt combinations remain available to the operating system.
+  Installing this feature requires a native app rebuild.
 - Live speaker names on conference cards, including listen-only conferences.
 - Automatic reconnect with cancellation of superseded connection attempts.
 - Admin Status diagnostics: installed app version/build, active audio output, battery
@@ -56,8 +68,8 @@ The generated `android/` and `ios/` folders are ignored; local Expo modules in
 
 ### Dependency security
 
-CI runs `npm audit --audit-level=high` for the complete mobile dependency tree,
-including development tools. The SDK 56 toolchain needs four overrides:
+CI runs `npm audit --audit-level=moderate` for the complete mobile dependency tree,
+including development tools. The SDK 56 toolchain uses the following overrides:
 
 - `@expo/metro` 56.1.0 uses Metro 0.84.6, which replaces the vulnerable
   `image-size` dependency with Metro's own image readers.
@@ -68,6 +80,14 @@ including development tools. The SDK 56 toolchain needs four overrides:
   consumer here is Expo CLI's dev-tool/MCP schema handling.
 - UUID stays on the patched CommonJS-compatible 11.x line for the Xcode project
   tooling. UUID 12 and later require ESM.
+- Glob 14.0.2 or newer and minimatch 11.0.1 or newer fix traversal cancellation
+  and pattern-amplification denial of service in Expo/Apple-target build tooling.
+
+The `deepmerge` advisory GHSA-gcqx-w48m-w2h4 refers to
+[CVE-2026-93753](https://cveawg.mitre.org/api/cve/CVE-2026-93753), which its CNA
+rejected on 2026-11-02 because it does not describe a security vulnerability.
+Dependabot alert #118 is dismissed as inaccurate; npm audit may still report
+this withdrawn advisory and its transitive Expo dependants until its database updates.
 
 `src/config/toolingCompatibility.test.ts` exercises the actual plist parser,
 Metro image reader and Expo dev-tool schemas. Revisit these overrides when

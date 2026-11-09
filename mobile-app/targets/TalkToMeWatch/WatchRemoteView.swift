@@ -40,7 +40,7 @@ struct WatchRemoteView: View {
   private var content: some View {
     if !remote.snapshot.connected {
       StatusScreen(
-        title: "TalkToMe",
+        title: "Talktome",
         detail: remote.status,
         hint: "Keep the iPhone session connected. The watch only remotes talk — audio stays on the phone."
       )

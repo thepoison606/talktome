@@ -5,6 +5,27 @@ const vm = require('node:vm');
 const { normalizeClientDeviceStatus, recordClientDeviceStatus, getFreshClientDeviceStatus } = require('../src/server/clientDeviceStatus');
 const { browserNetworkType, createReporter } = require('../public/clientDeviceStatus');
 
+test('headless reports survive server validation and render their device details and real zero loss', () => {
+  const { normalizeClientVersion } = require('../src/server/statusClient');
+  const peer = { kind: 'user', connectedAt: 1 };
+  assert.equal(normalizeClientVersion('1.6.1+local.20261108.7'), '1.6.1+local.20261108.7');
+  assert.equal(recordClientDeviceStatus(peer, {
+    audioOutput: { label: 'hw:CARD=wm8960soundcard,DEV=0', kind: 'other' },
+    networkType: 'ethernet', batteryPercent: null, charging: null,
+  }, 1000), true);
+  const status = getFreshClientDeviceStatus(peer, 6000);
+  const admin = fs.readFileSync(require.resolve('../public/admin'), 'utf8');
+  const server = fs.readFileSync(require.resolve('../src/server/serverCore'), 'utf8');
+  const context = vm.createContext({});
+  vm.runInContext(admin.slice(admin.indexOf('function formatStatusAudioOutput('), admin.indexOf('function renderAdminStatus(')), context);
+  vm.runInContext(admin.slice(admin.indexOf('function formatStatusLatency('), admin.indexOf('function syncStopTransmissionButtons(')), context);
+  vm.runInContext(server.slice(server.indexOf('function normalizeBrowserMediaStats('), server.indexOf('function logBrowserMediaStats(')), context);
+  assert.equal(context.formatStatusNetwork(status), 'Ethernet');
+  assert.match(context.formatStatusAudioOutput(status), /wm8960soundcard/);
+  const media = context.normalizeBrowserMediaStats({ packetsReceived: 10, packetsLost: 0, packetLossPercent: 0 });
+  assert.equal(context.formatStatusPacketLoss(media), '0.0%');
+});
+
 test('device reports validate hardware values without inventing defaults', () => {
   assert.equal(normalizeClientDeviceStatus(null), null);
   assert.equal(normalizeClientDeviceStatus([]), null);

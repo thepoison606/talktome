@@ -13,6 +13,7 @@ export type PanelSettings = {
 };
 
 export type PanelAudioSettings = Required<Omit<ServerClientDefaults, 'bigMainButton'>> & {
+  bigMainButton?: boolean;
   userInputGainDb: number;
   voiceTriggerEnabled: boolean;
   voiceTriggerTarget: string;

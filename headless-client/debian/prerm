@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove)
+        if [ -d /run/systemd/system ]; then
+            for unit in $(systemctl list-units --all --plain --no-legend --type=service 'talktome-headless@*.service' 2>/dev/null | awk '{print $1}'); do
+                systemctl stop "$unit" >/dev/null 2>&1 || true
+                systemctl disable "$unit" >/dev/null 2>&1 || true
+            done
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

@@ -75,3 +75,19 @@ test("incoming meter defaults apply until a user saves an explicit preference", 
   const disabled = resolveDefaultClientSettings({ showIncomingLevels: false });
   assert.equal(resolveUserAudioSettings({ showIncomingLevels: true }, disabled).showIncomingLevels, true);
 });
+
+test('feed video defaults to off and only accepts boolean configuration', () => {
+  assert.equal(resolveDefaultClientSettings({}).allowFeedVideo, false);
+  assert.equal(resolveDefaultClientSettings({ allowFeedVideo: true }).allowFeedVideo, true);
+  assert.throws(() => normalizeConfiguredDefaultClientSettings({ allowFeedVideo: 'true' }, { strict: true }), /boolean/);
+});
+
+
+test("apply-to-all only accepts explicitly supplied boolean default keys", () => {
+  const { normalizeApplyToAll } = require('../src/server/defaultClientSettings');
+  assert.deepEqual(normalizeApplyToAll(undefined, {}), []);
+  assert.deepEqual(normalizeApplyToAll(['bigMainButton', 'bigMainButton'], { bigMainButton: true }), ['bigMainButton']);
+  for (const value of [true, 'bigMainButton', ['audioProfile'], ['unknown'], ['leftHandMode']]) {
+    assert.throws(() => normalizeApplyToAll(value, { audioProfile: 'low' }), /Invalid applyToAll/);
+  }
+});

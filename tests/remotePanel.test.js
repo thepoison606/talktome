@@ -25,7 +25,7 @@ async function fixture(t) {
   const commands = [];
   const user = { id: 7, name: 'Camera' };
   const productions = [{ id: 1, name: 'Show' }];
-  const behavior = { failPress: false };
+  const behavior = { failPress: false, systemVolume: null, failSystemVolume: false };
   const activeFeedIds = new Set();
   const targets = [{ targetType: 'user', targetId: 8, name: 'Director' }, { targetType: 'conference', targetId: 4, name: 'Crew', canTalk: true }];
   const getAdminSession = req => req.headers.cookie === 'admin_session=test-admin' ? { session: { isGlobalAdmin: true } } : null;
@@ -71,13 +71,53 @@ async function fixture(t) {
     await once(socket, 'connect');
     socket.on('panel-command', (command, ack) => {
       commands.push(command);
+      if (command.kind === 'system-volume') {
+        if (behavior.failSystemVolume) return ack({ ok: false, error: 'Hardware unavailable' });
+        behavior.systemVolume = { ...behavior.systemVolume, ...('volume' in command ? { volume: command.volume } : {}), ...('muted' in command ? { muted: command.muted } : {}) };
+      }
       if (behavior.failPress && command.action === 'press') return ack({ ok: false, error: 'Microphone unavailable' });
-      ack({ ok: true, report: { revision: command.panelSettings?.revision || 0, storage: command.panelSettings?.storage || {}, runtime: {} } });
+      ack({ ok: true, report: { revision: command.panelSettings?.revision || 0, storage: command.panelSettings?.storage || {}, runtime: { systemVolume: behavior.systemVolume } } });
     });
     return socket;
   }
   return { app, url, control, settings, audio, peers, commands, openPanel, openUser, clients, productions, behavior, targets, activeFeedIds };
 }
+
+test('device volume uses confirmed client values without persisting user audio or panel settings', async t => {
+  const f = await fixture(t);
+  await f.openUser();
+  const peer = f.peers.get(7).peer;
+  f.behavior.systemVolume = { volume: 0.6, muted: false, muteSupported: true, control: 'Master' };
+  f.control.report(peer, { revision: 0, runtime: { systemVolume: f.behavior.systemVolume } });
+  assert.equal(f.control.snapshot(7).runtime.systemVolume.volume, 0.6);
+  assert.equal((await f.control.systemVolume(7, { volume: 0.25 })).volume, 0.25);
+  assert.equal((await f.control.systemVolume(7, { muted: true })).muted, true);
+  assert.deepEqual(f.commands, [{ kind: 'system-volume', volume: 0.25 }, { kind: 'system-volume', muted: true }]);
+  assert.equal(f.settings.size, 0);
+  assert.equal(f.audio.size, 0);
+  // An external mixer change is reflected in subsequent snapshots.
+  f.control.report(peer, { revision: 0, runtime: { systemVolume: { ...f.behavior.systemVolume, volume: 0.8 } } });
+  assert.equal(f.control.snapshot(7).runtime.systemVolume.volume, 0.8);
+});
+
+test('device volume rejects offline, unsupported, invalid and unconfirmed changes', async t => {
+  const f = await fixture(t);
+  await assert.rejects(f.control.systemVolume(7, { volume: 0.5 }), /unavailable/);
+  await f.openUser();
+  const peer = f.peers.get(7).peer;
+  await assert.rejects(f.control.systemVolume(7, { volume: 0.5 }), /unavailable/);
+  f.behavior.systemVolume = { volume: 0.6, muted: false, muteSupported: false, control: 'PCM' };
+  f.control.report(peer, { revision: 0, runtime: { systemVolume: f.behavior.systemVolume } });
+  for (const command of [{}, { volume: -1 }, { volume: 2 }, { volume: NaN }, { volume: '0.5' }, { muted: true }, { volume: 0.5, muted: true }]) {
+    await assert.rejects(f.control.systemVolume(7, command));
+  }
+  assert.equal(f.commands.length, 0);
+  f.behavior.failSystemVolume = true;
+  await assert.rejects(f.control.systemVolume(7, { volume: 0.5 }), /Hardware unavailable/);
+  assert.equal(f.control.snapshot(7).runtime.systemVolume.volume, 0.6);
+  f.control.report(peer, { revision: 0, runtime: { systemVolume: null } });
+  assert.equal(f.control.snapshot(7).runtime.systemVolume, null);
+});
 
 test('remote panels see sending feeds independently of local reception and client runtime reports', async t => {
   const f = await fixture(t);

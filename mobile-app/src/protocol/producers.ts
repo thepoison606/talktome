@@ -44,6 +44,7 @@ export function parseActiveProducer(payload: unknown): ActiveProducer | null {
   return {
     peerId,
     producerId,
+    ...(item.kind === 'audio' || item.kind === 'video' ? { kind: item.kind } : {}),
     speakerUserId: asNumber(item.speakerUserId) ?? null,
     appData,
     route,
@@ -89,4 +90,10 @@ export function activeFeedKeysFromProducers(producers: ActiveProducer[]): string
     }
   }
   return [...keys];
+}
+
+/** Older servers omit kind. Only explicitly advertised feed video is treated as video. */
+export function isFeedVideoProducer(producer: ActiveProducer): boolean {
+  return producer.route.kind === 'feed' && (producer.kind === 'video' ||
+    (producer.kind == null && producer.appData.mediaKind === 'video'));
 }

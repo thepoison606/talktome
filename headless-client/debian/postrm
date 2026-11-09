@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    purge)
+        rm -rf /var/lib/talktome-headless
+        rm -rf /etc/talktome-headless
+        if getent passwd talktome-headless >/dev/null; then
+            deluser --system --quiet talktome-headless >/dev/null 2>&1 || true
+        fi
+        if getent group talktome-headless >/dev/null; then
+            delgroup --system --quiet talktome-headless >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+fi
+
+#DEBHELPER#
+
+exit 0

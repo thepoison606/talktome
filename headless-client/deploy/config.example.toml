@@ -1,0 +1,191 @@
+# Talktome headless client configuration (TOML flavour).
+# Copy to /etc/talktome-headless/<instance>.toml and start with
+#   systemctl enable --now talktome-headless@<instance>
+# Every value can also be set through TALKTOME_<SECTION>_<KEY> environment
+# variables, e.g. TALKTOME_USER_PASSWORD in /etc/talktome-headless/<instance>.env.
+
+# Defaults to the file name.
+instance = "cam1"
+
+[server]
+url = "https://talktome.local:8443"
+
+[tls]
+# Trust an additional CA (for self-signed server certificates) ...
+# ca_file = "/etc/talktome-headless/server-ca.pem"
+# ... or pin the server's leaf certificate ...
+# fingerprint_sha256 = "AB:CD:EF:..."
+# ... or (development only) accept any certificate.
+insecure = false
+
+[user]
+name = "Cam 1"
+password = "change-me"
+# Production id or name; omit to use the Default production.
+# production = "Studio A"
+
+[registration]
+# "takeover" (default): kick another session using this account after
+# takeover_delay_ms. "wait": retry every retry_ms until the account is free.
+conflict = "takeover"
+takeover_delay_ms = 1500
+retry_ms = 5000
+kicked_retry_ms = 10000
+
+[audio]
+# ALSA ids from `talktome-headless list-audio-devices`; omit for the default
+# device. "none" disables a direction, "tone" / "tone:440" feeds a 440 Hz
+# sine (or another frequency with tone:1000), "wav:/path.wav" records the
+# mix instead of playing it. On a VM without a headset use:
+#   input_device = "tone"
+#   output_device = "wav:/tmp/talktome-out.wav"
+input_device = "plughw:CARD=Headset,DEV=0"
+output_device = "plughw:CARD=Headset,DEV=0"
+# ultra-low matches the web client (5 ms, no FEC, 48 kbit/s).
+# low = 10 ms. standard = 20 ms with FEC when the link or the CPU cannot keep up.
+profile = "ultra-low"
+# ALSA period. 0 = driver default (often 21–85 ms, and the buffer is two periods).
+# 10 ms is the stable choice on a NanoPi NEO Core LTS; try 5 on a faster host.
+# A rejected size falls back to the driver default (log: audio-period-rejected).
+device_period_ms = 10
+# Same as the browser "Audio auto processing" toggle: AEC + NS + AGC.
+# Manual input_gain_db is ignored while this is on. Admin can override it
+# per user after register (`user-audio-settings-updated`).
+auto_processing = false
+input_gain_db = 0
+# Optional AEC delay override (0–500 ms). Empty = estimate from callback periods.
+# stream_delay_ms = 40
+dim_db = -15
+dim_feeds_while_speaking = false
+dim_when_addressed = true
+# Disconnect and reconnect tones. Same as the web client "Play connection sounds".
+# A live user-audio-settings-updated playConnectionSounds value overrides this.
+play_connection_sounds = true
+# Link of this client: "lan" (default) or "mobile". The preset fills the
+# jitter buffer and profile when they are left out; values set here win.
+# mobile = jitter_start_ms 150, jitter_min_ms 60, jitter_max_ms 600, profile "standard"
+network = "lan"
+jitter_start_ms = 20
+jitter_min_ms = 20
+jitter_max_ms = 400
+reopen_ms = 2000
+default_volume = 0.9   # 90%, matching web/mobile (about -0.9 dB)
+# default_volume_db = -6   # optional dB override
+
+[vox]
+enabled = false
+target = "conference:1"
+threshold_db = -32
+hang_ms = 600
+
+[talk]
+# A press shorter than this toggles the talk lock instead of talking.
+tap_ms = 250
+lock_multiple = false
+# Pin Reply / Main to a user or conference (`user:4`, `conference:1`).
+# Empty = last incoming reply. A missing pin does not fall back.
+# main_target = "conference:1"
+
+[ice]
+# Normally left empty: STUN/TURN servers and the policy come from the server.
+# servers = [{ urls = ["turn:turn.example:3478"], username = "u", credential = "p" }]
+# transport_policy = "relay"
+# Gather IPv6 ICE candidates. Leave off unless the box has a global IPv6
+# address; link-local-only IPv6 makes webrtc-ice fail to bind.
+# ipv6 = false
+
+[network]
+ice_disconnect_grace_ms = 4000
+
+[streamdeck]
+enabled = true
+# Dummy panel when no USB Stream Deck is attached (OrbStack / CI / a Pi
+# without a deck). Models: mk2, mini, minimk2, original, originalv2, xl,
+# xlv2, plus, plusxl, neo, pedal. The Stream Deck web tab then works.
+# mock = "mk2"
+# serial = "AL12K3456789"   # bind to one deck when several are attached
+brightness = 60
+font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+# Percentage points per Stream Deck VOL +/− key and encoder tick.
+volume_step_percent = 4
+# GPIO/local API default step (dB), independent of the deck:
+volume_step_db = 3
+volume_layer_timeout_s = 8
+# Pedal: right switch is always Reply; left and middle are assignable.
+# Dedicated fields, or the layout JSON map (those keys win when both are set):
+# pedal_left = "user:4"
+# pedal_target = "conference:1"
+# [streamdeck.layout]
+# "0" = "user:4"          # left switch
+# "1" = "conference:1"    # middle switch
+# Other layout indexes are ignored. Visual decks (mk2, neo, …) never read this map.
+# Several decks in one instance (mixed models are fine). When this list is
+# empty, serial/mock/pedal above describe a single deck.
+# [[streamdeck.devices]]
+# mock = "neo"
+# [[streamdeck.devices]]
+# mock = "plusxl"
+# [[streamdeck.devices]]
+# mock = "pedal"
+# layout = { "0" = "user:4", "1" = "conference:1" }
+
+[gpio]
+enabled = true
+# chip = "gpiochip0"        # only needed when lines are given as offsets
+
+# Named outputs are optional. Omit a name (or the whole [gpio.outputs] table) to skip that pin.
+# `connected` follows ICE/media Ready (not merely registered). It goes off if the network drops.
+[gpio.outputs]
+tally = { line = "GPIO17", active_low = false }
+talking = { line = "GPIO27" }
+# Preview (PRV) tally — green in the web client. Omit if the camera has no preview GPI.
+# tally_preview = { line = "GPIO5" }
+# incoming = { line = "GPIO18" }
+# connected = { line = "GPIO25" }
+# Status light: 100 ms flash then 2 s dark = running but not registered,
+# 1 s on / 1 s off = registered with an error (no media / audio / heartbeat),
+# steady on = media OK, off = client not running.
+# status = { line = "GPIO24" }
+
+# Drive a pin when a specific conference, user, or feed is playing audio (`receiving`)
+# or is currently addressing this client (`incoming`). Add more tables as needed.
+# [[gpio.target_outputs]]
+# line = "GPIO18"
+# target = "conference:1"
+# when = "receiving"
+
+[[gpio.inputs]]
+line = "GPIO22"
+action = "talk"           # talk | reply | lock_toggle | clear_locks | mute_toggle | volume_up | volume_down
+target = "conference:1"
+active_low = true         # button to ground with pull-up
+debounce_ms = 20
+
+[[gpio.inputs]]
+line = "GPIO23"
+action = "reply"
+active_low = true
+
+[socket]
+# JSON-lines control socket for a display, volume rotaries or MCU panel.
+# Same talk/volume bus as Stream Deck and GPIO. See examples/socket_panel.py.
+enabled = true
+# path = "/run/talktome-headless/cam1/control.sock"   # default: $RUNTIME_DIRECTORY/control.sock
+# tcp = "127.0.0.1:9876"    # optional loopback TCP for development (rejected unless loopback)
+
+[web]
+# Local administration web interface (status, Stream Deck view, settings).
+# Login is always "admin"; the default password must be changed on first login.
+enabled = true
+bind = "0.0.0.0"
+port = 8080
+password = "admin"        # or TALKTOME_WEB_PASSWORD in the .env file
+
+[health]
+# port = 9911               # GET http://127.0.0.1:9911/healthz
+bind = "127.0.0.1"
+
+[log]
+level = "info"
+# auto (JSON under systemd, text on a terminal), json or text
+format = "auto"

@@ -1,3 +1,4 @@
+const bridgeTalkTrigger = globalThis.TalktomeBridgeTalkTrigger;
 const PANEL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4M7 8h4M7 12h2M15 8v4"/></svg>';
 const adminState = {
   isAuthenticated: false,
@@ -126,6 +127,7 @@ const defaultClientIncomingLevels = document.getElementById('default-client-inco
 const defaultClientLeftHand = document.getElementById('default-client-left-hand');
 const defaultClientBigMainButton = document.getElementById('default-client-big-main-button');
 const defaultClientLockMultiple = document.getElementById('default-client-lock-multiple');
+const defaultClientAllowFeedVideo = document.getElementById('default-client-allow-feed-video');
 const defaultClientAllowTargetAddRemove = document.getElementById('default-client-allow-target-add-remove');
 const defaultClientAllowTargetRearrange = document.getElementById('default-client-allow-target-rearrange');
 const adminImageLightbox = document.getElementById('admin-image-lightbox');
@@ -143,6 +145,7 @@ const adminActionDialogInput = document.getElementById('admin-action-dialog-inpu
 const adminActionDialogPasswordToggle = document.getElementById('admin-action-dialog-password-toggle');
 const adminActionDialogError = document.getElementById('admin-action-dialog-error');
 const adminActionDialogCancel = document.getElementById('admin-action-dialog-cancel');
+const adminActionDialogAlternative = document.getElementById('admin-action-dialog-alternative');
 const adminActionDialogConfirm = document.getElementById('admin-action-dialog-confirm');
 
 let activeAdminActionDialog = null;
@@ -182,6 +185,7 @@ function openAdminActionDialog({
   inputType = 'text',
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
+  alternativeLabel = '',
   danger = false,
   required = false,
   minLength = 0,
@@ -221,6 +225,8 @@ function openAdminActionDialog({
     adminActionDialogPasswordToggle.title = 'Show password';
     adminActionDialogCancel.textContent = cancelLabel;
     adminActionDialogCancel.classList.toggle('is-hidden', !canCancel);
+    adminActionDialogAlternative.textContent = alternativeLabel;
+    adminActionDialogAlternative.classList.toggle('is-hidden', !alternativeLabel);
     adminActionDialogConfirm.textContent = confirmLabel;
     adminActionDialogConfirm.classList.toggle('danger', Boolean(danger));
     showAdminActionDialogError('');
@@ -289,6 +295,7 @@ adminActionDialogForm?.addEventListener('submit', (event) => {
   closeAdminActionDialog(true);
 });
 
+adminActionDialogAlternative?.addEventListener('click', () => closeAdminActionDialog('alternative'));
 adminActionDialogCancel?.addEventListener('click', () => closeAdminActionDialog(null));
 adminActionDialog?.addEventListener('pointerdown', (event) => {
   if (event.target === adminActionDialog && activeAdminActionDialog?.canCancel) {
@@ -731,48 +738,38 @@ function validateOptionalBridgeDeviceChannel(device, leftChannel, label) {
 }
 
 function readBridgeTriggerConfig(userId, validate = true) {
-  const mode = document.getElementById(`bridge-trigger-mode-${userId}`)?.value === 'audio-level'
-    ? 'audio-level'
-    : 'external';
-  const targetValue = mode === 'audio-level'
-    ? document.getElementById(`bridge-trigger-target-${userId}`)?.value || ''
-    : '';
-  const thresholdValue = document.getElementById(`bridge-trigger-threshold-${userId}`)?.value;
-  const payload = {
-    triggerMode: mode,
-    triggerTargetType: '',
-    triggerTargetId: null,
-    triggerThresholdDb: Number(thresholdValue || -45),
-  };
-
-  if (targetValue) {
-    const [targetType, rawTargetId] = targetValue.split(':');
-    payload.triggerTargetType = targetType === 'user' || targetType === 'conference' ? targetType : '';
-    payload.triggerTargetId = Number(rawTargetId);
+  const mode = bridgeTalkTrigger.mode(document.getElementById(`bridge-trigger-mode-${userId}`)?.value);
+  const list = document.getElementById(`bridge-trigger-target-${userId}`);
+  const targets = globalThis.TalktomeTargetPicker.read(list).map(value => {
+    const [type, id] = value.split(':');
+    return { type, id: Number(id) };
+  });
+  const threshold = Number(document.getElementById(`bridge-trigger-threshold-${userId}`)?.value ?? -45);
+  if (validate && mode !== 'external' && !targets.length) {
+    throw new Error('Select at least one talk target');
   }
-
-  if (validate && mode === 'audio-level') {
-    if (!payload.triggerTargetType || !Number.isInteger(payload.triggerTargetId) || payload.triggerTargetId < 1) {
-      throw new Error('Audio level trigger requires a selected user or conference target');
-    }
-    if (!Number.isFinite(payload.triggerThresholdDb)) {
-      throw new Error('Audio level trigger threshold is invalid');
-    }
+  if (validate && mode === 'audio-level' && !Number.isFinite(threshold)) {
+    throw new Error('Audio level trigger threshold is invalid');
   }
-
-  return payload;
+  return { triggerMode: mode, triggerTargets: targets, triggerThresholdDb: threshold };
 }
 
 function syncBridgeTriggerControls(userId) {
-  const modeSelect = document.getElementById(`bridge-trigger-mode-${userId}`);
-  const details = document.getElementById(`bridge-trigger-details-${userId}`);
-  const isLevelTrigger = modeSelect?.value === 'audio-level';
-  if (details) {
-    details.hidden = !isLevelTrigger;
-    details.querySelectorAll('select, input').forEach((field) => {
-      field.disabled = !isLevelTrigger;
-    });
+  const mode = document.getElementById(`bridge-trigger-mode-${userId}`)?.value;
+  const threshold = document.getElementById(`bridge-trigger-threshold-${userId}`);
+  if (threshold) {
+    threshold.parentElement.hidden = mode !== 'audio-level';
+    threshold.disabled = mode !== 'audio-level';
+    threshold.closest('.bridge-trigger-row')?.classList.toggle('bridge-trigger-row--simple', mode !== 'audio-level');
   }
+  const details = document.getElementById(`bridge-trigger-details-${userId}`);
+  if (details) details.hidden = mode === 'external';
+  const hint = document.getElementById(`bridge-trigger-hint-${userId}`);
+  if (hint) hint.title = (mode === 'always-on'
+    ? 'Sends continuously to all selected targets. Resumes after reconnects. Change mode to stop.'
+    : mode === 'audio-level' ? 'Sends to all selected targets when the input exceeds the threshold.'
+      : 'Targets are supplied by API / Companion commands.')
+    + ' Targets are global. Selected conferences also open return audio; mute or adjust it in the Panel.';
 }
 
 function getBridgeById(bridgeId) {
@@ -860,6 +857,7 @@ function updateBridgeEndpointDeviceOptions(formKey) {
   const bridgeSelect = document.getElementById(`bridge-device-${formKey}`);
   const inputDeviceSelect = document.getElementById(`bridge-input-device-${formKey}`);
   const outputDeviceSelect = document.getElementById(`bridge-output-device-${formKey}`);
+  const videoSelect = document.getElementById(`bridge-video-source-${formKey}`);
   if (!bridgeSelect || !inputDeviceSelect) return;
 
   const bridge = getBridgeById(bridgeSelect.value);
@@ -880,6 +878,14 @@ function updateBridgeEndpointDeviceOptions(formKey) {
   );
   inputDeviceSelect.disabled = !bridge;
   updateBridgeEndpointPairOptions(formKey, 'input');
+  if (videoSelect) {
+    const selected = videoSelect.value || videoSelect.dataset.savedValue || '';
+    setBridgeSelectOptions(videoSelect, (bridge?.inventory?.videoSources || [])
+      .map(source => ({ value: source.id, label: source.name })), selected, 'Off');
+    videoSelect.disabled = !bridge;
+    videoSelect.onchange = () => { videoSelect.dataset.savedValue = videoSelect.value; };
+  }
+
 
   if (outputDeviceSelect) {
     const outputDevices = (bridge?.inventory?.devices || [])
@@ -935,41 +941,27 @@ function syncBridgeEndpointFormsWithRegistry() {
 }
 
 function updateBridgeTriggerTargetOptions(userId, targets = [], { includeUnavailable = true } = {}) {
-  const select = document.getElementById(`bridge-trigger-target-${userId}`);
-  if (!select) return;
-
-  const savedValue = select.dataset.savedValue || '';
-  const preferredValue = select.value || savedValue;
-  const triggerTargets = targets
-    .filter((target) => (
-      (target.targetType || target.type) === 'user'
-      || ((target.targetType || target.type) === 'conference' && target.canTalk !== false)
-    ))
-    .map((target) => ({
-      value: `${target.targetType || target.type}:${target.targetId ?? target.id}`,
-      label: `${target.name} (${target.targetType || target.type})`,
-    }));
-
-  select.innerHTML = '<option value="">Select target</option>';
-  for (const target of triggerTargets) {
-    const option = document.createElement('option');
-    option.value = target.value;
-    option.textContent = target.label;
-    select.appendChild(option);
+  const list = document.getElementById(`bridge-trigger-target-${userId}`);
+  if (!list) return;
+  const selected = list.dataset.initialized === 'true'
+    ? globalThis.TalktomeTargetPicker.read(list)
+    : bridgeTalkTrigger.targets(list.dataset.savedTargets).map(target => `${target.type}:${target.id}`);
+  const options = new Map(targets
+    .filter(target => (target.targetType || target.type) === 'user'
+      || ((target.targetType || target.type) === 'conference' && target.canTalk !== false))
+    .map(target => [`${target.targetType || target.type}:${target.targetId ?? target.id}`, {
+      type: target.targetType || target.type, label: target.name,
+    }]));
+  if (includeUnavailable) for (const key of selected) {
+    if (!options.has(key)) options.set(key, { type: key.split(':')[0], label: key, unavailable: true });
   }
-
-  if (includeUnavailable && preferredValue && !triggerTargets.some((target) => target.value === preferredValue)) {
-    const option = document.createElement('option');
-    option.value = preferredValue;
-    option.textContent = `${preferredValue} (saved, unavailable)`;
-    select.appendChild(option);
-  }
-  select.value = [...select.options].some((option) => option.value === preferredValue) ? preferredValue : '';
+  globalThis.TalktomeTargetPicker.mount(list, [...options].map(([value, option]) => ({value, ...option})), selected);
+  list.dataset.initialized = 'true';
 }
 
 async function loadBridgeTriggerTargets(userId, { includeUnavailable = true } = {}) {
   const payload = await fetchJSON(`/admin/users/${userId}/audio-settings`);
-  updateBridgeTriggerTargetOptions(userId, payload.targets || [], { includeUnavailable });
+  updateBridgeTriggerTargetOptions(userId, payload.bridgeTargets || payload.targets || [], { includeUnavailable });
 }
 
 function updateBridgeRegistryFromStatus(snapshot = {}) {
@@ -1100,6 +1092,7 @@ async function authedFetch(url, options) {
     adminState.mustChangePassword = false;
     adminState.userId = null;
     adminState.name = '';
+    showLogin('Session expired. Please sign in again.');
     throw new Error('Unauthorized');
   }
   return res;
@@ -2171,6 +2164,35 @@ function productionTargetKey(targetType, targetId) {
   return `${targetType}:${targetId}`;
 }
 
+function isBridgeManagedMatrixTarget(user, targetType, targetId) {
+  return Boolean(user?.bridge_enabled && ['audio-level', 'always-on'].includes(user.bridge_trigger_mode)
+    && bridgeTalkTrigger.targets(user.bridge_trigger_targets,
+    user.bridge_trigger_target_type && user.bridge_trigger_target_id
+      ? { type: user.bridge_trigger_target_type, id: user.bridge_trigger_target_id } : null)
+    .some(target => target.type === targetType && Number(target.id) === Number(targetId)));
+}
+
+function bridgeManagedMatrixHint(label) {
+  return `${label} — Configured by Bridge. Click to open Bridge configuration.`;
+}
+
+async function openMatrixBridgeConfiguration(toggle, forcedEnabled = null) {
+  if (toggle.dataset.bridgeManaged !== 'true') return false;
+  // Painting across managed cells must neither edit them nor navigate away.
+  if (forcedEnabled !== null) return true;
+  if (!adminState.isGlobalAdmin) {
+    showMessage('This connection is configured by Bridge. Ask a global administrator to change it.', 'info', 'matrix');
+    return true;
+  }
+  await window.openUserFromStatus(Number(toggle.dataset.userId));
+  window.requestAnimationFrame(() => {
+    const form = document.getElementById(`bridge-config-${toggle.dataset.userId}`);
+    form?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    document.getElementById(`bridge-trigger-mode-${toggle.dataset.userId}`)?.focus({ preventScroll: true });
+  });
+  return true;
+}
+
 function getProductionTargetState(targetType, target = null) {
   if (!target) return 'off';
   if (targetType === 'conference' && target.canTalk === false) return 'listen-only';
@@ -2234,6 +2256,68 @@ function renderProductionMembers(payload) {
   ].join('');
 }
 
+function matrixConnectButton(user = null) {
+  const hint = user ? `Connect all targets for ${user.name}` : 'Connect all users to all targets in this matrix';
+  return `<button type="button" class="matrix-connect${user ? '' : ' matrix-connect--all'}"
+    data-matrix-connect="${user ? user.id : 'all'}" data-user-name="${escapeHtml(user?.name || '')}"
+    title="${escapeHtml(hint)}" aria-label="${escapeHtml(hint)}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M10 13a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1l-1.7 1.7M14 11a5 5 0 0 0-7.1 0l-3 3a5 5 0 0 0 7.1 7.1l1.7-1.7" />
+    </svg></button>`;
+}
+
+function matrixUserHeading(user) {
+  return `<th class="target-matrix__user-name" scope="row"><div class="target-matrix__user-label"><span title="${escapeHtml(user.name)}">${escapeHtml(user.name)}</span>${matrixConnectButton(user)}</div></th>`;
+}
+
+let matrixConnectBusy = false;
+async function handleMatrixConnectAll(container, button) {
+  if (matrixConnectBusy || button.disabled) return;
+  const production = container === productionTargetMatrixContainer;
+  const productionId = production ? selectedProductionId : null;
+  const userId = button.dataset.matrixConnect === 'all' ? null : Number(button.dataset.matrixConnect);
+  const scope = production ? selectedProductionPayload?.production?.name || 'this production' : 'this matrix';
+  const subject = userId === null ? `all users in ${scope}` : button.dataset.userName;
+  matrixConnectBusy = true;
+  const disabled = [];
+  try {
+    const action = await adminConfirm(
+      `Connect all available targets for ${subject}? Conferences will be set to talk and listen. Existing connections are kept when connecting. Disconnect all removes the connections in this scope. Bridge-managed points are kept.`,
+      { title: 'Connect all targets', confirmLabel: 'Connect all', alternativeLabel: 'Disconnect all' }
+    );
+    if (!action) return;
+    const disconnect = action === 'alternative';
+    const operation = disconnect ? 'disconnect-all' : 'connect-all';
+    if (production && selectedProductionId !== productionId) return;
+    for (const node of container.querySelectorAll('button:not(:disabled)')) {
+      node.disabled = true;
+      disabled.push(node);
+    }
+    const response = await productionRequest(production
+      ? `/admin/productions/${productionId}/targets/${operation}`
+      : `/admin/matrix/${operation}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId }),
+    });
+    const result = await response.json();
+    if (production) {
+      if (selectedProductionId === productionId) await loadProductionDetail(productionId, { preferredOrderUserId: productionOrderUser?.value });
+    } else {
+      for (const id of result.userIds) {
+        cacheUserTargetAssignments(id, await fetchJSON(`/users/${id}/targets`));
+        scheduleUserTargetEditorRefresh(id);
+      }
+      renderTargetMatrix(currentAdminCatalog.users, currentAdminCatalog.conferences, currentAdminCatalog.feeds);
+      for (const id of result.conferenceIds) for (const uid of result.userIds) scheduleConferenceMembershipEditorRefresh(id, uid);
+    }
+    showMessage(`${result.connections} target connection${result.connections === 1 ? '' : 's'} ${disconnect ? 'removed' : 'added'}.`, 'success', 'matrix');
+  } catch (error) {
+    showMessage(error.message || 'Failed to update target connections', 'error', 'matrix');
+  } finally {
+    for (const node of disabled) node.disabled = false;
+    matrixConnectBusy = false;
+  }
+}
+
 function renderProductionTargetMatrix(payload) {
   if (!productionTargetMatrixContainer) return;
   const rowUsers = payload.members;
@@ -2270,6 +2354,7 @@ function renderProductionTargetMatrix(payload) {
       const label = `${column.name} as target for ${user.name}`;
       const assignment = assignments.get(productionTargetKey(column.targetType, column.id));
       const state = getProductionTargetState(column.targetType, assignment);
+      const managed = assignment?.bridgeManaged === true;
       const conferenceTitle = state === 'talk'
         ? `${label} (talk and listen)`
         : state === 'listen-only'
@@ -2280,20 +2365,20 @@ function renderProductionTargetMatrix(payload) {
           <button type="button" class="target-matrix-toggle production-target-toggle"
             data-user-id="${user.id}" data-target-type="${escapeHtml(column.targetType)}" data-target-id="${column.id}"
             data-label="${escapeHtml(label)}"
-            data-state="${state}" ${column.targetType === 'conference' ? 'data-matrix-multistate="true"' : ''}
-            aria-label="${escapeHtml(column.targetType === 'conference' ? conferenceTitle : label)}"
-            title="${escapeHtml(column.targetType === 'conference' ? conferenceTitle : label)}"
+            data-bridge-managed="${managed}" data-state="${state}" ${column.targetType === 'conference' ? 'data-matrix-multistate="true"' : ''}
+            aria-label="${escapeHtml(managed ? bridgeManagedMatrixHint(label) : column.targetType === 'conference' ? conferenceTitle : label)}"
+            title="${escapeHtml(managed ? bridgeManagedMatrixHint(label) : column.targetType === 'conference' ? conferenceTitle : label)}"
             aria-pressed="${state === 'talk' ? 'true' : state === 'listen-only' ? 'mixed' : 'false'}"></button>
         </td>
       `;
     }).join('');
-    return `<tr><th class="target-matrix__user-name" scope="row">${escapeHtml(user.name)}</th>${cells}</tr>`;
+    return `<tr>${matrixUserHeading(user)}${cells}</tr>`;
   }).join('');
   const matrixTableWidth = 7.5 + (columns.length * 1.9);
   productionTargetMatrixContainer.innerHTML = `
     <table class="target-matrix" style="--matrix-table-width: ${matrixTableWidth}rem">
       <colgroup><col class="target-matrix__profile-column" />${columns.map(() => '<col class="target-matrix__target-col" />').join('')}</colgroup>
-      <thead><tr><th class="target-matrix__corner" rowspan="2" scope="col"><span class="target-matrix__corner-label target-matrix__corner-label--users">Users</span><span class="target-matrix__corner-label target-matrix__corner-label--targets">Targets</span></th>${groupHeaders}</tr><tr>${columnHeaders}</tr></thead>
+      <thead><tr><th class="target-matrix__corner" rowspan="2" scope="col"><span class="target-matrix__corner-label target-matrix__corner-label--users">Users</span><span class="target-matrix__corner-label target-matrix__corner-label--targets">Targets</span>${matrixConnectButton()}</th>${groupHeaders}</tr><tr>${columnHeaders}</tr></thead>
       <tbody>${bodyRows}</tbody>
     </table>
   `;
@@ -2321,9 +2406,13 @@ function renderProductionOrder(payload, preferredUserId = null) {
 function initProductionTargetOrdering(userId, list) {
   const items = [...list.querySelectorAll('.draggable-target')];
   items.forEach((item) => {
-    item.addEventListener('dragstart', () => item.classList.add('dragging'));
+    item.addEventListener('dragstart', () => {
+      item.classList.add('dragging');
+      showTargetDropIndicator(list, item);
+    });
     item.addEventListener('dragend', () => {
       item.classList.remove('dragging');
+      clearTargetDropIndicator(list);
       saveProductionTargetOrder(userId, list);
     });
   });
@@ -2335,6 +2424,7 @@ function initProductionTargetOrdering(userId, list) {
     const afterElement = getDragAfterElement(list, event.clientY);
     if (!afterElement) list.appendChild(dragging);
     else if (afterElement !== dragging) list.insertBefore(dragging, afterElement);
+    showTargetDropIndicator(list, dragging);
   };
   if (list._productionDragOverHandler) {
     list.removeEventListener('dragover', list._productionDragOverHandler);
@@ -2342,7 +2432,10 @@ function initProductionTargetOrdering(userId, list) {
   list._productionDragOverHandler = onDragOver;
   list.addEventListener('dragover', onDragOver);
   if (!list._productionDropReady) {
-    list.addEventListener('drop', (event) => event.preventDefault());
+    list.addEventListener('drop', (event) => {
+      event.preventDefault();
+      clearTargetDropIndicator(list);
+    });
     list._productionDropReady = true;
   }
   initTouchTargetOrdering(list, () => saveProductionTargetOrder(userId, list));
@@ -2514,7 +2607,7 @@ function cacheUserTargetAssignments(userId, targets) {
     .querySelectorAll(`.target-matrix-toggle[data-user-id="${key}"]`)
     .forEach((toggle) => {
       if (toggle.disabled) return;
-      toggle.setAttribute('aria-pressed', String(assignments.has(
+      toggle.setAttribute('aria-pressed', String(toggle.dataset.bridgeManaged === 'true' || assignments.has(
         targetAssignmentKey(toggle.dataset.targetType, toggle.dataset.targetId)
       )));
     });
@@ -2560,7 +2653,7 @@ function cacheConferenceMemberships(conferenceId, users) {
     setCachedTargetAssignment(user.id, 'conference', conferenceId, enabled);
     targetMatrixContainer
       ?.querySelector(`.target-matrix-toggle[data-user-id="${userKey}"][data-target-type="conference"][data-target-id="${conferenceKey}"]`)
-      ?.setAttribute('aria-pressed', String(enabled));
+      ?.setAttribute('aria-pressed', String(enabled || isBridgeManagedMatrixTarget(user, 'conference', conferenceId)));
   });
 }
 
@@ -2636,7 +2729,8 @@ function renderTargetMatrix(users, conferences, feeds) {
       if (isSelfTarget) {
         return `<td class="target-matrix__unavailable target-matrix__target-column target-matrix__column--user" data-matrix-column="${columnIndex}" aria-label="A user cannot target itself">&mdash;</td>`;
       }
-      const checked = assignments.has(targetAssignmentKey(column.targetType, column.id));
+      const managed = isBridgeManagedMatrixTarget(user, column.targetType, column.id);
+      const checked = managed || assignments.has(targetAssignmentKey(column.targetType, column.id));
       const label = `${column.name} as target for ${user.name}`;
       return `
         <td class="target-matrix__coupling target-matrix__target-column target-matrix__column--${escapeHtml(column.targetType)}" data-matrix-column="${columnIndex}">
@@ -2646,16 +2740,17 @@ function renderTargetMatrix(users, conferences, feeds) {
             data-user-id="${user.id}"
             data-target-type="${escapeHtml(column.targetType)}"
             data-target-id="${column.id}"
-            aria-label="${escapeHtml(label)}"
+            data-bridge-managed="${managed}"
+            aria-label="${escapeHtml(managed ? bridgeManagedMatrixHint(label) : label)}"
             aria-pressed="${checked ? 'true' : 'false'}"
-            title="${escapeHtml(column.targetType === 'conference' ? `${label} (also controls conference membership)` : label)}"
+            title="${escapeHtml(managed ? bridgeManagedMatrixHint(label) : column.targetType === 'conference' ? `${label} (also controls conference membership)` : label)}"
           ></button>
         </td>
       `;
     }).join('');
     return `
       <tr>
-        <th class="target-matrix__user-name" scope="row">${escapeHtml(user.name)}</th>
+        ${matrixUserHeading(user)}
         ${cells}
       </tr>
     `;
@@ -2676,6 +2771,7 @@ function renderTargetMatrix(users, conferences, feeds) {
           <th class="target-matrix__corner" rowspan="2" scope="col" aria-label="Users by targets">
             <span class="target-matrix__corner-label target-matrix__corner-label--users">Users</span>
             <span class="target-matrix__corner-label target-matrix__corner-label--targets">Targets</span>
+            ${matrixConnectButton()}
           </th>
           ${groupHeaders}
         </tr>
@@ -2701,6 +2797,7 @@ function highlightMatrixColumn(container, columnIndex = null) {
 }
 
 async function handleTargetMatrixToggle(toggle, forcedEnabled = null) {
+  if (await openMatrixBridgeConfiguration(toggle, forcedEnabled)) return;
   const userId = Number(toggle.dataset.userId);
   const targetType = toggle.dataset.targetType;
   const targetId = Number(toggle.dataset.targetId);
@@ -2939,22 +3036,23 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
                   <select id="bridge-output-pair-${user.id}" data-saved-left="${escapeHtml(valueOrEmpty(user.bridge_output_left_channel))}" data-saved-right="${escapeHtml(valueOrEmpty(user.bridge_output_right_channel))}"></select>
                 </div>
               </div>
-              <div class="bridge-trigger-row">
+              <div class="bridge-trigger-row ${user.bridge_trigger_mode !== 'audio-level' ? 'bridge-trigger-row--simple' : ''}">
                 <div class="field-group">
                   <label for="bridge-trigger-mode-${user.id}">Talk trigger</label>
                   <select id="bridge-trigger-mode-${user.id}">
-                    <option value="external" ${user.bridge_trigger_mode === 'audio-level' ? '' : 'selected'}>External trigger</option>
+                    <option value="external" ${bridgeTalkTrigger.mode(user.bridge_trigger_mode) === 'external' ? 'selected' : ''}>External API / Companion</option>
                     <option value="audio-level" ${user.bridge_trigger_mode === 'audio-level' ? 'selected' : ''}>Audio level</option>
+                    <option value="always-on" ${user.bridge_trigger_mode === 'always-on' ? 'selected' : ''}>Always on</option>
                   </select>
                 </div>
-                <div class="bridge-trigger-details" id="bridge-trigger-details-${user.id}" ${user.bridge_trigger_mode === 'audio-level' ? '' : 'hidden'}>
+                <div class="field-group" ${user.bridge_trigger_mode === 'audio-level' ? '' : 'hidden'}>
+                  <label for="bridge-trigger-threshold-${user.id}">Threshold dBFS</label>
+                  <input id="bridge-trigger-threshold-${user.id}" type="number" min="-120" max="-10" step="1" value="${escapeHtml(valueOrEmpty(user.bridge_trigger_threshold_db ?? -45))}">
+                </div>
+                <div class="bridge-trigger-details" id="bridge-trigger-details-${user.id}" ${bridgeTalkTrigger.mode(user.bridge_trigger_mode) === 'external' ? 'hidden' : ''}>
                   <div class="field-group">
-                    <label for="bridge-trigger-target-${user.id}">Trigger target</label>
-                    <select id="bridge-trigger-target-${user.id}" data-saved-value="${escapeHtml(user.bridge_trigger_target_type && user.bridge_trigger_target_id ? `${user.bridge_trigger_target_type}:${user.bridge_trigger_target_id}` : '')}"></select>
-                  </div>
-                  <div class="field-group">
-                    <label for="bridge-trigger-threshold-${user.id}">Threshold dBFS</label>
-                    <input id="bridge-trigger-threshold-${user.id}" type="number" min="-120" max="-10" step="1" value="${escapeHtml(valueOrEmpty(user.bridge_trigger_threshold_db ?? -45))}">
+                    <span class="bridge-target-label" id="bridge-trigger-hint-${user.id}"><span id="bridge-trigger-target-label-${user.id}">Talk targets</span> <span class="bridge-target-info" aria-hidden="true">ⓘ</span></span>
+                    <div class="bridge-talk-targets" role="group" aria-labelledby="bridge-trigger-target-label-${user.id}" id="bridge-trigger-target-${user.id}" data-saved-targets="${escapeHtml(JSON.stringify(bridgeTalkTrigger.targets(user.bridge_trigger_targets, user.bridge_trigger_target_type && user.bridge_trigger_target_id ? { type: user.bridge_trigger_target_type, id: user.bridge_trigger_target_id } : null)))}"></div>
                   </div>
                 </div>
               </div>
@@ -3046,6 +3144,25 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
   syncStopTransmissionButtons();
 }
 
+async function saveFeedVideoPermission(feedId, allowed, control) {
+  if (control) control.disabled = true;
+  try {
+    const response = await authedFetch(`/admin/feeds/${feedId}/feed-video`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ allowFeedVideo: allowed }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || 'Failed to save feed video permission');
+    await refreshAdminLists({ feeds: true });
+    showMessage('Feed video permission saved', 'success', 'feed');
+  } catch (error) {
+    if (control?.type === 'checkbox') control.checked = !allowed;
+    showMessage(error.message, 'error', 'feed');
+  } finally {
+    if (control) control.disabled = false;
+  }
+}
+
 async function renderFeedList(feeds) {
   const feedList = document.getElementById('feed-list');
   feedList.innerHTML = '';
@@ -3075,7 +3192,14 @@ async function renderFeedList(feeds) {
         </div>
       </div>
       <div class="nested" id="feed-nested-${feed.id}" onclick="event.stopPropagation()">
-        <div class="nested-block">
+        <div class="nested-block feed-video-permission">
+          <label class="admin-switch" title="Allow this feed to transmit video. Audio is unaffected.">
+            <input type="checkbox" role="switch" onchange="saveFeedVideoPermission(${feed.id}, this.checked, this)" ${feed.allowFeedVideo ? 'checked' : ''}>
+            <span class="admin-switch__track" aria-hidden="true"></span>
+            <span>Allow Feed-Video</span>
+          </label>
+        </div>
+        <div class="nested-block feed-bridge-controls">
           <form class="bridge-config-form" id="bridge-config-${formKey}" data-bridge-config-key="${formKey}" onsubmit="saveFeedBridgeEndpoint(event, ${feed.id})">
             <label class="admin-switch bridge-input-switch" for="bridge-enabled-${formKey}">
               <input type="checkbox" id="bridge-enabled-${formKey}" role="switch" ${isBridgeEndpoint ? 'checked' : ''}>
@@ -3100,6 +3224,10 @@ async function renderFeedList(feeds) {
                   <label for="bridge-input-pair-${formKey}">Input channel</label>
                   <select id="bridge-input-pair-${formKey}" data-saved-left="${escapeHtml(valueOrEmpty(feed.bridge_input_left_channel))}" data-saved-right="${escapeHtml(valueOrEmpty(feed.bridge_input_right_channel))}"></select>
                 </div>
+              </div>
+              <div class="field-group">
+                <label for="bridge-video-source-${formKey}">Video source (optional)</label>
+                <select id="bridge-video-source-${formKey}" data-saved-value="${escapeHtml(feed.bridge_video_source || '')}"></select>
               </div>
             </div>
             <button type="submit" class="small">Save</button>
@@ -3381,7 +3509,21 @@ async function loadDefaultClientSettings() {
   if (defaultClientLockMultiple) defaultClientLockMultiple.checked = settings.lockMultipleTargets === true;
   if (defaultClientAllowTargetRearrange) defaultClientAllowTargetRearrange.checked = settings.allowTargetRearrange !== false;
   if (defaultClientAllowTargetAddRemove) defaultClientAllowTargetAddRemove.checked = settings.allowTargetAddRemove === true;
+  if (defaultClientAllowFeedVideo) defaultClientAllowFeedVideo.checked = settings.allowFeedVideo === true;
+  resetDefaultClientApplyAll();
   return payload;
+}
+
+const defaultClientApplyAll = new Map();
+function resetDefaultClientApplyAll() {
+  for (const [input, entry] of defaultClientApplyAll) {
+    entry.original = input.checked;
+    entry.checkbox.checked = false;
+    entry.label.hidden = true;
+  }
+}
+function selectedDefaultClientOverrides() {
+  return [...defaultClientApplyAll.values()].filter(entry => !entry.label.hidden && entry.checkbox.checked).map(entry => entry.key);
 }
 
 function renderAutomaticBackupSettings(settings = {}) {
@@ -3589,7 +3731,11 @@ async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
     return acc;
   }, {});
   const ul = document.getElementById(`user-targets-${userId}`);
-  updateBridgeTriggerTargetOptions(userId, targets);
+  updateBridgeTriggerTargetOptions(userId, [
+    ...allUsers.filter(user => !user.is_superadmin && !user.is_guest_profile && Number(user.id) !== Number(userId))
+      .map(user => ({ type: 'user', id: user.id, name: user.name })),
+    ...allConfs.map(conference => ({ type: 'conference', id: conference.id, name: conference.name })),
+  ]);
   if (!ul) return;
   ul.replaceChildren(...targets.map(t => {
     const isConference = t.targetType === 'conference';
@@ -3666,9 +3812,13 @@ async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
 function initTargetOrdering(userId, ul) {
   const items = [...ul.querySelectorAll('.draggable-target')];
   items.forEach(item => {
-    item.addEventListener('dragstart', () => item.classList.add('dragging'));
+    item.addEventListener('dragstart', () => {
+      item.classList.add('dragging');
+      showTargetDropIndicator(ul, item);
+    });
     item.addEventListener('dragend', () => {
       item.classList.remove('dragging');
+      clearTargetDropIndicator(ul);
       saveTargetOrder(userId, ul);
     });
   });
@@ -3683,13 +3833,30 @@ function initTargetOrdering(userId, ul) {
     } else if (afterElement !== dragging) {
       ul.insertBefore(dragging, afterElement);
     }
+    showTargetDropIndicator(ul, dragging);
   };
 
   if (ul._dragOverHandler) ul.removeEventListener('dragover', ul._dragOverHandler);
   ul._dragOverHandler = onDragOver;
   ul.addEventListener('dragover', onDragOver);
-  ul.addEventListener('drop', e => e.preventDefault());
+  ul.addEventListener('drop', e => {
+    e.preventDefault();
+    clearTargetDropIndicator(ul);
+  });
   initTouchTargetOrdering(ul, () => saveTargetOrder(userId, ul));
+}
+
+function showTargetDropIndicator(list, item) {
+  list.classList.add('is-target-reordering');
+  const listBox = list.getBoundingClientRect();
+  const itemBox = item.getBoundingClientRect();
+  const top = itemBox.top - listBox.top + list.scrollTop - list.clientTop;
+  list.style.setProperty('--target-drop-y', `${top}px`);
+}
+
+function clearTargetDropIndicator(list) {
+  list.classList.remove('is-target-reordering');
+  list.style.removeProperty('--target-drop-y');
 }
 
 function getDragAfterElement(container, y) {
@@ -3715,6 +3882,7 @@ function initTouchTargetOrdering(list, onCommit) {
     session = null;
     item.classList.remove('dragging');
     list.classList.remove('is-touch-reordering');
+    clearTargetDropIndicator(list);
     try {
       handle.releasePointerCapture(event.pointerId);
     } catch {}
@@ -3742,6 +3910,7 @@ function initTouchTargetOrdering(list, onCommit) {
     };
     item.classList.add('dragging');
     list.classList.add('is-touch-reordering');
+    showTargetDropIndicator(list, item);
     try {
       handle.setPointerCapture(event.pointerId);
     } catch {}
@@ -3755,6 +3924,7 @@ function initTouchTargetOrdering(list, onCommit) {
     if (!afterElement) list.appendChild(session.item);
     else if (afterElement !== session.item) list.insertBefore(session.item, afterElement);
     if (session.item.nextSibling !== previousNextSibling) session.moved = true;
+    showTargetDropIndicator(list, session.item);
 
     const edge = 56;
     if (event.clientY < edge) window.scrollBy(0, -12);
@@ -4340,6 +4510,7 @@ window.saveFeedBridgeEndpoint = async function(event, feedId) {
     const payload = {
       enabled: Boolean(document.getElementById(`bridge-enabled-${formKey}`)?.checked),
       bridgeDevice: document.getElementById(`bridge-device-${formKey}`)?.value || '',
+      videoSource: document.getElementById(`bridge-video-source-${formKey}`)?.value || '',
       inputDevice: document.getElementById(`bridge-input-device-${formKey}`)?.value || '',
       inputLeftChannel: inputPair.left,
       inputRightChannel: inputPair.right,
@@ -4658,6 +4829,37 @@ if (guestLoginEnabledInput) {
 }
 
 if (defaultClientSettingsForm) {
+  const keys = ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'bigMainButton', 'lockMultipleTargets', 'allowTargetRearrange', 'allowTargetAddRemove', 'allowFeedVideo'];
+  defaultClientSettingsForm.querySelectorAll('.default-client-setting-toggle').forEach((row, index) => {
+    const input = row.querySelector('input[role="switch"]');
+    const text = row.querySelector('span:first-child');
+    text.id = `${input.id}-label`;
+    input.setAttribute('aria-labelledby', text.id);
+    const controls = document.createElement('span');
+    controls.className = 'default-client-setting-controls';
+    const label = document.createElement('label');
+    label.className = 'default-client-apply-all';
+    label.hidden = true;
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    label.append(checkbox, document.createTextNode('Apply to all'));
+    const switchLabel = document.createElement('label');
+    switchLabel.className = 'admin-switch';
+    const oldSwitch = row.querySelector('.admin-switch');
+    switchLabel.append(...oldSwitch.childNodes);
+    oldSwitch.remove();
+    controls.append(label, switchLabel);
+    row.append(controls);
+    const entry = { key: keys[index], label, checkbox, original: input.checked };
+    defaultClientApplyAll.set(input, entry);
+    input.addEventListener('change', () => {
+      label.hidden = input.checked === entry.original;
+      if (label.hidden) checkbox.checked = false;
+    });
+    row.addEventListener('click', event => {
+      if (event.target === row || event.target === text) { input.checked = !input.checked; input.dispatchEvent(new Event('change')); }
+    });
+  });
   defaultClientSettingsForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     const submitButton = defaultClientSettingsForm.querySelector('button[type="submit"]');
@@ -4674,6 +4876,7 @@ if (defaultClientSettingsForm) {
       lockMultipleTargets: Boolean(defaultClientLockMultiple?.checked),
       allowTargetRearrange: Boolean(defaultClientAllowTargetRearrange?.checked),
       allowTargetAddRemove: Boolean(defaultClientAllowTargetAddRemove?.checked),
+      allowFeedVideo: Boolean(defaultClientAllowFeedVideo?.checked),
     };
 
     if (submitButton) submitButton.disabled = true;
@@ -4681,12 +4884,12 @@ if (defaultClientSettingsForm) {
       const res = await authedFetch('/admin/settings/default-client', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: JSON.stringify({ ...settings, applyToAll: selectedDefaultClientOverrides() }),
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to save default client settings');
       await loadDefaultClientSettings();
-      await refreshAdminLists({ users: true });
+      await refreshAdminLists({ users: true, feeds: true });
       showMessage('✅ Default client settings saved', 'success', 'config');
     } catch (error) {
       console.error('Failed to save default client settings:', error);
@@ -5036,6 +5239,7 @@ window.resetPassword = async function(userId, userName) {
 };
 
 async function handleProductionTargetToggle(toggle, forcedEnabled = null) {
+  if (await openMatrixBridgeConfiguration(toggle, forcedEnabled)) return;
   if (!selectedProductionPayload || !selectedProductionId) return;
   const userId = Number(toggle.dataset.userId);
   const targetType = toggle.dataset.targetType;
@@ -5356,12 +5560,17 @@ function setupMatrixInteractions(container, toggleSelector, toggleHandler) {
   };
 
   const paintToggle = (toggle) => {
-    if (!paintSession || !toggle || paintSession.visited.has(toggle)) return;
+    if (!paintSession || !toggle || toggle.dataset.bridgeManaged === 'true' || paintSession.visited.has(toggle)) return;
     paintSession.visited.add(toggle);
     toggleHandler(toggle, paintSession.value);
   };
 
   container.addEventListener('click', (event) => {
+    const connect = event.target.closest('[data-matrix-connect]');
+    if (connect) {
+      handleMatrixConnectAll(container, connect);
+      return;
+    }
     const toggle = event.target.closest(toggleSelector);
     if (!toggle) return;
     if (suppressPointerClick) {
@@ -5377,7 +5586,7 @@ function setupMatrixInteractions(container, toggleSelector, toggleHandler) {
   container.addEventListener('pointerdown', (event) => {
     if (event.pointerType === 'touch' || event.button !== 0) return;
     const toggle = event.target.closest(toggleSelector);
-    if (!toggle || toggle.disabled) return;
+    if (!toggle || toggle.disabled || toggle.dataset.bridgeManaged === 'true') return;
 
     event.preventDefault();
     suppressPointerClick = true;
@@ -5478,6 +5687,67 @@ const userAudioSettingsNotice = document.getElementById('user-audio-settings-not
 const userAudioSettingsError = document.getElementById('user-audio-settings-error');
 const userAudioSettingsSave = document.getElementById('user-audio-settings-save');
 let editingAudioSettingsUserId = null;
+let systemVolumeTimer = null;
+let systemVolumeBusy = false;
+
+function renderSystemVolume(value) {
+  const container = document.getElementById('admin-system-volume-controls');
+  if (!container || systemVolumeBusy || container.querySelector('input:active')) return;
+  const slider = document.getElementById('admin-system-volume');
+  const mute = document.getElementById('admin-system-mute');
+  if (value && slider && Boolean(mute) === Boolean(value.muteSupported)) {
+    slider.value = String(Math.round(value.volume * 100));
+    document.getElementById('admin-system-volume-value').textContent = `${slider.value}%`;
+    if (mute) mute.checked = value.muted;
+    return;
+  }
+  container.innerHTML = value ? `
+    <div class="user-audio-settings-range"><label class="user-audio-settings-range__label" for="admin-system-volume"><span>Device main volume</span><output id="admin-system-volume-value">${Math.round(value.volume * 100)}%</output></label><input id="admin-system-volume" type="range" min="0" max="100" step="1" value="${Math.round(value.volume * 100)}"></div>
+    ${value.muteSupported ? `<label class="user-audio-settings-switch"><span>Mute device output</span><span class="admin-switch"><input id="admin-system-mute" type="checkbox" role="switch" ${value.muted ? 'checked' : ''}><span class="admin-switch__track" aria-hidden="true"></span></span></label>` : ''}
+    <div class="setting-meta">Controls the device output, including other applications. Changes apply immediately.</div>
+  ` : '';
+  document.getElementById('admin-system-volume')?.addEventListener('input', event => {
+    document.getElementById('admin-system-volume-value').textContent = `${event.target.value}%`;
+  });
+  document.getElementById('admin-system-volume')?.addEventListener('change', event => {
+    void changeSystemVolume({ volume: Number(event.target.value) / 100 });
+  });
+  document.getElementById('admin-system-mute')?.addEventListener('change', event => {
+    void changeSystemVolume({ muted: event.target.checked });
+  });
+}
+
+async function refreshSystemVolume(userId) {
+  try {
+    const response = await authedFetch(`/admin/users/${userId}/system-volume`);
+    const payload = await response.json();
+    if (response.ok && editingAudioSettingsUserId === userId) renderSystemVolume(payload.systemVolume);
+  } catch { /* Keep the current control on a transient network failure. */ }
+}
+
+async function changeSystemVolume(command) {
+  const userId = editingAudioSettingsUserId;
+  if (!userId || systemVolumeBusy) return;
+  systemVolumeBusy = true;
+  const controls = document.getElementById('admin-system-volume-controls');
+  controls?.querySelectorAll('input').forEach(input => { input.disabled = true; });
+  try {
+    const response = await authedFetch(`/admin/users/${userId}/system-volume`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Unable to change device volume');
+  } catch (error) {
+    if (editingAudioSettingsUserId === userId) {
+      userAudioSettingsError.textContent = error.message;
+      userAudioSettingsError.classList.remove('is-hidden');
+    }
+  } finally {
+    systemVolumeBusy = false;
+    controls?.querySelectorAll('input').forEach(input => { input.disabled = false; });
+    if (editingAudioSettingsUserId === userId) void refreshSystemVolume(userId);
+  }
+}
 
 function renderUserAudioSettingsFields(settings, targets = []) {
   const settingsApi = window.TalktomeUserAudioSettings;
@@ -5491,6 +5761,7 @@ function renderUserAudioSettingsFields(settings, targets = []) {
     return `<option value="${escapeHtml(identity)}" ${identity === settings.voiceTriggerTarget ? 'selected' : ''}>${escapeHtml(target.name)} (${typeLabel})</option>`;
   }).join('');
   userAudioSettingsFields.innerHTML = `
+    <div id="admin-system-volume-controls"></div>
     <div class="user-audio-settings-row"><label for="admin-audio-profile">Audio profile</label><select id="admin-audio-profile">${options(settingsApi.AUDIO_PROFILES, settings.audioProfile, (value) => ({ 'ultra-low': 'Ultra low (5 ms frame)', low: 'Low (10 ms frame)', standard: 'Standard (20 ms frame)' }[value]))}</select></div>
     <div class="user-audio-settings-row"><label for="admin-dim-amount">Dim amount</label><select id="admin-dim-amount">${options(settingsApi.DIM_AMOUNT_DB_OPTIONS, settings.dimAmountDb, (value) => `${value} dB`)}</select></div>
     <label class="user-audio-settings-switch"><span>Dim feeds while speaking</span><span class="admin-switch"><input id="admin-dim-speaking" type="checkbox" role="switch" ${checked('dimFeedsWhileSpeaking')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
@@ -5514,6 +5785,7 @@ function renderUserAudioSettingsFields(settings, targets = []) {
 }
 
 async function openUserAudioSettings(userId, userName) {
+  clearInterval(systemVolumeTimer);
   editingAudioSettingsUserId = Number(userId);
   userAudioSettingsTitle.textContent = `Audio settings · ${userName}`;
   userAudioSettingsFields.innerHTML = '<div class="setting-meta">Loading…</div>';
@@ -5528,6 +5800,10 @@ async function openUserAudioSettings(userId, userName) {
     if (editingAudioSettingsUserId !== Number(userId)) return;
     userAudioSettingsNotice?.classList.toggle('is-hidden', !payload.configuredAsBridge);
     renderUserAudioSettingsFields(payload.settings, payload.targets);
+    renderSystemVolume(payload.systemVolume);
+    systemVolumeTimer = setInterval(() => {
+      if (!systemVolumeBusy) void refreshSystemVolume(Number(userId));
+    }, 2000);
     userAudioSettingsSave.disabled = false;
   } catch (error) {
     userAudioSettingsFields.innerHTML = '';
@@ -5537,6 +5813,8 @@ async function openUserAudioSettings(userId, userName) {
 }
 
 function closeUserAudioSettings() {
+  clearInterval(systemVolumeTimer);
+  systemVolumeTimer = null;
   editingAudioSettingsUserId = null;
   userAudioSettingsDialog.classList.add('is-hidden');
 }

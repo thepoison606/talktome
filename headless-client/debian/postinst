@@ -1,0 +1,61 @@
+#!/bin/sh
+set -e
+
+USER=talktome-headless
+CONF_DIR=/etc/talktome-headless
+STATE_DIR=/var/lib/talktome-headless
+
+case "$1" in
+    configure)
+        if ! getent group "$USER" >/dev/null; then
+            addgroup --system --quiet "$USER"
+        fi
+        if ! getent passwd "$USER" >/dev/null; then
+            adduser --system --quiet --ingroup "$USER" --no-create-home \
+                --home "$STATE_DIR" --shell /usr/sbin/nologin \
+                --gecos "Talktome headless client" "$USER"
+        fi
+        # Audio devices, Stream Deck HID (udev rule) and GPIO character devices.
+        # Only join groups that exist: systemd SupplementaryGroups= of a
+        # missing name (typically gpio off Raspberry Pi OS) fails the unit
+        # at step GROUP with status 216 before the binary runs. Membership
+        # here is enough because User= loads the user's groups from NSS.
+        for grp in audio plugdev gpio; do
+            if getent group "$grp" >/dev/null; then
+                adduser --quiet "$USER" "$grp" >/dev/null 2>&1 || true
+            fi
+        done
+
+        # Group-writable so the service can create <instance>.toml.tmp and
+        # rename it over the live file (web UI password / settings save).
+        # 0750 is not enough: ProtectSystem=strict aside, group r-x cannot
+        # create the temp file.
+        install -d -m 0770 -o root -g "$USER" "$CONF_DIR"
+        chmod 0770 "$CONF_DIR"
+        install -d -m 0750 -o "$USER" -g "$USER" "$STATE_DIR"
+
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload-rules >/dev/null 2>&1 || true
+            udevadm trigger --subsystem-match=usb --attr-match=idVendor=0fd9 >/dev/null 2>&1 || true
+        fi
+
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            # On upgrade, restart instances that are running.
+            if [ -n "$2" ]; then
+                for unit in $(systemctl list-units --plain --no-legend --type=service --state=running 'talktome-headless@*.service' 2>/dev/null | awk '{print $1}'); do
+                    systemctl try-restart "$unit" >/dev/null 2>&1 || true
+                done
+            fi
+        fi
+
+        if [ -z "$2" ]; then
+            echo "talktome-headless: copy /usr/share/talktome-headless/config.example.toml to $CONF_DIR/<instance>.toml,"
+            echo "talktome-headless: edit it, then run: systemctl enable --now talktome-headless@<instance>"
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

@@ -1,0 +1,125 @@
+{
+  "instance": "cam1",
+  "server": {
+    "url": "https://talktome.local:8443"
+  },
+  "tls": {
+    "ca_file": null,
+    "fingerprint_sha256": null,
+    "insecure": false
+  },
+  "user": {
+    "name": "Cam 1",
+    "password": "change-me",
+    "production": null
+  },
+  "registration": {
+    "conflict": "takeover",
+    "takeover_delay_ms": 1500,
+    "retry_ms": 5000,
+    "kicked_retry_ms": 10000
+  },
+  "audio": {
+    "input_device": "plughw:CARD=Headset,DEV=0",
+    "output_device": "plughw:CARD=Headset,DEV=0",
+    "profile": "ultra-low",
+    "device_period_ms": 10,
+    "auto_processing": false,
+    "input_gain_db": 0,
+    "dim_db": -15,
+    "dim_feeds_while_speaking": false,
+    "dim_when_addressed": true,
+    "network": "lan",
+    "jitter_start_ms": 20,
+    "jitter_min_ms": 20,
+    "jitter_max_ms": 400,
+    "reopen_ms": 2000,
+    "default_volume": 0.9
+  },
+  "vox": {
+    "enabled": false,
+    "target": "conference:1",
+    "threshold_db": -32,
+    "hang_ms": 600
+  },
+  "talk": {
+    "tap_ms": 250,
+    "lock_multiple": false,
+    "main_target": null
+  },
+  "ice": {
+    "servers": null,
+    "transport_policy": null,
+    "ipv6": false
+  },
+  "network": {
+    "ice_disconnect_grace_ms": 4000
+  },
+  "streamdeck": {
+    "enabled": true,
+    "serial": null,
+    "mock": null,
+    "brightness": 60,
+    "font_path": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "volume_step_db": 3,
+    "volume_step_percent": 4,
+    "volume_layer_timeout_s": 8,
+    "pedal_left": null,
+    "pedal_target": null
+  },
+  "gpio": {
+    "enabled": true,
+    "chip": null,
+    "outputs": {
+      "tally": {
+        "line": "GPIO17",
+        "active_low": false
+      },
+      "talking": {
+        "line": "GPIO27",
+        "active_low": false
+      }
+    },
+    "inputs": [
+      {
+        "line": "GPIO22",
+        "action": "talk",
+        "target": "conference:1",
+        "active_low": true,
+        "debounce_ms": 20
+      },
+      {
+        "line": "GPIO23",
+        "action": "reply",
+        "active_low": true
+      }
+    ],
+    "target_outputs": [
+      {
+        "line": "GPIO18",
+        "target": "conference:1",
+        "when": "receiving",
+        "active_low": false
+      }
+    ]
+  },
+  "socket": {
+    "enabled": true,
+    "path": null,
+    "tcp": null
+  },
+  "web": {
+    "enabled": true,
+    "bind": "0.0.0.0",
+    "port": 8080,
+    "password": "admin"
+  },
+  "health": {
+    "port": null,
+    "bind": "127.0.0.1"
+  },
+  "log": {
+    "level": "info",
+    "format": "auto"
+  }
+}

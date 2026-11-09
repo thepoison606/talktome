@@ -71,6 +71,7 @@ export type ActiveProducerRoute =
   | { kind: 'unknown'; type: string };
 
 export type ActiveProducer = {
+  kind?: 'audio' | 'video';
   peerId: string;
   producerId: string;
   speakerUserId?: number | null;

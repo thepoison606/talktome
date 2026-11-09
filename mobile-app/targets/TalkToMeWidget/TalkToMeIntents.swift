@@ -31,7 +31,7 @@ struct TalkToMeReplyLockIntent: AppIntent, LiveActivityIntent {
 @available(iOS 17.0, *)
 struct TalkToMeDisconnectIntent: AppIntent, LiveActivityIntent {
   static var title: LocalizedStringResource = "Disconnect"
-  static var description = IntentDescription("Disconnect the TalkToMe session.")
+  static var description = IntentDescription("Disconnect the Talktome session.")
   static var openAppWhenRun = false
 
   func perform() async throws -> some IntentResult {

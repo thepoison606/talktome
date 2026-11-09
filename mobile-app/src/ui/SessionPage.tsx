@@ -72,7 +72,7 @@ export function SessionPage({
         {production && choices.length === 0 ? <SettingsRow label="Production" value={production} /> : null}
       </SettingsSection>
 
-      {choices.length > 0 ? (
+      {choices.length > 1 ? (
         <SettingsSection title="Production">
           {choices.map((choice) => {
             const selected = choice.id === store.productionId;

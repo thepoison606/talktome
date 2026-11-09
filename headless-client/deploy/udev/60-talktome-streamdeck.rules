@@ -1,0 +1,4 @@
+# Elgato Stream Deck devices: allow members of "plugdev" (the
+# talktome-headless service user) to open the HID device.
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0fd9", TAG+="uaccess", GROUP="plugdev", MODE="0660"
+KERNEL=="hidraw*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="0fd9", TAG+="uaccess", GROUP="plugdev", MODE="0660"

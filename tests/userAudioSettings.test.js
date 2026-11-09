@@ -82,3 +82,10 @@ test('bridge endpoint browser login requires an explicit confirmation', () => {
   assert.match(clientScript, /if \(!bridgeLoginConfirmed\)/);
   assert.match(serverScript, /configuredAsBridge: kind === "user" && Boolean\(storedUser\?\.bridge_enabled\)/);
 });
+
+
+test('main button override is optional and does not turn a default into a forced preference', () => {
+  assert.equal(resolve({}, { bigMainButton: true }).bigMainButton, undefined);
+  assert.equal(resolve({ bigMainButton: false }, { bigMainButton: true }).bigMainButton, false);
+  assert.throws(() => normalize({ bigMainButton: 'true' }, { strict: true }), /boolean/);
+});

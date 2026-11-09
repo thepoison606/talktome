@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { AppState, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import {
   cameraTallyColor,
@@ -19,19 +19,19 @@ import { ConnectionStatusBadge } from './ConnectionStatusBadge';
 import { ChevronIcon, LockIcon, ReplyArrowIcon, WalkieTalkieIcon } from './icons';
 import { endTalkTouches, HoldToTalk, moveTalkTouches } from './HoldToTalk';
 import {
-  chunkTargets,
   COLLAPSED_HEADER_HEIGHT,
   estimateTargetListHeight,
   isCompactOperatorScreen,
   isTabletOperatorScreen,
   operatorLayout,
   shouldOfferHeaderCollapse,
-  targetLayerCount,
-  visibleTargets,
 } from './layers';
 import { openSessionSheet } from './sessionSheetState';
+import { feedVideoHeight, feedVideoLayers } from './feedVideoLayout';
 import { TargetRow } from './TargetRow';
+import { VolumeAdjustmentHUD } from './VolumeAdjustmentHUD';
 import { colors } from './theme';
+import { KeyboardShortcuts } from '../keyboard/KeyboardShortcuts';
 
 /** Launch and short dropouts reconnect on their own; only warn when an accessory stays away. */
 const ACCESSORY_NOTICE_DELAY_MS = 5000;
@@ -64,6 +64,8 @@ export function OperatorScreen() {
   const [headerCollapsed, setHeaderCollapsed] = useState(compact);
   const [headerHeight, setHeaderHeight] = useState(96);
   const [listHeight, setListHeight] = useState(0);
+  const [listWidth, setListWidth] = useState(0);
+  const [expandedVideos, setExpandedVideos] = useState<Set<string>>(() => new Set());
   const compactRef = useRef(compact);
   const reply = store.replyTarget;
   const mainButton = resolveMainButton({
@@ -80,10 +82,39 @@ export function OperatorScreen() {
     headerCollapsed,
   });
   const replyBeside = layout.replyBeside;
-  const layers = targetLayerCount(store.targets.length, width, height, availableHeight, headerCollapsed);
+  const videoCellWidth = (listWidth || width - 32) / layout.columns - layout.gap;
+  const videoHeight = feedVideoHeight(videoCellWidth,
+    height, availableHeight, layout.cardHeight,
+    layout.landscape ? Math.min(layout.rows, Math.ceil(store.targets.length / layout.columns)) : 0, layout.gap);
+  const maxVideoHeight = Math.min(260, videoCellWidth * 9 / 16 + 4);
+  const pages = feedVideoLayers(store.targets, layout, expandedVideos, availableHeight, videoHeight, maxVideoHeight);
+  const layers = pages.length;
   const safeLayerIndex = Math.min(layerIndex, layers - 1);
-  const page = visibleTargets(store.targets, safeLayerIndex, width, height, availableHeight, headerCollapsed);
-  const grid = chunkTargets(page, layout.columns);
+  const grid = pages[safeLayerIndex]!;
+  const visibleVideoKeys = grid.flatMap(row => row.targets)
+    .filter(target => target.type === 'feed' && expandedVideos.has(talkTargetIdentity(target)))
+    .map(talkTargetIdentity).sort().join(',');
+
+  useEffect(() => {
+    const update = () => session.mediaCoordinator.setVisibleFeedVideos(
+      AppState.currentState === 'active' && store.operatorReady ? visibleVideoKeys.split(',').filter(Boolean) : []);
+    update();
+    const subscription = AppState.addEventListener('change', update);
+    return () => { subscription.remove(); session.mediaCoordinator.setVisibleFeedVideos([]); };
+  }, [visibleVideoKeys, store.operatorReady, store.productionId]);
+
+  useEffect(() => { setExpandedVideos(new Set()); }, [store.productionId, store.activeProfileId]);
+
+  const toggleVideo = (target: TalkTarget) => {
+    const key = talkTargetIdentity(target);
+    const next = new Set(expandedVideos);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    const nextPages = feedVideoLayers(store.targets, layout, next, availableHeight, videoHeight, maxVideoHeight);
+    setExpandedVideos(next);
+    // Expanding a row can move it to the next layer; keep the tapped feed on screen.
+    setLayerIndex(Math.max(0, nextPages.findIndex(page => page.some(row =>
+      row.targets.some(item => talkTargetIdentity(item) === key)))));
+  };
   const offerCollapse =
     headerCollapsed ||
     shouldOfferHeaderCollapse({
@@ -243,6 +274,7 @@ export function OperatorScreen() {
         headerCollapsed && styles.screenPeek,
       ]}
     >
+      <KeyboardShortcuts />
       <View style={{ flex: 1 }} accessibilityElementsHidden={audioMenuOpen} importantForAccessibility={audioMenuOpen ? 'no-hide-descendants' : 'auto'}>
         {headerCollapsed ? (
           <Pressable
@@ -253,6 +285,7 @@ export function OperatorScreen() {
             style={styles.headerPeekCard}
           >
             <ChevronIcon color={colors.text} direction="down" size={14} />
+            <Text style={styles.headerPeekLabel}>Show top bar</Text>
           </Pressable>
         ) : (
           <View
@@ -271,18 +304,19 @@ export function OperatorScreen() {
                   {store.identity?.name ?? 'talktome'}
                 </Text>
                 <ConnectionStatusBadge health={connection} compact={compact} />
+                {tallyLabel && tallyColor ? (
+                  <Text
+                    accessibilityLabel={tallyLabel === 'PGM' ? 'On program' : 'On preview'}
+                    numberOfLines={1}
+                    style={[styles.tallyChip, { color: tallyColor }]}
+                  >
+                    {tallyLabel}
+                  </Text>
+                ) : null}
               </View>
               {productionLabel ? (
                 <Text style={styles.production} numberOfLines={1}>
                   {productionLabel}
-                </Text>
-              ) : null}
-              {tallyLabel && tallyColor ? (
-                <Text
-                  accessibilityLabel={tallyLabel === 'PGM' ? 'On program' : 'On preview'}
-                  style={[styles.tallyChip, { color: tallyColor }]}
-                >
-                  {tallyLabel}
                 </Text>
               ) : null}
             </Pressable>
@@ -304,25 +338,27 @@ export function OperatorScreen() {
           </View>
         )}
 
-        {mediaNotice ? <Text style={styles.warn}>{mediaNotice}</Text> : null}
-        {accessoryNotice ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={accessoryNotice}
-            accessibilityHint="Opens Accessories"
-            onPress={() => openSessionSheet('accessories')}
-            style={styles.accessoryNotice}
-          >
-            <Text style={styles.accessoryNoticeText} numberOfLines={1}>
-              {accessoryNotice}
+        {/* Reserve one line even when healthy: transient warnings must never
+            change the target grid's measured height or move a held button. */}
+        <View style={styles.noticeSlot}>
+          {store.error || mediaNotice || store.overBudget ? (
+            <Text style={store.error ? styles.error : styles.warn} numberOfLines={1}
+              accessibilityLiveRegion="polite">
+              {store.error || mediaNotice || 'Too many incoming streams — some feeds paused.'}
             </Text>
-            <Text style={styles.accessoryNoticeChevron}>›</Text>
-          </Pressable>
-        ) : null}
-        {store.overBudget ? (
-          <Text style={styles.warn}>Too many incoming streams — some feeds paused.</Text>
-        ) : null}
-        {store.error ? <Text style={styles.error}>{store.error}</Text> : null}
+          ) : accessoryNotice ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={accessoryNotice}
+              accessibilityHint="Opens Accessories"
+              onPress={() => openSessionSheet('accessories')}
+              style={styles.accessoryNotice}
+            >
+              <Text style={styles.accessoryNoticeText} numberOfLines={1}>{accessoryNotice}</Text>
+              <Text style={styles.accessoryNoticeChevron}>›</Text>
+            </Pressable>
+          ) : null}
+        </View>
 
         <View
           style={[
@@ -333,11 +369,11 @@ export function OperatorScreen() {
         >
           <View
             style={styles.list}
-            onLayout={(event) => setListHeight(event.nativeEvent.layout.height)}
+            onLayout={(event) => { setListHeight(event.nativeEvent.layout.height); setListWidth(event.nativeEvent.layout.width); }}
           >
             {grid.map((row, rowIndex) => (
-              <View key={`row-${rowIndex}`} style={[styles.gridRow, { height: layout.cardHeight, gap: layout.gap }]}>
-                {row.map((target) => (
+              <View key={`row-${rowIndex}`} style={[styles.gridRow, { height: row.height, gap: layout.gap }]}>
+                {row.targets.map((target) => (
                   <View key={`${target.type}-${target.id}`} style={styles.gridCell}>
                     <TargetRow
                       target={target}
@@ -345,13 +381,19 @@ export function OperatorScreen() {
                       compactLabel={layout.columns > 1 && width / layout.columns < 400}
                       volumeReadout={compact}
                       height={layout.cardHeight}
-                      edgeTalkAffordance={!replyBeside && store.edgeTalkAffordance}
+                      videoAvailable={store.videoFeedKeys.includes(talkTargetIdentity(target))}
+                      videoExpanded={expandedVideos.has(talkTargetIdentity(target))}
+                      videoHeight={row.videoHeight}
+                      videoStreamURL={store.feedVideos[talkTargetIdentity(target)]?.streamURL}
+                      videoError={store.feedVideos[talkTargetIdentity(target)]?.error}
+                      onToggleVideo={() => toggleVideo(target)}
+                      edgeTalkAffordance={!replyBeside}
                       onOpenConferenceMembers={setConferenceTarget}
                     />
                   </View>
                 ))}
-                {row.length < layout.columns
-                  ? Array.from({ length: layout.columns - row.length }, (_, index) => (
+                {row.targets.length < layout.columns
+                  ? Array.from({ length: layout.columns - row.targets.length }, (_, index) => (
                       <View key={`pad-${rowIndex}-${index}`} style={styles.gridCell} />
                     ))
                   : null}
@@ -363,6 +405,7 @@ export function OperatorScreen() {
 
         <ConferenceMembersModal target={conferenceTarget} onClose={() => setConferenceTarget(null)} />
       </View>
+      <VolumeAdjustmentHUD />
       {audioMenuOpen ? <AudioRouteMenu onClose={() => setAudioMenuOpen(false)} /> : null}
     </View>
   );
@@ -401,7 +444,14 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     gap: 6,
   },
+  headerPeekLabel: {
+    color: colors.muted,
+    fontSize: 11,
+    fontWeight: '600',
+  },
   headerPeekCard: {
+    flexDirection: 'row',
+    gap: 6,
     height: COLLAPSED_HEADER_HEIGHT,
     marginBottom: 8,
     borderBottomLeftRadius: 16,
@@ -440,7 +490,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   tallyChip: {
-    marginTop: 4,
+    flexShrink: 0,
     fontSize: 13,
     fontWeight: '800',
     letterSpacing: 1.2,
@@ -490,9 +540,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  noticeSlot: {
+    height: 26,
+    flexShrink: 0,
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
   warn: {
     color: colors.danger,
-    marginBottom: 8,
+    fontSize: 13,
   },
   accessoryNotice: {
     flexDirection: 'row',
@@ -501,8 +557,7 @@ const styles = StyleSheet.create({
     maxWidth: '100%',
     gap: 6,
     paddingHorizontal: 10,
-    paddingVertical: 5,
-    marginBottom: 8,
+    paddingVertical: 2,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: 'rgba(245,194,107,0.35)',
@@ -521,7 +576,7 @@ const styles = StyleSheet.create({
   },
   error: {
     color: colors.danger,
-    marginBottom: 8,
+    fontSize: 13,
   },
   body: {
     flex: 1,
@@ -549,6 +604,7 @@ const styles = StyleSheet.create({
   },
   gridCell: {
     flex: 1,
+    justifyContent: 'flex-end',
     minWidth: 0,
   },
   reply: {

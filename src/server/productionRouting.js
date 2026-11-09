@@ -17,7 +17,8 @@ function arePeersInSameActiveProduction(firstPeer, secondPeer, multipleProductio
 }
 
 function canRouteTargetBetweenPeers(target, firstPeer, secondPeer, multipleProductionsEnabled) {
-  if (String(target?.type || '').toLowerCase() === 'conference') return true;
+  // User identities and conferences are global; only guest/session targets keep production scope.
+  if (['user', 'conference'].includes(String(target?.type || '').toLowerCase())) return true;
   return arePeersInSameActiveProduction(firstPeer, secondPeer, multipleProductionsEnabled);
 }
 

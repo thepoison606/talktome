@@ -80,6 +80,48 @@ desired OBS source. Refresh the Bridge, then select the resulting
 The OBS output must contain an audio track; a video-only NDI test signal is
 discoverable but produces silence in this audio-only Bridge integration.
 
+## Talk triggers and target groups
+
+For each managed **user** endpoint, select **Talk trigger** and **Talk targets**
+in the Bridge window or in Admin → Users → Bridge endpoint. The target list
+contains all users and conferences on the server, regardless of Production or
+Matrix assignments. Selecting several targets distributes the same input audio to all of them.
+Selected targets appear as removable chips. The **+** beside them opens a searchable
+dialog grouped by conferences and users. **Apply** updates the selection, while **Cancel** discards dialog
+changes. In Admin, use **Save** afterwards to store the endpoint configuration;
+the Bridge window saves applied changes automatically.
+Each receiver retains their own mute and volume control for that source.
+Selecting a conference also opens its return audio to the Bridge output; use the
+Panel to mute it or adjust its volume. A listener reached both directly and via
+a conference receives the input only once.
+
+Selected targets appear as gray, Bridge-managed crosspoints in every Production
+Matrix containing both endpoints. Clicking one opens the Bridge configuration.
+Removing a selected target removes only its automatic routing; any underlying
+manual Matrix assignment remains, including a previous listen-only assignment.
+
+- **External API / Companion**: press/release and lock commands control talk.
+  Targets come from each command, including explicit user/conference and Reply
+  targets; this mode has no configured target group. Saved automatic targets are
+  inactive in this mode. Individual remote Panel buttons address their own targets.
+- **Audio level**: the input threshold opens and closes talk to all selected
+  targets together. At least one target is required.
+- **Always on**: continuously transmits to all selected targets whenever the
+  server session and input device are ready, even during silence. The saved mode
+  is restored after Bridge restarts, server reconnects and audio-device recovery.
+  Manual releases do not close this permanent route; change Talk trigger or
+  disable the endpoint to stop it. At least one target is required.
+
+Always on applies to the input/send direction. Return audio uses the configured
+conference memberships and output settings. Configuration backups include the mode
+and full target group; older single-target configurations remain supported.
+
+## NDI / OMT video feeds
+
+Starting with v1.6.0, managed Feed ports also offer **Video source (optional)**. Choose a discovered webcam, NDI or OMT source here or in **Admin → Feeds**. The picture is sent to assigned browser users and video-capable iOS/Android apps; audio routing stays independent. Select **Off** to remove video without stopping audio. NDI/OMT video outputs are not included.
+
+The software encoder targets up to 720p / 30 fps / 2.4 Mbit/s per Feed, preserving source cadence (50 fps → 25 fps, 60 fps → 30 fps). Multiple feeds add CPU and bandwidth load. OpenH264 and its Rust bindings use BSD-2-Clause licenses; notices are bundled under `licenses/`. See [video setup and validation](../docs/browser-video-feeds.md#send-an-ndi-or-omt-feed-through-the-bridge).
+
 ## OMT Audio
 
 Open Media Transport support is bundled with the macOS and Windows Bridge, so
@@ -228,3 +270,19 @@ set `ALLOW_NON_PORTABLE_FFMPEG=1` explicitly.
 4. Add device-reconnect recovery and long-running soak tests.
 5. Add signed Bridge installer builds for macOS and Windows.
 6. Add configurable NDI/OMT output names and multichannel network routing.
+
+### Connection security
+
+API keys and bridge tokens are stored in macOS Keychain, Windows Credential
+Manager, or Linux Secret Service, scoped to the server URL. Existing WebView
+credentials migrate on startup; the old copy is removed only after the secure
+write succeeds. A locked/unavailable credential store reports an error instead
+of falling back to plaintext storage.
+
+TLS certificates are verified against the operating system trust store by
+default. For a self-signed local server, either trust its certificate in the
+operating system or explicitly select **Allow untrusted TLS for this local
+server**. This exception is saved per server URL, restricted to local IPs and
+local hostnames, and never follows redirects. Plain HTTP remains available.
+Native event streams use Authorization headers; if streaming is unavailable,
+the client uses authenticated polling rather than putting credentials in URLs.

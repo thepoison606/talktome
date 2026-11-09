@@ -1,0 +1,275 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const net = require('node:net');
+const { spawn, execFileSync } = require('node:child_process');
+const { setTimeout: delay } = require('node:timers/promises');
+const { io } = require('socket.io-client');
+const root = require('./helpers/projectRoot');
+
+// Real mediasoup worker + authenticated Socket.IO, not a mock of the routing policy.
+test('audio and camera coexist; discovery, replacement and consumption respect video capability and feed assignment', { timeout: 25000 }, async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'talktome-video-signaling-'));
+  const clients = []; let child, exited, output = '';
+  t.after(async () => {
+    clients.forEach(socket => socket.disconnect());
+    if (child?.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    if (exited) await exited;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const listener = net.createServer(); await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
+  const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
+  const configPath = path.join(dir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ tlsMode: 'proxy', httpsPort: port, httpPort: 'off', mdnsHost: 'off',
+    multipleProductions: true, defaultClientSettings: { allowFeedVideo: true }, mediaNetworkMode: 'manual', mediaAnnouncedAddress: '127.0.0.1' }));
+  const env = { ...process.env, TALKTOME_DATA_DIR: dir, TALKTOME_CONFIG_PATH: configPath, TALKTOME_NO_WIZARD: '1',
+    TALKTOME_TLS_MODE: 'proxy', PORT: String(port), HTTPS_PORT: String(port), HTTP_PORT: 'off', MDNS_HOST: 'off', PUBLIC_IP: '127.0.0.1', COMPANION_API_KEY: 'video-test-only-key' };
+  execFileSync(process.execPath, ['-e', `
+    const db = require('./src/server/dbHandler');
+    const admin = Number(db.createUser('Video admin', 'test-only')); db.setUserAdminRole(admin, true);
+    const feed = Number(db.createFeed('Camera', 'test-only'));
+    const production = db.getPrimaryProduction().id;
+    db.setProductionFeed(production, feed);
+    db.updateFeedBridgeEndpoint(feed, { enabled: true, bridgeDevice: 'video-test' });
+    const bridgeUser = Number(db.createUser('Bridge user', 'test-only'));
+    db.updateUserBridgeEndpoint(bridgeUser, { enabled: true, bridgeDevice: 'video-test' });
+    for (const name of ['Viewer','Native','Unassigned']) {
+      const id = Number(db.createUser(name,'test-only')); db.setProductionUser(production,id);
+      if(name !== 'Unassigned') db.addProductionTarget(production,id,'feed',feed);
+    }
+    require('node:fs').writeFileSync(${JSON.stringify(path.join(dir, 'fixture.json'))}, JSON.stringify({feed,production,bridgeUser}));
+  `], { cwd: root, env, stdio: 'pipe' });
+  const fixture = JSON.parse(fs.readFileSync(path.join(dir, 'fixture.json')));
+  child = spawn(process.execPath, [path.join(root, 'server.js')], { cwd: dir, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  for (const stream of [child.stdout, child.stderr]) stream.on('data', data => { output = (output + data).slice(-24000); });
+  exited = new Promise(resolve => child.once('exit', resolve));
+  const origin = `http://127.0.0.1:${port}`;
+  let ready = false;
+  for (let i = 0; i < 100 && child.exitCode === null; i++) {
+    try { if ((await fetch(`${origin}/api/v1/health`)).ok && output.includes('Router created')) { ready = true; break; } } catch {}
+    await delay(100);
+  }
+  assert(ready, output);
+  const html = await (await fetch(origin)).text();
+  assert(html.includes('id="feed-video-source"'));
+  for (const asset of ['/feedVideo.js', '/feedVideo.css', '/targetLayers.js']) {
+    assert(html.includes(asset)); assert.equal((await fetch(origin + asset)).status, 200);
+  }
+  const request = (socket, event, payload) => socket.timeout(5000).emitWithAck(event, ...(payload === undefined ? [] : [payload]));
+  async function login(name, video) {
+    const response = await fetch(`${origin}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, password: 'test-only' }) });
+    assert.equal(response.status, 200);
+    const identity = await response.json();
+    const socket = io(origin, { transports: ['websocket'], forceNew: true, extraHeaders: { Cookie: response.headers.get('set-cookie').split(';')[0] } });
+    clients.push(socket);
+    await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); });
+    const result = await request(socket, 'register-user', { id: identity.id, name: identity.name, kind: identity.kind,
+      productionId: fixture.production, feedVideo: video });
+    assert(result.ok, JSON.stringify(result));
+    return socket;
+  }
+  const adminLogin = await fetch(`${origin}/admin/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'Video admin', password: 'test-only' }) });
+  assert.equal(adminLogin.status, 200);
+  const adminCookie = adminLogin.headers.get('set-cookie').split(';')[0];
+  async function admin(method, route, body, expected = 200, authenticated = true) {
+    const response = await fetch(origin + route, { method, headers: {
+      'Content-Type': 'application/json', ...(authenticated ? { Cookie: adminCookie } : {}),
+    }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const result = await response.json(); assert.equal(response.status, expected, JSON.stringify(result)); return result;
+  }
+  assert.equal((await admin('GET', '/feeds'))[0].allow_feed_video, null);
+  assert.equal((await admin('GET', '/feeds'))[0].allowFeedVideo, true);
+  await admin('PUT', `/admin/feeds/${fixture.feed}/feed-video`, { allowFeedVideo: 'true' }, 400);
+  await admin('PUT', '/admin/feeds/999999/feed-video', { allowFeedVideo: true }, 404);
+  await admin('PUT', `/admin/feeds/${fixture.feed}/feed-video`, { allowFeedVideo: true }, 401, false);
+  const feed = await login('Camera', true), viewer = await login('Viewer', true), native = await login('Native', false), unassigned = await login('Unassigned', true);
+  const announcements = [], nativeAnnouncements = [], closed = [], permissions = [];
+  feed.on('feed-video-permission-updated', event => permissions.push(event.allowed));
+  viewer.on('new-producer', event => announcements.push(event));
+  native.on('new-producer', event => nativeAnnouncements.push(event));
+  viewer.on('producer-closed', event => closed.push(event));
+  const caps = await request(viewer, 'get-router-rtp-capabilities');
+  assert(caps.codecs.some(c => c.mimeType === 'video/VP8'));
+  assert(caps.codecs.some(c => c.mimeType === 'video/H264'));
+  assert((await request(feed, 'create-send-transport', null)).id);
+  const produce = (kind, ssrc) => request(feed, 'produce', { kind, appData: { type: 'feed', id: fixture.feed }, rtpParameters: {
+    mid: String(ssrc), codecs: kind === 'audio'
+      ? [{ mimeType: 'audio/opus', payloadType: 111, clockRate: 48000, channels: 2 }]
+      : [{ mimeType: 'video/VP8', payloadType: 96, clockRate: 90000 }],
+    encodings: [{ ssrc }], rtcp: { cname: `video-test-${ssrc}` },
+  } });
+  const audio = await produce('audio', 10001); assert(audio.id, JSON.stringify(audio));
+  const video = await produce('video', 10002); assert(video.id, JSON.stringify(video));
+  await delay(30);
+  assert(announcements.some(p => p.kind === 'video' && p.producerId === video.id));
+  assert(nativeAnnouncements.every(p => p.kind === 'audio'));
+  let active = await request(viewer, 'request-active-producers');
+  assert(active.some(p => p.producerId === audio.id)); assert(active.some(p => p.producerId === video.id));
+  assert((await request(native, 'request-active-producers')).every(p => p.kind === 'audio'));
+  assert.deepEqual(await request(unassigned, 'request-active-producers'), []);
+  for (const socket of [viewer, native, unassigned]) assert((await request(socket, 'create-recv-transport', null)).id);
+  const consumption = await request(viewer, 'consume', { producerId: video.id, rtpCapabilities: caps });
+  assert.equal(consumption.kind, 'video'); assert(consumption.id);
+  await request(viewer, 'resume-consumer', { consumerId: consumption.id });
+  assert.equal((await request(viewer, 'pause-consumer', { consumerId: consumption.id })).paused, true);
+  assert.equal((await request(native, 'pause-consumer', { consumerId: consumption.id })).paused, false, 'other peers cannot pause this video');
+  await request(viewer, 'resume-consumer', { consumerId: consumption.id });
+  // Video may disappear at screen lock without replacing audio's PeerConnection.
+  const audioConsumer = await request(viewer, 'consume', { producerId: audio.id, rtpCapabilities: caps });
+  assert.equal(audioConsumer.kind, 'audio');
+  assert((await request(native, 'create-video-recv-transport', null)).error);
+  const separateVideo = await request(viewer, 'create-video-recv-transport', null);
+  assert(separateVideo.id);
+  assert.match((await request(viewer, 'consume', { producerId: audio.id, rtpCapabilities: caps, transportId: separateVideo.id })).error, /cannot receive audio/);
+  const videoConsumer = await request(viewer, 'consume', { producerId: video.id, rtpCapabilities: caps, transportId: separateVideo.id });
+  assert.equal(videoConsumer.kind, 'video');
+  await request(viewer, 'close-video-recv-transport', { transportId: separateVideo.id });
+  assert((await request(viewer, 'consume', { producerId: video.id, rtpCapabilities: caps, transportId: separateVideo.id })).error);
+  // The original audio transport is still present and accepts DTLS setup.
+  assert(!(await request(viewer, 'connect-recv-transport', { dtlsParameters: { ...separateVideo.dtlsParameters, role: 'client' } }))?.error);
+  await request(viewer, 'resume-consumer', { consumerId: audioConsumer.id });
+  await delay(20);
+  assert(output.includes(`Consumer ${audioConsumer.id} resumed`), 'audio consumer survives video transport closure');
+  const reopenedVideo = await request(viewer, 'create-video-recv-transport', null);
+  assert.notEqual(reopenedVideo.id, separateVideo.id);
+  await request(viewer, 'close-video-recv-transport', { transportId: separateVideo.id });
+  assert.equal((await request(viewer, 'consume', { producerId: video.id, rtpCapabilities: caps, transportId: reopenedVideo.id })).kind, 'video', 'late closure of the previous video connection must not close the new one');
+  await request(viewer, 'close-video-recv-transport', { transportId: reopenedVideo.id });
+  for (const socket of [native, unassigned]) {
+    assert.match((await request(socket, 'consume', { producerId: video.id, rtpCapabilities: caps })).error, /Not authorized/);
+  }
+  assert.match((await request(viewer, 'produce', { kind: 'video', appData: { type: 'feed', id: fixture.feed }, rtpParameters: {} })).error, /assigned browser feed/);
+  assert.match((await request(feed, 'produce', { kind: 'video', appData: { type: 'feed', id: fixture.feed + 1 }, rtpParameters: {} })).error, /assigned browser feed/);
+  assert.match((await request(viewer, 'consume-plain', { producerId: video.id, ip: '127.0.0.1', port: 45999 })).error, /browser WebRTC/);
+  // A changed default immediately withdraws existing video, including consumers,
+  // without stopping the audio producer. An explicit per-feed opt-in overrides it.
+  await admin('PUT', '/admin/settings/default-client', { allowFeedVideo: false });
+  await delay(20);
+  assert(permissions.includes(false));
+  assert(closed.some(p => p.producerId === video.id));
+  assert.deepEqual((await request(viewer, 'request-active-producers')).map(p => p.producerId), [audio.id]);
+  assert.match((await produce('video', 10100)).error, /disabled by the administrator/);
+  await admin('PUT', `/admin/feeds/${fixture.feed}/feed-video`, { allowFeedVideo: true });
+  await delay(20); assert(permissions.includes(true));
+  assert.equal((await admin('GET', '/feeds'))[0].allowFeedVideo, true);
+  const replacement = await produce('video', 10003); assert(replacement.id);
+  await delay(30);
+  assert(closed.some(p => p.producerId === video.id));
+  active = await request(viewer, 'request-active-producers');
+  assert(active.some(p => p.producerId === audio.id), 'camera replacement must not close feed audio');
+  assert(!active.some(p => p.producerId === video.id)); assert(active.some(p => p.producerId === replacement.id));
+  assert((await request(feed, 'producer-close', { producerId: replacement.id })).ok);
+  await delay(20);
+  assert(closed.some(p => p.producerId === replacement.id));
+  active = await request(viewer, 'request-active-producers'); assert.deepEqual(active.map(p => p.producerId), [audio.id]);
+  const lastVideo = await produce('video', 10004); assert(lastVideo.id);
+  await delay(20); feed.disconnect(); await delay(30);
+  assert(closed.some(p => p.producerId === lastVideo.id), 'disconnect must withdraw video availability even without consumers');
+
+  // The same router accepts H.264 from a native Bridge, without exposing video
+  // to legacy native clients or tearing down the independent Opus producer.
+  async function api(method, route, body, expected = 200) {
+    const response = await fetch(origin + route, { method, headers: {
+      'Content-Type': 'application/json', 'x-api-key': 'video-test-only-key',
+    }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const result = await response.json();
+    assert.equal(response.status, expected, JSON.stringify(result)); return result;
+  }
+  const inventory = { host: 'Test', devices: [], videoSources: [
+    { id: 'ndi:recv:0123456789abcdef', name: 'NDI · Test', protocol: 'ndi' },
+    { id: 'webcam:recv:abcdef0123456789', name: 'Webcam · Test', protocol: 'invalid' },
+    { id: 'file:///tmp/no-video', name: 'Rejected' },
+  ] };
+  const announced = await api('POST', '/api/v1/bridge/announce', { bridgeId: 'video-test', inventory });
+  assert.equal(announced.bridge.inventory.videoSources.length, 2);
+  assert.equal(announced.bridge.inventory.videoSources[1].protocol, 'webcam');
+  const bridge = await api('POST', '/api/v1/bridge/sessions', { bridgeId: 'video-test', portId: `feed-${fixture.feed}` });
+  const route = `/api/v1/bridge/sessions/${bridge.sessionId}`;
+  await api('POST', route + '/video-send-transport', {}, 403);
+  const userBridge = await api('POST', '/api/v1/bridge/sessions', { bridgeId: 'video-test', portId: `user-${fixture.bridgeUser}` });
+  await api('POST', `/api/v1/bridge/sessions/${userBridge.sessionId}/video-send-transport`, {}, 403);
+  const configured = await api('PUT', `/api/v1/bridge/video-test/ports/feed/${fixture.feed}`, {
+    videoSource: inventory.videoSources[1].id,
+  });
+  assert.equal(configured.ports.find(port => port.kind === 'feed').videoSource, inventory.videoSources[1].id);
+  const audioTransport = await api('POST', route + '/plain-send-transport', {});
+  const bridgeAudio = await api('POST', route + '/producers', audioTransport);
+  const videoTransport = await api('POST', route + '/video-send-transport', {});
+  assert.equal(audioTransport.cname, videoTransport.cname, 'native encoders must use one feed synchronization identity');
+  assert.equal(videoTransport.payloadType, 102);
+  const bridgeVideo = await api('POST', route + '/video-producer', {});
+  assert(!(await request(viewer, 'request-active-producers')).some(p => p.producerId === bridgeVideo.id), 'source must not be advertised before its first encoded picture');
+  await api('POST', route + `/producers/${bridgeVideo.id}/resume`, {});
+  let bridgeActive = await request(viewer, 'request-active-producers');
+  assert(bridgeActive.some(p => p.producerId === bridgeAudio.id));
+  assert(bridgeActive.some(p => p.producerId === bridgeVideo.id && p.kind === 'video'));
+  assert((await request(native, 'request-active-producers')).every(p => p.kind === 'audio'));
+  assert.deepEqual(await request(unassigned, 'request-active-producers'), []);
+  const h264 = await request(viewer, 'consume', { producerId: bridgeVideo.id, rtpCapabilities: caps });
+  assert.equal(h264.kind, 'video'); assert(h264.id);
+  const audioReplacement = await api('POST', route + '/producers', audioTransport);
+  bridgeActive = await request(viewer, 'request-active-producers');
+  assert(bridgeActive.some(p => p.producerId === bridgeVideo.id), 'audio restart retains video');
+  await admin('PUT', `/admin/feeds/${fixture.feed}/feed-video`, { allowFeedVideo: false });
+  await delay(20);
+  assert.deepEqual((await request(viewer, 'request-active-producers')).map(p => p.producerId), [audioReplacement.id]);
+  assert(closed.some(p => p.producerId === bridgeVideo.id));
+  const disabledConfig = await api('GET', '/api/v1/bridge/video-test/config');
+  assert.equal(disabledConfig.ports.find(port => port.kind === 'feed').videoAllowed, false);
+  assert.equal(disabledConfig.ports.find(port => port.kind === 'feed').videoSource, inventory.videoSources[1].id);
+  await api('POST', route + '/video-send-transport', {}, 403);
+  await admin('PUT', '/admin/settings/default-client', { allowFeedVideo: true });
+  assert.equal((await admin('GET', '/feeds'))[0].allowFeedVideo, false, 'explicit off overrides a true default');
+  const reset = await admin('PUT', `/admin/feeds/${fixture.feed}/feed-video`, { allowFeedVideo: null });
+  assert.equal(reset.allow_feed_video, null); assert.equal(reset.allowFeedVideo, true);
+  assert.equal((await api('GET', '/api/v1/bridge/video-test/config')).ports.find(port => port.kind === 'feed').videoAllowed, true);
+  await api('DELETE', route + '/video');
+  bridgeActive = await request(viewer, 'request-active-producers');
+  assert.deepEqual(bridgeActive.map(p => p.producerId), [audioReplacement.id]);
+  assert(closed.some(p => p.producerId === bridgeVideo.id));
+  await api('POST', route + '/video-send-transport', {});
+  const lastBridgeVideo = await api('POST', route + '/video-producer', {});
+  await api('POST', route + `/producers/${lastBridgeVideo.id}/resume`, {});
+  const offConfig = await api('PUT', `/api/v1/bridge/video-test/ports/feed/${fixture.feed}`, { videoSource: '' });
+  assert.equal(offConfig.ports.find(port => port.kind === 'feed').videoSource, '');
+  await delay(20);
+  assert(closed.some(p => p.producerId === lastBridgeVideo.id));
+  assert.deepEqual((await request(viewer, 'request-active-producers')).map(p => p.producerId), [audioReplacement.id], 'Off withdraws only video, preserving audio');
+  await api('DELETE', route);
+  await delay(20);
+  assert(closed.some(p => p.producerId === lastBridgeVideo.id));
+  assert.deepEqual(await request(viewer, 'request-active-producers'), []);
+
+  // Applying one default to all must preserve unrelated user settings and stop stale reports overwriting it.
+  const users = await admin('GET', '/users');
+  const userId = users.find(user => user.name === 'Viewer').id;
+  await admin('PUT', `/admin/users/${userId}/audio-settings`, { settings: { leftHandMode: true, dimAmountDb: -24, userInputGainDb: 8 } });
+  await admin('PUT', `/admin/users/${userId}/target-rearrange`, { allowTargetRearrange: false });
+  const commands = [];
+  viewer.on('panel-command', command => commands.push(command));
+  await admin('PUT', '/admin/settings/default-client', { leftHandMode: false });
+  assert.equal((await admin('GET', `/admin/users/${userId}/audio-settings`)).settings.leftHandMode, true);
+  await admin('PUT', '/admin/settings/default-client', { leftHandMode: false, applyToAll: ['unknown'] }, 400);
+  assert.equal((await admin('GET', `/admin/users/${userId}/audio-settings`)).settings.leftHandMode, true);
+  await admin('PUT', '/admin/settings/default-client', { leftHandMode: false, bigMainButton: true, allowTargetRearrange: true,
+    allowFeedVideo: false, applyToAll: ['leftHandMode', 'bigMainButton', 'allowTargetRearrange', 'allowFeedVideo'] });
+  await delay(30);
+  const updated = await admin('GET', `/admin/users/${userId}/audio-settings`);
+  assert.equal(updated.settings.leftHandMode, false);
+  assert.equal(updated.settings.bigMainButton, true);
+  assert.equal(updated.settings.dimAmountDb, -24);
+  assert.equal(updated.settings.userInputGainDb, 8);
+  assert.equal((await admin('GET', '/users')).find(user => user.id === userId).allow_target_rearrange, 1);
+  assert.equal((await admin('GET', '/feeds'))[0].allowFeedVideo, false);
+  assert(commands.some(command => command.kind === 'audio-settings' && command.settings.bigMainButton === true && command.panelSettings.revision > 0));
+  const stale = await request(viewer, 'user-audio-settings-update', { revision: 0, settings: { leftHandMode: true } });
+  assert.equal(stale.ok, false);
+  assert.equal((await admin('GET', `/admin/users/${userId}/audio-settings`)).settings.leftHandMode, false);
+  await admin('PUT', `/admin/users/${userId}/audio-settings`, { settings: { leftHandMode: true } });
+  assert.equal((await admin('GET', `/admin/users/${userId}/audio-settings`)).settings.bigMainButton, true, 'audio-only editors preserve the layout override');
+  const offlineId = users.find(user => user.name === 'Bridge user').id;
+  assert.equal((await admin('GET', `/admin/users/${offlineId}/audio-settings`)).settings.bigMainButton, true);
+
+});

@@ -33,7 +33,7 @@ struct TalkToMeHomeWidget: Widget {
         TalkToMeHomeView(entry: entry)
       }
     }
-    .configurationDisplayName("TalkToMe")
+    .configurationDisplayName("Talktome")
     .description("Who is talking, and the current Reply or Talk target.")
     .supportedFamilies([.systemSmall, .systemMedium])
   }

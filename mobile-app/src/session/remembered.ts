@@ -54,8 +54,6 @@ export async function loadProfileBundle(): Promise<ProfileBundle> {
         leftHanded: typeof parsed.leftHanded === 'boolean' ? parsed.leftHanded : undefined,
         lockMultipleTargets:
           typeof parsed.lockMultipleTargets === 'boolean' ? parsed.lockMultipleTargets : undefined,
-        edgeTalkAffordance:
-          typeof parsed.edgeTalkAffordance === 'boolean' ? parsed.edgeTalkAffordance : undefined,
         mainButtonTargets: readMainButtonTargets(parsed.mainButtonTargets),
         watchTargetSelections: readWatchTargetSelections(parsed.watchTargetSelections),
         bigMainButton: parsed.bigMainButton === true,
