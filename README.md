@@ -365,6 +365,10 @@ Auth:
 - API key via `x-api-key: <KEY>` or `Authorization: Bearer <KEY>`
 - User-scoped token via `POST /api/v1/companion/auth/login`
 
+Authentication uses `Authorization: Bearer <token>` or `X-API-Key` headers.
+API keys in URL query parameters are no longer accepted. Socket.IO clients
+must use the handshake `auth` payload or authentication headers.
+
 Main endpoints:
 
 - `GET /api/v1/companion/config`

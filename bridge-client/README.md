@@ -270,3 +270,19 @@ set `ALLOW_NON_PORTABLE_FFMPEG=1` explicitly.
 4. Add device-reconnect recovery and long-running soak tests.
 5. Add signed Bridge installer builds for macOS and Windows.
 6. Add configurable NDI/OMT output names and multichannel network routing.
+
+### Connection security
+
+API keys and bridge tokens are stored in macOS Keychain, Windows Credential
+Manager, or Linux Secret Service, scoped to the server URL. Existing WebView
+credentials migrate on startup; the old copy is removed only after the secure
+write succeeds. A locked/unavailable credential store reports an error instead
+of falling back to plaintext storage.
+
+TLS certificates are verified against the operating system trust store by
+default. For a self-signed local server, either trust its certificate in the
+operating system or explicitly select **Allow untrusted TLS for this local
+server**. This exception is saved per server URL, restricted to local IPs and
+local hostnames, and never follows redirects. Plain HTTP remains available.
+Native event streams use Authorization headers; if streaming is unavailable,
+the client uses authenticated polling rather than putting credentials in URLs.

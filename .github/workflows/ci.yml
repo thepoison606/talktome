@@ -65,6 +65,7 @@ jobs:
         run: >-
           sudo apt-get update && sudo apt-get install -y --no-install-recommends
           libasound2-dev
+          libdbus-1-dev
           libwebkit2gtk-4.1-dev
           libappindicator3-dev
           librsvg2-dev
@@ -207,8 +208,8 @@ jobs:
           cache-dependency-path: mobile-app/package-lock.json
       - name: Install dependencies
         run: npm ci
-      - name: Reject high and critical mobile dependency advisories
-        run: npm audit --audit-level=high
+      - name: Reject moderate, high and critical mobile dependency advisories
+        run: npm audit --audit-level=moderate
       - name: Test
         run: npm test
       - name: Check TypeScript

@@ -68,7 +68,7 @@ The generated `android/` and `ios/` folders are ignored; local Expo modules in
 
 ### Dependency security
 
-CI runs `npm audit --audit-level=high` for the complete mobile dependency tree,
+CI runs `npm audit --audit-level=moderate` for the complete mobile dependency tree,
 including development tools. The SDK 56 toolchain uses the following overrides:
 
 - `@expo/metro` 56.1.0 uses Metro 0.84.6, which replaces the vulnerable

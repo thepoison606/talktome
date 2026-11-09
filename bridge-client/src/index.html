@@ -44,6 +44,11 @@
             <input id="bridge-name" type="text" autocomplete="off" />
           </label>
         </div>
+        <label class="switch-row local-tls-choice" title="Disables certificate verification only for this local HTTPS server. Leave off for trusted certificates.">
+          <input id="allow-insecure-tls" type="checkbox" role="switch" />
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="switch-label">Allow untrusted TLS for this local server</span>
+        </label>
         <div class="network-audio-runtime-row" id="ndi-runtime" data-state="checking">
           <span class="network-audio-runtime-dot" aria-hidden="true"></span>
           <div>

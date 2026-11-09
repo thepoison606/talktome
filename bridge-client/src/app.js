@@ -1,3 +1,4 @@
+import { createCredentialStore } from './credentialStore.js';
 import '../../public/bridgeTalkTrigger.js';
 import '../../public/targetPicker.js';
 import '../../public/targetPicker.css';
@@ -16,6 +17,7 @@ const localPortList = document.getElementById("local-port-list");
 const addPortButton = document.getElementById("add-port");
 const stopAllPortsButton = document.getElementById("stop-all-ports");
 const serverUrlInput = document.getElementById("server-url");
+const allowInsecureTlsInput = document.getElementById("allow-insecure-tls");
 const apiKeyInput = document.getElementById("api-key");
 const bridgeNameInput = document.getElementById("bridge-name");
 const announceStatus = document.getElementById("announce-status");
@@ -53,6 +55,9 @@ const STORAGE_KEYS = {
   bridgeId: "talktome:bridge-id",
   bridgeToken: "talktome:bridge-token"
 };
+const bridgeCredentials = createCredentialStore(invoke, localStorage, STORAGE_KEYS);
+let credentialInputServer = "";
+
 const MANAGED_EVENT_FALLBACK_POLL_MS = 250;
 // This timer only reads the lightweight device snapshot. Full format discovery
 // runs at startup, on manual refresh, or after the snapshot actually changes.
@@ -205,15 +210,36 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
-function loadBridgeSettings() {
+async function loadBridgeSettings() {
   serverUrlInput.value = localStorage.getItem(STORAGE_KEYS.serverUrl) || "";
-  apiKeyInput.value = localStorage.getItem(STORAGE_KEYS.apiKey) || "";
   bridgeNameInput.value = localStorage.getItem(STORAGE_KEYS.bridgeName) || "Bridge";
+  loadBridgeTlsChoice();
+  await loadBridgeCredentials(true);
+}
+
+function credentialServer() {
+  try { return normalizeServerUrl(serverUrlInput.value); } catch { return ""; }
+}
+
+async function loadBridgeCredentials(migrate = false) {
+  const serverUrl = credentialServer();
+  if (!serverUrl) return;
+  const credentials = await bridgeCredentials.load(serverUrl, migrate);
+  if (credentialServer() !== serverUrl || credentialInputServer === serverUrl) return;
+  apiKeyInput.value = credentials.apiKey;
+  credentialInputServer = serverUrl;
+}
+
+function saveBridgeCredentials() {
+  const serverUrl = credentialServer();
+  if (!serverUrl || credentialInputServer !== serverUrl) return Promise.resolve();
+  const current = bridgeCredentials.get(serverUrl);
+  const apiKey = apiKeyInput.value.trim();
+  return bridgeCredentials.save(serverUrl, { apiKey, bridgeToken: current.apiKey === apiKey ? current.bridgeToken : "" });
 }
 
 function saveBridgeSettings() {
   localStorage.setItem(STORAGE_KEYS.serverUrl, serverUrlInput.value.trim());
-  localStorage.setItem(STORAGE_KEYS.apiKey, apiKeyInput.value.trim());
   localStorage.setItem(STORAGE_KEYS.bridgeName, bridgeNameInput.value.trim());
 }
 
@@ -466,8 +492,20 @@ function audioDeviceSnapshotSignature(snapshot) {
   });
 }
 
+function bridgeAllowsUntrustedTls() {
+  return credentialServer().startsWith("https:") && allowInsecureTlsInput.checked;
+}
+
+function loadBridgeTlsChoice() {
+  allowInsecureTlsInput.checked = localStorage.getItem(`talktome:bridge-tls-insecure:${credentialServer()}`) === "true";
+}
+
 function getBridgeCredential() {
-  return localStorage.getItem(STORAGE_KEYS.bridgeToken) || apiKeyInput.value.trim();
+  const serverUrl = credentialServer();
+  if (!serverUrl || serverUrl !== credentialInputServer) return "";
+  const current = bridgeCredentials.get(serverUrl);
+  const apiKey = apiKeyInput.value.trim();
+  return (current.apiKey === apiKey ? current.bridgeToken : "") || apiKey;
 }
 
 function normalizeServerUrl(value) {
@@ -513,6 +551,7 @@ async function bridgeApi(method, path, body = null) {
   return invoke("bridge_api_request", {
     serverUrl: normalizeServerUrl(serverUrlInput.value),
     apiKey: getBridgeCredential(),
+    allowInsecureTls: bridgeAllowsUntrustedTls(),
     method,
     path,
     body
@@ -544,15 +583,6 @@ function installWindowFocusSuppressionForControls() {
 
 function managedSessionPath(session, suffix = "") {
   return `/api/v1/bridge/sessions/${encodeURIComponent(session.sessionId)}${suffix}`;
-}
-
-function managedSessionEventStreamUrl(session) {
-  const url = new URL(
-    managedSessionPath(session, "/events/stream"),
-    `${normalizeServerUrl(serverUrlInput.value)}/`
-  );
-  url.searchParams.set("apiKey", getBridgeCredential());
-  return url.toString();
 }
 
 function bridgePortKey(port) {
@@ -2515,6 +2545,7 @@ async function startNativeManagedEventStream(session) {
       streamId,
       serverUrl: normalizeServerUrl(serverUrlInput.value),
       apiKey: getBridgeCredential(),
+    allowInsecureTls: bridgeAllowsUntrustedTls(),
       path: managedSessionPath(session, "/events/stream"),
       inputStreamId: session.inputStreamId,
       outputStreamPrefix: `${session.port.id}:consumer:`
@@ -2553,56 +2584,9 @@ async function startManagedEventStream(session) {
     setManagedSessionError(session, error);
   }
 
-  if (!window.EventSource || !session?.sessionId || !getBridgeCredential()) {
-    return false;
-  }
-
-  const source = new EventSource(managedSessionEventStreamUrl(session));
-  session.eventSource = source;
-  session.eventStreamActive = false;
-
-  source.addEventListener("open", () => {
-    if (session.eventSource !== source) return;
-    session.eventStreamActive = true;
-    session.error = null;
-    renderManagedBridgePorts();
-  });
-
-  source.addEventListener("bridge-event", (message) => {
-    if (session.eventSource !== source) return;
-    try {
-      const event = JSON.parse(message.data || "{}");
-      enqueueManagedEvent(session, event);
-    } catch (error) {
-      session.error = `Failed to parse bridge event: ${String(error.message || error)}`;
-      renderManagedBridgePorts();
-    }
-  });
-
-  source.addEventListener("session-closed", (message) => {
-    if (session.eventSource !== source) return;
-    source.close();
-    session.eventSource = null;
-    session.eventStreamActive = false;
-    if (session.ready) {
-      try {
-        const payload = JSON.parse(message.data || "{}");
-        session.error = payload.reason || "Bridge session closed";
-      } catch {
-        session.error = "Bridge session closed";
-      }
-      session.ready = false;
-      renderManagedBridgePorts();
-    }
-  });
-
-  source.addEventListener("error", () => {
-    if (session.eventSource !== source) return;
-    session.eventStreamActive = false;
-    renderManagedBridgePorts();
-  });
-
-  return true;
+  // Browser EventSource cannot set Authorization headers. Use the existing
+  // authenticated polling fallback instead of exposing a key in the URL.
+  return false;
 }
 
 async function pollManagedEvents() {
@@ -3588,9 +3572,11 @@ function renderInventory(inventory) {
 }
 
 async function announceBridge({ quiet = false, syncConfig = true } = {}) {
+  await loadBridgeCredentials();
   const serverUrl = normalizeServerUrl(serverUrlInput.value);
   const apiKey = apiKeyInput.value.trim();
-  const bridgeToken = localStorage.getItem(STORAGE_KEYS.bridgeToken) || "";
+  const currentCredentials = bridgeCredentials.get(serverUrl);
+  const bridgeToken = currentCredentials.apiKey === apiKey ? currentCredentials.bridgeToken : "";
   const credential = bridgeToken || apiKey;
   const bridgeName = bridgeNameInput.value.trim() || "Bridge";
   if (!credential) {
@@ -3598,6 +3584,7 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
   }
 
   saveBridgeSettings();
+  await saveBridgeCredentials();
   if (!quiet) {
     setBridgeConnectionError();
     setServerConnectionState("connecting");
@@ -3612,6 +3599,7 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
       return invoke("announce_bridge", {
         serverUrl,
         apiKey: authToken,
+        allowInsecureTls: bridgeAllowsUntrustedTls(),
         bridgeId: bridgeId || null,
         bridgeName,
         inventory: currentInventory
@@ -3654,7 +3642,7 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
   }
   const announcedBridge = announceResponse?.bridge || announceResponse || {};
   if (announceResponse?.bridgeToken) {
-    localStorage.setItem(STORAGE_KEYS.bridgeToken, announceResponse.bridgeToken);
+    await bridgeCredentials.save(serverUrl, { apiKey, bridgeToken: announceResponse.bridgeToken });
   }
 
   if (announcedBridge.id) {
@@ -4272,6 +4260,12 @@ window.addEventListener("pointercancel", finishManagedRangeInteraction);
 [serverUrlInput, apiKeyInput, bridgeNameInput].forEach((input) => {
   input.addEventListener("input", () => {
     saveBridgeSettings();
+    if (input === serverUrlInput && credentialServer() !== credentialInputServer) {
+      apiKeyInput.value = "";
+      credentialInputServer = "";
+      loadBridgeTlsChoice();
+    }
+    if (input === apiKeyInput) credentialInputServer = credentialServer();
     if (bridgeSettingsApplyTimer) {
       window.clearTimeout(bridgeSettingsApplyTimer);
       bridgeSettingsApplyTimer = null;
@@ -4283,6 +4277,11 @@ window.addEventListener("pointercancel", finishManagedRangeInteraction);
     scheduleBridgeSettingsApply(0);
   });
   input.addEventListener("change", () => scheduleBridgeSettingsApply(0));
+});
+allowInsecureTlsInput.addEventListener("change", () => {
+  const serverUrl = credentialServer();
+  if (serverUrl) localStorage.setItem(`talktome:bridge-tls-insecure:${serverUrl}`, String(allowInsecureTlsInput.checked));
+  scheduleBridgeSettingsApply(0);
 });
 window.addEventListener("beforeunload", () => {
   if (managedHeartbeatTimer) window.clearInterval(managedHeartbeatTimer);
@@ -4298,10 +4297,10 @@ window.addEventListener("beforeunload", () => {
   invoke?.("stop_all_bridge_media").catch(() => {});
 });
 
-loadBridgeSettings();
+const credentialsReady = loadBridgeSettings().catch(error => setBridgeConnectionError(error));
 loadBridgeAppVersion();
 installWindowFocusSuppressionForControls();
 installBridgeWindowAutoResize();
 loadAutostartState();
 listenForAutostartChanges();
-refreshDevices();
+credentialsReady.then(() => refreshDevices());

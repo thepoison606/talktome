@@ -1,5 +1,6 @@
 mod audio;
 mod bridge_media;
+mod credentials;
 mod media_timing;
 mod model;
 mod ndi;
@@ -167,6 +168,7 @@ struct BridgeAnnounceError {
 
 struct BridgeHttpClient {
     client: reqwest::Client,
+    local_insecure_client: Mutex<Option<reqwest::Client>>,
 }
 
 #[derive(Default)]
@@ -298,11 +300,70 @@ fn bridge_client_platform() -> &'static str {
 impl BridgeHttpClient {
     fn new() -> Result<Self, String> {
         let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
             .connect_timeout(Duration::from_secs(5))
             .build()
             .map_err(|err| format!("failed to build bridge HTTP client: {err}"))?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            local_insecure_client: Mutex::new(None),
+        })
+    }
+
+    fn for_server(
+        &self,
+        server_url: &str,
+        allow_insecure_tls: bool,
+    ) -> Result<reqwest::Client, String> {
+        if !allow_insecure_tls {
+            return Ok(self.client.clone());
+        }
+        if !is_local_tls_server(server_url) {
+            return Err(
+                "Untrusted TLS is only allowed for an explicitly selected local HTTPS server"
+                    .into(),
+            );
+        }
+        let mut cached = self
+            .local_insecure_client
+            .lock()
+            .map_err(|_| "TLS client is unavailable")?;
+        if cached.is_none() {
+            *cached = Some(
+                reqwest::Client::builder()
+                    .danger_accept_invalid_certs(allow_insecure_tls)
+                    // Never carry this local-only exception to a redirected host.
+                    .redirect(reqwest::redirect::Policy::none())
+                    .connect_timeout(Duration::from_secs(5))
+                    .build()
+                    .map_err(|err| format!("Cannot build local TLS client: {err}"))?,
+            );
+        }
+        Ok(cached.as_ref().unwrap().clone())
+    }
+}
+
+fn is_local_tls_server(value: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(value) else {
+        return false;
+    };
+    if url.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']);
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+        Ok(std::net::IpAddr::V6(ip)) => {
+            ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local()
+        }
+        Err(_) => {
+            host == "localhost"
+                || host.ends_with(".local")
+                || host.ends_with(".localhost")
+                || host.ends_with(".home.arpa")
+        }
     }
 }
 
@@ -339,6 +400,8 @@ impl BridgeEventStreamManager {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BridgeEventStreamRequest {
+    #[serde(default)]
+    allow_insecure_tls: bool,
     stream_id: String,
     server_url: String,
     api_key: String,
@@ -450,10 +513,10 @@ async fn announce_bridge(
     app: AppHandle,
     server_url: String,
     api_key: String,
+    allow_insecure_tls: Option<bool>,
     bridge_id: Option<String>,
     bridge_name: String,
     inventory: AudioInventory,
-    http: tauri::State<'_, BridgeHttpClient>,
 ) -> Result<BridgeAnnounceResponse, String> {
     let server_url = normalize_server_url(&server_url)?;
     let api_key = api_key.trim();
@@ -479,8 +542,9 @@ async fn announce_bridge(
         inventory: &inventory,
     };
 
-    let response = http
-        .client
+    let response = app
+        .state::<BridgeHttpClient>()
+        .for_server(&server_url, allow_insecure_tls.unwrap_or(false))?
         .post(format!("{server_url}/api/v1/bridge/announce"))
         .bearer_auth(api_key)
         .json(&payload)
@@ -511,6 +575,7 @@ async fn announce_bridge(
 async fn bridge_api_request(
     server_url: String,
     api_key: String,
+    allow_insecure_tls: Option<bool>,
     method: String,
     path: String,
     body: Option<serde_json::Value>,
@@ -528,7 +593,7 @@ async fn bridge_api_request(
     let method = reqwest::Method::from_bytes(method.trim().to_uppercase().as_bytes())
         .map_err(|_| "Invalid bridge API method".to_string())?;
     let mut request = http
-        .client
+        .for_server(&server_url, allow_insecure_tls.unwrap_or(false))?
         .request(method, format!("{server_url}{path}"))
         .bearer_auth(api_key)
         .timeout(BRIDGE_HTTP_REQUEST_TIMEOUT);
@@ -729,7 +794,7 @@ fn start_bridge_event_stream(
     }
 
     let stop_flag = streams.start(&stream_id)?;
-    let client = http.client.clone();
+    let client = http.for_server(&server_url, request.allow_insecure_tls)?;
     tauri::async_runtime::spawn(async move {
         tauri::async_runtime::spawn(run_bridge_health_reporter(
             app.clone(),
@@ -1111,6 +1176,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            credentials::load_bridge_credentials,
+            credentials::save_bridge_credentials,
             activate_bridge_output,
             announce_bridge,
             bridge_api_request,
@@ -1154,6 +1221,35 @@ mod tests {
     use super::{
         bridge_event_stream_heartbeat_path, bridge_health_report_payload, normalize_server_url,
     };
+
+    #[test]
+    fn insecure_tls_requires_an_explicit_local_https_origin() {
+        for url in [
+            "https://192.168.42.11:8443",
+            "https://10.0.0.1",
+            "https://172.16.1.2",
+            "https://127.0.0.1",
+            "https://[::1]",
+            "https://[fd00::1]",
+            "https://intercom.local",
+        ] {
+            assert!(super::is_local_tls_server(url), "{url}");
+        }
+        for url in [
+            "https://example.com",
+            "https://example.local.evil.com",
+            "https://8.8.8.8",
+            "https://172.32.0.1",
+            "http://192.168.1.1",
+            "https://[2001:4860:4860::8888]",
+        ] {
+            assert!(!super::is_local_tls_server(url), "{url}");
+        }
+        let client = super::BridgeHttpClient::new().unwrap();
+        assert!(client.for_server("https://example.com", false).is_ok());
+        assert!(client.for_server("https://example.com", true).is_err());
+        assert!(client.for_server("https://192.168.1.1", true).is_ok());
+    }
 
     #[test]
     fn native_health_reports_include_rtt_without_webview_timers() {

@@ -1147,10 +1147,6 @@ function extractCompanionApiKeyFromRequest(req) {
   const headerKey = req.get("x-api-key");
   if (headerKey) return String(headerKey).trim();
 
-  if (typeof req.query?.apiKey === "string" && req.query.apiKey.trim()) {
-    return req.query.apiKey.trim();
-  }
-
   return null;
 }
 
@@ -1172,11 +1168,6 @@ function extractCompanionApiKeyFromSocket(socket) {
   const headerKey = headers["x-api-key"];
   if (typeof headerKey === "string" && headerKey.trim()) {
     return headerKey.trim();
-  }
-
-  const queryPayload = socket?.handshake?.query || {};
-  if (typeof queryPayload.apiKey === "string" && queryPayload.apiKey.trim()) {
-    return queryPayload.apiKey.trim();
   }
 
   return null;
