@@ -9,8 +9,8 @@
     "release:macos": "python3 scripts/release-macos-local.py",
     "build:mediasoup-client": "node scripts/build-mediasoup-client.js",
     "prebuild:pkg": "node scripts/verify-build-node.js && node scripts/resolve-build-version.js --version-json build-version.json && node scripts/stage-better-sqlite3-binding.js",
-    "build:win64": "npm run prebuild:pkg && npx --no-install pkg package.json --sea --targets node24.22.1-win-x64 --output talktome_win64 && node scripts/copy-runtime-deps.js win64",
-    "build:mac_arm64": "npm run prebuild:pkg && npx --no-install pkg package.json --sea --targets node24.22.1-macos-arm64 --output talktome_arm64 && node scripts/copy-runtime-deps.js mac_arm64"
+    "build:win64": "npm run prebuild:pkg && npx --no-install pkg package.json --sea --targets node24.22.2-win-x64 --output talktome_win64 && node scripts/copy-runtime-deps.js win64",
+    "build:mac_arm64": "npm run prebuild:pkg && npx --no-install pkg package.json --sea --targets node24.22.2-macos-arm64 --output talktome_arm64 && node scripts/copy-runtime-deps.js mac_arm64"
   },
   "keywords": [],
   "author": "",
