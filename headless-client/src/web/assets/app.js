@@ -985,6 +985,8 @@
       fields: [
         { path: 'audio.input_device', label: 'Input device', type: 'device', direction: 'inputs', nullable: true, help: 'Use tone or tone:440 on a VM with no microphone' },
         { path: 'audio.output_device', label: 'Output device', type: 'device', direction: 'outputs', nullable: true, help: 'wav:/tmp/out.wav records the mix when there is no speaker' },
+        { path: 'audio.speaker_level_db', label: 'Speaker output level (dB)', type: 'output-level', step: 1, min: -120, max: 24, help: 'Default: 0 dB. Fixed analog level, when supported by the selected sound card. Main controls Playback separately. Restart to apply.' },
+        { path: 'audio.headphone_level_db', label: 'Headphone output level (dB)', type: 'output-level', step: 1, min: -120, max: 24, help: 'Default: 0 dB. Applied only to a separate Headphone control with dB support. Restart to apply.' },
         { path: 'audio.profile', label: 'Codec profile', type: 'select', options: [['ultra-low', 'Ultra low (5 ms)'], ['low', 'Low (10 ms)'], ['standard', 'Standard (20 ms, FEC)']], help: 'Default matches the web client (5 ms, no FEC). If audio crackles or the log says audio-stream-error, use Low or Standard. Restart to apply.' },
         { path: 'audio.device_period_ms', label: 'Device period (ms)', type: 'number', min: 0, max: 40, help: '0 uses the sound-card default, often 20–85 ms. 10 ms is stable on a NanoPi NEO; try 5 ms for less delay. The card buffer is two periods. Restart to apply.' },
         { path: 'audio.auto_processing', label: 'Echo cancel, noise suppress, auto gain', type: 'bool', help: 'Same as the browser Audio auto processing toggle. Admin can override it per user after register. Manual input gain is ignored while this is on.' },
@@ -1026,7 +1028,7 @@
         { path: 'streamdeck.serial', label: 'Serial number', type: 'text', nullable: true, help: 'Empty: first unused deck found. Used when the device list below is empty.' },
         { path: 'streamdeck.brightness', label: 'Brightness (%)', type: 'number', min: 0, max: 100 },
         { path: 'streamdeck.font_path', label: 'Font file', type: 'text' },
-        { path: 'streamdeck.volume_step_percent', label: 'Volume step per key/dial tick (%)', type: 'number', step: 1, min: 1, max: 100, nullable: true, help: 'Percentage points per tick. Default: 4%.' },
+        { path: 'streamdeck.volume_step_percent', label: 'Volume step per key/dial tick (%)', type: 'number', step: 1, min: 1, max: 100, nullable: true, help: 'Default: 4 percentage points per tick. Targets below -20 dB use 1 dB per default tick down to -60 dB, then silence. Main stays in percentage points.' },
         { path: 'streamdeck.volume_layer_timeout_s', label: 'Volume layer timeout (s)', type: 'number' },
         { path: 'streamdeck.pedal_left', label: 'Pedal left switch target', type: 'target', nullable: true, help: 'Reply is always the right pedal. Equivalent to layout JSON key "0".' },
         { path: 'streamdeck.pedal_target', label: 'Pedal middle switch target', type: 'target', nullable: true, help: 'Equivalent to layout JSON key "1".' },
@@ -1218,6 +1220,12 @@
       details.append(fields);
       form.append(details);
     }
+    const output = form.querySelector('select[data-path="audio.output_device"]');
+    output?.addEventListener('change', () => {
+      for (const input of form.querySelectorAll('[data-output-level]')) {
+        input.disabled = output.value !== (getPath(state.runningDoc, 'audio.output_device') || '') || !(state.config?.output_levels?.[input.dataset.outputLevel]?.length);
+      }
+    });
     const network = form.querySelector('select[data-path="audio.network"]');
     if (network) {
       network.addEventListener('change', () => {
@@ -1235,6 +1243,7 @@
     if (field.type === 'gpio-inputs') return renderGpioInputs(doc);
     if (field.type === 'streamdeck-devices') return renderStreamdeckDevices(doc);
     let value = getPath(doc, field.path);
+    if (['audio.speaker_level_db', 'audio.headphone_level_db'].includes(field.path) && value == null) value = 0;
     if (field.path === 'audio.default_volume_db' && (value == null || value === '')) {
       value = Math.round(linearToDb(getPath(doc, 'audio.default_volume') ?? 0.9) * 10) / 10;
     }
@@ -1253,7 +1262,23 @@
     }
     wrapper.append(el('span', { text: field.label }));
     let input;
-    if (field.type === 'production') {
+    if (field.type === 'output-level') {
+      const control = field.path === 'audio.speaker_level_db' ? 'Speaker' : 'Headphone';
+      const values = state.config?.output_levels?.[control] || [];
+      input = el('select', { dataset: { path: field.path, type: 'select', numeric: '1', outputLevel: control }, autocomplete: 'off' });
+      for (const db of values) input.append(el('option', { value: String(db), text: `${db} dB` }));
+      if (!values.length) {
+        input.append(el('option', { value: '0', text: 'Not available on this output' }));
+        input.disabled = true;
+      } else if (!values.includes(Number(value))) {
+        const placeholder = el('option', { value: '', text: 'Choose a supported level' });
+        placeholder.disabled = true;
+        input.prepend(placeholder);
+        input.required = true;
+      }
+      input.value = values.includes(Number(value)) ? String(value) : values.length ? '' : '0';
+      input.disabled ||= (getPath(doc, 'audio.output_device') || '') !== (getPath(state.runningDoc, 'audio.output_device') || '');
+    } else if (field.type === 'production') {
       input = el('select', { dataset: { path: field.path, type: 'select', nullable: '1', production: '1' }, autocomplete: 'off' });
       fillProductionSelect(input, value == null ? '' : String(value));
     } else if (field.type === 'select' || field.type === 'target') {
@@ -1518,6 +1543,8 @@
     const doc = JSON.parse(JSON.stringify(fileDoc || state.configDoc));
     for (const input of $$('#settings-form [data-path]', document)) {
       if (!(input instanceof HTMLInputElement || input instanceof HTMLSelectElement || input instanceof HTMLTextAreaElement)) continue;
+      if (input.dataset.outputLevel && input.disabled) continue;
+      if (input.dataset.outputLevel && !input.value) throw new Error('Choose a supported output level');
       const path = input.dataset.path;
       const type = input.dataset.type;
       const nullable = input.dataset.nullable === '1';

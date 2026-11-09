@@ -3719,27 +3719,28 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function renderMediaConnectionStatus() {
-    if (remotePanel) {
-      if (mediaConnectionStatusLabelEl) mediaConnectionStatusLabelEl.textContent = 'No audio';
-      return;
-    }
     if (!mediaConnectionStatusEl || !mediaConnectionStatusLabelEl) return;
 
-    const states = [mediaConnectionState.send, mediaConnectionState.receive];
-    const iceStates = [mediaConnectionState.sendIce, mediaConnectionState.receiveIce];
-    let label = 'Media idle';
+    const connection = remotePanel
+      ? remotePanel.state?.online
+        ? remotePanel.state.runtime?.mediaConnection || { signaling: 'connected', send: 'idle', receive: 'idle' }
+        : { signaling: 'failed', send: 'idle', receive: 'idle' }
+      : mediaConnectionState;
+    const states = [connection.send, connection.receive];
+    const iceStates = [connection.sendIce, connection.receiveIce];
+    let label = remotePanel && !remotePanel.state?.runtime?.mediaConnection ? 'Media status unavailable' : 'Media idle';
     let className = '';
 
-    if (mediaConnectionState.signaling === 'failed') {
+    if (connection.signaling === 'failed') {
       label = 'Server unavailable';
       className = 'is-failed';
-    } else if (mediaConnectionState.signaling !== 'connected') {
+    } else if (connection.signaling !== 'connected') {
       label = 'Server connecting';
       className = 'is-connecting';
     } else if (states.includes('failed')) {
       label = 'Media failed';
       className = 'is-failed';
-    } else if (mediaConnectionState.heartbeatInterrupted) {
+    } else if (connection.heartbeatInterrupted) {
       label = 'Server not responding';
       className = 'is-warning';
     } else if (states.includes('disconnected')) {
@@ -3754,10 +3755,10 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (states.includes('connected')) {
       label = 'Media connected';
       className = 'is-connected';
-    } else if (mediaConnectionState.iceError) {
+    } else if (connection.iceError) {
       label = 'ICE warning';
       className = 'is-warning';
-    } else if (mediaInitialized) {
+    } else if (remotePanel ? connection.initialized : mediaInitialized) {
       label = 'Media ready';
       className = 'is-connected';
     }
@@ -3765,13 +3766,13 @@ document.addEventListener("DOMContentLoaded", () => {
     mediaConnectionStatusEl.className = `media-connection-status${className ? ` ${className}` : ''}`;
     mediaConnectionStatusLabelEl.textContent = label;
     mediaConnectionStatusEl.title = [
-      `Signaling: ${mediaConnectionState.signaling}`,
-      `Server heartbeat: ${mediaConnectionState.heartbeatInterrupted ? 'missing' : 'no interruption detected'}`,
-      `Send media: ${mediaConnectionState.send}`,
-      `Receive media: ${mediaConnectionState.receive}`,
-      `Send ICE: ${mediaConnectionState.sendIce}`,
-      `Receive ICE: ${mediaConnectionState.receiveIce}`,
-      mediaConnectionState.iceError ? `Last ICE error: ${mediaConnectionState.iceError}` : null,
+      `Signaling: ${connection.signaling}`,
+      `Server heartbeat: ${connection.heartbeatInterrupted ? 'missing' : 'no interruption detected'}`,
+      `Send media: ${remotePanel && !remotePanel.state?.runtime?.mediaConnection ? 'not reported' : connection.send}`,
+      `Receive media: ${remotePanel && !remotePanel.state?.runtime?.mediaConnection ? 'not reported' : connection.receive}`,
+      `Send ICE: ${connection.sendIce || 'not reported'}`,
+      `Receive ICE: ${connection.receiveIce || 'not reported'}`,
+      connection.iceError ? `Last ICE error: ${connection.iceError}` : null,
     ].filter(Boolean).join('\n');
   }
 
@@ -7769,6 +7770,7 @@ let cachedOperatorTargets = null;
       revision: clientPanelRevision,
       storage: window.TalktomeRemotePanelState.collectStorage(clientLocalStorage, session.userId),
       runtime: {
+        mediaConnection: { ...mediaConnectionState, initialized: mediaInitialized },
         devices: clientPanelDevices, inputDeviceId: preferredInputDeviceId,
         outputDeviceId: preferredOutputDeviceId, outputSupported: supportsAudioOutputSelection(),
         ...getCurrentPttState(), lockedTargets: getActiveTalkLockTargets(),
@@ -7847,6 +7849,7 @@ let cachedOperatorTargets = null;
         productionId: state.productionId == null ? null : String(state.productionId),
         productionName: state.productionName, productions: state.productions,
       };
+      renderMediaConnectionStatus();
       document.title = `${state.name} · Remote panel · Talktome`;
       setSessionDisplay(state.name);
       applyProductionSessionUI();

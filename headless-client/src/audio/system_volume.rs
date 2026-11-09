@@ -1,7 +1,8 @@
 //! Real ALSA playback controls for the card behind the selected output PCM.
 //! Never falls back to another card or to a software gain.
 
-use alsa::mixer::{Mixer, Selem, SelemChannelId};
+use alsa::mixer::{MilliBel, Mixer, Selem, SelemChannelId, SelemId};
+use alsa::Round;
 use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
 use std::sync::{Arc, Condvar, Mutex};
@@ -149,6 +150,92 @@ fn with_control<T>(card: Option<i32>, f: impl FnOnce(Selem<'_>) -> Result<T>) ->
     f(control(&mixer)?)
 }
 
+pub type OutputLevels = std::collections::BTreeMap<String, Vec<f32>>;
+
+pub fn output_levels(card: Option<i32>) -> OutputLevels {
+    let mut levels = OutputLevels::new();
+    let Some(card) = card.filter(|card| *card >= 0) else {
+        return levels;
+    };
+    let _quiet = super::QuietAlsa::new();
+    let Ok(mixer) = Mixer::new(&format!("hw:{card}"), true) else {
+        return levels;
+    };
+    for name in ["Speaker", "Headphone"] {
+        let Some(elem) = mixer.find_selem(&SelemId::new(name, 0)) else {
+            continue;
+        };
+        if !elem.has_playback_volume() {
+            continue;
+        }
+        let (min, max) = elem.get_playback_volume_range();
+        if max <= min || max - min > 4096 {
+            continue;
+        }
+        let mut values: Vec<f32> = (min..=max)
+            .filter_map(|raw| {
+                elem.ask_playback_vol_db(raw)
+                    .ok()
+                    .map(|db| db.0)
+                    .filter(|db| (-12000..=2400).contains(db))
+                    .map(|db| db as f32 / 100.0)
+            })
+            .collect();
+        values.sort_by(f32::total_cmp);
+        values.dedup();
+        if !values.is_empty() {
+            levels.insert(name.to_string(), values);
+        }
+    }
+    levels
+}
+
+pub fn validate_output_levels(levels: &OutputLevels, speaker: f32, headphone: f32) -> Result<()> {
+    for (name, value) in [("Speaker", speaker), ("Headphone", headphone)] {
+        match levels.get(name) {
+            Some(values) if !values.iter().any(|db| (db - value).abs() < 0.001) => {
+                bail!("{name} output level {value} dB is not supported by this sound card")
+            }
+            None if value != 0.0 => {
+                bail!("{name} output level is unavailable; only the 0 dB default can be stored")
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Only configure separate, explicitly named analog outputs. Never touch
+/// Playback/PCM, speaker AC/DC boost, routing, mute switches or capture gain.
+pub fn configure_outputs(card: Option<i32>, speaker_db: f32, headphone_db: f32) -> Result<()> {
+    validate_output_levels(&output_levels(card), speaker_db, headphone_db)?;
+    let Some(card) = card.filter(|card| *card >= 0) else {
+        return Ok(());
+    };
+    let _quiet = super::QuietAlsa::new();
+    let mixer = Mixer::new(&format!("hw:{card}"), true)?;
+    for (name, db) in [("Speaker", speaker_db), ("Headphone", headphone_db)] {
+        let Some(elem) = mixer.find_selem(&SelemId::new(name, 0)) else {
+            continue;
+        };
+        if !elem.has_playback_volume() {
+            continue;
+        }
+        let (min, max) = elem.get_playback_db_range();
+        // No dB metadata means there is no safe way to apply a 0 dB default.
+        if min.0 >= max.0 {
+            continue;
+        }
+        let value = MilliBel::from_db(db);
+        if value.0 < min.0 || value.0 > max.0 {
+            tracing::warn!(event = "output-level-out-of-range", control = name, db);
+            continue;
+        }
+        elem.set_playback_db_all(value, Round::Floor)?;
+    }
+    Ok(())
+}
+
 fn snapshot(elem: &Selem<'_>) -> Result<SystemVolume> {
     let (min, max) = elem.get_playback_volume_range();
     if max <= min {
@@ -159,7 +246,13 @@ fn snapshot(elem: &Selem<'_>) -> Result<SystemVolume> {
         .copied()
         .find(|c| elem.has_playback_channel(*c))
         .ok_or_else(|| anyhow!("No playback channel"))?;
-    let volume = normalize(elem.get_playback_volume(channel)?, min, max);
+    let raw = elem.get_playback_volume(channel)?;
+    let (db_min, db_max) = elem.get_playback_db_range();
+    let volume = if db_min.0 < db_max.0 {
+        normalize_db(elem.ask_playback_vol_db(raw)?.0, db_min.0, db_max.0)
+    } else {
+        normalize(raw, min, max)
+    };
     let mute_supported = elem.has_playback_switch();
     Ok(SystemVolume {
         volume,
@@ -187,7 +280,15 @@ fn apply(card: Option<i32>, action: Action) -> Result<SystemVolume> {
                     value
                 };
                 let (min, max) = elem.get_playback_volume_range();
-                elem.set_playback_volume_all(denormalize(volume, min, max))?;
+                let (db_min, db_max) = elem.get_playback_db_range();
+                if db_min.0 < db_max.0 {
+                    elem.set_playback_db_all(
+                        MilliBel(denormalize_db(volume, db_min.0, db_max.0)),
+                        Round::Floor,
+                    )?;
+                } else {
+                    elem.set_playback_volume_all(denormalize(volume, min, max))?;
+                }
             }
             Action::Mute(value) => {
                 if !current.mute_supported {
@@ -206,6 +307,35 @@ fn apply(card: Option<i32>, action: Action) -> Result<SystemVolume> {
     })
 }
 
+// Match alsamixer's perceptual percentage mapping (alsa-utils volume_mapping.c).
+// https://github.com/alsa-project/alsa-utils/blob/master/alsamixer/volume_mapping.c
+const DB_MUTE: i64 = -9_999_999;
+
+fn normalize_db(value: i64, min: i64, max: i64) -> f32 {
+    if max - min <= 2400 {
+        return normalize(value, min, max);
+    }
+    let floor = if min == DB_MUTE {
+        0.0
+    } else {
+        10f64.powf((min - max) as f64 / 6000.0)
+    };
+    ((10f64.powf((value - max) as f64 / 6000.0) - floor) / (1.0 - floor)).clamp(0.0, 1.0) as f32
+}
+
+fn denormalize_db(value: f32, min: i64, max: i64) -> i64 {
+    if max - min <= 2400 {
+        return denormalize(value, min, max);
+    }
+    let floor = if min == DB_MUTE {
+        0.0
+    } else {
+        10f64.powf((min - max) as f64 / 6000.0)
+    };
+    let amplitude = value.clamp(0.0, 1.0) as f64 * (1.0 - floor) + floor;
+    (max + (6000.0 * amplitude.max(1e-36).log10()).round() as i64).clamp(min, max)
+}
+
 fn normalize(value: i64, min: i64, max: i64) -> f32 {
     ((value - min) as f32 / (max - min) as f32).clamp(0.0, 1.0)
 }
@@ -217,6 +347,21 @@ fn denormalize(value: f32, min: i64, max: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_limits_reject_out_of_range_and_unsupported_steps() {
+        let levels = OutputLevels::from([
+            ("Speaker".into(), vec![-12.0, -6.0, 0.0, 6.0]),
+            ("Headphone".into(), vec![-6.0, 0.0]),
+        ]);
+        assert!(validate_output_levels(&levels, 6.0, 0.0).is_ok());
+        assert!(validate_output_levels(&levels, 20.0, 0.0).is_err());
+        assert!(validate_output_levels(&levels, 3.0, 0.0).is_err());
+        assert!(validate_output_levels(&levels, 0.0, 6.0).is_err());
+        assert!(validate_output_levels(&levels, f32::NAN, 0.0).is_err());
+        assert!(validate_output_levels(&OutputLevels::new(), 0.0, 0.0).is_ok());
+        assert!(validate_output_levels(&OutputLevels::new(), 6.0, 0.0).is_err());
+    }
 
     #[test]
     fn volume_input_wakes_the_supervisor_without_waiting_for_its_poll_interval() {
@@ -301,6 +446,24 @@ mod tests {
         );
         assert!(select_control(&[candidate("PCM", false), candidate("PCM", false)]).is_err());
         assert!(select_control(&[]).is_err());
+    }
+
+    #[test]
+    fn alsamixer_percentages_use_db_mapping_and_round_trip() {
+        // WM8960 Playback: 0..255 hardware values, -127.5..0 dB.
+        for (raw, alsa_percent) in [(245, 83.0), (235, 68.0), (225, 56.0)] {
+            let db = -12750 + raw * 50;
+            assert!((normalize_db(db, -12750, 0) * 100.0 - alsa_percent).abs() < 1.0);
+        }
+        for (min, max) in [(-12750, 0), (-1800, 600), (DB_MUTE, 0)] {
+            for value in [0.0, 0.04, 0.5, 0.88, 0.92, 0.96, 1.0] {
+                let actual = normalize_db(denormalize_db(value, min, max), min, max);
+                assert!(
+                    (actual - value).abs() < 0.001,
+                    "{min}..{max}: {value} -> {actual}"
+                );
+            }
+        }
     }
 
     #[test]

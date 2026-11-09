@@ -91,6 +91,14 @@ function installRemotePanelControl(deps) {
     })).filter(device => device.kind) : [];
     reports.set(Number(peer.userId), {
       socketId: peer.socket.id, at: Date.now(), runtime: {
+        mediaConnection: runtime.mediaConnection && typeof runtime.mediaConnection === 'object' ? {
+          ...Object.fromEntries(['signaling', 'send', 'receive', 'sendIce', 'receiveIce'].map(key => [
+            key, ['idle', 'new', 'checking', 'connected', 'completed', 'connecting', 'disconnected', 'failed', 'closed', 'gathering'].includes(runtime.mediaConnection[key]) ? runtime.mediaConnection[key] : 'idle',
+          ])),
+          heartbeatInterrupted: Boolean(runtime.mediaConnection.heartbeatInterrupted),
+          initialized: Boolean(runtime.mediaConnection.initialized),
+          iceError: runtime.mediaConnection.iceError ? String(runtime.mediaConnection.iceError).slice(0, 512) : null,
+        } : null,
         devices, inputDeviceId: String(runtime.inputDeviceId || '').slice(0, 512),
         outputDeviceId: String(runtime.outputDeviceId || '').slice(0, 512),
         outputSupported: Boolean(runtime.outputSupported),

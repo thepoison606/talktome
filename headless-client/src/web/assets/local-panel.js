@@ -42,7 +42,18 @@
       targets, users: [...users.values()], settings: result.settings || {},
       targetAudioStates: (snap.targets || []).map(item => ({ ...target(item.key), volume: item.volume, muted: item.muted })),
       panelSettings: { revision: report.revision || 0, storage: report.storage || {} },
-      runtime: report.runtime,
+      runtime: {
+        ...report.runtime,
+        mediaConnection: {
+          signaling: online ? 'connected' : 'failed',
+          heartbeatInterrupted: Boolean(snap.server_not_responding),
+          send: snap.media?.send_state || 'idle',
+          receive: snap.media?.recv_state || 'idle',
+          sendIce: snap.media?.send_ice_state || 'idle',
+          receiveIce: snap.media?.recv_ice_state || 'idle',
+          initialized: Boolean(snap.media),
+        },
+      },
       activeFeedKeys: (snap.targets || []).filter(item => item.key.Feed != null && item.online).map(item => `feed-${item.key.Feed}`),
       incomingTalkState: {
         addressedNow: (snap.incoming || []).map(item => addressed(target(item.target), item.from_name)).filter(Boolean),

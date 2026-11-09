@@ -90,6 +90,7 @@ pub async fn get_config(State(state): State<Shared>) -> Response {
         .map(|raw| config::file_differs_from_running(&raw, &state.ctx.config))
         .unwrap_or(false);
     Json(json!({
+        "output_levels": state.ctx.bus.snapshots.borrow().output_levels,
         "document": document,
         "file_document": file_document,
         "editor_document": editor_document,
@@ -121,6 +122,40 @@ pub async fn put_config(State(state): State<Shared>, Json(body): Json<PutConfigB
         Err(error) => return client_error(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     let stored = config::read_document(&path).ok();
+    let audio = &state.ctx.config.audio;
+    let level = |key: &str, fallback: f32| {
+        body.document
+            .pointer(&format!("/audio/{key}"))
+            .and_then(Value::as_f64)
+            .map(|value| value as f32)
+            .unwrap_or(fallback)
+    };
+    let speaker = level("speaker_level_db", audio.speaker_level_db);
+    let headphone = level("headphone_level_db", audio.headphone_level_db);
+    let selected = body
+        .document
+        .pointer("/audio/output_device")
+        .map(|v| v.as_str());
+    let changed_device = selected.is_some_and(|value| value != audio.output_device.as_deref());
+    let validation = if changed_device
+        && (speaker != audio.speaker_level_db || headphone != audio.headphone_level_db)
+    {
+        Err(anyhow!(
+            "Save and restart with the selected output device before changing its analog levels"
+        ))
+    } else if !changed_device {
+        crate::audio::system_volume::validate_output_levels(
+            &state.ctx.bus.snapshots.borrow().output_levels,
+            speaker,
+            headphone,
+        )
+    } else {
+        Ok(())
+    };
+    if let Err(error) = validation {
+        return client_error(StatusCode::BAD_REQUEST, error.to_string());
+    }
+
     match save_document(&path, body.document, stored.as_ref(), &running) {
         Ok(()) => {
             tracing::info!(event = "config-saved", path = %path.display());

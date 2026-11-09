@@ -466,8 +466,7 @@ impl AudioState {
 
     pub fn step_volume(&mut self, key: TargetKey, delta: f32) -> AudioLevel {
         let current = self.level(key).volume;
-        // Round to two decimals so repeated steps stay on clean values.
-        let next = ((current + delta) * 100.0).round() / 100.0;
+        let next = step_target_volume(current, delta);
         self.set_volume(key, next)
     }
 
@@ -562,12 +561,63 @@ impl AudioState {
     }
 }
 
+/// Preserve percentage steps above -20 dB; extend the quiet end in 1 dB
+/// increments per default 4% tick, down to -60 dB before silence.
+pub fn step_target_volume(current: f32, delta: f32) -> f32 {
+    if !delta.is_finite() || delta == 0.0 {
+        return current;
+    }
+    if delta.abs() >= 1.0 {
+        return (current + delta).clamp(0.0, 1.0);
+    }
+    let mut volume = current.clamp(0.0, 1.0);
+    let mut remaining = delta.abs().min(2.0);
+    while remaining > 0.000001 {
+        let step = remaining.min(0.04);
+        remaining -= step;
+        if volume < 0.1 - 0.000001 || (volume <= 0.1 + 0.000001 && delta < 0.0) {
+            if volume == 0.0 {
+                if delta > 0.0 {
+                    volume = 0.001;
+                }
+            } else {
+                let db = 20.0 * volume.log10() + delta.signum() * step / 0.04;
+                volume = if db < -60.0001 {
+                    0.0
+                } else {
+                    10f32.powf(db / 20.0).min(0.1)
+                };
+            }
+        } else {
+            volume = ((volume + delta.signum() * step) * 100.0).round() / 100.0;
+            volume = volume.clamp(if delta < 0.0 { 0.1 } else { 0.0 }, 1.0);
+        }
+    }
+    volume
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn deck(n: u8) -> InputSource {
         InputSource::StreamDeck { device: 0, key: n }
+    }
+
+    #[test]
+    fn quiet_volume_steps_reach_minus_sixty_before_silence() {
+        let mut volume = 0.1;
+        for _ in 0..40 {
+            volume = step_target_volume(volume, -0.04);
+        }
+        assert!((20.0 * volume.log10() + 60.0).abs() < 0.001);
+        assert_eq!(step_target_volume(volume, -0.04), 0.0);
+        assert_eq!(step_target_volume(0.0, 0.04), 0.001);
+        assert!((step_target_volume(0.001, 0.04) - 10f32.powf(-59.0 / 20.0)).abs() < 0.000001);
+        assert!((step_target_volume(0.5, -0.04) - 0.46).abs() < 0.000001);
+        let grouped = step_target_volume(0.1, -0.12);
+        let single = (0..3).fold(0.1, |v, _| step_target_volume(v, -0.04));
+        assert!((grouped - single).abs() < 0.000001);
     }
 
     #[test]

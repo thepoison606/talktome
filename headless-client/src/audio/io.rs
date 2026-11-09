@@ -52,6 +52,7 @@ impl CapturedFrame {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioStatus {
     pub system_volume: Option<super::system_volume::SystemVolume>,
+    pub output_levels: super::system_volume::OutputLevels,
     pub capture_ok: bool,
     pub playback_ok: bool,
     pub capture_device: Option<String>,
@@ -126,6 +127,7 @@ impl AudioIo {
         let snapshot = processing.snapshot();
         let (status_tx, status_rx) = watch::channel(AudioStatus {
             system_volume: None,
+            output_levels: Default::default(),
             capture_ok: false,
             playback_ok: false,
             capture_device: None,
@@ -290,6 +292,7 @@ fn run_supervisor(
     let mut playback_wanted = wanted(&config.output_device);
     let mut capture: Option<OpenStream> = None;
     let mut playback: Option<OpenStream> = None;
+    let mut output_levels = super::system_volume::OutputLevels::new();
     let mut next_attempt = Instant::now();
     let reopen = Duration::from_millis(config.reopen_ms.max(250));
     let processor = Arc::new(Mutex::new(Processor::new(processing.clone())));
@@ -406,6 +409,14 @@ fn run_supervisor(
                 ) {
                     Ok(open) => {
                         tracing::info!(event = "audio-device-restored", direction = "playback", device = %open.name);
+                        if let Err(error) = super::system_volume::configure_outputs(
+                            open.card,
+                            config.speaker_level_db,
+                            config.headphone_level_db,
+                        ) {
+                            tracing::warn!(event = "output-level-config-failed", error = %error);
+                        }
+                        output_levels = super::system_volume::output_levels(open.card);
                         playback = Some(open);
                     }
                     Err(error) => {
@@ -433,6 +444,11 @@ fn run_supervisor(
             config.output_device.clone()
         };
         let status = AudioStatus {
+            output_levels: if playback.is_some() {
+                output_levels.clone()
+            } else {
+                Default::default()
+            },
             system_volume: system_volume.poll(playback.as_ref().and_then(|p| p.card)),
             capture_ok: !capture_wanted || capture.is_some(),
             playback_ok: !playback_wanted || playback.is_some(),

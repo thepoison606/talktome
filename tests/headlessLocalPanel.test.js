@@ -30,9 +30,16 @@ test('local adapter supplies the shared panel contract with offline gating and c
   assert.equal(state.activeFeedKeys[0], 'feed-9');
   assert.equal(state.targetAudioStates[0].volume, .8);
   assert.equal(state.incomingTalkState.replyTarget.targetId, 7);
+  f.snapshot.media = { send_state: 'connected', recv_state: 'failed', send_ice_state: 'completed', recv_ice_state: 'failed' };
+  state = f.panel.stateOf(f.result);
+  assert.equal(state.runtime.mediaConnection.send, 'connected');
+  assert.equal(state.runtime.mediaConnection.receive, 'failed');
+  assert.equal(state.runtime.mediaConnection.sendIce, 'completed');
+  assert.equal(state.runtime.mediaConnection.receiveIce, 'failed');
   f.snapshot.server_not_responding = true;
   state = f.panel.stateOf(f.result);
   assert.equal(state.online, false);
+  assert.equal(state.runtime.mediaConnection.signaling, 'failed');
 });
 test('local talk inputs are isolated per browser and are released when the admin tab is hidden', async () => {
   const one = adapter('one'), two = adapter('two');

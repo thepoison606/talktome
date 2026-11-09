@@ -2447,22 +2447,34 @@
       }
 
       .production-config-layout {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: flex-start;
+        display: grid;
         gap: 1rem;
         margin: 1rem 0;
       }
 
-      .production-members-panel {
-        flex: 1 1 16rem;
-        min-width: min(100%, 16rem);
-        max-width: 28rem;
+      .production-members-panel,
+      .production-matrix-panel {
+        min-width: 0;
       }
 
-      .production-matrix-panel {
-        flex: 999 1 38rem;
-        min-width: min(100%, 38rem);
+      .production-contents-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        align-items: start;
+        gap: 1rem;
+        margin-top: 0.6rem;
+      }
+
+      .production-contents-secondary {
+        display: grid;
+        gap: 1rem;
+        min-width: 0;
+      }
+
+      @media (max-width: 700px) {
+        .production-contents-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
       }
 
       .production-matrix-panel .matrix-subheading {
@@ -4408,10 +4420,6 @@
               </div>
 
               <div class="production-config-layout">
-                <section class="production-members-panel">
-                  <h3 class="matrix-subheading">Production contents</h3>
-                  <ul id="production-members" class="production-check-list"></ul>
-                </section>
                 <section class="production-matrix-panel">
                   <h3 class="matrix-subheading">Target buttons</h3>
                   <div
@@ -4420,6 +4428,10 @@
                     aria-label="Conference listen only. Orange conference cells mean that the user remains a member and can hear the conference, but cannot speak to it."
                   ><span class="conference-listen-only-dot" aria-hidden="true"></span><span>= Conference listen only</span></div>
                   <div id="production-target-matrix-container" class="target-matrix-wrap" aria-live="polite"></div>
+                </section>
+                <section class="production-members-panel">
+                  <h3 class="matrix-subheading">Production contents</h3>
+                  <div id="production-members" class="production-contents-grid"></div>
                 </section>
               </div>
 

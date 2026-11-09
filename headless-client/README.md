@@ -335,15 +335,23 @@ server-side mute. The conference fader still scales the whole conference.
   it is **−, +, NEXT**: open it from MENU → VOLUME, close it by tapping the
   selected target again or let it time out. Tap a target to select it; holding a target 600 ms toggles
   its mute. Target/member readouts use dB; the continuous bars use linear amplitude. Steps use
-  `streamdeck.volume_step_percent` (default 4 percentage points); this also
-  applies to MAIN and member levels. With more targets than keys, **NEXT** pages them: it
+  `streamdeck.volume_step_percent` (default 4 percentage points). Below -20 dB,
+  targets and member levels use 1 dB per default tick, down to -60 dB and then
+  silence. MAIN keeps percentage-point steps. With more targets than keys, **NEXT** pages them: it
   takes Reply's key on an MK.2 and MUTE's key on a Neo / Stream Deck +.
   The layer closes after
   `streamdeck.volume_layer_timeout_s`; paging keeps it open.
+- Audio settings include `audio.speaker_level_db` and
+  `audio.headphone_level_db`, both defaulting to **0 dB**. These fixed analog
+  levels are applied whenever the playback device opens, only for separate
+  Speaker/Headphone ALSA controls with dB metadata. Missing controls are skipped;
+  unsupported levels are logged and left unchanged. Speaker AC/DC boost,
+  routing and mute switches are not changed. Calibrate these output levels for
+  the connected speakers/headphones; MAIN remains the shared Playback control.
 - When the selected audio output exposes an ALSA hardware playback control,
   `VOL` adds **MAIN** before the targets and initially selects it. Its percentage
   controls the real sound-card output, including other applications; target
-  and conference-member levels stay unchanged. Use **− / +** in 5 percentage-point
+  and conference-member levels stay unchanged. Use **− / +** in the configured percentage-point
   steps, or the corresponding dial on a Stream Deck +. Hardware mute is available
   through **MUTE**, holding MAIN, or pressing its dial when the control supports it.
   MAIN also works while disconnected from the server. Unsupported, virtual or

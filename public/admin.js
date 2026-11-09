@@ -2246,14 +2246,16 @@ function renderProductionMembers(payload) {
         </li>
       `;
     }).join('') || '<li class="section-note">None available.</li>';
-    return `<li class="production-entity-heading">${escapeHtml(label)}</li>${rows}`;
+    return `<section><h4 class="production-entity-heading">${escapeHtml(label)}</h4><ul class="production-check-list">${rows}</ul></section>`;
   };
 
-  productionMembersList.innerHTML = [
-    renderRows('user', 'Users', payload.catalog.users, payload.members),
-    renderRows('conference', 'Conferences', payload.catalog.conferences, payload.conferences),
-    renderRows('feed', 'Feeds', payload.catalog.feeds, payload.feeds),
-  ].join('');
+  productionMembersList.innerHTML = `
+    ${renderRows('user', 'Users', payload.catalog.users, payload.members)}
+    <div class="production-contents-secondary">
+      ${renderRows('conference', 'Conferences', payload.catalog.conferences, payload.conferences)}
+      ${renderRows('feed', 'Feeds', payload.catalog.feeds, payload.feeds)}
+    </div>
+  `;
 }
 
 function matrixConnectButton(user = null) {
@@ -3068,15 +3070,6 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
         <div class="nested-block user-target-controls">
           <strong>Target Buttons</strong>
           <div class="inline-controls">
-            ${multipleProductionsEnabled ? '' : `
-            <select id="add-target-type-${user.id}">
-              <option value="user">User</option>
-              <option value="conference">Conference</option>
-              <option value="feed">Feed</option>
-            </select>
-            <select id="add-target-id-${user.id}"></select>
-            <button type="button" id="add-target-btn-${user.id}" class="small" onclick="addTarget(${user.id})">Add target</button>
-            `}
             <label class="admin-switch" title="Allow this user to change the order of their target buttons">
               <input type="checkbox" role="switch" onchange="saveUserTargetRearrange(${user.id}, this)" ${user.allowTargetRearrange ? 'checked' : ''} ${isGuestProfile ? 'disabled' : ''}>
               <span class="admin-switch__track" aria-hidden="true"></span>
@@ -3088,7 +3081,18 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
               <span>Allow target add/remove</span>
             </label>
           </div>
-          ${multipleProductionsEnabled ? '' : `<ul id="user-targets-${user.id}"></ul>`}
+          ${multipleProductionsEnabled ? '' : `
+          <div class="inline-controls">
+            <select id="add-target-type-${user.id}">
+              <option value="user">User</option>
+              <option value="conference">Conference</option>
+              <option value="feed">Feed</option>
+            </select>
+            <select id="add-target-id-${user.id}"></select>
+            <button type="button" id="add-target-btn-${user.id}" class="small" onclick="addTarget(${user.id})">Add target</button>
+          </div>
+          <ul id="user-targets-${user.id}"></ul>
+          `}
         </div>
       `;
     const detailControls = targetControls || bridgeControls

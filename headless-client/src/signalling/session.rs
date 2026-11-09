@@ -434,10 +434,10 @@ impl Session {
                 user_id,
                 delta,
             } => {
-                let volume = ((self.audio.member_level(conference_id, user_id).volume + delta)
-                    * 100.0)
-                    .round()
-                    / 100.0;
+                let volume = crate::talk::step_target_volume(
+                    self.audio.member_level(conference_id, user_id).volume,
+                    delta,
+                );
                 let level = self.audio.set_member_volume(conference_id, user_id, volume);
                 self.apply_member_level(conference_id, user_id, level);
             }
@@ -760,6 +760,8 @@ impl Session {
         self.media_info = Some(crate::state::MediaInfo {
             send_state: "new".into(),
             recv_state: "new".into(),
+            send_ice_state: "new".into(),
+            recv_ice_state: "new".into(),
             consumers: 0,
             producer_id: Some(send.producer_id.clone()),
             ice_servers: send.ice_servers.clone(),
@@ -1216,6 +1218,11 @@ impl Session {
                     self.snapshot_dirty = true;
                 }
             }
+            "force-stop-transmission" => {
+                let change = self.admin_stop_transmission();
+                self.send_talk_change(connected, &change, "admin-stop-transmission")
+                    .await;
+            }
             "api-talk-command" => self.handle_api_talk_command(connected, payload).await,
             "api-target-audio-command" => self.handle_api_audio_command(connected, payload).await,
             "user-audio-settings-updated" => {
@@ -1351,6 +1358,17 @@ impl Session {
             }
             RtcEvent::IceState { direction, state } => {
                 tracing::debug!(event = "ice-state", direction = ?direction, state = %state);
+                if let Some(info) = self.media_info.as_mut() {
+                    match direction {
+                        Direction::Send => {
+                            info.send_ice_state = state.to_string().to_ascii_lowercase()
+                        }
+                        Direction::Recv => {
+                            info.recv_ice_state = state.to_string().to_ascii_lowercase()
+                        }
+                    }
+                    self.snapshot_dirty = true;
+                }
                 if matches!(state, RTCIceConnectionState::Failed) {
                     let cue = self.alerts.on_transport_down();
                     self.play_announcement(cue);
@@ -1456,10 +1474,10 @@ impl Session {
                 user_id,
                 delta,
             } => {
-                let volume = ((self.audio.member_level(conference_id, user_id).volume + delta)
-                    * 100.0)
-                    .round()
-                    / 100.0;
+                let volume = crate::talk::step_target_volume(
+                    self.audio.member_level(conference_id, user_id).volume,
+                    delta,
+                );
                 let level = self.audio.set_member_volume(conference_id, user_id, volume);
                 self.apply_member_level(conference_id, user_id, level);
             }
@@ -1530,6 +1548,15 @@ impl Session {
         }
         self.audio_state_dirty = true;
         self.snapshot_dirty = true;
+    }
+
+    fn admin_stop_transmission(&mut self) -> TalkChange {
+        // Keep the level trigger's current state: an active VOX must first
+        // fall silent before a fresh rising edge can start transmission again.
+        let change = self.talk.reset();
+        self.pending_talk_change = None;
+        self.snapshot_dirty = true;
+        change
     }
 
     async fn send_talk_change(
@@ -1961,6 +1988,15 @@ impl Session {
             "revision": self.panel.revision,
             "storage": panel::storage_with_devices(&self.panel.storage, &input, &output),
             "runtime": {
+                "mediaConnection": {
+                    "signaling": if self.connection.is_online() { "connected" } else { "failed" },
+                    "heartbeatInterrupted": self.server_unavailable || (self.connection.is_online() && self.alerts.interrupted()),
+                    "send": self.media_info.as_ref().map(|info| info.send_state.as_str()).unwrap_or("idle"),
+                    "receive": self.media_info.as_ref().map(|info| info.recv_state.as_str()).unwrap_or("idle"),
+                    "sendIce": self.media_info.as_ref().map(|info| info.send_ice_state.as_str()).filter(|state| !state.is_empty()).unwrap_or("idle"),
+                    "receiveIce": self.media_info.as_ref().map(|info| info.recv_ice_state.as_str()).filter(|state| !state.is_empty()).unwrap_or("idle"),
+                    "initialized": self.media_info.is_some(),
+                },
                 "devices": devices,
                 "inputDeviceId": input,
                 "outputDeviceId": output,
@@ -2812,6 +2848,7 @@ impl Session {
             server_version: self.server_version.clone(),
             audio_ok: audio_status.all_ok(capture_wanted, playback_wanted),
             system_volume: audio_status.system_volume.clone(),
+            output_levels: audio_status.output_levels.clone(),
             targets,
             reply_target,
             reply_name,
@@ -3055,6 +3092,7 @@ mod tests {
         let (_, frames) = mpsc::channel(1);
         let (_, audio_status) = watch::channel(AudioStatus {
             system_volume: None,
+            output_levels: Default::default(),
             capture_ok: true,
             playback_ok: true,
             capture_device: None,
@@ -3158,6 +3196,71 @@ mod tests {
             assert!(delay >= Duration::from_secs(3));
             assert!(delay < Duration::from_millis(3250));
         }
+    }
+
+    #[tokio::test]
+    async fn admin_stop_clears_holds_locks_and_vox_until_a_fresh_trigger() {
+        use crate::audio::vox::LevelTrigger;
+        use crate::state::{InputSource, TargetRef};
+        let (_dir, mut session, _mixer, _path) = test_session();
+        let now = Instant::now();
+        let target = crate::talk::TargetKey::User(5);
+        let source = InputSource::Companion("panel-hold".into());
+        session
+            .talk
+            .press(source.clone(), TargetRef::Key(target), now);
+        session
+            .talk
+            .set_lock(TargetRef::Key(crate::talk::TargetKey::Conference(7)), true);
+        session.talk.set_vox_target(Some(target));
+        session.vox = Some(LevelTrigger::new(-30.0, 100));
+        assert_eq!(session.vox.as_mut().unwrap().update(-10.0, now), Some(true));
+        session.talk.set_vox_active(true);
+        session.pending_talk_change = Some(session.talk_change_now());
+
+        let change = session.admin_stop_transmission();
+        assert!(!change.talking);
+        assert!(!change.lock_active);
+        assert!(change.targets.is_empty());
+        assert!(session.pending_talk_change.is_none());
+        // Releasing the old held button cannot recreate a tap lock.
+        assert!(session.talk.release_source(&source).is_none());
+        assert_eq!(session.vox.as_mut().unwrap().update(-10.0, now), None);
+        assert!(!session.talk.is_talking());
+        let quiet = now + Duration::from_millis(200);
+        assert_eq!(
+            session.vox.as_mut().unwrap().update(-60.0, quiet),
+            Some(false)
+        );
+        session.talk.set_vox_active(false);
+        assert_eq!(
+            session.vox.as_mut().unwrap().update(-10.0, quiet),
+            Some(true)
+        );
+        assert!(session.talk.set_vox_active(true).unwrap().talking);
+    }
+
+    #[tokio::test]
+    async fn panel_report_includes_media_and_ice_states() {
+        let (_dir, mut session, _mixer, _path) = test_session();
+        session.media_info = Some(crate::state::MediaInfo {
+            send_state: "connected".into(),
+            recv_state: "connecting".into(),
+            send_ice_state: "completed".into(),
+            recv_ice_state: "checking".into(),
+            ..Default::default()
+        });
+        let report = session.panel_report().await;
+        let media = &report["runtime"]["mediaConnection"];
+        assert_eq!(media["send"], "connected");
+        assert_eq!(media["receive"], "connecting");
+        assert_eq!(media["sendIce"], "completed");
+        assert_eq!(media["receiveIce"], "checking");
+        assert_eq!(media["initialized"], true);
+        session.media_info = None;
+        let report = session.panel_report().await;
+        assert_eq!(report["runtime"]["mediaConnection"]["sendIce"], "idle");
+        assert_eq!(report["runtime"]["mediaConnection"]["initialized"], false);
     }
 
     #[tokio::test]
@@ -3320,7 +3423,7 @@ mod tests {
                 delta: 0.04,
             })
             .await;
-        assert_eq!(session.audio.member_level(7, 8).volume, 0.04);
+        assert_eq!(session.audio.member_level(7, 8).volume, 0.001);
     }
 
     #[tokio::test]

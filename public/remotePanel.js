@@ -7,7 +7,6 @@
     let pendingPatch = {};
     let patchTimer = null;
     let pendingCommands = 0;
-    let feedbackUntil = 0;
     let queue = Promise.resolve();
     const heldInputs = new Map();
     const panel = {
@@ -35,7 +34,6 @@
       },
       command(command) {
         pendingCommands++;
-        panel.status('Applying…');
         const promise = queue.then(() => new Promise((resolve) => {
           if (!socket.connected) return resolve({ ok: false, error: 'Server disconnected' });
           socket.timeout(8000).emit('panel-command', command, (error, result) => {
@@ -43,8 +41,7 @@
           });
         })).then((result) => {
           pendingCommands--;
-          feedbackUntil = Date.now() + 4000;
-          panel.status(result.ok ? result.message || (result.offline ? 'Offline · saved for reconnect' : 'Applied') : result.error || 'Change failed', !result.ok);
+          if (!result.ok) panel.status(result.error || 'Change failed', true);
           panel.needsRefresh = true;
           if (result.state) panel.receive(result.state);
           return result;
@@ -60,7 +57,7 @@
         if (panel.state && state.panelSettings.revision < panel.state.panelSettings.revision) return;
         panel.state = state;
         panel.onState?.(state);
-        if (!pendingCommands && Date.now() > feedbackUntil) panel.status(state.online ? state.clientConnected ? 'Client online' : 'Waiting for client state…' : 'Client offline');
+        panel.status(state.online ? 'Client online' : 'Client offline');
       },
       close() {
         clearTimeout(patchTimer);

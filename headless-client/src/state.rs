@@ -94,6 +94,8 @@ pub struct IncomingInfo {
 pub struct MediaInfo {
     pub send_state: String,
     pub recv_state: String,
+    pub send_ice_state: String,
+    pub recv_ice_state: String,
     pub consumers: usize,
     pub producer_id: Option<String>,
     pub ice_servers: Vec<String>,
@@ -151,6 +153,7 @@ pub struct Snapshot {
     pub server_version: Option<String>,
     pub audio_ok: bool,
     pub system_volume: Option<crate::audio::system_volume::SystemVolume>,
+    pub output_levels: crate::audio::system_volume::OutputLevels,
     pub targets: Vec<TargetInfo>,
     /// Effective Reply / Main destination (pin when assigned, else last incoming).
     pub reply_target: Option<TargetKey>,
@@ -200,6 +203,7 @@ impl Snapshot {
             server_version: None,
             audio_ok: false,
             system_volume: None,
+            output_levels: Default::default(),
             targets: Vec::new(),
             reply_target: None,
             reply_name: None,

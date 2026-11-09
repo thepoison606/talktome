@@ -83,6 +83,21 @@ async function fixture(t) {
   return { app, url, control, settings, audio, peers, commands, openPanel, openUser, clients, productions, behavior, targets, activeFeedIds };
 }
 
+test('remote media status follows the controlled client and disappears with its session', async t => {
+  const f = await fixture(t);
+  await f.openUser();
+  const peer = f.peers.get(7).peer;
+  const mediaConnection = {
+    signaling: 'connected', send: 'connected', receive: 'failed',
+    sendIce: 'completed', receiveIce: 'checking',
+    heartbeatInterrupted: false, initialized: true, iceError: 'ICE 701',
+  };
+  f.control.report(peer, { revision: 0, runtime: { mediaConnection } });
+  assert.deepEqual(f.control.snapshot(7).runtime.mediaConnection, mediaConnection);
+  f.peers.delete(7);
+  assert.equal(f.control.snapshot(7).runtime, null);
+});
+
 test('device volume uses confirmed client values without persisting user audio or panel settings', async t => {
   const f = await fixture(t);
   await f.openUser();

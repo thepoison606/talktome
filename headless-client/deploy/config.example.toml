@@ -33,6 +33,11 @@ retry_ms = 5000
 kicked_retry_ms = 10000
 
 [audio]
+# Fixed analog output levels; applied on playback open if supported by the card.
+# Main volume continues to control the separate Playback/PCM level.
+speaker_level_db = 0
+headphone_level_db = 0
+
 # ALSA ids from `talktome-headless list-audio-devices`; omit for the default
 # device. "none" disables a direction, "tone" / "tone:440" feeds a 440 Hz
 # sine (or another frequency with tone:1000), "wav:/path.wav" records the

@@ -152,6 +152,9 @@ pub struct AudioConfig {
     pub input_device: Option<String>,
     /// ALSA/cpal device name; `null` = system default. `"none"` disables playback.
     pub output_device: Option<String>,
+    /// Fixed analog output levels, applied when the playback device opens.
+    pub speaker_level_db: f32,
+    pub headphone_level_db: f32,
     pub profile: AudioProfile,
     /// ALSA period in milliseconds. `0` keeps the driver default (often
     /// 21–85 ms). The device buffer is two periods. A size the card rejects
@@ -532,6 +535,8 @@ impl Default for AudioConfig {
         Self {
             input_device: None,
             output_device: None,
+            speaker_level_db: 0.0,
+            headphone_level_db: 0.0,
             profile: AudioProfile::UltraLow,
             device_period_ms: default_device_period_ms(),
             input_gain_db: 0.0,
@@ -1153,6 +1158,11 @@ impl Config {
                 );
             }
         }
+        for db in [self.audio.speaker_level_db, self.audio.headphone_level_db] {
+            if !db.is_finite() || !(-120.0..=24.0).contains(&db) {
+                bail!("audio speaker/headphone levels must be between -120 and 24 dB");
+            }
+        }
         if !(-30.0..=40.0).contains(&self.audio.input_gain_db) {
             bail!("audio.input_gain_db must be between -30 and 40");
         }
@@ -1366,6 +1376,8 @@ mod tests {
         config.user.name = "test".into();
         config.user.password = "test".into();
         assert_eq!(config.audio.default_volume_linear(), 0.9);
+        assert_eq!(config.audio.speaker_level_db, 0.0);
+        assert_eq!(config.audio.headphone_level_db, 0.0);
         assert_eq!(config.streamdeck.volume_step_linear(), 0.04);
         config.streamdeck.volume_step_db = Some(3.0);
         assert_eq!(config.streamdeck.volume_step_linear(), 0.04);
