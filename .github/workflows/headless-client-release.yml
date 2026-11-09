@@ -22,6 +22,7 @@ on:
     paths:
       - ".github/workflows/headless-client-release.yml"
       - "headless-client/**"
+      - "public/**"
       - "scripts/resolve-build-version.js"
       - "scripts/upload-release-asset.sh"
 
