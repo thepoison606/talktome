@@ -29,7 +29,7 @@ function runtime(mode = 'always-on') {
     MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB: -45,
     MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB: -120, MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB: -10,
     MANAGED_LEVEL_TRIGGER_ATTACK_MS: 100, MANAGED_LEVEL_TRIGGER_RELEASE_MS: 300,
-    managedLevelTriggerRunning: false, managedLevelTriggerStartedAt: 0,
+    managedLevelTriggerRunning: false, managedLevelTriggerStartedAt: 0, managedEventStreamsNeedRestart: false,
     managedSessions: new Map([['user-1', session]]), managedBridgeConfig: {}, managedAudioPopover: null,
     invoke: async () => ({ inputStreamStats: [{ streamId: session.inputStreamId, rmsDb: context.rmsDb, capturedFrames: 100 }] }),
     rmsDb: -20, auditManagedNativeMediaStatus: async () => {}, updateManagedInputLevelDisplay() {},
@@ -44,6 +44,7 @@ function runtime(mode = 'always-on') {
   load(context, 'function getManagedInputLevelMap(', 'function updateManagedInputLevelDisplay(');
   load(context, 'async function performManagedTalkState(', 'function getManagedPanelReport(');
   load(context, 'async function processManagedLevelTriggers(', 'function createManagedSession(');
+  load(context, 'async function restartManagedEventStreamsIfNeeded(', 'async function startManagedEventStream(');
   load(context, 'async function reconcileManagedBridgeConfig(', 'async function refreshManagedInventoryOnly(');
   return { context, session, targets, calls, advance: ms => { now += ms; } };
 }

@@ -145,3 +145,23 @@ test('restarted native streams use fresh IDs so late events cannot affect the ne
   await context.startNativeManagedEventStream(session);
   assert.equal(ids.length, 2); assert.notEqual(ids[0], ids[1]);
 });
+
+test('a changed TLS policy restarts only ready streams without an active native connection', async () => {
+  const source = fs.readFileSync(require.resolve('../bridge-client/src/app.js'), 'utf8');
+  const start = source.indexOf('async function restartManagedEventStreamsIfNeeded(');
+  const restarted = [];
+  const ctx = {
+    managedEventStreamsNeedRestart: true,
+    managedSessions: new Map([
+      ['ready', { ready: true, id: 'ready' }],
+      ['opening', { ready: false, id: 'opening' }],
+      ['active', { ready: true, eventStreamId: 'active-stream', id: 'active' }],
+    ]),
+    startManagedEventStream: async session => restarted.push(session.id),
+  };
+  vm.runInNewContext(source.slice(start, source.indexOf('async function startManagedEventStream(', start)), ctx);
+  await ctx.restartManagedEventStreamsIfNeeded();
+  await ctx.restartManagedEventStreamsIfNeeded();
+  assert.deepEqual(restarted, ['ready']);
+  assert.equal(ctx.managedEventStreamsNeedRestart, false);
+});
