@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { fileURLToPath, URL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const expoRequire = createRequire(require.resolve('expo/package.json'));
@@ -78,4 +79,34 @@ describe('security-updated Expo tooling', () => {
       properties: { command: { enum: ['level'] } },
     });
   });
+
+  it('discovers both Apple extension configs through the upgraded glob dependency', () => {
+    const appleRequire = createRequire(require.resolve('@bacons/apple-targets/package.json'));
+    const { globSync } = appleRequire('glob');
+    expect(globSync('targets/*/expo-target.config.@(json|js)', {
+      cwd: fileURLToPath(new URL('../../', import.meta.url)),
+      nodir: true,
+    }).sort()).toEqual([
+      'targets/TalkToMeWatch/expo-target.config.js',
+      'targets/TalkToMeWidget/expo-target.config.js',
+    ]);
+  });
+
+  it('stops an already-cancelled Expo filesystem traversal', async () => {
+    const { glob } = expoRequire('glob');
+    await expect(glob('targets/**/*', {
+      cwd: fileURLToPath(new URL('../../', import.meta.url)),
+      signal: AbortSignal.abort(),
+    })).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('preserves fingerprint ignore patterns and exceptions with minimatch 11', () => {
+    const { isIgnoredPath } = require('@expo/fingerprint/build/utils/Path');
+    const patterns = ['**/node_modules/**', '.expo/**', '!**/node_modules/keep.js'];
+    expect(isIgnoredPath('node_modules/library/index.js', patterns)).toBe(true);
+    expect(isIgnoredPath('.expo/settings.json', patterns)).toBe(true);
+    expect(isIgnoredPath('node_modules/keep.js', patterns)).toBe(false);
+    expect(isIgnoredPath('src/ui/VolumeRing.tsx', patterns)).toBe(false);
+  });
+
 });

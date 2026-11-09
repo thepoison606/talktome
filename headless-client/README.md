@@ -334,8 +334,8 @@ server-side mute. The conference fader still scales the whole conference.
   from the left (status is hidden). On the Mini
   it is **−, +, NEXT**: open it from MENU → VOLUME, close it by tapping the
   selected target again or let it time out. Tap a target to select it; holding a target 600 ms toggles
-  its mute. Deck bars and readouts use a linear 0–100% scale. Steps use
-  `streamdeck.volume_step_percent` (default 5 percentage points); this also
+  its mute. Target/member readouts use dB; the continuous bars use linear amplitude. Steps use
+  `streamdeck.volume_step_percent` (default 4 percentage points); this also
   applies to MAIN and member levels. With more targets than keys, **NEXT** pages them: it
   takes Reply's key on an MK.2 and MUTE's key on a Neo / Stream Deck +.
   The layer closes after

@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::audio::mixer::format_volume_percent;
+use crate::audio::mixer::format_volume_db;
 use crate::state::{ConferenceMemberInfo, ConnectionState, ProductionInfo, Snapshot, TargetInfo};
 use crate::talk::TargetKey;
 
@@ -859,7 +859,7 @@ fn command_roles(
 
 fn member_appearance(member: &ConferenceMemberInfo, state: &DeckState) -> Appearance {
     let mut appearance = Appearance::simple(&member.name, palette::IDLE);
-    appearance.subtitle = format_volume_percent(member.volume);
+    appearance.subtitle = format_volume_db(member.volume);
     appearance.bar = Some(member.volume);
     if state.member_selected == Some(member.user_id) {
         appearance.background = palette::SELECTED;
@@ -886,7 +886,7 @@ fn member_appearance(member: &ConferenceMemberInfo, state: &DeckState) -> Appear
 }
 
 fn target_appearance(target: &TargetInfo, state: &DeckState, snapshot: &Snapshot) -> Appearance {
-    let volume_label = format_volume_percent(target.volume);
+    let volume_label = format_volume_db(target.volume);
     let mut appearance = Appearance::simple(&target.name, palette::IDLE);
     if state.volume_layer {
         appearance.background =
@@ -915,7 +915,7 @@ fn target_appearance(target: &TargetInfo, state: &DeckState, snapshot: &Snapshot
         palette::IDLE,
     );
     // Listen-only keys (feeds and listen-only conferences) show their level
-    // as a bar; the percentage only appears on the volume layer.
+    // as a bar; the dB readout only appears on the volume layer.
     let listen_only_conference = !target.can_talk && matches!(target.key, TargetKey::Conference(_));
     if !target.can_talk && !listen_only_conference {
         appearance.bar = Some(target.volume);
@@ -1750,7 +1750,7 @@ mod tests {
         assert!(feed.bar.is_some());
         assert!(listen_conference.bar.is_none());
         assert!(talk_conference.bar.is_none());
-        // Names only in normal operation; percentages on the volume layer.
+        // Names only in normal operation; dB on the volume layer.
         assert_eq!(feed.subtitle, "");
         let volume_layer = DeckState {
             volume_layer: true,
@@ -1758,7 +1758,7 @@ mod tests {
         };
         let feed_volume = target_appearance(&snapshot.targets[2], &volume_layer, &snapshot);
         assert!(
-            feed_volume.subtitle.ends_with("%"),
+            feed_volume.subtitle.ends_with("dB"),
             "{}",
             feed_volume.subtitle
         );
