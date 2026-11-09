@@ -990,7 +990,7 @@
         { path: 'audio.auto_processing', label: 'Echo cancel, noise suppress, auto gain', type: 'bool', help: 'Same as the browser Audio auto processing toggle. Admin can override it per user after register. Manual input gain is ignored while this is on.' },
         { path: 'audio.input_gain_db', label: 'Input gain (dB)', type: 'number', step: 0.5, min: -30, max: 40, help: 'Ignored while auto processing is on (AGC runs instead).' },
         { path: 'audio.stream_delay_ms', label: 'AEC stream delay (ms)', type: 'number', min: 0, max: 500, nullable: true, help: 'Empty: estimate from capture + playback period. Set if echo remains.' },
-        { path: 'audio.default_volume_db', label: 'Default target volume (dB)', type: 'number', step: 0.5, min: -60, max: 0, nullable: true, help: '0 dB is unity. Overrides the legacy 0–1 default_volume value.' },
+        { path: 'audio.default_volume_db', label: 'Default target volume (dB)', type: 'number', step: 0.5, min: -60, max: 0, nullable: true, help: 'Default: 90% (about -0.9 dB). 0 dB is unity. Overrides the legacy 0–1 default_volume value.' },
         { path: 'audio.dim_db', label: 'Dim amount (dB)', type: 'select', numeric: true, options: DIM_AMOUNT_DB_OPTIONS.map((db) => [String(db), `${db} dB`]), help: 'Same list as the web client. Stored −14 dB is migrated to −15 dB.' },
         { path: 'audio.dim_feeds_while_speaking', label: 'Dim feeds while speaking', type: 'bool' },
         { path: 'audio.dim_when_addressed', label: 'Dim feeds when addressed', type: 'bool' },
@@ -1026,7 +1026,7 @@
         { path: 'streamdeck.serial', label: 'Serial number', type: 'text', nullable: true, help: 'Empty: first unused deck found. Used when the device list below is empty.' },
         { path: 'streamdeck.brightness', label: 'Brightness (%)', type: 'number', min: 0, max: 100 },
         { path: 'streamdeck.font_path', label: 'Font file', type: 'text' },
-        { path: 'streamdeck.volume_step_percent', label: 'Volume step per key/dial tick (%)', type: 'number', step: 1, min: 1, max: 100, nullable: true, help: 'Percentage points per tick. Default: 5%.' },
+        { path: 'streamdeck.volume_step_percent', label: 'Volume step per key/dial tick (%)', type: 'number', step: 1, min: 1, max: 100, nullable: true, help: 'Percentage points per tick. Default: 4%.' },
         { path: 'streamdeck.volume_layer_timeout_s', label: 'Volume layer timeout (s)', type: 'number' },
         { path: 'streamdeck.pedal_left', label: 'Pedal left switch target', type: 'target', nullable: true, help: 'Reply is always the right pedal. Equivalent to layout JSON key "0".' },
         { path: 'streamdeck.pedal_target', label: 'Pedal middle switch target', type: 'target', nullable: true, help: 'Equivalent to layout JSON key "1".' },
@@ -1240,7 +1240,7 @@
     }
     if (field.path === 'streamdeck.volume_step_percent' && (value == null || value === '')) {
       const legacy = Number(getPath(doc, 'streamdeck.volume_step'));
-      value = Number.isFinite(legacy) && legacy > 0 && legacy <= 1 ? legacy * 100 : 5;
+      value = Number.isFinite(legacy) && legacy > 0 && legacy <= 1 ? legacy * 100 : 4;
     }
     if (field.path === 'audio.dim_db' && Number(value) === -14) value = -15;
     const wrapper = el('label', { class: `field${field.wide ? ' wide' : ''}`, dataset: { path: field.path } });

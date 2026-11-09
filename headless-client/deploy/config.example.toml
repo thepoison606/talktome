@@ -69,8 +69,8 @@ jitter_start_ms = 20
 jitter_min_ms = 20
 jitter_max_ms = 400
 reopen_ms = 2000
-default_volume_db = 0
-# default_volume = 0.9   # legacy 0–1; ignored when default_volume_db is set
+default_volume = 0.9   # 90%, matching web/mobile (about -0.9 dB)
+# default_volume_db = -6   # optional dB override
 
 [vox]
 enabled = false
@@ -107,7 +107,7 @@ enabled = true
 brightness = 60
 font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 # Percentage points per Stream Deck VOL +/− key and encoder tick.
-volume_step_percent = 5
+volume_step_percent = 4
 # GPIO/local API default step (dB), independent of the deck:
 volume_step_db = 3
 volume_layer_timeout_s = 8

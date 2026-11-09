@@ -1663,13 +1663,13 @@ fn dial_views(geometry: &Geometry, state: &DeckState, snapshot: &Snapshot) -> Ve
                 index: index as u8,
                 role: target.key.to_string(),
                 title: target.name.clone(),
-                subtitle: crate::audio::mixer::format_volume_percent(target.volume),
+                subtitle: crate::audio::mixer::format_volume_db(target.volume),
             },
             Some(EncoderBinding::Member { conference, member }) => DeckDialView {
                 index: index as u8,
                 role: format!("{conference}/user:{}", member.user_id),
                 title: member.name.clone(),
-                subtitle: crate::audio::mixer::format_volume_percent(member.volume),
+                subtitle: crate::audio::mixer::format_volume_db(member.volume),
             },
             None => DeckDialView {
                 index: index as u8,
@@ -1841,6 +1841,7 @@ async fn render_lcd(
             .into_iter()
             .map(|binding| match binding {
                 Some(EncoderBinding::SystemVolume(volume)) => StripSegment {
+                    percent: true,
                     title: "MAIN".into(),
                     volume: volume.volume,
                     muted: volume.muted,
@@ -1851,6 +1852,7 @@ async fn render_lcd(
                     },
                 },
                 Some(EncoderBinding::Target(target)) => StripSegment {
+                    percent: false,
                     title: target.name.clone(),
                     volume: target.volume,
                     muted: target.muted,
@@ -1864,6 +1866,7 @@ async fn render_lcd(
                     }),
                 },
                 Some(EncoderBinding::Member { member, .. }) => StripSegment {
+                    percent: false,
                     volume: member.volume,
                     title: member.name.clone(),
                     muted: member.muted,
@@ -1877,6 +1880,7 @@ async fn render_lcd(
                     }),
                 },
                 None => StripSegment {
+                    percent: false,
                     title: String::new(),
                     volume: 0.0,
                     muted: false,
@@ -1887,6 +1891,7 @@ async fn render_lcd(
     } else {
         // Neo: a single status segment.
         vec![StripSegment {
+            percent: false,
             title: format!(
                 "{} · {}",
                 snapshot.user_name,
