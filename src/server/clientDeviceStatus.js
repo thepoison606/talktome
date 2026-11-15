@@ -1,6 +1,6 @@
 const STALE_MS = 30_000;
 const OUTPUT_KINDS = new Set(['speaker', 'receiver', 'bluetooth', 'wired', 'usb', 'other']);
-const NETWORK_TYPES = new Set(['wifi', 'cellular', 'ethernet', 'vpn', 'bluetooth', 'none', 'other']);
+const NETWORK_TYPES = new Set(['wifi', 'cellular', 'ethernet', 'vpn', 'bluetooth', 'none', 'other', 'local']);
 function normalizeClientDeviceStatus(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const output = value.audioOutput;

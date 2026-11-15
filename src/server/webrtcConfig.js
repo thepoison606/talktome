@@ -130,7 +130,9 @@ function buildWebRtcListenInfos({ mediaRoute, env = process.env } = {}) {
     throw new Error("A WebRTC announced address is required.");
   }
 
-  const localAddresses = (mediaRoute?.mode === "auto" || (mediaRoute?.mode === "interface" && mediaRoute.candidateAddresses?.length > 1))
+  // Bind selected adapters even when there is only one. A wildcard socket
+  // can reply from another adapter's address, which ICE peers must reject.
+  const localAddresses = (mediaRoute?.mode === "auto" || mediaRoute?.mode === "interface")
     ? [...new Set(
         (Array.isArray(mediaRoute?.candidateAddresses) ? mediaRoute.candidateAddresses : [])
           .map((address) => String(address || "").trim())

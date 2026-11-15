@@ -1,3 +1,5 @@
+const { getBridgeRemoteAddress, getBridgeDeviceStatus } = require('./bridgeDeviceStatus');
+const { sanitizePortReport, endpointIssues } = require('./bridgePortStatus');
 const bridgeTalkTrigger = require('../../public/bridgeTalkTrigger');
 const { isFeedVideoAllowed, FEED_VIDEO_CODECS, canPublishFeedMedia, canReceiveFeedVideo } = require("./feedVideoPolicy");
 const express = require("express");
@@ -21,7 +23,7 @@ const {
   createAutomaticConfigBackup,
 } = require("./automaticConfigBackup");
 const { normalizeRegisteredClientType, normalizeClientVersion, normalizeClientBuild, describeStatusClient, statusRemoteAddress } = require("./statusClient");
-const { getFreshClientDeviceStatus, recordClientDeviceStatus } = require('./clientDeviceStatus');
+const { getFreshClientDeviceStatus, recordClientDeviceStatus, normalizeClientDeviceStatus } = require('./clientDeviceStatus');
 const { resetPeerMediaTransportStatus, updatePeerMediaTransportStatus, describePeerMediaStatus } = require("./mediaStatus");
 const { buildGuestLoginUrl, buildLoginUrl, buildMediaNetworkQrTargets, normalizeConnectUrl, selectAdminQrUrl } = require("./qrConnectUrl");
 const { buildWebRtcListenInfos, resolveClientIceConfig } = require("./webrtcConfig");
@@ -270,12 +272,14 @@ const legacyConfigPath = path.join(projectRoot, "config.json");
 const legacyPkgConfigPath = path.join(execDir, "config.json");
 const DEFAULT_RTC_PORT_START = 40000;
 const DEFAULT_RTC_PORT_COUNT = 10000;
-const BRIDGE_REGISTRY_STALE_MS = 45_000;
-const BRIDGE_CONTROL_SESSION_STALE_MS = 30_000;
+const BRIDGE_REGISTRY_STALE_MS = 15_000;
+const BRIDGE_CONTROL_SESSION_STALE_MS = 15_000;
 const BRIDGE_RTP_HANDSHAKE_TIMEOUT_MS = 3_000;
 const SERVER_STARTED_AT = Date.now();
 
 const bridgeRegistry = new Map();
+const bridgePortReports = new Map();
+const bridgeTestTones = new Map();
 const bridgeControlSessions = new Map();
 
 function loadBridgeTokenStore() {
@@ -1477,6 +1481,7 @@ function serializeBridgeRegistryEntry(entry, now = Date.now()) {
     connectedAt: entry.firstSeenAtIso || entry.lastSeenAtIso,
     lastSeenAt: entry.lastSeenAtIso,
     remoteAddress: entry.remoteAddress || null,
+    deviceStatus: entry.deviceStatus || null,
     stale: now - entry.lastSeenAtMs > BRIDGE_REGISTRY_STALE_MS,
   };
 }
@@ -1504,6 +1509,7 @@ function buildBridgeRuntimeConfig(bridgeId) {
       feedId: null,
       label: row.user_name || `User ${row.user_id}`,
       audioLevels: getBridgePortAudioLevels('user', row.user_id),
+      testToneHz: bridgeTestTones.get(`${normalizedBridgeId}:user:${row.user_id}`) || 0,
       enabled: true,
       input: {
         deviceId: row.input_device,
@@ -1541,6 +1547,7 @@ function buildBridgeRuntimeConfig(bridgeId) {
       feedId: Number(row.feed_id),
       label: row.feed_name || `Feed ${row.feed_id}`,
       audioLevels: getBridgePortAudioLevels('feed', row.feed_id),
+      testToneHz: bridgeTestTones.get(`${normalizedBridgeId}:feed:${row.feed_id}`) || 0,
       enabled: true,
       input: {
         deviceId: row.input_device,
@@ -3690,56 +3697,44 @@ function describeBridgeStatusClient(platform, host) {
   return "Bridge";
 }
 
-function bridgeInventoryHasAssignment(bridge, direction, assignment) {
-  const deviceId = String(assignment?.deviceId || "");
-  if (!deviceId) return false;
-  const leftChannel = Number(assignment?.leftChannel);
-  const rightChannel = Number(assignment?.rightChannel);
-  const requiredChannel = Math.max(leftChannel, rightChannel);
-  const devices = Array.isArray(bridge?.inventory?.devices) ? bridge.inventory.devices : [];
-  const device = devices.find((entry) => (
-    entry.direction === direction
-    && String(entry.id || "") === deviceId
-  ));
-  if (!device) return false;
-  if (!Number.isInteger(leftChannel) || !Number.isInteger(rightChannel)) return false;
-  if (leftChannel < 1 || rightChannel < 1) return false;
-  const maxChannels = Number(device.max_channels ?? device.maxChannels ?? 0);
-  return maxChannels >= requiredChannel;
+function buildBridgePortStatus(row, kind, now = Date.now()) {
+  if (!row.bridge_enabled) return null;
+  const entry = bridgeRegistry.get(String(row.bridge_device));
+  const bridge = entry ? serializeBridgeRegistryEntry(entry, now) : null;
+  const report = bridgePortReports.get(`${kind}:${row.id}`);
+  const fresh = report && report.bridgeId === String(row.bridge_device) && now - report.at < 5000;
+  return { bridgeOnline: Boolean(bridge && !bridge.stale),
+    issues: endpointIssues(row, bridge, kind),
+    ...(fresh ? report.status : { state: bridge && !bridge.stale ? 'Waiting for port status' : 'Bridge offline', error: '' }),
+    testToneHz: bridgeTestTones.get(`${row.bridge_device}:${kind}:${row.id}`) || 0,
+  };
 }
-
-function buildBridgeDeviceIssues(bridge, users = [], feeds = []) {
-  if (!bridge?.id || bridge.stale) return [];
-  const bridgeId = String(bridge.id);
-  const issues = [];
-
-  for (const user of users) {
-    if (!user.bridge_enabled || String(user.bridge_device || "") !== bridgeId) continue;
-    const inputOk = bridgeInventoryHasAssignment(bridge, "input", {
-      deviceId: user.bridge_input_device,
-      leftChannel: user.bridge_input_left_channel,
-      rightChannel: user.bridge_input_right_channel,
-    });
-    const outputOk = bridgeInventoryHasAssignment(bridge, "output", {
-      deviceId: user.bridge_output_device,
-      leftChannel: user.bridge_output_left_channel,
-      rightChannel: user.bridge_output_right_channel,
-    });
-    if (!inputOk) issues.push(`${user.name}: input device missing`);
-    if (!outputOk) issues.push(`${user.name}: output device missing`);
+function expireBridgePresence(id) {
+  const entry = bridgeRegistry.get(String(id));
+  if (entry && Date.now() - entry.lastSeenAtMs > BRIDGE_REGISTRY_STALE_MS) {
+    for (const key of bridgeTestTones.keys()) if (key.startsWith(`${id}:`)) bridgeTestTones.delete(key);
+    scheduleAdminStatusBroadcast('bridge-stale');
   }
-
-  for (const feed of feeds) {
-    if (!feed.bridge_enabled || String(feed.bridge_device || "") !== bridgeId) continue;
-    const inputOk = bridgeInventoryHasAssignment(bridge, "input", {
-      deviceId: feed.bridge_input_device,
-      leftChannel: feed.bridge_input_left_channel,
-      rightChannel: feed.bridge_input_right_channel,
-    });
-    if (!inputOk) issues.push(`${feed.name}: input device missing`);
+}
+function touchBridgePresence(id) {
+  const entry = bridgeRegistry.get(String(id));
+  if (!entry) return;
+  if (entry.disconnected) return;
+  entry.lastSeenAtMs = Date.now(); entry.lastSeenAtIso = new Date().toISOString();
+  if (entry.staleTimer) clearTimeout(entry.staleTimer);
+  entry.staleTimer = setTimeout(() => expireBridgePresence(id), BRIDGE_REGISTRY_STALE_MS + 50);
+}
+function disconnectBridge(id) {
+  const entry = bridgeRegistry.get(String(id));
+  if (entry) { clearTimeout(entry.staleTimer); entry.lastSeenAtMs = 0; entry.disconnected = true; }
+  for (const session of [...bridgeControlSessions.values()]) {
+    if (session.bridgeId === String(id)) closeBridgeControlSession(session.id, 'bridge-quit');
   }
-
-  return issues;
+  for (const [key, report] of bridgePortReports) if (report.bridgeId === String(id)) {
+    bridgePortReports.delete(key);
+  }
+  for (const key of bridgeTestTones.keys()) if (key.startsWith(`${id}:`)) bridgeTestTones.delete(key);
+  scheduleAdminStatusBroadcast('bridge-quit');
 }
 
 const BROWSER_MEDIA_STATS_STALE_MS = 15_000;
@@ -3945,6 +3940,15 @@ function getBridgeAggregateNetworkStats(bridgeId, now = Date.now()) {
   };
 }
 
+function getBridgePortNetworkStats(bridgeId, session, now = Date.now()) {
+  const own = getFreshBridgeNetworkStats(session, now);
+  if (Number.isFinite(own?.packetLossPercent)) return { ...own, packetLossScope: 'port' };
+  const aggregate = getBridgeAggregateNetworkStats(bridgeId, now);
+  if (!own && !aggregate) return null;
+  return { ...own, roundTripMs: own?.roundTripMs ?? aggregate?.roundTripMs ?? null,
+    packetLossPercent: aggregate?.packetLossPercent ?? null, packetLossScope: 'bridge' };
+}
+
 async function collectBridgeInputPacketStats(peer) {
   const producers = [...(peer?.producers?.values() || [])].filter((producer) => !producer.closed && producer.kind === "audio");
   const producerStats = await Promise.all(producers.map((producer) => producer.getStats()));
@@ -3964,6 +3968,19 @@ async function collectBridgeInputPacketStats(peer) {
       // Duplicate/reordered RTP packets can make the signed cumulative loss negative.
       const lost = Math.max(0, signedLost);
       packetsReceived += received;
+      packetsLost += lost;
+      hasPackets = true;
+    }
+  }
+  const consumers = [...(peer?.consumers?.values() || [])].filter(consumer => !consumer.closed && consumer.kind === 'audio');
+  const consumerStats = await Promise.all(consumers.map(consumer => consumer.getStats()));
+  for (const stats of consumerStats) {
+    for (const entry of stats) {
+      if (entry.type !== 'outbound-rtp' || !(entry.roundTripTime > 0)) continue;
+      const sent = Number(entry.packetCount), rawLost = Number(entry.packetsLost);
+      if (!Number.isSafeInteger(sent) || sent < 0 || !Number.isSafeInteger(rawLost)) continue;
+      const lost = Math.min(sent, Math.max(0, rawLost > 0x7fffffff && rawLost <= 0xffffffff ? rawLost - 0x100000000 : rawLost));
+      packetsReceived += sent - lost;
       packetsLost += lost;
       hasPackets = true;
     }
@@ -4031,7 +4048,7 @@ function buildAdminStatusSnapshot() {
         : null;
       const networkStats = online
         ? isBridge
-          ? getFreshBridgeNetworkStats(bridgeControlSessions.get(found.socketId), now)
+          ? getBridgePortNetworkStats(peer.bridgeId, bridgeControlSessions.get(found.socketId), now)
           : getFreshBrowserMediaStats(peer, now)
         : null;
 
@@ -4049,10 +4066,11 @@ function buildAdminStatusSnapshot() {
           : null,
         connectionType: online ? (isBridge ? "bridge" : "browser") : null,
         configuredAsBridge: Boolean(user.bridge_enabled),
+      bridgePortStatus: buildBridgePortStatus(user, "user", now),
         bridgeName: bridge?.name || (isBridge ? peer.bridgeId : null),
         clientVersion: online ? (isBridge ? bridge?.clientVersion : peer.clientVersion) || null : null,
         clientBuild: online && !isBridge ? peer.clientBuild || null : null,
-        deviceStatus: online && !isBridge ? getFreshClientDeviceStatus(peer, now) : null,
+        deviceStatus: online ? (isBridge ? getBridgeDeviceStatus(bridge, bridgeControlSessions.get(found.socketId), now) : getFreshClientDeviceStatus(peer, now)) : null,
         connectedAt: online ? statusIsoTimestamp(peer.connectedAt) : null,
         lastOnlineAt: user.last_online_at || null,
         client: online
@@ -4060,7 +4078,7 @@ function buildAdminStatusSnapshot() {
               ? `${describeBridgeStatusClient(bridge?.platform, bridge?.host)}: ${bridge?.name || peer.bridgeId || "unknown"}`
               : describeStatusClient(peer.socket, peer.clientType))
           : null,
-        remoteAddress: online && !isBridge ? statusRemoteAddress(peer.socket, WEB_ACCESS) : null,
+        remoteAddress: online ? (isBridge ? getBridgeRemoteAddress(bridge, bridgeControlSessions.get(found.socketId)) : statusRemoteAddress(peer.socket, WEB_ACCESS)) : null,
         mediaStatus: online ? describePeerMediaStatus(peer) : null,
         networkStats,
       };
@@ -4076,7 +4094,7 @@ function buildAdminStatusSnapshot() {
       : null;
     const networkStats = online
       ? isBridge
-        ? getFreshBridgeNetworkStats(bridgeControlSessions.get(found.socketId), now)
+        ? getBridgePortNetworkStats(peer.bridgeId, bridgeControlSessions.get(found.socketId), now)
         : getFreshBrowserMediaStats(peer, now)
       : null;
 
@@ -4086,10 +4104,11 @@ function buildAdminStatusSnapshot() {
       online,
       connectionType: online ? (isBridge ? "bridge" : "browser") : null,
       configuredAsBridge: Boolean(feed.bridge_enabled),
+      bridgePortStatus: buildBridgePortStatus(feed, "feed", now),
       bridgeName: bridge?.name || (isBridge ? peer.bridgeId : null),
       clientVersion: online ? (isBridge ? bridge?.clientVersion : peer.clientVersion) || null : null,
       clientBuild: online && !isBridge ? peer.clientBuild || null : null,
-      deviceStatus: online && !isBridge ? getFreshClientDeviceStatus(peer, now) : null,
+      deviceStatus: online ? (isBridge ? getBridgeDeviceStatus(bridge, bridgeControlSessions.get(found.socketId), now) : getFreshClientDeviceStatus(peer, now)) : null,
       connectedAt: online ? statusIsoTimestamp(peer.connectedAt) : null,
       lastSeenAt: online ? statusIsoTimestamp(peer.lastSeenAt || peer.connectedAt) : null,
       client: online
@@ -4097,7 +4116,7 @@ function buildAdminStatusSnapshot() {
             ? `${describeBridgeStatusClient(bridge?.platform, bridge?.host)}: ${bridge?.name || peer.bridgeId || "unknown"}`
             : describeStatusClient(peer.socket, peer.clientType))
         : null,
-      remoteAddress: online && !isBridge ? statusRemoteAddress(peer.socket, WEB_ACCESS) : null,
+      remoteAddress: online ? (isBridge ? getBridgeRemoteAddress(bridge, bridgeControlSessions.get(found.socketId)) : statusRemoteAddress(peer.socket, WEB_ACCESS)) : null,
       mediaStatus: online ? describePeerMediaStatus(peer) : null,
       networkStats,
     };
@@ -4105,7 +4124,6 @@ function buildAdminStatusSnapshot() {
 
   const bridges = getBridgeRegistrySnapshot().map((bridge) => {
     const devices = Array.isArray(bridge.inventory?.devices) ? bridge.inventory.devices : [];
-    const deviceIssues = buildBridgeDeviceIssues(bridge, allUsers, allFeeds);
     return {
       id: bridge.id,
       name: bridge.name,
@@ -4117,11 +4135,12 @@ function buildAdminStatusSnapshot() {
       connectedAt: bridge.connectedAt,
       lastSeenAt: bridge.lastSeenAt,
       remoteAddress: bridge.remoteAddress,
+      deviceStatus: bridge.stale ? null : getBridgeDeviceStatus(bridge, null, now),
       networkStats: bridge.stale ? null : getBridgeAggregateNetworkStats(bridge.id, now),
       client: describeBridgeStatusClient(bridge.platform, bridge.host),
       inventory: bridge.inventory,
-      deviceMissing: deviceIssues.length > 0,
-      deviceIssues,
+      deviceMissing: false,
+      deviceIssues: [],
       inputDevices: devices.filter((device) => device.direction === "input").length,
       outputDevices: devices.filter((device) => device.direction === "output").length,
     };
@@ -5349,15 +5368,14 @@ app.post("/api/v1/bridge/announce", requireBridgeApiAuth, (req, res) => {
     remoteAddress,
     token: bridgeToken,
     tokenHash: bridgeTokenEntry.tokenHash,
+    deviceStatus: previousEntry?.deviceStatus || null,
     firstSeenAtMs,
     firstSeenAtIso: new Date(firstSeenAtMs).toISOString(),
     lastSeenAtMs: now,
     lastSeenAtIso: new Date(now).toISOString(),
     staleTimer: null,
   };
-  entry.staleTimer = setTimeout(() => {
-    scheduleAdminStatusBroadcast("bridge-stale");
-  }, BRIDGE_REGISTRY_STALE_MS + 100);
+  entry.staleTimer = setTimeout(() => expireBridgePresence(id), BRIDGE_REGISTRY_STALE_MS + 100);
   bridgeRegistry.set(id, entry);
   scheduleAdminStatusBroadcast("bridge-announced");
 
@@ -5366,6 +5384,71 @@ app.post("/api/v1/bridge/announce", requireBridgeApiAuth, (req, res) => {
     bridgeToken,
     config: buildBridgeRuntimeConfig(id),
   });
+});
+
+app.post('/api/v1/bridge/:bridgeId/status', requireBridgeApiAuth, (req, res) => {
+  const id = String(req.params.bridgeId);
+  if (!canBridgeAuthAccessBridge(req.bridgeApiAuth, id)) return res.sendStatus(403);
+  if (bridgeRegistry.get(id)?.disconnected) return res.status(410).json({ error: 'Bridge has disconnected; announce again' });
+  if (req.body?.deviceStatus) {
+    const status = normalizeClientDeviceStatus(req.body.deviceStatus);
+    const bridge = bridgeRegistry.get(id);
+    if (bridge && status) bridge.deviceStatus = { status, reportedAt: Date.now() };
+  }
+  const ports = buildBridgeRuntimeConfig(id).ports;
+  for (const port of ports) {
+    const key = `${port.kind}:${port.userId ?? port.feedId}`;
+    const raw = req.body?.ports?.[key];
+    if (raw) bridgePortReports.set(key, { bridgeId: id, at: Date.now(), status: sanitizePortReport(raw) });
+  }
+  touchBridgePresence(id);
+  scheduleAdminStatusBroadcast('bridge-port-status');
+  res.json({ ok: true });
+});
+app.post('/api/v1/bridge/:bridgeId/disconnect', requireBridgeApiAuth, (req, res) => {
+  if (!canBridgeAuthAccessBridge(req.bridgeApiAuth, req.params.bridgeId)) return res.sendStatus(403);
+  disconnectBridge(req.params.bridgeId); res.json({ ok: true });
+});
+function adminBridgePort(req) {
+  const kind = req.params.kind;
+  const id = Number(req.params.id);
+  if (!['user', 'feed'].includes(kind) || !Number.isInteger(id) || id < 1) return null;
+  const row = kind === 'user' ? getUserById(id) : kind === 'feed' ? getAllFeeds().find(f => Number(f.id) === id) : null;
+  if (!row?.bridge_enabled) return null;
+  return { row, kind, id, key: `${kind}:${id}` };
+}
+app.get('/admin/bridge/ports/:kind/:id', requireAdmin, (req, res) => {
+  const port = adminBridgePort(req);
+  if (!port) return res.sendStatus(404);
+  res.json({ audioLevels: getBridgePortAudioLevels(port.kind, port.id), status: buildBridgePortStatus(port.row, port.kind) });
+});
+app.put('/admin/bridge/ports/:kind/:id/levels/:direction', requireAdmin, (req, res) => {
+  const port = adminBridgePort(req);
+  if (!port) return res.sendStatus(404);
+  try {
+    const audioLevels = updateBridgePortAudioLevel(port.kind, port.id, req.params.direction, req.body);
+    res.json({ ok: true, audioLevels });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+function setBridgePortTestTone(bridgeId, kind, id, frequency, res) {
+  if (![0, 400, 1000].includes(frequency)) return res.status(400).json({ error: 'Test tone must be off, 400 Hz or 1000 Hz' });
+  const entry = bridgeRegistry.get(String(bridgeId));
+  if (frequency && (!entry || entry.disconnected || Date.now() - entry.lastSeenAtMs > BRIDGE_REGISTRY_STALE_MS)) return res.status(409).json({ error: 'Bridge offline' });
+  const key = `${bridgeId}:${kind}:${id}`;
+  if (frequency) bridgeTestTones.set(key, frequency); else bridgeTestTones.delete(key);
+  res.json({ ok: true });
+}
+app.put('/admin/bridge/ports/:kind/:id/tone', requireAdmin, (req, res) => {
+  const port = adminBridgePort(req);
+  if (!port) return res.sendStatus(404);
+  return setBridgePortTestTone(port.row.bridge_device, port.kind, port.id, req.body?.frequency, res);
+});
+app.put('/api/v1/bridge/:bridgeId/ports/:kind/:id/tone', requireBridgeApiAuth, (req, res) => {
+  const bridgeId = req.params.bridgeId;
+  if (!canBridgeAuthAccessBridge(req.bridgeApiAuth, bridgeId)) return res.sendStatus(403);
+  const port = adminBridgePort(req);
+  if (!port || String(port.row.bridge_device) !== bridgeId) return res.sendStatus(404);
+  return setBridgePortTestTone(bridgeId, port.kind, port.id, req.body?.frequency, res);
 });
 
 app.get("/api/v1/bridge/:bridgeId/config", requireBridgeApiAuth, (req, res) => {
@@ -5496,7 +5579,19 @@ app.post(
   requireBridgeApiAuth,
   requireBridgeControlSession,
   async (req, res) => {
+    touchBridgePresence(req.bridgeSession.bridgeId);
     logBridgeMediaDiagnostics(req.bridgeSession, req.body?.mediaDiagnostics);
+    const diagnostics = req.body?.mediaDiagnostics;
+    if (diagnostics) {
+      const session = req.bridgeSession;
+      const key = `${session.kind}:${session.userId ?? session.feedId}`;
+      const previous = bridgePortReports.get(key)?.status || {};
+      const outputs = Array.isArray(diagnostics.outputs) ? diagnostics.outputs : [];
+      const output = { rmsDb: Math.max(-120, ...outputs.map(row => Number.isFinite(row.rmsDb) ? row.rmsDb : -120)), peakDb: Math.max(-120, ...outputs.map(row => Number.isFinite(row.peakDb) ? row.peakDb : -120)) };
+      const errors = Array.isArray(diagnostics.errors) ? diagnostics.errors.slice(0, 8).map(String) : [];
+      bridgePortReports.set(key, { bridgeId: session.bridgeId, at: Date.now(), status: sanitizePortReport({ ...previous, state: previous.state || 'Connected', error: errors.length ? errors.join(' · ') : previous.error, input: diagnostics.input, output }) });
+    }
+
     let packetStats = null;
     try {
       packetStats = await collectBridgeInputPacketStats(req.bridgePeer);
@@ -7726,7 +7821,7 @@ const bridgeControlSessionCleanupTimer = setInterval(() => {
       closeBridgeControlSession(session.id, "bridge-session-timeout");
     }
   }
-}, 5_000);
+}, 1_000);
 bridgeControlSessionCleanupTimer.unref?.();
 
 function warnIfDockerAnnouncedIpLooksInternal(announcedIp) {

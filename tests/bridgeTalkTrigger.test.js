@@ -30,7 +30,7 @@ function runtime(mode = 'always-on') {
     MANAGED_LEVEL_TRIGGER_MIN_THRESHOLD_DB: -120, MANAGED_LEVEL_TRIGGER_MAX_THRESHOLD_DB: -10,
     MANAGED_LEVEL_TRIGGER_ATTACK_MS: 100, MANAGED_LEVEL_TRIGGER_RELEASE_MS: 300,
     managedLevelTriggerRunning: false, managedLevelTriggerStartedAt: 0, managedEventStreamsNeedRestart: false,
-    managedSessions: new Map([['user-1', session]]), managedBridgeConfig: {}, managedAudioPopover: null,
+    managedSessions: new Map([['user-1', session]]), managedBridgeConfig: {}, managedAudioPopover: null, reconcileManagedAudioEdits() {},
     invoke: async () => ({ inputStreamStats: [{ streamId: session.inputStreamId, rmsDb: context.rmsDb, capturedFrames: 100 }] }),
     rmsDb: -20, auditManagedNativeMediaStatus: async () => {}, updateManagedInputLevelDisplay() {},
     renderManagedBridgePorts() {}, recordManagedLifecycle() {}, refreshManagedInputLevelsDuringTransition() {},

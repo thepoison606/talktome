@@ -363,6 +363,7 @@ pub(crate) struct StereoFrame {
 
 #[allow(dead_code)]
 enum BridgeInputStreamRuntime {
+    Virtual(crate::virtual_input::VirtualInput),
     Native(Stream),
     Network(network_audio::NetworkAudioInputRuntime),
 }
@@ -658,7 +659,12 @@ impl BridgeInputRuntime {
         let dropped_frames = Arc::new(AtomicU64::new(0));
         let callback_dropped_frames = Arc::clone(&dropped_frames);
         let (stream, input_sample_rate) =
-            if network_audio::is_input_device(&request.assignment.device_id) {
+            if request.assignment.device_id.starts_with("bridge:") {
+                let runtime = crate::virtual_input::VirtualInput::start(
+                    &request.assignment.device_id, callback_sender, callback_level, callback_captured_frames,
+                )?;
+                (BridgeInputStreamRuntime::Virtual(runtime), "48000".to_string())
+            } else if network_audio::is_input_device(&request.assignment.device_id) {
                 let runtime = network_audio::start_input(network_audio::InputStartRequest {
                     timing,
                     device_id: request.assignment.device_id.clone(),
@@ -811,8 +817,20 @@ impl BridgeInputRuntime {
         let child = Arc::new(Mutex::new(child));
         let writer_gain = Arc::clone(&audio_gain);
         let mut previous_gain = writer_gain.linear();
+        let mut suppression = crate::input_noise::InputNoiseSuppression::new(input_sample_rate.parse().unwrap_or(48000));
+        let allow_suppression = !request.assignment.device_id.starts_with("bridge:");
+        let processing_error = Arc::clone(&last_error);
         let writer = thread::spawn(move || {
             while let Ok(mut bytes) = receiver.recv() {
+                let enabled = allow_suppression && writer_gain.noise_suppression.load(Ordering::Relaxed);
+                if !enabled { suppression.reset_filter(); }
+                if enabled || suppression.has_pending() {
+                    bytes = match suppression.process(&bytes, enabled) {
+                        Ok(bytes) => bytes,
+                        Err(error) => { if let Ok(mut last) = processing_error.lock() { *last = Some(error); } break; }
+                    };
+                }
+                if bytes.is_empty() { continue; }
                 writer_gain.process(&mut bytes, &mut previous_gain, 1.0, true);
                 if stdin.write_all(&bytes).is_err() {
                     break;
@@ -1457,6 +1475,33 @@ fn read_last_error(last_error: &Arc<Mutex<Option<String>>>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn virtual_sources_encode_and_gain_mute_without_audio_hardware() {
+        for device in ["bridge:tone:400", "bridge:tone:1000", "bridge:none"] {
+            let output = UdpSocket::bind("127.0.0.1:0").unwrap();
+            output.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let runtime = BridgeInputRuntime::start(&StartBridgeInputRequest {
+                stream_id: "test-port:input".into(),
+                assignment: BridgeChannelAssignment { device_id: device.into(), left_channel: 1, right_channel: 2 },
+                rtp_ip: "127.0.0.1".into(), rtp_port: output.local_addr().unwrap().port(),
+                payload_type: 102, ssrc: 12345, cname: "virtual-input-test".into(),
+                audio_level: PortAudioLevel { gain_db: 6.0, muted: false, noise_suppression: true },
+            }).unwrap();
+            let mut packet = [0u8; 1500];
+            let received = output.recv(&mut packet);
+            std::thread::sleep(Duration::from_millis(100));
+            let rms = runtime.audio_gain.rms_milli_db.load(Ordering::Relaxed);
+            runtime.audio_gain.set(PortAudioLevel { gain_db: 6.0, muted: true, noise_suppression: false });
+            std::thread::sleep(Duration::from_millis(100));
+            let muted = runtime.audio_gain.rms_milli_db.load(Ordering::Relaxed);
+            runtime.stop();
+            assert!(received.is_ok(), "{device}: {received:?}");
+            if device == "bridge:none" { assert_eq!(rms, -120000); }
+            else { assert!((rms + 14000).abs() < 200, "{device}: {rms}"); }
+            assert_eq!(muted, -120000);
+        }
+    }
 
     #[test]
     fn real_opus_encoder_keeps_the_omt_presentation_clock_in_rtcp() {

@@ -1,14 +1,17 @@
 mod audio;
+mod input_noise;
 mod bridge_media;
 mod credentials;
 mod media_timing;
 mod model;
 mod ndi;
 mod network_audio;
+mod network_status;
 mod omt;
 mod port_audio_level;
 mod probe;
 mod video_media;
+mod virtual_input;
 mod webcam;
 
 use audio::{AudioDeviceSnapshot, AudioInventory};
@@ -134,6 +137,13 @@ fn toggle_main_window_from_tray(app: &tauri::AppHandle, rect: tauri::Rect) {
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+#[derive(Default)]
+struct BridgePresence {
+    connection: Mutex<Option<(reqwest::Client, String, String, String)>>,
+    quitting: AtomicBool,
+    heartbeat_started: AtomicBool,
 }
 
 #[derive(Debug, Serialize)]
@@ -423,6 +433,8 @@ struct BridgeEventStreamMessage {
 fn list_audio_devices() -> Result<AudioInventory, String> {
     let mut inventory = audio::list_audio_devices()?;
     inventory.video_sources = list_video_sources();
+    eprintln!("[audio-inventory] {} devices, {} video sources, {} warnings", inventory.devices.len(), inventory.video_sources.len(), inventory.warnings.len());
+    for warning in &inventory.warnings { eprintln!("[audio-inventory] {warning}"); }
     Ok(inventory)
 }
 
@@ -518,6 +530,13 @@ async fn announce_bridge(
     bridge_name: String,
     inventory: AudioInventory,
 ) -> Result<BridgeAnnounceResponse, String> {
+    if app
+        .state::<BridgePresence>()
+        .quitting
+        .load(Ordering::SeqCst)
+    {
+        return Err("Bridge is quitting".into());
+    }
     let server_url = normalize_server_url(&server_url)?;
     let api_key = api_key.trim();
     if api_key.is_empty() {
@@ -567,8 +586,56 @@ async fn announce_bridge(
         return Err(parsed_error);
     }
 
-    serde_json::from_str::<BridgeAnnounceResponse>(&body)
-        .map_err(|err| format!("failed to parse bridge announce response: {err}"))
+    let announced = serde_json::from_str::<BridgeAnnounceResponse>(&body)
+        .map_err(|err| format!("failed to parse bridge announce response: {err}"))?;
+    let client = app
+        .state::<BridgeHttpClient>()
+        .for_server(&server_url, allow_insecure_tls.unwrap_or(false))?;
+    *app.state::<BridgePresence>()
+        .connection
+        .lock()
+        .map_err(|_| "Bridge presence lock failed")? = Some((
+        client,
+        server_url,
+        announced.bridge.id.clone(),
+        announced
+            .bridge_token
+            .clone()
+            .unwrap_or_else(|| api_key.to_string()),
+    ));
+    if !app
+        .state::<BridgePresence>()
+        .heartbeat_started
+        .swap(true, Ordering::SeqCst)
+    {
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let presence = handle.state::<BridgePresence>();
+                if presence.quitting.load(Ordering::SeqCst) {
+                    break;
+                }
+                let connection = presence
+                    .connection
+                    .lock()
+                    .ok()
+                    .and_then(|value| value.clone());
+                if let Some((client, server, id, token)) = connection {
+                    let network_server = server.clone();
+                    let device_status = tauri::async_runtime::spawn_blocking(move || network_status::report(&network_server)).await.ok();
+                    let _ = client
+                        .post(format!("{server}/api/v1/bridge/{id}/status"))
+                        .bearer_auth(token)
+                        .json(&serde_json::json!({ "ports": {}, "deviceStatus": device_status }))
+                        .timeout(Duration::from_secs(2))
+                        .send()
+                        .await;
+                }
+            }
+        });
+    }
+    Ok(announced)
 }
 
 #[tauri::command]
@@ -844,6 +911,18 @@ fn bridge_media_diagnostics(
     input_stream_id: &str,
     output_stream_prefix: &str,
 ) -> Option<serde_json::Value> {
+    let errors = status
+        .input_stream_errors
+        .iter()
+        .filter(|e| e.stream_id == input_stream_id)
+        .chain(
+            status
+                .output_stream_errors
+                .iter()
+                .filter(|e| e.stream_id.starts_with(output_stream_prefix)),
+        )
+        .map(|e| e.message.clone())
+        .collect::<Vec<_>>();
     let input = status
         .input_stream_stats
         .into_iter()
@@ -853,12 +932,13 @@ fn bridge_media_diagnostics(
         .into_iter()
         .filter(|entry| entry.stream_id.starts_with(output_stream_prefix))
         .collect::<Vec<_>>();
-    if input.is_none() && outputs.is_empty() {
+    if input.is_none() && outputs.is_empty() && errors.is_empty() {
         return None;
     }
     Some(serde_json::json!({
         "input": input,
         "outputs": outputs,
+        "errors": errors,
     }))
 }
 
@@ -885,7 +965,7 @@ async fn run_bridge_health_reporter(
 ) {
     let mut last_round_trip: Option<(Instant, u64)> = None;
     loop {
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
         if stop_flag.load(Ordering::SeqCst) {
             return;
         }
@@ -1065,6 +1145,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(ProbeManager::default())
         .manage(BridgeMediaManager::default())
+        .manage(BridgePresence::default())
         .manage(video_media::VideoManager::default())
         .manage(BridgeEventStreamManager::default())
         .manage(WindowFocusGuard::default())
@@ -1212,8 +1293,34 @@ pub fn run() {
             stop_bridge_output,
             stop_audio_probe_port
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Talktome Bridge");
+        .build(tauri::generate_context!())
+        .expect("error while building Talktome Bridge")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                let presence = app.state::<BridgePresence>();
+                if !presence.quitting.swap(true, Ordering::SeqCst) {
+                    api.prevent_exit();
+                    let _ = app.emit("bridge-quitting", ());
+                    let connection = presence
+                        .connection
+                        .lock()
+                        .ok()
+                        .and_then(|mut value| value.take());
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some((client, server, id, token)) = connection {
+                            let _ = client
+                                .post(format!("{server}/api/v1/bridge/{id}/disconnect"))
+                                .bearer_auth(token)
+                                .timeout(Duration::from_secs(2))
+                                .send()
+                                .await;
+                        }
+                        app.exit(0);
+                    });
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -1221,6 +1328,18 @@ mod tests {
     use super::{
         bridge_event_stream_heartbeat_path, bridge_health_report_payload, normalize_server_url,
     };
+
+    #[test]
+    fn virtual_device_inventory_matches_the_native_announce_contract() {
+        let inventory: super::AudioInventory = serde_json::from_str(include_str!("../../test-fixtures/silence-inventory.json")).unwrap();
+        assert_eq!(inventory.devices.len(), 2);
+        for device in inventory.devices {
+            assert!(!device.is_default);
+            assert!(device.supports_48k);
+            assert_eq!(device.max_channels, 2);
+            assert_eq!(device.channel_pairs[0].right_channel, 2);
+        }
+    }
 
     #[test]
     fn insecure_tls_requires_an_explicit_local_https_origin() {

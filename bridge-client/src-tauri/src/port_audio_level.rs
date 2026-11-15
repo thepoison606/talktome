@@ -8,6 +8,8 @@ pub struct PortAudioLevel {
     pub gain_db: f32,
     #[serde(default)]
     pub muted: bool,
+    #[serde(default)]
+    pub noise_suppression: bool,
 }
 
 impl PortAudioLevel {
@@ -23,6 +25,7 @@ impl PortAudioLevel {
 pub struct AudioGain {
     gain_milli_db: AtomicI32,
     muted: AtomicBool,
+    pub noise_suppression: AtomicBool,
     pub rms_milli_db: AtomicI32,
     pub peak_milli_db: AtomicI32,
     pub clipped_samples: AtomicU64,
@@ -33,6 +36,7 @@ impl AudioGain {
         Self {
             gain_milli_db: AtomicI32::new((level.gain_db * 1000.0).round() as i32),
             muted: AtomicBool::new(level.muted),
+            noise_suppression: AtomicBool::new(level.noise_suppression),
             rms_milli_db: AtomicI32::new(-120_000),
             peak_milli_db: AtomicI32::new(-120_000),
             clipped_samples: AtomicU64::new(0),
@@ -43,6 +47,8 @@ impl AudioGain {
         self.gain_milli_db
             .store((level.gain_db * 1000.0).round() as i32, Ordering::Relaxed);
         self.muted.store(level.muted, Ordering::Relaxed);
+        self.noise_suppression
+            .store(level.noise_suppression, Ordering::Relaxed);
     }
 
     pub fn linear(&self) -> f32 {
@@ -127,6 +133,7 @@ mod tests {
         let gain = AudioGain::new(PortAudioLevel {
             gain_db: 6.0206,
             muted: false,
+            noise_suppression: false,
         });
         let mut previous = gain.linear();
         let mut audio = pcm(&[0.25, -0.25, 0.75, -0.75]);
@@ -140,6 +147,7 @@ mod tests {
         gain.set(PortAudioLevel {
             gain_db: 0.0,
             muted: true,
+            noise_suppression: false,
         });
         gain.process(&mut audio, &mut previous, 1.0, true);
         let mut audio = pcm(&[0.8, -0.8]);
@@ -152,6 +160,7 @@ mod tests {
         let gain = AudioGain::new(PortAudioLevel {
             gain_db: 12.0,
             muted: false,
+            noise_suppression: false,
         });
         let neutral = AudioGain::new(PortAudioLevel::default());
         let mut previous = gain.linear();
@@ -162,27 +171,31 @@ mod tests {
         assert_eq!(neutral.linear(), 1.0);
         assert!(PortAudioLevel {
             gain_db: 41.0,
-            muted: false
+            muted: false,
+            noise_suppression: false,
         }
         .validate()
         .is_err());
         for gain_db in [-40.0, 25.0, 40.0] {
             assert!(PortAudioLevel {
                 gain_db,
-                muted: false
+                muted: false,
+                noise_suppression: false,
             }
             .validate()
             .is_ok());
         }
         assert!(PortAudioLevel {
             gain_db: -41.0,
-            muted: false
+            muted: false,
+            noise_suppression: false,
         }
         .validate()
         .is_err());
         assert!(PortAudioLevel {
             gain_db: f32::NAN,
-            muted: false
+            muted: false,
+            noise_suppression: false,
         }
         .validate()
         .is_err());

@@ -88,6 +88,10 @@ const ALLOWED_OMT_INFORMATION_URLS = new Set([
 ]);
 
 let currentInventory = null;
+let lastFullInventoryScanAt = 0;
+let bridgeQuitting = false;
+let lastManagedAnnounceAt = 0;
+listen?.('bridge-quitting', () => { bridgeQuitting = true; });
 let portRows = [];
 let nextPortNumber = 1;
 let statusPollTimer = null;
@@ -449,7 +453,7 @@ async function listenForAutostartChanges() {
 
 function inventorySignature(inventory) {
   if (!inventory) return "";
-  const devices = (inventory.devices || []).map((device) => ({
+  const devices = (inventory.devices || []).filter(device => device.id !== 'bridge:none').map((device) => ({
     id: device.id || "",
     name: device.name || "",
     direction: device.direction || "",
@@ -477,7 +481,7 @@ function inventorySignature(inventory) {
 
 function audioDeviceSnapshotSignature(snapshot) {
   if (!snapshot) return "";
-  const devices = (snapshot.devices || []).map((device) => ({
+  const devices = (snapshot.devices || []).filter(device => device.id !== 'bridge:none').map((device) => ({
     id: device.id || "",
     name: device.name || "",
     direction: device.direction || "",
@@ -692,6 +696,7 @@ function findInventoryDevice(direction, assignment) {
 }
 
 function getManagedAssignmentUnavailableReason(direction, assignment) {
+  if (assignment?.deviceId === 'bridge:none' || (direction === 'input' && /^bridge:tone:(400|1000)$/.test(assignment?.deviceId))) return '';
   const label = direction === "output" ? "Output" : "Input";
   if (!assignment?.deviceId) {
     return direction === "output" ? "" : `${label} device is not configured`;
@@ -782,7 +787,7 @@ async function auditManagedSessionDevices() {
 
     if (session.port.kind === "feed" && !session.port.input?.deviceId && session.port.videoSource) continue;
     if (!currentInventory?.devices?.length) continue;
-    const inputUnavailableReason = getManagedAssignmentUnavailableReason("input", session.port.input);
+    const inputUnavailableReason = session.port.testToneHz ? '' : getManagedAssignmentUnavailableReason("input", session.port.input);
     if (inputUnavailableReason) {
       if (session.inputReady || session.inputStarting) {
         await stopManagedInputPath(session, "input-device-unavailable");
@@ -962,6 +967,7 @@ function bridgePortSignature(port) {
     userId: port.userId ?? null,
     feedId: port.feedId ?? null,
     input: bridgeAssignmentSignature(port.input),
+    testToneHz: port.testToneHz || 0,
     output: bridgePortHasOutput(port) ? bridgeAssignmentSignature(port.output) : null,
   });
 }
@@ -982,12 +988,12 @@ function getManagedPortDraft(port) {
   return {
     videoSource: draft.videoSource ?? port.videoSource ?? "",
     input: {
-      deviceId: draft.input?.deviceId ?? port.input?.deviceId ?? "",
+      deviceId: (draft.input?.deviceId ?? port.input?.deviceId) || "bridge:none",
       leftChannel: draft.input?.leftChannel ?? port.input?.leftChannel ?? null,
       rightChannel: draft.input?.rightChannel ?? port.input?.rightChannel ?? null,
     },
     output: bridgePortHasOutput(port) ? {
-      deviceId: draft.output?.deviceId ?? port.output?.deviceId ?? "",
+      deviceId: (draft.output?.deviceId ?? port.output?.deviceId) || "bridge:none",
       leftChannel: draft.output?.leftChannel ?? port.output?.leftChannel ?? null,
       rightChannel: draft.output?.rightChannel ?? port.output?.rightChannel ?? null,
     } : null,
@@ -1001,15 +1007,15 @@ function getManagedPortDraft(port) {
 
 function buildManagedDeviceOptions(direction, selectedDeviceId) {
   const devices = devicesByDirection(direction);
-  const selected = String(selectedDeviceId || "");
+  const selected = String(selectedDeviceId || "bridge:none");
   const hasSelected = devices.some((device) => device.id === selected);
   const options = [];
-  options.push('<option value="">Select device</option>');
-  if (selected && !hasSelected) {
+  options.push(`<option value="bridge:none"${selected === 'bridge:none' ? ' selected' : ''}>None</option>`);
+  if (selected && selected !== 'bridge:none' && !hasSelected) {
     options.push(`<option value="${escapeHtml(selected)}" selected>${escapeHtml(`${selected} (saved, unavailable)`)}</option>`);
   }
 
-  devices.forEach((device) => {
+  devices.filter(device => device.id !== 'bridge:none').forEach((device) => {
     const selectedAttr = device.id === selected ? " selected" : "";
     const suffix = device.is_default ? " (default)" : "";
     options.push(`<option value="${escapeHtml(device.id)}"${selectedAttr}>${escapeHtml(`${getDeviceLabel(device)}${suffix}`)}</option>`);
@@ -1019,6 +1025,7 @@ function buildManagedDeviceOptions(direction, selectedDeviceId) {
 }
 
 function buildManagedChannelOptions(device, selectedLeft, selectedRight) {
+  if (device?.id === 'bridge:none') return '<option value="1:2" selected>—</option>';
   const normalizedLeft = Number(selectedLeft);
   const normalizedRight = Number(selectedRight);
   const selectedPair = (
@@ -1147,18 +1154,22 @@ function updateManagedAudioControl(port, direction) {
   const edit = managedAudioEdits.get(audioEditKey(port, direction));
   const button = control.querySelector('[data-audio-open]');
   button.title = `${direction === 'input' ? 'Input gain' : 'Output volume'}: ${gainLabel(level)}`;
-  button.classList.toggle('is-adjusted', level.gainDb !== 0 || level.muted);
+  button.classList.toggle('is-adjusted', level.gainDb !== 0 || level.muted || Boolean(level.noiseSuppression));
   for (const selector of ['[data-audio-range]', '[data-audio-number]']) {
     const input = control.querySelector(selector);
     if (input !== document.activeElement) input.value = String(level.gainDb);
   }
   control.querySelector('[data-audio-mute]').checked = level.muted;
+  const noise = control.querySelector('[data-audio-noise]');
+  if (noise) noise.checked = Boolean(level.noiseSuppression);
   control.querySelector('[data-audio-mute-label]').textContent = level.muted ? 'Muted' : 'Mute';
   const [min, max] = audioLevels.LIMITS[direction];
   control.querySelector('[data-audio-step="-0.5"]').disabled = level.gainDb <= min;
   control.querySelector('[data-audio-step="0.5"]').disabled = level.gainDb >= max;
   const status = control.querySelector('[data-audio-save]');
-  status.textContent = edit?.error || (edit?.dirty || edit?.saving ? 'Saving…' : 'Saved');
+  status.textContent = edit?.error || (edit?.dirty || edit?.saving ? 'Saving…' : '');
+  const tone = control.querySelector('[data-audio-tone]');
+  if (tone && tone !== document.activeElement) tone.value = String(port.testToneHz || 0);
   status.classList.toggle('is-error', Boolean(edit?.error));
   control.querySelector('[data-audio-retry]').hidden = !edit?.error;
 }
@@ -1168,16 +1179,22 @@ async function persistManagedAudioLevel(port, direction) {
   if (!edit?.dirty || edit.saving) return;
   edit.saving = true;
   const revision = edit.revision;
-  const level = { ...edit.level };
+  // Omitted means 'keep the existing setting' to legacy gain editors.
+  // Send false explicitly when this UI switches suppression off.
+  const level = { ...edit.level, ...(direction === 'input' ? { noiseSuppression: Boolean(edit.level.noiseSuppression) } : {}) };
   try {
     await edit.nativePromise;
     const result = await bridgeApi('PUT', `/api/v1/bridge/${encodeURIComponent(managedBridgeConfig.bridgeId)}/ports/${port.kind}/${bridgePortTargetId(port)}/levels/${direction}`, level);
+    if (direction === 'input' && Boolean(result.audioLevels?.input?.noiseSuppression) !== Boolean(level.noiseSuppression)) {
+      throw new Error('Noise suppression was not saved by the server. Retry after updating the server.');
+    }
     port.audioLevels = { ...port.audioLevels, [direction]: result.audioLevels[direction] };
     const current = (managedBridgeConfig?.ports || []).find(entry => bridgePortKey(entry) === bridgePortKey(port));
     if (current) current.audioLevels = { ...current.audioLevels, [direction]: result.audioLevels[direction] };
     if (edit.revision === revision) { edit.dirty = false; edit.error = null; }
   } catch (error) {
     edit.error = String(error?.message || error);
+    edit.retryAt = Date.now() + 5000;
   } finally {
     edit.saving = false;
     updateManagedAudioControl(port, direction);
@@ -1193,7 +1210,7 @@ function changeManagedAudioLevel(port, direction, value) {
   const edit = managedAudioEdits.get(key) || { revision: 0 };
   const normalized = audioLevels.normalizeLevel(value, direction);
   const previous = getManagedAudioLevel(port, direction);
-  if (!edit.error && normalized.gainDb === previous.gainDb && normalized.muted === previous.muted) return;
+  if (!edit.error && normalized.gainDb === previous.gainDb && normalized.muted === previous.muted && Boolean(normalized.noiseSuppression) === Boolean(previous.noiseSuppression)) return;
   edit.level = normalized;
   edit.revision++;
   edit.dirty = true;
@@ -1306,20 +1323,38 @@ function handleManagedAudioClick(event) {
     const step = Number(event.target.closest('[data-audio-step]').dataset.audioStep);
     changeManagedAudioLevel(port, direction, { ...level, gainDb: level.gainDb + step });
   }
-  else if (event.target.closest('[data-audio-reset]')) changeManagedAudioLevel(port, direction, { gainDb: 0, muted: false });
+  else if (event.target.closest('[data-audio-reset]')) changeManagedAudioLevel(port, direction, { ...getManagedAudioLevel(port, direction), gainDb: 0, muted: false });
   else if (event.target.closest('[data-audio-retry]')) changeManagedAudioLevel(port, direction, getManagedAudioLevel(port, direction));
+}
+
+async function changeManagedTestTone(port, frequency) {
+  const control = managedAudioControl(port, 'input');
+  const select = control?.querySelector('[data-audio-tone]');
+  if (select) select.disabled = true;
+  try {
+    await bridgeApi('PUT', `/api/v1/bridge/${encodeURIComponent(managedBridgeConfig.bridgeId)}/ports/${port.kind}/${bridgePortTargetId(port)}/tone`, { frequency });
+    const config = await bridgeApi('GET', `/api/v1/bridge/${encodeURIComponent(managedBridgeConfig.bridgeId)}/config`);
+    await reconcileManagedBridgeConfig(config);
+  } catch (error) {
+    const status = control?.querySelector('[data-audio-save]');
+    if (status) { status.textContent = String(error?.message || error); status.classList.add('is-error'); }
+  } finally {
+    if (select) { select.disabled = false; const current = managedBridgeConfig?.ports?.find(p => bridgePortKey(p) === bridgePortKey(port)); select.value = String(current?.testToneHz || 0); }
+  }
 }
 
 function handleManagedAudioInput(event) {
   const input = event.target;
-  if (!input.matches('[data-audio-range], [data-audio-number], [data-audio-mute]')) return;
-  if (input.matches('[data-audio-mute]') && event.type !== 'change') return;
+  if (!input.matches('[data-audio-range], [data-audio-number], [data-audio-mute], [data-audio-noise], [data-audio-tone]')) return;
+  if (input.matches('[data-audio-mute], [data-audio-noise], [data-audio-tone]') && event.type !== 'change') return;
   const control = input.closest('[data-audio-direction]');
   const port = (managedBridgeConfig?.ports || []).find(port => bridgePortKey(port) === control.closest('[data-managed-port-key]').dataset.managedPortKey);
   if (!port) return;
   const direction = control.dataset.audioDirection;
   const level = getManagedAudioLevel(port, direction);
-  if (input.matches('[data-audio-mute]')) level.muted = input.checked;
+  if (input.matches('[data-audio-tone]')) { void changeManagedTestTone(port, Number(input.value)); return; }
+  if (input.matches('[data-audio-noise]')) level.noiseSuppression = input.checked;
+  else if (input.matches('[data-audio-mute]')) level.muted = input.checked;
   else {
     if (!input.value.trim() || !Number.isFinite(Number(input.value))) return;
     level.gainDb = Number(input.value);
@@ -1331,7 +1366,7 @@ function handleManagedAudioInput(event) {
 }
 
 function renderManagedAssignmentControls(port, direction, assignment) {
-  const device = findDeviceByDirectionAndId(direction, assignment.deviceId);
+  const device = findDeviceByDirectionAndId(direction, assignment.deviceId || 'bridge:none');
   const labelPrefix = direction === "output" ? "Output" : "Input";
   return `
     <label class="managed-port-control managed-port-control--device">
@@ -1343,7 +1378,7 @@ function renderManagedAssignmentControls(port, direction, assignment) {
     ${renderPortAudioControl(escapeHtml(port.id), direction, getManagedAudioLevel(port, direction))}
     <label class="managed-port-control managed-port-control--channel">
       <span>${labelPrefix} channel</span>
-      <select data-managed-port-control data-field="${direction}Channel">
+      <select data-managed-port-control data-field="${direction}Channel" ${device?.id === 'bridge:none' ? 'disabled' : ''}>
         ${buildManagedChannelOptions(device, assignment.leftChannel, assignment.rightChannel)}
       </select>
     </label>
@@ -1399,6 +1434,7 @@ function getManagedPortElement(key) {
 
 function readManagedPortAssignmentFromElement(card, direction) {
   const deviceId = card.querySelector(`[data-field="${direction}Device"]`)?.value || "";
+  if (deviceId === 'bridge:none') return { deviceId, leftChannel: 1, rightChannel: 2 };
   const channelValue = card.querySelector(`[data-field="${direction}Channel"]`)?.value || "";
   const pair = parsePair(channelValue);
   return {
@@ -1750,6 +1786,7 @@ function renderManagedBridgePorts() {
           <span class="managed-port-state ${escapeHtml(state.className)}">${escapeHtml(state.label)}</span>
         </div>
       </div>
+      ${port.testToneHz ? `<div class="managed-port-state warning" role="status">Input test tone: ${escapeHtml(String(port.testToneHz))} Hz · −20 dBFS RMS before gain</div>` : ''}
       <div class="managed-port-routing-grid">
         ${renderManagedAssignmentControls(port, "input", draft.input)}
         ${hasOutput ? renderManagedAssignmentControls(port, "output", draft.output) : ""}
@@ -1801,7 +1838,7 @@ function codecParametersToFmtp(parameters = {}) {
 }
 
 async function startManagedConsumer(session, producerPayload) {
-  if (!bridgePortHasOutput(session.port)) return;
+  if (!bridgePortHasOutput(session.port) || session.port.output?.deviceId === "bridge:none") return;
   const producerId = String(producerPayload?.producerId || "");
   if (!producerId || session.outputs.has(producerId)) return;
 
@@ -2085,7 +2122,8 @@ function updateManagedInputLevelDisplay(session, inputStats) {
   const now = Date.now();
   const elapsed = now - Number(session.inputStartedAt || now);
   const muted = getManagedAudioLevel(session.port, 'input').muted;
-  const mode = muted ? 'muted'
+  const intentionalSilence = session.port.input?.deviceId === 'bridge:none' && !session.port.testToneHz;
+  const mode = intentionalSilence ? 'none' : muted ? 'muted'
     : Number.isFinite(capturedFrames) && capturedFrames <= 0
       ? elapsed >= MANAGED_INPUT_ACTIVITY_GRACE_MS ? 'no-input' : 'waiting'
       : !Number.isFinite(rmsDb) ? 'unavailable'
@@ -2099,7 +2137,9 @@ function updateManagedInputLevelDisplay(session, inputStats) {
   let text;
   let warning = false;
 
-  if (muted) {
+  if (intentionalSilence) {
+    text = 'Input: None';
+  } else if (muted) {
     text = Number.isFinite(rmsDb)
       ? `Input level: ${rmsDb.toFixed(1)} dBFS - Muted`
       : 'Input level: Muted';
@@ -2626,6 +2666,28 @@ async function pollManagedEvents() {
   }
 }
 
+let bridgePortReportBusy = false;
+async function reportManagedPorts() {
+  if (bridgeQuitting || bridgePortReportBusy || !invoke || !managedBridgeConfig?.bridgeId) return;
+  bridgePortReportBusy = true;
+  try {
+    const media = await invoke('get_bridge_media_status');
+    const ports = {};
+    for (const session of managedSessions.values()) {
+      const input = (media.inputStreamStats || []).find(row => row.streamId === session.inputStreamId);
+      const outputs = (media.outputStreamStats || []).filter(row => row.streamId.startsWith(`${session.port.id}:consumer:`));
+      const meter = rows => ({ rmsDb: Math.max(-120, ...rows.map(row => Number.isFinite(row.rmsDb) ? row.rmsDb : -120)), peakDb: Math.max(-120, ...rows.map(row => Number.isFinite(row.peakDb) ? row.peakDb : -120)) });
+      ports[bridgePortKey(session.port)] = {
+        state: session.statusLabel || (session.ready ? 'Connected' : 'Reconnecting'),
+        error: [session.error, session.inputError].filter(Boolean).join(' · '),
+        input: meter(input ? [input] : []), output: meter(outputs),
+      };
+    }
+    await bridgeApi('POST', `/api/v1/bridge/${encodeURIComponent(managedBridgeConfig.bridgeId)}/status`, { ports });
+  } catch {} finally { bridgePortReportBusy = false; }
+}
+setInterval(reportManagedPorts, 250);
+
 async function heartbeatManagedSessions() {
   const sessions = [...managedSessions.values()].filter((session) => (
     session.sessionId
@@ -2907,12 +2969,12 @@ function createManagedSession(port) {
 }
 
 async function startManagedInputPath(session, { reason = "input-start" } = {}) {
-  if (session.port.kind === 'feed' && !session.port.input?.deviceId && session.port.videoSource) return false;
+  if (!session.port.testToneHz && session.port.kind === 'feed' && !session.port.input?.deviceId && session.port.videoSource) return false;
   if (session.inputReady || session.inputStarting) return session.inputReady;
   if (!session.sessionId) throw new Error("Bridge session is not ready for input");
 
   if (currentInventory?.devices?.length) {
-    const unavailableReason = getManagedAssignmentUnavailableReason("input", session.port.input);
+    const unavailableReason = session.port.testToneHz ? '' : getManagedAssignmentUnavailableReason("input", session.port.input);
     if (unavailableReason) {
       setManagedInputError(session, new Error(unavailableReason));
       return false;
@@ -2931,7 +2993,9 @@ async function startManagedInputPath(session, { reason = "input-start" } = {}) {
     await invoke("start_bridge_input", {
       request: {
         streamId: session.inputStreamId,
-        assignment: session.port.input,
+        assignment: session.port.testToneHz
+          ? { deviceId: `bridge:tone:${session.port.testToneHz}`, leftChannel: 1, rightChannel: 2 }
+          : session.port.input,
         rtpIp: transport.ip,
         rtpPort: Number(transport.port),
         payloadType: rtp.payloadType,
@@ -3175,8 +3239,32 @@ async function stopManagedSession(session, { remove = true, reason = "client-sto
   if (remove) managedSessions.delete(bridgePortKey(session.port));
 }
 
+function reconcileManagedAudioEdits(config) {
+  for (const port of config?.ports || []) {
+    for (const direction of ['input', 'output']) {
+      const edit = managedAudioEdits.get(audioEditKey(port, direction));
+      if (!edit?.dirty || edit.saving) continue;
+      if (JSON.stringify(audioLevels.normalizeLevel(port.audioLevels?.[direction], direction)) === JSON.stringify(edit.level)) {
+        edit.dirty = false; edit.error = null;
+      } else if (edit.error && Date.now() >= (edit.retryAt || 0)) {
+        void persistManagedAudioLevel(port, direction);
+      }
+    }
+  }
+}
+
 async function reconcileManagedBridgeConfig(config) {
+  // Empty assignments mean intentional silence until a device is chosen.
+  for (const port of config?.ports || []) {
+    if (!port.input?.deviceId && !port.videoSource) port.input = { deviceId: 'bridge:none', leftChannel: 1, rightChannel: 2 };
+    if (port.kind === 'user' && !port.output?.deviceId) port.output = { deviceId: 'bridge:none', leftChannel: 1, rightChannel: 2 };
+  }
   managedBridgeConfig = config;
+  reconcileManagedAudioEdits(config);
+  if (managedAudioPopover) {
+    const current = config?.ports?.find(port => bridgePortKey(port) === bridgePortKey(managedAudioPopover.port));
+    if (current) { managedAudioPopover.port = current; updateManagedAudioControl(current, managedAudioPopover.direction); }
+  }
   const wanted = new Map((config?.ports || []).map((port) => [bridgePortKey(port), port]));
   if (managedAudioPopover && !wanted.has(bridgePortKey(managedAudioPopover.port))) closeManagedAudioPopover(false);
 
@@ -3311,7 +3399,7 @@ async function retryDueManagedSessions() {
 }
 
 async function syncManagedBridge() {
-  if (managedSyncRunning) return;
+  if (bridgeQuitting || managedSyncRunning) return;
   // Do not reconnect with a partially edited address or credential. Apart from
   // producing avoidable failures, programmatic connection updates can disturb
   // the text selection in Windows WebView2 while the user is still typing.
@@ -3319,7 +3407,7 @@ async function syncManagedBridge() {
   if (!serverUrlInput.value.trim() || !getBridgeCredential()) return;
   managedSyncRunning = true;
   try {
-    await announceBridge({ quiet: true, syncConfig: false });
+    if (Date.now() - lastManagedAnnounceAt >= 10000) await announceBridge({ quiet: true, syncConfig: false });
     const bridgeId = localStorage.getItem(STORAGE_KEYS.bridgeId) || "";
     if (!bridgeId) throw new Error("Bridge announce did not return an ID");
     setServerConnectionState("connected");
@@ -3373,7 +3461,8 @@ async function watchManagedInventory() {
     managedInventoryWatchRetryAt = 0;
     if (!lastAudioDeviceSnapshotSignature) {
       lastAudioDeviceSnapshotSignature = nextSnapshotSignature;
-    } else if (nextSnapshotSignature && nextSnapshotSignature !== lastAudioDeviceSnapshotSignature) {
+    } else if (nextSnapshotSignature && (nextSnapshotSignature !== lastAudioDeviceSnapshotSignature
+      || inventoryNeedsRetry(currentInventory, lastFullInventoryScanAt))) {
       const inventory = await refreshManagedInventoryOnly();
       const nextInventorySignature = inventorySignature(inventory);
       if (nextInventorySignature && nextInventorySignature !== lastAnnouncedInventorySignature) {
@@ -3396,7 +3485,7 @@ async function watchManagedInventory() {
 
 function startManagedConnectionRetry() {
   if (!managedHeartbeatTimer) {
-    managedHeartbeatTimer = window.setInterval(syncManagedBridge, 10_000);
+    managedHeartbeatTimer = window.setInterval(syncManagedBridge, 2_000);
   }
 }
 
@@ -3554,8 +3643,31 @@ function renderBridgeStatus(status) {
   renderManagedBridgePorts();
 }
 
+function virtualSilenceDevice(direction) {
+  return {
+    id: 'bridge:none', name: 'None', direction,
+    is_default: false, max_channels: 2, supports_48k: true,
+    supported_configs: [{ channels: 2, min_sample_rate: 48000, max_sample_rate: 48000, sample_format: 'f32', min_buffer_size: null, max_buffer_size: null }],
+    channel_pairs: [{ label: '1/2', left_channel: 1, right_channel: 2 }],
+  };
+}
+
+function inventoryNeedsRetry(inventory, scannedAt, now = Date.now()) {
+  if (now - scannedAt < 30000) return false;
+  return inventoryScanIncomplete(inventory);
+}
+
+function inventoryScanIncomplete(inventory) {
+  const hardware = (inventory?.devices || []).filter(device => !/^(bridge|ndi|omt):/.test(device.id || ''));
+  return !hardware.length || Boolean(inventory?.warnings?.length);
+}
+
 function renderInventory(inventory) {
+  lastFullInventoryScanAt = Date.now();
+  inventory.devices = (inventory.devices || []).filter(device => device.id !== 'bridge:none');
+  for (const direction of ['input', 'output']) inventory.devices.push(virtualSilenceDevice(direction));
   currentInventory = inventory;
+  if (refreshButton) refreshButton.hidden = !inventoryScanIncomplete(inventory);
   lastAudioDeviceSnapshotSignature = audioDeviceSnapshotSignature(inventory);
   renderSummary(inventory);
   if (audioScanStatus) {
@@ -3661,6 +3773,7 @@ async function announceBridge({ quiet = false, syncConfig = true } = {}) {
   if (announcedBridge.id) {
     localStorage.setItem(STORAGE_KEYS.bridgeId, announcedBridge.id);
   }
+  lastManagedAnnounceAt = Date.now();
   lastAnnouncedInventorySignature = inventorySignature(currentInventory);
   setBridgeConnectionError();
   if (connectionStatus) {
@@ -3730,7 +3843,7 @@ async function runBridgeSettingsApply() {
 }
 
 function populateDeviceSelect(select, direction, preferredValue) {
-  const devices = devicesByDirection(direction);
+  const devices = devicesByDirection(direction).filter(device => device.id !== 'bridge:none');
   select.innerHTML = "";
 
   devices.forEach((device) => {
@@ -4163,7 +4276,7 @@ async function refreshDevices() {
 
   if (refreshButton) {
     refreshButton.disabled = true;
-    refreshButton.textContent = "Refreshing";
+    refreshButton.textContent = "Retrying…";
   }
   try {
     // Inventory probes each backend with a native timeout first. Status checks
@@ -4173,7 +4286,7 @@ async function refreshDevices() {
     ]);
     const inventory = inventoryResult[0].status === "fulfilled"
       ? inventoryResult[0].value
-      : { host: "Unavailable", devices: [], warnings: [String(inventoryResult[0].reason)] };
+      : { ...(currentInventory || { host: "Unavailable", devices: [] }), warnings: [String(inventoryResult[0].reason)] };
     if (inventoryResult[0].status === "fulfilled") {
       managedInventoryWatchRetryAt = 0;
     }
@@ -4241,7 +4354,7 @@ async function refreshDevices() {
     }
     if (refreshButton) {
       refreshButton.disabled = false;
-      refreshButton.textContent = "Refresh";
+      refreshButton.textContent = "Retry";
     }
   }
 }

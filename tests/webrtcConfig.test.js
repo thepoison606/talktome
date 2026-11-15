@@ -141,3 +141,19 @@ test("selected adapters offer UDP and TCP on each chosen local address", () => {
     { protocol: "tcp", ip: "10.20.30.40" },
   ]);
 });
+
+test("a single selected adapter binds ICE sockets to that adapter instead of a wildcard", () => {
+  const { resolveTransportMediaRoute } = require("../src/server/mediaNetwork");
+  const env = { TALKTOME_MEDIA_INTERFACE: "en0" };
+  const mediaRoute = resolveTransportMediaRoute({
+    env,
+    availableInterfaces: [
+      { name: "en7", address: "192.168.178.37" },
+      { name: "en0", address: "192.168.178.166" },
+    ],
+  });
+  assert.deepEqual(buildWebRtcListenInfos({ mediaRoute, env }), [
+    { protocol: "udp", ip: "192.168.178.166" },
+    { protocol: "tcp", ip: "192.168.178.166" },
+  ]);
+});

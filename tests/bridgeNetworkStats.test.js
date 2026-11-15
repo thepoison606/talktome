@@ -102,3 +102,39 @@ test('missing Bridge network values render as unavailable', () => {
   assert.equal(formatters.formatStatusLatency({ roundTripMs: 24.8 }), '25 ms');
   assert.equal(formatters.formatStatusPacketLoss({ packetLossPercent: 1.25 }), '1.3%');
 });
+
+test('an idle Bridge port displays its own instance loss without borrowing another Bridge', () => {
+  const now=Date.now();bridgeControlSessions.clear();
+  const own={bridgeId:'bridge-1'};
+  context.recordBridgeNetworkStats(own,{roundTripMs:4},null,now);
+  const feed={bridgeId:'bridge-1'};
+  context.recordBridgeNetworkStats(feed,{roundTripMs:8},{packetsReceived:99,packetsLost:1},now);
+  bridgeControlSessions.set('own',own);bridgeControlSessions.set('feed',feed);
+  const status=context.getBridgePortNetworkStats('bridge-1',own,now);
+  assert.equal(status.roundTripMs,4);assert.equal(status.packetLossPercent,1);assert.equal(status.packetLossScope,'bridge');
+  assert.equal(context.getBridgePortNetworkStats('bridge-2',own,now).packetLossPercent,null);
+  context.recordBridgeNetworkStats(own,null,{packetsReceived:100,packetsLost:0},now);
+  assert.equal(context.getBridgePortNetworkStats('bridge-1',own,now).packetLossScope,'port');
+  assert.equal(context.getBridgePortNetworkStats('bridge-1',own,now).packetLossPercent,0);
+});
+
+test('receive-only ports count receiver-reported loss, not unacknowledged sent packets', async () => {
+  const consumer=stats=>({kind:'audio',getStats:async()=>[stats]});
+  const peer={consumers:new Map([['rx',consumer({type:'outbound-rtp',packetCount:100,packetsLost:3,roundTripTime:1})]])};
+  const stats=await context.collectBridgeInputPacketStats(peer);
+  assert.equal(stats.packetsReceived,97);assert.equal(stats.packetsLost,3);
+  peer.consumers.set('rx',consumer({type:'outbound-rtp',packetCount:100,packetsLost:0,roundTripTime:0}));
+  assert.equal(await context.collectBridgeInputPacketStats(peer),null);
+});
+
+test('Bridge endpoints expose the connection address and fresh network type',()=>{
+  const {getBridgeRemoteAddress,getBridgeDeviceStatus}=require('../src/server/bridgeDeviceStatus');const now=Date.now();
+  const bridge={remoteAddress:'127.0.0.1'};
+  assert.equal(getBridgeRemoteAddress(bridge,null),'127.0.0.1');
+  assert.equal(getBridgeDeviceStatus(bridge,null,now).networkType,'local');
+  bridge.deviceStatus={status:{networkType:'wifi'},reportedAt:now};
+  const session={remoteAddress:'192.168.178.166'};
+  assert.equal(getBridgeRemoteAddress(bridge,session),'192.168.178.166');
+  assert.equal(getBridgeDeviceStatus(bridge,session,now).networkType,'wifi');
+  assert.equal(getBridgeDeviceStatus({...bridge,remoteAddress:'192.168.178.166'},session,now+31000),null);
+});

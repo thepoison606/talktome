@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(require.resolve('../bridge-client/src/app.js'), 'utf8');
 
 function bridgeFunction(start, end, globals) {
-  const context = vm.createContext(globals);
+  const context = vm.createContext({ bridgeQuitting: false, lastManagedAnnounceAt: 0, ...globals });
   vm.runInContext(source.slice(source.indexOf(start), source.indexOf(end)), context);
   return context;
 }

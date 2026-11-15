@@ -15,7 +15,7 @@ test('client metadata accepts release and development versions and rejects unsaf
 });
 
 test('status snapshots retain versions separately for mobile clients and their Bridge endpoints', () => {
-  const bridge = { id: 'bridge-1', name: 'Studio Bridge', clientVersion: '1.5.20', inventory: { devices: [] } };
+  const bridge = { id: 'bridge-1', name: 'Studio Bridge', clientVersion: '1.5.20', remoteAddress: '127.0.0.1', inventory: { devices: [] } };
   const peersByUser = new Map([
     [1, { clientType: 'ios-app', clientVersion: '1.0.0', clientBuild: '40', connectedAt: Date.now(), socket: {} }],
     [2, { isBridgePeer: true, bridgeId: bridge.id, connectedAt: Date.now() }],
@@ -23,13 +23,14 @@ test('status snapshots retain versions separately for mobile clients and their B
   ]);
   const context = vm.createContext({
     areMultipleProductionsEnabled: () => false,
+    buildBridgePortStatus: () => null,
     getAllUsers: () => [1, 2, 3, 4].map(id => ({ id, name: `User ${id}` })),
     getAllFeeds: () => [], getAllConferences: () => [],
     findUserPeerByUserId: id => peersByUser.has(id) ? { peer: peersByUser.get(id), socketId: `socket-${id}` } : null,
     getPeerActiveTalkTargets: () => [], normalizeRuntimeTalkTargets: value => value,
     bridgeRegistry: new Map([[bridge.id, bridge]]),
     getBridgeRegistrySnapshot: () => [bridge],
-    getFreshBridgeNetworkStats: () => null, getFreshBrowserMediaStats: () => null,
+    ...require('../src/server/bridgeDeviceStatus'), getBridgePortNetworkStats: () => null, getFreshBridgeNetworkStats: () => null, getFreshBrowserMediaStats: () => null,
     getBridgeAggregateNetworkStats: () => null, buildBridgeDeviceIssues: () => [],
     bridgeControlSessions: new Map(), describePeerMediaStatus: () => 'Connected',
     describeBridgeStatusClient: () => 'Bridge macOS', describeStatusClient: (_socket, type) => type,
@@ -45,6 +46,8 @@ test('status snapshots retain versions separately for mobile clients and their B
   assert.equal(snapshot.users[0].clientBuild, '40');
   assert.equal(snapshot.users[1].clientVersion, '1.5.20');
   assert.equal(snapshot.users[1].clientBuild, null);
+  assert.equal(snapshot.users[1].remoteAddress, '127.0.0.1');
+  assert.equal(snapshot.users[1].deviceStatus.networkType, 'local');
   assert.equal(snapshot.bridges[0].clientVersion, '1.5.20');
   assert.equal(snapshot.users[2].clientVersion, null);
   assert.equal(snapshot.users[3].clientVersion, null);

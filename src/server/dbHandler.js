@@ -355,8 +355,11 @@ function getBridgePortAudioLevels(kind, id) {
 
 function updateBridgePortAudioLevel(kind, id, direction, value) {
   if (kind === 'feed' && direction === 'output') throw new Error('Feeds have no output');
-  const level = bridgeAudioLevels.normalizeLevel(value, direction, { strict: true });
-  const levels = { ...getBridgePortAudioLevels(kind, id), [direction]: level };
+  const previous = getBridgePortAudioLevels(kind, id);
+  const merged = direction === 'input' && value && typeof value === 'object' && !Array.isArray(value) && !Object.prototype.hasOwnProperty.call(value, 'noiseSuppression')
+    ? { ...value, noiseSuppression: previous.input.noiseSuppression || false } : value;
+  const level = bridgeAudioLevels.normalizeLevel(merged, direction, { strict: true });
+  const levels = { ...previous, [direction]: level };
   const result = db.prepare(`UPDATE ${bridgeEndpointTable(kind)} SET audio_levels = ? WHERE ${kind}_id = ?`)
     .run(JSON.stringify(levels), id);
   if (!result.changes) throw new Error('Bridge endpoint not found');

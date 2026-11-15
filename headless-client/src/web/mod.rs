@@ -63,7 +63,11 @@ pub async fn run(
 ) -> Result<()> {
     let password_from_env = std::env::var_os("TALKTOME_WEB_PASSWORD").is_some();
     let state: Shared = Arc::new(AppState {
-        auth: Mutex::new(AuthState::new(web.password.clone(), password_from_env)),
+        auth: Mutex::new(AuthState::load(
+            web.password.clone(),
+            password_from_env,
+            &ctx.config.state_dir(),
+        )),
         ctx,
         started: Instant::now(),
     });
@@ -378,11 +382,11 @@ async fn change_password(State(state): State<Shared>, Json(body): Json<PasswordB
         },
         None => false,
     };
-    let from_env = if let Ok(mut auth) = state.auth.lock() {
-        auth.set_password(new);
-        auth.password_from_env()
+    let (from_env, token) = if let Ok(mut auth) = state.auth.lock() {
+        auth.set_password(new.clone());
+        (auth.password_from_env(), auth.login(&new))
     } else {
-        false
+        (false, None)
     };
     tracing::info!(event = "web-password-changed", saved_to_file = saved);
     let note = if from_env {
@@ -392,7 +396,18 @@ async fn change_password(State(state): State<Shared>, Json(body): Json<PasswordB
     } else {
         None
     };
-    Json(json!({ "ok": true, "saved_to_file": saved, "note": note })).into_response()
+    let mut response =
+        Json(json!({ "ok": true, "saved_to_file": saved, "note": note })).into_response();
+    if let Some(token) = token {
+        let cookie = format!(
+            "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}",
+            auth::SESSION_TTL.as_secs()
+        );
+        if let Ok(value) = HeaderValue::from_str(&cookie) {
+            response.headers_mut().insert(header::SET_COOKIE, value);
+        }
+    }
+    response
 }
 
 // ---------------------------------------------------------------------------
