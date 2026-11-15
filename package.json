@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "test": "node --test tests/*.test.js",
+    "web:guidance": "node scripts/web-guidance.mjs",
     "start": "node server.js",
     "release:macos": "python3 scripts/release-macos-local.py",
     "build:mediasoup-client": "node scripts/build-mediasoup-client.js",
