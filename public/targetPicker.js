@@ -104,7 +104,12 @@
     applyButton.onclick = () => close(true);
     dialog.addEventListener('cancel', event => { event.preventDefault(); close(false); });
     dialog.addEventListener('keydown', event => {
-      if (event.key === 'Enter' && event.target === search) { event.preventDefault(); applyButton.click(); }
+      if (event.key === 'Enter' && event.target === search) {
+        // Safari can report isComposing=false for the IME-confirming Enter.
+        if (event.isComposing || event.keyCode === 229) return;
+        event.preventDefault();
+        applyButton.click();
+      }
     });
     document.body.appendChild(dialog);
     activeDialog = { container };
