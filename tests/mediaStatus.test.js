@@ -167,6 +167,7 @@ test('admin snapshots expose user/feed media health while preserving signaling o
   const feed = { kind: 'feed', feedId: 2, mediaTransportStates: { receive: { connectionState: 'disconnected' } } };
   const context = vm.createContext({
     areMultipleProductionsEnabled: () => false,
+    buildBridgePortStatus: () => null,
     getAllUsers: () => [{ id: 1, name: 'Camera' }, { id: 3, name: 'Offline' }],
     getAllFeeds: () => [{ id: 2, name: 'Music' }], getAllConferences: () => [],
     findUserPeerByUserId: id => id === 1 ? { peer } : null,

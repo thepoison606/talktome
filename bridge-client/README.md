@@ -286,3 +286,61 @@ server**. This exception is saved per server URL, restricted to local IPs and
 local hostnames, and never follows redirects. Plain HTTP remains available.
 Native event streams use Authorization headers; if streaming is unavailable,
 the client uses authenticated polling rather than putting credentials in URLs.
+
+
+### Remote port audio and diagnostics
+
+The server Admin Users/Feeds page exposes input gain, output gain (users), mute,
+and post-gain RMS meters for each Bridge endpoint. Gain/mute changes are stored
+on the server and applied live through the existing port audio controls; changing
+a device or the input test source rebuilds that port's media session.
+
+Choose **None / silence** as input or **None / discard** as output to keep a port
+connected without requiring physical audio devices. User and feed inputs also
+support a Bridge-generated 400 Hz or 1 kHz test tone at -20 dBFS RMS before input
+gain. The tone replaces capture and follows the configured routing/talk trigger;
+for users in External mode, press PTT or use Companion to route it. Select Off to
+restore the configured source. Tone selection is temporary and clears when the
+Bridge quits or its presence expires; gain/mute settings persist.
+
+Port errors (missing devices, unsupported formats and reconnection errors) appear
+on their associated user/feed Status row. Bridge instance status describes only
+the Bridge's presence. Normal Quit explicitly unregisters the instance before
+exit (up to two seconds for the request). Native heartbeats run every three
+seconds even with no ports or a hidden WebView; a lost instance expires after
+15 seconds. Closing the main window still hides to the tray rather than quitting.
+
+Both server and Bridge must be updated for the new remote diagnostics, virtual
+sources and explicit quit notification.
+
+
+### Optional input noise suppression
+
+Each user/feed input has an independent **Noise suppression** switch in the
+server Admin port audio controls and the Bridge input-audio popover. It defaults
+to off and is stored with the endpoint's input gain/mute settings. It updates
+live without reopening the device or RTP stream; older gain/mute editors retain
+an already-enabled suppression setting.
+
+The processor runs before gain/mute and Opus encoding. It applies only noise
+suppression, with separate left/right channel state: no automatic gain control,
+high-pass filter or echo cancellation is enabled. Input meters and audio-level
+triggers therefore see the processed signal. Calibration test tones bypass it.
+Disabled ports retain the existing unbuffered processing path. Enabled processing
+uses 10 ms frames; a synthetic 48 kHz processor test measures about 7 ms of DSP
+signal delay plus up to 10 ms of frame staging. This is not an end-to-end network
+latency measurement. No additional output processing is applied.
+
+### Network status in server admin
+
+Bridge instances and their User/Feed rows show the connection address and the
+network interface used to reach the server (Wi-Fi, Ethernet, VPN, or Local for a
+same-machine connection). Network reports refresh independently of the WebView.
+Port loss uses incoming RTP and available receiver reports. An idle port falls
+back to its own Bridge instance's aggregate loss, identified in the Loss tooltip;
+no loss value is invented when no packets have been measured.
+
+Incomplete audio inventory scans retry after 30 seconds even without a device
+hotplug. A **Retry** button appears only while the inventory is incomplete and
+runs a new scan immediately; a failed scan preserves
+the previous inventory rather than replacing it with an empty device list.

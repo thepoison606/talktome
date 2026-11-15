@@ -146,3 +146,28 @@ test('popover input levels show RMS with throttled numbers and reveal fixed colo
   assert.equal(fill.style['--meter-level'], '0%');
   assert.equal(meter.value, -96);
 });
+
+test('None input stays neutral even without frames; a test tone still reports its level', () => {
+  const { display, popoverLabel, session, update, setTime } = fixture();
+  update({ rmsDb: -120, capturedFrames: 1000 });
+  assert.equal(display.classes.has('warning'), true);
+  session.port.input = { deviceId: 'bridge:none' };
+  for (const stats of [{ rmsDb: -120, capturedFrames: 1000 }, { capturedFrames: 0 }, undefined]) {
+    update(stats);
+    assert.equal(display.textContent, 'Input: None');
+    assert.equal(popoverLabel.textContent, 'Input: None');
+    assert.equal(display.classes.has('warning'), false);
+  }
+  session.port.testToneHz = 400;
+  update({ rmsDb: -20, capturedFrames: 2000 });
+  assert.equal(display.textContent, 'Input level: -20.0 dBFS');
+  assert.equal(display.classes.has('warning'), false);
+  session.port.testToneHz = 0;
+  update({ rmsDb: -120, capturedFrames: 3000 });
+  assert.equal(display.textContent, 'Input: None');
+  session.port.input.deviceId = 'hardware-mic';
+  setTime(11_000);
+  update({ rmsDb: -120, capturedFrames: 4000 });
+  assert.match(display.textContent, /check device and channels/);
+  assert.equal(display.classes.has('warning'), true);
+});

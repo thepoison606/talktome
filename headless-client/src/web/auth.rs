@@ -1,7 +1,11 @@
-//! Password check, in-memory sessions and login throttling for the web UI.
+//! Password check, persistent sessions and login throttling for the web UI.
 
 use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use sha2::{Digest, Sha256};
 
 use rand::RngCore;
 
@@ -16,7 +20,8 @@ const THROTTLE: Duration = Duration::from_secs(30);
 pub struct AuthState {
     password: String,
     password_from_env: bool,
-    sessions: HashMap<String, Instant>,
+    sessions: HashMap<String, u64>,
+    session_path: Option<PathBuf>,
     failures: VecDeque<Instant>,
 }
 
@@ -37,8 +42,69 @@ impl AuthState {
             password,
             password_from_env,
             sessions: HashMap::new(),
+            session_path: None,
             failures: VecDeque::new(),
         }
+    }
+
+    pub fn load(password: String, password_from_env: bool, state_dir: &Path) -> Self {
+        let mut auth = Self::new(password, password_from_env);
+        let path = state_dir.join("web-sessions.json");
+        match std::fs::read(&path) {
+            Ok(bytes) => match serde_json::from_slice::<HashMap<String, u64>>(&bytes) {
+                Ok(sessions) => auth.sessions = sessions,
+                Err(error) => tracing::warn!(event = "web-sessions-load-failed", %error),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(event = "web-sessions-load-failed", %error),
+        }
+        auth.session_path = Some(path);
+        auth.expire_sessions();
+        auth
+    }
+
+    // Bind each random token to the current password without storing either
+    // the token or a password verifier. Changing the configured password also
+    // invalidates sessions when it happens outside this process.
+    fn session_key(&self, token: &str) -> String {
+        let mut hash = Sha256::new();
+        hash.update(b"talktome-web-session\0");
+        hash.update(self.password.as_bytes());
+        hash.update(b"\0");
+        hash.update(token.as_bytes());
+        format!("{:x}", hash.finalize())
+    }
+
+    fn persist_sessions(&self) {
+        let Some(path) = &self.session_path else {
+            return;
+        };
+        if let Err(error) = self.write_sessions(path) {
+            tracing::warn!(event = "web-sessions-save-failed", %error);
+        }
+    }
+
+    fn write_sessions(&self, path: &Path) -> std::io::Result<()> {
+        let parent = path.parent().expect("session file has a parent");
+        std::fs::create_dir_all(parent)?;
+        let temporary = parent.join(format!(".web-sessions-{:016x}.tmp", rand::random::<u64>()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let result = (|| {
+            let mut file = options.open(&temporary)?;
+            file.write_all(&serde_json::to_vec(&self.sessions)?)?;
+            file.sync_all()?;
+            std::fs::rename(&temporary, path)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
     }
 
     pub fn must_change_password(&self) -> bool {
@@ -55,6 +121,8 @@ impl AuthState {
 
     pub fn set_password(&mut self, password: String) {
         self.password = password;
+        self.sessions.clear();
+        self.persist_sessions();
     }
 
     /// Returns how long logins stay blocked after too many failures.
@@ -87,16 +155,23 @@ impl AuthState {
         let mut bytes = [0u8; 32];
         rand::rng().fill_bytes(&mut bytes);
         let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        self.expire_sessions();
         self.sessions
-            .insert(token.clone(), Instant::now() + SESSION_TTL);
+            .insert(self.session_key(&token), unix_now() + SESSION_TTL.as_secs());
+        self.persist_sessions();
         Some(token)
     }
 
     pub fn validate(&mut self, token: &str) -> bool {
-        match self.sessions.get(token) {
-            Some(expires) if *expires > Instant::now() => true,
+        if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return false;
+        }
+        let key = self.session_key(token);
+        match self.sessions.get(&key) {
+            Some(expires) if *expires > unix_now() => true,
             Some(_) => {
-                self.sessions.remove(token);
+                self.sessions.remove(&key);
+                self.persist_sessions();
                 false
             }
             None => false,
@@ -104,13 +179,26 @@ impl AuthState {
     }
 
     pub fn logout(&mut self, token: &str) {
-        self.sessions.remove(token);
+        if self.sessions.remove(&self.session_key(token)).is_some() {
+            self.persist_sessions();
+        }
     }
 
     pub fn expire_sessions(&mut self) {
-        let now = Instant::now();
+        let now = unix_now();
+        let before = self.sessions.len();
         self.sessions.retain(|_, expires| *expires > now);
+        if before != self.sessions.len() {
+            self.persist_sessions();
+        }
     }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[cfg(test)]
@@ -136,5 +224,65 @@ mod tests {
         assert!(!auth.must_change_password());
         assert!(auth.check_password("secret1"));
         assert!(!auth.check_password("secret"));
+    }
+    #[test]
+    fn sessions_survive_restart_and_logout_remains_revoked() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut auth = AuthState::load("secret1".into(), false, dir.path());
+        let token = auth.login("secret1").unwrap();
+        let expiry = auth.sessions[&auth.session_key(&token)];
+        let contents = std::fs::read_to_string(dir.path().join("web-sessions.json")).unwrap();
+        assert!(!contents.contains(&token));
+        assert!(!contents.contains("secret1"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(dir.path().join("web-sessions.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        drop(auth);
+        let mut restarted = AuthState::load("secret1".into(), false, dir.path());
+        assert!(restarted.validate(&token));
+        assert_eq!(restarted.sessions[&restarted.session_key(&token)], expiry);
+        restarted.logout(&token);
+        drop(restarted);
+        assert!(!AuthState::load("secret1".into(), false, dir.path()).validate(&token));
+    }
+
+    #[test]
+    fn expired_sessions_and_password_changes_do_not_survive_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut auth = AuthState::load("secret1".into(), false, dir.path());
+        let expired = auth.login("secret1").unwrap();
+        auth.sessions
+            .insert(auth.session_key(&expired), unix_now() - 1);
+        auth.persist_sessions();
+        drop(auth);
+        let mut auth = AuthState::load("secret1".into(), false, dir.path());
+        assert!(!auth.validate(&expired));
+        let token = auth.login("secret1").unwrap();
+        // An externally changed password also invalidates the old cookie.
+        assert!(!AuthState::load("different".into(), true, dir.path()).validate(&token));
+        auth.set_password("secret2".into());
+        assert!(!auth.validate(&token));
+        drop(auth);
+        assert!(!AuthState::load("secret2".into(), false, dir.path()).validate(&token));
+        assert!(!AuthState::load("secret1".into(), false, dir.path()).validate(&token));
+    }
+
+    #[test]
+    fn malformed_session_file_does_not_prevent_a_new_login() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("web-sessions.json"), "broken").unwrap();
+        let mut auth = AuthState::load("secret1".into(), false, dir.path());
+        assert!(!auth.validate(&"a".repeat(64)));
+        let token = auth.login("secret1").unwrap();
+        assert!(AuthState::load("secret1".into(), false, dir.path()).validate(&token));
     }
 }

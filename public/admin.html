@@ -3924,6 +3924,35 @@
       }
       .status-table .status-stop-mic { position: absolute; right: 26px; top: 50%; margin-top: -13px; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; min-height: 0; padding: 3px; background: transparent; border: 0; box-shadow: none; }
       .status-stop-mic img { width: 18px; height: 18px; object-fit: contain; filter: brightness(0) invert(1); }
+      .bridge-status-dialog { width: min(32rem, calc(100vw - 2rem)); padding: 1.25rem; background: var(--card-bg); color: var(--text); border: 1px solid var(--border); border-radius: .75rem; }
+      .bridge-status-dialog::backdrop { background: #0009; }
+      .bridge-status-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+      .bridge-status-header h2 { margin: 0; }
+      .bridge-status-dialog p { color: var(--muted); }
+      .bridge-status-ports { display: grid; gap: .5rem; }
+      .bridge-status-ports > button { display: flex; align-items: center; justify-content: space-between; gap: 1rem; text-align: left; }
+      .auto-save-feedback { display: inline-flex; align-items: center; gap: .6rem; font-size: .8rem; color: var(--muted); overflow-wrap: anywhere; }
+      .auto-save-feedback:empty { display: none; }
+      .auto-save-feedback.is-error { color: #fca5a5; }
+      .auto-save-feedback button { padding: .25rem .5rem; font-size: inherit; width: auto; }
+      .bridge-config-actions { display: flex; justify-content: flex-end; margin-top: .6rem; }
+      .bridge-config-actions:has(.auto-save-feedback:empty) { display: none; }
+      .bridge-audio-footer[hidden] { display: none; }
+
+      .bridge-audio-row { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(8rem, 12rem); align-items: end; gap: .5rem; min-width: 0; }
+      .bridge-audio-inline { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem 1rem; min-height: 2.2rem; min-width: 0; font-size: .9rem; }
+      .bridge-audio-row [data-gain] { width: 100%; min-width: 0; font-variant-numeric: tabular-nums; }
+      .bridge-audio-meter { display: flex; align-items: center; gap: .5rem; min-width: 7rem; flex: 1; }
+      .bridge-audio-meter meter { display: block; width: 100%; min-width: 2rem; height: .5rem; flex: 1; appearance: none; background: #0b1220; border: 0; border-radius: 4px; overflow: hidden; }
+      .bridge-audio-meter meter::-webkit-meter-bar { background: #0b1220; border: 0; border-radius: 4px; }
+      .bridge-audio-meter meter::-webkit-meter-optimum-value { background: #4ade80; border-radius: 4px; }
+      .bridge-audio-meter meter::-moz-meter-bar { background: #4ade80; border-radius: 4px; }
+      .bridge-audio-meter [data-meter-label] { width: 5rem; text-align: right; font-size: .75rem; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+      @media (max-width: 600px) { .bridge-audio-row { grid-template-columns: minmax(0, 1fr); } .bridge-audio-row > .field-group { grid-row: 1; } }
+      .bridge-audio-tone { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: .5rem 1rem; margin-bottom: .5rem; }
+      .bridge-audio-tone label { display: flex; align-items: center; gap: .75rem; font-size: .85rem; }
+      .bridge-audio-tone select { width: 8rem; padding: .4rem .5rem; }
+      .bridge-audio-footer { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: .5rem 1rem; margin-top: .75rem; font-size: .8rem; color: var(--muted); overflow-wrap: anywhere; }
     </style>
   </head>
   <body>
@@ -4681,7 +4710,7 @@
                     </span>
                   </label>
                   <div class="config-auto-backup-actions">
-                    <button type="submit">Save</button>
+                    <span id="backup-auto-save-status" class="auto-save-feedback" role="status" aria-live="polite"></span>
                   </div>
                 </div>
                 <div id="config-auto-backup-details" class="config-auto-backup-details" hidden>
@@ -4818,9 +4847,7 @@
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
                   </div>
-                  <div class="default-client-settings-actions">
-                    <button type="submit">Save</button>
-                  </div>
+                  <div class="default-client-settings-actions"><span id="defaults-auto-save-status" class="auto-save-feedback" role="status" aria-live="polite"></span></div>
                 </div>
               </form>
             </section>
@@ -4898,6 +4925,7 @@
     <script src="/userAudioSettings.js"></script>
     <script src="/bridgeTalkTrigger.js"></script>
     <script src="/targetPicker.js"></script>
+    <script src="/adminAutoSave.js"></script>
     <script src="admin.js"></script>
   </body>
 </html>

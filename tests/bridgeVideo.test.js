@@ -102,7 +102,7 @@ test('selecting Off is autosaved and reconciles only the video path', async () =
   const f = runtime();
   Object.assign(f.context, {
     currentInventory: { videoSources: [] }, escapeHtml: value => String(value),
-    managedAudioPopover: null, managedBridgeConfig: {},
+    managedAudioPopover: null, reconcileManagedAudioEdits() {}, managedBridgeConfig: {},
     bridgePortKey: port => port.id, bridgePortSignature: () => 'same',
     getManagedTriggerTargets: () => [], managedTalkTargetsMatch: () => true,
     bridgeTalkTrigger: { mode: () => 'external' },

@@ -1,0 +1,55 @@
+{
+  "host": "virtual-test",
+  "devices": [
+    {
+      "id": "bridge:none",
+      "name": "None",
+      "direction": "input",
+      "is_default": false,
+      "max_channels": 2,
+      "supports_48k": true,
+      "supported_configs": [
+        {
+          "channels": 2,
+          "min_sample_rate": 48000,
+          "max_sample_rate": 48000,
+          "sample_format": "f32",
+          "min_buffer_size": null,
+          "max_buffer_size": null
+        }
+      ],
+      "channel_pairs": [
+        {
+          "label": "1/2",
+          "left_channel": 1,
+          "right_channel": 2
+        }
+      ]
+    },
+    {
+      "id": "bridge:none",
+      "name": "None",
+      "direction": "output",
+      "is_default": false,
+      "max_channels": 2,
+      "supports_48k": true,
+      "supported_configs": [
+        {
+          "channels": 2,
+          "min_sample_rate": 48000,
+          "max_sample_rate": 48000,
+          "sample_format": "f32",
+          "min_buffer_size": null,
+          "max_buffer_size": null
+        }
+      ],
+      "channel_pairs": [
+        {
+          "label": "1/2",
+          "left_channel": 1,
+          "right_channel": 2
+        }
+      ]
+    }
+  ]
+}

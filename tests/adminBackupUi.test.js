@@ -49,14 +49,14 @@ test('automatic backups expand their details and distinguish unsaved schedules',
   context.syncAutomaticBackupVisibility();
   assert.equal(nodes['config-auto-backup-details'].hidden, false);
   assert.ok(times.every(time => !time.hidden));
-  assert.equal(nodes['config-auto-backup-next'].textContent, 'Save to apply schedule');
+  assert.equal(nodes['config-auto-backup-next'].textContent, 'Updating…');
   context.savedAutomaticBackupSettings.enabled = true;
   nodes['config-auto-backup-next'].dataset.savedValue = 'Tomorrow';
   context.syncAutomaticBackupVisibility();
   assert.equal(nodes['config-auto-backup-next'].textContent, 'Tomorrow');
   interval.value = '14';
   context.syncAutomaticBackupVisibility();
-  assert.equal(nodes['config-auto-backup-next'].textContent, 'Save to apply schedule');
+  assert.equal(nodes['config-auto-backup-next'].textContent, 'Updating…');
   enabled.checked = false;
   context.syncAutomaticBackupVisibility();
   assert.equal(nodes['config-auto-backup-details'].hidden, true);

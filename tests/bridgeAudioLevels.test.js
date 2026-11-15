@@ -117,7 +117,7 @@ test('drag changes apply in order and save the final port gain without a stream 
   await context.persistManagedAudioLevel(port, 'input');
   assert.deepEqual(native.map(row => row.gainDb), [6, 12]);
   assert.equal(native.every(row => row.command === 'set_bridge_port_audio_level'), true);
-  assert.deepEqual(saves, [{ gainDb: 12, muted: false }]);
+  assert.deepEqual(saves, [{ gainDb: 12, muted: false, noiseSuppression: false }]);
   assert.equal(edits.get('user-7:input').dirty, false);
 });
 

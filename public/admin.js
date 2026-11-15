@@ -599,23 +599,23 @@ function activateAdminView(sectionKey, { updateHash = true, replaceHash = false 
   window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
 }
 
-window.openUserFromStatus = async function (userId) {
-  const numericUserId = Number(userId);
-  if (!Number.isFinite(numericUserId)) return;
+async function openEntityFromStatus(kind, entityId) {
+  const numericId = Number(entityId);
+  if (!Number.isFinite(numericId)) return;
 
-  activateAdminView('users');
+  activateAdminView(kind);
 
-  let listItem = document.querySelector(`#user-list [data-entity-id="${numericUserId}"]`);
+  let listItem = document.querySelector(`#${kind === 'users' ? 'user' : 'feed'}-list [data-entity-id="${numericId}"]`);
   if (!listItem) {
-    await refreshAdminLists({ users: true });
-    listItem = document.querySelector(`#user-list [data-entity-id="${numericUserId}"]`);
+    await refreshAdminLists({ [kind]: true });
+    listItem = document.querySelector(`#${kind === 'users' ? 'user' : 'feed'}-list [data-entity-id="${numericId}"]`);
   }
   if (!listItem) return;
 
   try {
-    await selectAdminEntity('users', numericUserId);
+    await selectAdminEntity(kind, numericId);
   } catch (err) {
-    showMessage('❌ Failed to load user details', 'error', 'user');
+    showMessage('❌ Failed to load details', 'error', kind === 'users' ? 'user' : 'feed');
     console.error(err);
     return;
   }
@@ -628,7 +628,38 @@ window.openUserFromStatus = async function (userId) {
       }, 1400);
     });
   });
-};
+}
+window.openUserFromStatus = id => openEntityFromStatus('users', id);
+window.openFeedFromStatus = id => openEntityFromStatus('feeds', id);
+
+async function openBridgeFromStatus(bridgeId) {
+  try { await refreshAdminLists({ users: true, feeds: true }); }
+  catch (error) { showMessage('Failed to load Bridge endpoints', 'error'); return; }
+  const ports = ['users', 'feeds'].flatMap(kind => getEntityMasterDetailItems(kind)
+    .filter(item => item.bridge_enabled && String(item.bridge_device) === bridgeId)
+    .map(item => ({ kind, id: item.id, name: item.name })));
+  if (ports.length === 1) return openEntityFromStatus(ports[0].kind, ports[0].id);
+  document.getElementById('bridge-status-dialog')?.remove();
+  const dialog = document.createElement('dialog');
+  dialog.id = 'bridge-status-dialog'; dialog.className = 'bridge-status-dialog';
+  dialog.setAttribute('aria-labelledby', 'bridge-status-title');
+  const bridge = latestAdminStatus?.bridges?.find(item => item.id === bridgeId);
+  dialog.innerHTML = `<div class="bridge-status-header"><h2 id="bridge-status-title">${escapeHtml(bridge?.name || 'Bridge')}</h2><button type="button" data-close aria-label="Close">×</button></div>
+    <p>${escapeHtml(bridge?.remoteAddress || 'Address unavailable')}</p>
+    <div class="bridge-status-ports">${ports.length ? ports.map((port, index) => `<button type="button" data-port-index="${index}"><span>${escapeHtml(port.name)}</span><span class="badge">${port.kind === 'users' ? 'User' : 'Feed'}</span></button>`).join('') : '<p>No endpoints are assigned to this Bridge.</p>'}</div>`;
+  dialog.addEventListener('click', event => {
+    if (event.target.closest('[data-close]')) { dialog.close(); return; }
+    const button = event.target.closest('[data-port-index]');
+    const port = button && ports[Number(button.dataset.portIndex)];
+    if (port) { dialog.close(); void openEntityFromStatus(port.kind, port.id); }
+  });
+  dialog.addEventListener('close', () => dialog.remove(), { once: true });
+  document.body.appendChild(dialog); dialog.showModal();
+}
+document.addEventListener('click', event => {
+  const link = event.target.closest('[data-status-bridge-id]');
+  if (link) void openBridgeFromStatus(link.dataset.statusBridgeId);
+});
 
 function activateConfigCategory(category, { updateHash = false, focus = false } = {}) {
   const selected = configTabs.find(tab => tab.dataset.configTab === category) || configTabs[0];
@@ -853,6 +884,11 @@ function setBridgeSelectOptions(select, options, selectedValue, fallbackLabel) {
   select.value = selectedValue || '';
 }
 
+function setBridgeAudioDeviceOptions(select, options, selectedValue, fallbackLabel) {
+  setBridgeSelectOptions(select, [{ value: 'bridge:none', label: 'None' }, ...options], selectedValue || 'bridge:none', fallbackLabel);
+  select.querySelector('option[value=""]')?.remove();
+}
+
 function updateBridgeEndpointDeviceOptions(formKey) {
   const bridgeSelect = document.getElementById(`bridge-device-${formKey}`);
   const inputDeviceSelect = document.getElementById(`bridge-input-device-${formKey}`);
@@ -864,13 +900,13 @@ function updateBridgeEndpointDeviceOptions(formKey) {
   const inputSavedValue = inputDeviceSelect.dataset.savedValue || '';
   const outputSavedValue = outputDeviceSelect?.dataset.savedValue || '';
   const inputDevices = (bridge?.inventory?.devices || [])
-    .filter((device) => device.direction === 'input')
+    .filter((device) => device.direction === 'input' && device.id !== 'bridge:none')
     .map((device) => ({
       value: device.id,
       label: `${device.name}${device.is_default ? ' (default)' : ''}`,
     }));
 
-  setBridgeSelectOptions(
+  setBridgeAudioDeviceOptions(
     inputDeviceSelect,
     inputDevices,
     inputSavedValue && (!inputDeviceSelect.value || inputDeviceSelect.value === inputSavedValue) ? inputSavedValue : inputDeviceSelect.value,
@@ -889,12 +925,12 @@ function updateBridgeEndpointDeviceOptions(formKey) {
 
   if (outputDeviceSelect) {
     const outputDevices = (bridge?.inventory?.devices || [])
-      .filter((device) => device.direction === 'output')
+      .filter((device) => device.direction === 'output' && device.id !== 'bridge:none')
       .map((device) => ({
         value: device.id,
         label: `${device.name}${device.is_default ? ' (default)' : ''}`,
       }));
-    setBridgeSelectOptions(
+    setBridgeAudioDeviceOptions(
       outputDeviceSelect,
       outputDevices,
       outputSavedValue && (!outputDeviceSelect.value || outputDeviceSelect.value === outputSavedValue) ? outputSavedValue : outputDeviceSelect.value,
@@ -910,9 +946,14 @@ function updateBridgeEndpointPairOptions(formKey, direction) {
   const deviceSelect = document.getElementById(`bridge-${direction}-device-${formKey}`);
   const pairSelect = document.getElementById(`bridge-${direction}-pair-${formKey}`);
   if (!bridgeSelect || !deviceSelect || !pairSelect) return;
+  if (deviceSelect.value === 'bridge:none') {
+    pairSelect.innerHTML = '<option value="1:2">—</option>';
+    pairSelect.value = '1:2'; pairSelect.disabled = true;
+    return;
+  }
 
   const bridge = getBridgeById(bridgeSelect.value);
-  const device = getBridgeDeviceById(bridge, deviceSelect.value, direction);
+  const device = deviceSelect.value === 'bridge:none' ? { max_channels: 2 } : getBridgeDeviceById(bridge, deviceSelect.value, direction);
   const savedLeft = pairSelect.dataset.savedLeft || '';
   const savedRight = pairSelect.dataset.savedRight || '';
   const savedPair = savedLeft && savedRight ? `${savedLeft}:${savedRight}` : '';
@@ -955,7 +996,7 @@ function updateBridgeTriggerTargetOptions(userId, targets = [], { includeUnavail
   if (includeUnavailable) for (const key of selected) {
     if (!options.has(key)) options.set(key, { type: key.split(':')[0], label: key, unavailable: true });
   }
-  globalThis.TalktomeTargetPicker.mount(list, [...options].map(([value, option]) => ({value, ...option})), selected);
+  globalThis.TalktomeTargetPicker.mount(list, [...options].map(([value, option]) => ({value, ...option})), selected, () => list.dispatchEvent(new Event('change', { bubbles: true })));
   list.dataset.initialized = 'true';
 }
 
@@ -973,6 +1014,102 @@ function updateBridgeRegistryFromStatus(snapshot = {}) {
   syncBridgeEndpointFormsWithRegistry();
 }
 
+const adminFormAutoSavers = new Map();
+function renderAutoSaveFeedback(id, text, retry) {
+  const status = document.getElementById(id);
+  if (!status) return;
+  status.replaceChildren(document.createTextNode(text));
+  status.classList.toggle('is-error', Boolean(retry));
+  if (retry) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.textContent = 'Retry'; button.onclick = retry;
+    status.appendChild(button);
+  }
+}
+async function saveAdminJson(path, body) {
+  const response = await authedFetch(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'Saving failed');
+  return result;
+}
+function readBridgeEndpointForm(form, kind, id) {
+  const key = kind === 'user' ? String(id) : `feed-${id}`;
+  const value = name => form.querySelector(`#bridge-${name}-${key}`)?.value || '';
+  const pair = direction => {
+    const selected = value(`${direction}-pair`);
+    if (!selected) return { left: null, right: null };
+    const [left, right] = selected.split(':').map(Number);
+    validateBridgeChannelPair(left, right, direction);
+    return { left, right };
+  };
+  const input = pair('input');
+  const enabled = Boolean(form.querySelector(`#bridge-enabled-${key}`)?.checked);
+  const payload = { enabled, bridgeDevice: value('device'), inputDevice: value('input-device'), inputLeftChannel: input.left, inputRightChannel: input.right };
+  if (kind === 'user') {
+    const output = pair('output');
+    Object.assign(payload, { outputDevice: value('output-device'), outputLeftChannel: output.left, outputRightChannel: output.right }, readBridgeTriggerConfig(id, enabled));
+    if (enabled) validateOptionalBridgeDeviceChannel(payload.outputDevice, payload.outputLeftChannel, 'Output');
+  } else payload.videoSource = value('video-source');
+  if (enabled) {
+    if (!payload.bridgeDevice) throw new Error('Choose a Bridge device');
+    validateOptionalBridgeDeviceChannel(payload.inputDevice, payload.inputLeftChannel, 'Input');
+  }
+  return payload;
+}
+function bindBridgeAutoSave(form) {
+  const kind = form.dataset.bridgeConfigUserId ? 'user' : 'feed';
+  const id = Number(form.dataset.bridgeConfigUserId || form.dataset.bridgeConfigKey.replace(/^feed-/, ''));
+  const identity = `${kind}-${id}`, formKey = kind === 'user' ? String(id) : `feed-${id}`;
+  let saver = adminFormAutoSavers.get(identity);
+  if (!saver) {
+    saver = globalThis.TalktomeAdminAutoSave.create({
+      render: (text, retry) => renderAutoSaveFeedback(`bridge-auto-save-${identity}`, text, retry),
+      save: (key, value) => saveAdminJson(key === 'route'
+        ? `/${kind === 'user' ? 'users' : 'feeds'}/${id}/bridge-endpoint`
+        : `/admin/bridge/ports/${kind}/${id}/${key}`, value),
+      onSaved(key, value) {
+        if (key !== 'route') return;
+        const item = currentAdminCatalog[kind === 'user' ? 'users' : 'feeds'].find(item => Number(item.id) === id);
+        if (item) {
+          Object.assign(item, { bridge_enabled: value.enabled, bridge_device: value.bridgeDevice,
+            bridge_input_device: value.inputDevice, bridge_input_left_channel: value.inputLeftChannel, bridge_input_right_channel: value.inputRightChannel,
+            bridge_output_device: value.outputDevice, bridge_output_left_channel: value.outputLeftChannel, bridge_output_right_channel: value.outputRightChannel,
+            bridge_video_source: value.videoSource, bridge_trigger_mode: value.triggerMode, bridge_trigger_targets: value.triggerTargets, bridge_trigger_threshold_db: value.triggerThresholdDb });
+        }
+        const current = document.getElementById(`bridge-config-${formKey}`);
+        for (const direction of ['input', 'output']) {
+          const prefix = direction === 'input' ? 'input' : 'output';
+          const device = current?.querySelector(`#bridge-${prefix}-device-${formKey}`);
+          const pair = current?.querySelector(`#bridge-${prefix}-pair-${formKey}`);
+          if (device) device.dataset.savedValue = value[`${direction}Device`] || '';
+          if (pair) { pair.dataset.savedLeft = value[`${direction}LeftChannel`] ?? ''; pair.dataset.savedRight = value[`${direction}RightChannel`] ?? ''; }
+        }
+        // The endpoint may have just been enabled. Retry audio edits that had
+        // previously failed because the routing was not configured yet.
+        saver.retry();
+      },
+    });
+    adminFormAutoSavers.set(identity, saver);
+  }
+  const change = target => {
+    const row = target?.closest('[data-direction]');
+    const tone = target?.matches('[data-test-tone]');
+    const key = row ? `levels/${row.dataset.direction}` : tone ? 'tone' : 'route';
+    saver.request(key, () => {
+      if (row) {
+        const gain = row.querySelector('[data-gain]');
+        if (!gain.value.trim() || !gain.checkValidity()) throw new Error('Gain must be between −40 and +40 dB');
+        return { gainDb: Number(gain.value), muted: row.querySelector('[data-muted]').checked,
+          ...(row.dataset.direction === 'input' ? { noiseSuppression: row.querySelector('[data-noise-suppression]').checked } : {}) };
+      }
+      if (tone) return { frequency: Number(target.value) };
+      return readBridgeEndpointForm(form, kind, id);
+    });
+  };
+  form.addEventListener('change', event => change(event.target));
+  form.addEventListener('submit', event => { event.preventDefault(); change(document.activeElement); });
+}
+
 function initializeBridgeEndpointForms() {
   document.querySelectorAll('[data-bridge-config-user-id], [data-bridge-config-key]').forEach((form) => {
     const formKey = form.dataset.bridgeConfigKey || form.dataset.bridgeConfigUserId;
@@ -985,6 +1122,8 @@ function initializeBridgeEndpointForms() {
 
     enabledToggle?.addEventListener('change', () => {
       if (options) options.hidden = !enabledToggle.checked;
+      const footer = form.closest('[data-bridge-audio-port]')?.querySelector('.bridge-audio-footer');
+      if (footer) footer.hidden = !enabledToggle.checked;
     });
 
     bridgeSelect.addEventListener('change', () => {
@@ -1033,6 +1172,7 @@ function initializeBridgeEndpointForms() {
     syncBridgeTriggerControls(formKey);
     bridgeSelect.dataset.bridgeReady = 'true';
     updateBridgeEndpointDeviceOptions(formKey);
+    bindBridgeAutoSave(form);
   });
 }
 
@@ -1380,12 +1520,22 @@ function statusTimeHtml(value, { suffix = true, empty = 'Never' } = {}) {
 
 const STATUS_TALKING_PULSE_MS = 1350;
 
-function statusIndicatorHtml({ online, talking = false, talkingLabel = 'Talking', warning = false, onlineLabel = 'Online', offlineLabel = 'Offline', warningLabel = 'Warning', mediaStatus = null }) {
+function bridgePortProblems(status) {
+  const normalize = message => message.trim().replace(/\s+/g, ' ').toLowerCase();
+  const messages = [status?.error, ...(status?.issues || [])]
+    .filter(message => typeof message === 'string' && message.trim());
+  const unique = messages.filter((message, index) => messages.findIndex(other => normalize(other) === normalize(message)) === index);
+  return unique.filter(message => !/^(input|output) device missing$/.test(normalize(message))
+    || !unique.some(other => normalize(other).startsWith(`${normalize(message)}:`)));
+}
+
+function statusIndicatorHtml({ online, talking = false, talkingLabel = 'Talking', warning = false, onlineLabel = 'Online', offlineLabel = 'Offline', warningLabel = 'Warning', mediaStatus = null, bridgePortStatus = null }) {
   const mediaIssue = online && ['failed', 'interrupted', 'connecting', 'warning'].includes(mediaStatus?.state);
-  const label = mediaIssue ? mediaStatus.label : talking ? talkingLabel : warning ? warningLabel : online ? onlineLabel : offlineLabel;
-  const stateClass = mediaIssue ? mediaStatus.state === 'failed' ? 'is-failed' : 'is-warning'
+  const portProblem = bridgePortStatus?.bridgeOnline && (bridgePortStatus.error || bridgePortStatus.issues?.length);
+  const label = portProblem ? (bridgePortStatus.issues?.length ? 'Device missing' : bridgePortStatus.error) : mediaIssue ? mediaStatus.label : talking ? talkingLabel : warning ? warningLabel : online ? onlineLabel : offlineLabel;
+  const stateClass = portProblem ? 'is-warning' : mediaIssue ? mediaStatus.state === 'failed' ? 'is-failed' : 'is-warning'
     : talking ? 'is-talking' : warning ? 'is-warning' : online ? 'is-online' : '';
-  const title = online && mediaStatus ? [
+  const title = portProblem ? bridgePortProblems(bridgePortStatus).join('\n') : online && mediaStatus ? [
     'Signaling: online',
     mediaStatus.label,
     `Send media: ${mediaStatus.send?.state || 'unknown'}`,
@@ -1616,7 +1766,7 @@ function formatStatusAudioOutput(status) {
 }
 
 function formatStatusNetwork(status) {
-  return { wifi: 'Wi-Fi', cellular: 'Cellular', ethernet: 'Ethernet', vpn: 'VPN', bluetooth: 'Bluetooth', none: 'Offline', other: 'Other' }[status?.networkType] || '-';
+  return { wifi: 'Wi-Fi', cellular: 'Cellular', ethernet: 'Ethernet', vpn: 'VPN', bluetooth: 'Bluetooth', none: 'Offline', other: 'Other', local: 'Local' }[status?.networkType] || '-';
 }
 
 function statusBatteryHtml(status) {
@@ -1704,7 +1854,7 @@ function renderAdminStatus(payload = {}) {
               <td class="status-device">${escapeHtml(formatStatusNetwork(user.deviceStatus))}</td>
               <td title="${escapeHtml(user.remoteAddress || '-')}">${escapeHtml(user.remoteAddress || '-')}</td>
               <td title="${user.connectionType === 'bridge' ? 'Bridge API request round-trip time' : 'WebRTC round-trip time reported by this client'}">${formatStatusLatency(user.networkStats)}</td>
-              <td title="${user.connectionType === 'bridge' ? 'Input RTP packet loss from Bridge to server' : 'WebRTC audio packet loss reported by this client'}">${formatStatusPacketLoss(user.networkStats)}</td>
+              <td title="${user.connectionType === 'bridge' ? (user.networkStats?.packetLossScope === 'bridge' ? 'RTP packet loss across this Bridge instance; this port has no current packet measurement' : 'RTP packet loss for this Bridge port') : 'WebRTC audio packet loss reported by this client'}">${formatStatusPacketLoss(user.networkStats)}</td>
               <td>${user.online ? statusTimeHtml(user.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
               <td>${user.online ? 'Now' : statusTimeHtml(user.lastOnlineAt)}</td>
             </tr>
@@ -1724,7 +1874,7 @@ function renderAdminStatus(payload = {}) {
           return `
             <tr>
               <td>${statusIndicatorHtml(feed)}</td>
-              <td><span class="status-primary">${escapeHtml(feed.name)}</span></td>
+              <td><button type="button" class="status-primary status-user-link" onclick="openFeedFromStatus(${Number(feed.id)})" title="Open settings for ${escapeHtml(feed.name)}">${escapeHtml(feed.name)}</button></td>
               ${showProductionColumn ? '<td class="status-production-spacer" aria-hidden="true"></td>' : ''}
               <td class="status-client" title="${escapeHtml(clientLabel)}">${escapeHtml(clientLabel)}</td>
               <td class="status-client-version" title="${escapeHtml(formatStatusClientVersion(feed))}">${escapeHtml(formatStatusClientVersion(feed))}</td>
@@ -1733,7 +1883,7 @@ function renderAdminStatus(payload = {}) {
               <td class="status-device">${escapeHtml(formatStatusNetwork(feed.deviceStatus))}</td>
               <td title="${escapeHtml(feed.remoteAddress || '-')}">${escapeHtml(feed.remoteAddress || '-')}</td>
               <td title="${feed.connectionType === 'bridge' ? 'Bridge API request round-trip time' : 'WebRTC round-trip time reported by this client'}">${formatStatusLatency(feed.networkStats)}</td>
-              <td title="${feed.connectionType === 'bridge' ? 'Input RTP packet loss from Bridge to server' : 'WebRTC audio packet loss reported by this client'}">${formatStatusPacketLoss(feed.networkStats)}</td>
+              <td title="${feed.connectionType === 'bridge' ? (feed.networkStats?.packetLossScope === 'bridge' ? 'RTP packet loss across this Bridge instance; this port has no current packet measurement' : 'RTP packet loss for this Bridge port') : 'WebRTC audio packet loss reported by this client'}">${formatStatusPacketLoss(feed.networkStats)}</td>
               <td>${feed.online ? statusTimeHtml(feed.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
               <td>${feed.online ? 'Now' : statusTimeHtml(feed.lastSeenAt, { empty: 'Never' })}</td>
             </tr>
@@ -1753,7 +1903,7 @@ function renderAdminStatus(payload = {}) {
                 offlineLabel: 'Offline',
                 warningLabel: 'Device missing',
               })}</td>
-              <td><span class="status-primary">${escapeHtml(bridge.name)}</span></td>
+              <td><button type="button" class="status-primary status-user-link" data-status-bridge-id="${escapeHtml(bridge.id)}" title="Open endpoints for ${escapeHtml(bridge.name)}">${escapeHtml(bridge.name)}</button></td>
               ${showProductionColumn ? '<td class="status-production-spacer" aria-hidden="true"></td>' : ''}
               <td class="status-client" title="${escapeHtml(bridge.client || 'Bridge')}">${escapeHtml(bridge.client || 'Bridge')}</td>
               <td class="status-client-version" title="${escapeHtml(formatStatusClientVersion(bridge))}">${escapeHtml(formatStatusClientVersion(bridge))}</td>
@@ -1762,7 +1912,7 @@ function renderAdminStatus(payload = {}) {
               <td class="status-device">${escapeHtml(formatStatusNetwork(bridge.deviceStatus))}</td>
               <td title="${escapeHtml(bridge.remoteAddress || '-')}">${escapeHtml(bridge.remoteAddress || '-')}</td>
               <td title="Average Bridge API request round-trip time across active ports">${formatStatusLatency(bridge.networkStats)}</td>
-              <td title="Input RTP packet loss from Bridge to server across active ports">${formatStatusPacketLoss(bridge.networkStats)}</td>
+              <td title="RTP packet loss across active Bridge ports">${formatStatusPacketLoss(bridge.networkStats)}</td>
               <td>${bridge.online ? statusTimeHtml(bridge.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
               <td>${bridge.online ? 'Now' : statusTimeHtml(bridge.lastSeenAt)}</td>
             </tr>
@@ -3002,8 +3152,8 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
 
     const bridgeControls = !isSuperadmin && !isGuestProfile
       ? `
-        <div class="nested-block user-bridge-controls">
-          <form class="bridge-config-form" id="bridge-config-${user.id}" data-bridge-config-user-id="${user.id}" onsubmit="saveBridgeEndpoint(event, ${user.id})">
+        <div class="nested-block user-bridge-controls" data-bridge-audio-port="user:${user.id}">
+          <form class="bridge-config-form" id="bridge-config-${user.id}" data-bridge-config-user-id="${user.id}">
             <label class="admin-switch bridge-input-switch" for="bridge-enabled-${user.id}">
               <input type="checkbox" id="bridge-enabled-${user.id}" role="switch" ${isBridgeEndpoint ? 'checked' : ''}>
               <span class="admin-switch__track" aria-hidden="true"></span>
@@ -3028,6 +3178,7 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
                   <select id="bridge-input-pair-${user.id}" data-saved-left="${escapeHtml(valueOrEmpty(user.bridge_input_left_channel))}" data-saved-right="${escapeHtml(valueOrEmpty(user.bridge_input_right_channel))}"></select>
                 </div>
               </div>
+              ${renderAdminBridgeAudio("user", user.id, "input")}
               <div class="bridge-channel-row">
                 <div class="field-group">
                   <label for="bridge-output-device-${user.id}">Output device</label>
@@ -3038,6 +3189,7 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
                   <select id="bridge-output-pair-${user.id}" data-saved-left="${escapeHtml(valueOrEmpty(user.bridge_output_left_channel))}" data-saved-right="${escapeHtml(valueOrEmpty(user.bridge_output_right_channel))}"></select>
                 </div>
               </div>
+              ${renderAdminBridgeAudio("user", user.id, "output")}
               <div class="bridge-trigger-row ${user.bridge_trigger_mode !== 'audio-level' ? 'bridge-trigger-row--simple' : ''}">
                 <div class="field-group">
                   <label for="bridge-trigger-mode-${user.id}">Talk trigger</label>
@@ -3059,8 +3211,9 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
                 </div>
               </div>
             </div>
-            <button type="submit" class="small">Save</button>
           </form>
+          <div class="bridge-audio-footer" ${user.bridge_enabled ? '' : 'hidden'}><span data-port-state role="status">Loading port audio…</span></div>
+          <div class="bridge-config-actions"><span id="bridge-auto-save-user-${user.id}" class="auto-save-feedback" role="status" aria-live="polite"></span></div>
         </div>
       `
       : '';
@@ -3203,8 +3356,8 @@ async function renderFeedList(feeds) {
             <span>Allow Feed-Video</span>
           </label>
         </div>
-        <div class="nested-block feed-bridge-controls">
-          <form class="bridge-config-form" id="bridge-config-${formKey}" data-bridge-config-key="${formKey}" onsubmit="saveFeedBridgeEndpoint(event, ${feed.id})">
+        <div class="nested-block feed-bridge-controls" data-bridge-audio-port="feed:${feed.id}">
+          <form class="bridge-config-form" id="bridge-config-${formKey}" data-bridge-config-key="${formKey}">
             <label class="admin-switch bridge-input-switch" for="bridge-enabled-${formKey}">
               <input type="checkbox" id="bridge-enabled-${formKey}" role="switch" ${isBridgeEndpoint ? 'checked' : ''}>
               <span class="admin-switch__track" aria-hidden="true"></span>
@@ -3229,13 +3382,15 @@ async function renderFeedList(feeds) {
                   <select id="bridge-input-pair-${formKey}" data-saved-left="${escapeHtml(valueOrEmpty(feed.bridge_input_left_channel))}" data-saved-right="${escapeHtml(valueOrEmpty(feed.bridge_input_right_channel))}"></select>
                 </div>
               </div>
+              ${renderAdminBridgeAudio("feed", feed.id, "input")}
               <div class="field-group">
                 <label for="bridge-video-source-${formKey}">Video source (optional)</label>
                 <select id="bridge-video-source-${formKey}" data-saved-value="${escapeHtml(feed.bridge_video_source || '')}"></select>
               </div>
             </div>
-            <button type="submit" class="small">Save</button>
           </form>
+          <div class="bridge-audio-footer" ${feed.bridge_enabled ? '' : 'hidden'}><span data-port-state role="status">Loading port audio…</span></div>
+          <div class="bridge-config-actions"><span id="bridge-auto-save-feed-${feed.id}" class="auto-save-feedback" role="status" aria-live="polite"></span></div>
         </div>
       </div>
     `;
@@ -3514,20 +3669,8 @@ async function loadDefaultClientSettings() {
   if (defaultClientAllowTargetRearrange) defaultClientAllowTargetRearrange.checked = settings.allowTargetRearrange !== false;
   if (defaultClientAllowTargetAddRemove) defaultClientAllowTargetAddRemove.checked = settings.allowTargetAddRemove === true;
   if (defaultClientAllowFeedVideo) defaultClientAllowFeedVideo.checked = settings.allowFeedVideo === true;
-  resetDefaultClientApplyAll();
+  defaultClientSettingsForm?.dispatchEvent(new Event('defaults-loaded'));
   return payload;
-}
-
-const defaultClientApplyAll = new Map();
-function resetDefaultClientApplyAll() {
-  for (const [input, entry] of defaultClientApplyAll) {
-    entry.original = input.checked;
-    entry.checkbox.checked = false;
-    entry.label.hidden = true;
-  }
-}
-function selectedDefaultClientOverrides() {
-  return [...defaultClientApplyAll.values()].filter(entry => !entry.label.hidden && entry.checkbox.checked).map(entry => entry.key);
 }
 
 function renderAutomaticBackupSettings(settings = {}) {
@@ -3565,7 +3708,7 @@ function syncAutomaticBackupVisibility() {
   if (next && savedAutomaticBackupSettings) {
     const changed = enabled !== Boolean(savedAutomaticBackupSettings.enabled)
       || Number(automaticBackupInterval?.value || 7) !== Number(savedAutomaticBackupSettings.intervalDays ?? 7);
-    next.textContent = enabled && changed ? 'Save to apply schedule' : next.dataset.savedValue || 'Disabled';
+    next.textContent = enabled && changed ? 'Updating…' : next.dataset.savedValue || 'Disabled';
   }
   const details = document.getElementById('config-auto-backup-details');
   if (details) details.hidden = !enabled;
@@ -4447,106 +4590,6 @@ window.openEntityLoginQr = async function (kind, entityId, entityName, button) {
   }
 };
 
-window.saveBridgeEndpoint = async function(event, userId) {
-  event.preventDefault();
-
-  const submitButton = event.submitter;
-  if (submitButton) submitButton.disabled = true;
-
-  try {
-    const inputPair = readBridgePairSelect(`bridge-input-pair-${userId}`, 'Input');
-    const outputPair = readBridgePairSelect(`bridge-output-pair-${userId}`, 'Output');
-    validateBridgeChannelPair(inputPair.left, inputPair.right, 'Input');
-    validateBridgeChannelPair(outputPair.left, outputPair.right, 'Output');
-
-    const enabled = Boolean(document.getElementById(`bridge-enabled-${userId}`)?.checked);
-    const payload = {
-      enabled,
-      bridgeDevice: document.getElementById(`bridge-device-${userId}`)?.value || '',
-      inputDevice: document.getElementById(`bridge-input-device-${userId}`)?.value || '',
-      inputLeftChannel: inputPair.left,
-      inputRightChannel: inputPair.right,
-      outputDevice: document.getElementById(`bridge-output-device-${userId}`)?.value || '',
-      outputLeftChannel: outputPair.left,
-      outputRightChannel: outputPair.right,
-      ...readBridgeTriggerConfig(userId, enabled),
-    };
-    if (payload.enabled) {
-      if (!payload.bridgeDevice) {
-        throw new Error('Bridge device is required when bridge endpoint is enabled');
-      }
-      validateOptionalBridgeDeviceChannel(payload.inputDevice, payload.inputLeftChannel, 'Input');
-      validateOptionalBridgeDeviceChannel(payload.outputDevice, payload.outputLeftChannel, 'Output');
-    }
-
-    const res = await authedFetch(`/users/${userId}/bridge-endpoint`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (res.ok) {
-      showMessage('Bridge endpoint saved', 'success', 'user');
-      await refreshAdminLists({ users: true });
-    } else {
-      const response = await res.json().catch(() => ({}));
-      showMessage(response.error || 'Failed to save bridge endpoint', 'error', 'user');
-    }
-  } catch (err) {
-    showMessage(err.message || 'Failed to save bridge endpoint', 'error', 'user');
-    console.error(err);
-  } finally {
-    if (submitButton) submitButton.disabled = false;
-  }
-};
-
-window.saveFeedBridgeEndpoint = async function(event, feedId) {
-  event.preventDefault();
-  const formKey = `feed-${feedId}`;
-
-  const submitButton = event.submitter;
-  if (submitButton) submitButton.disabled = true;
-
-  try {
-    const inputPair = readBridgePairSelect(`bridge-input-pair-${formKey}`, 'Input');
-    validateBridgeChannelPair(inputPair.left, inputPair.right, 'Input');
-
-    const payload = {
-      enabled: Boolean(document.getElementById(`bridge-enabled-${formKey}`)?.checked),
-      bridgeDevice: document.getElementById(`bridge-device-${formKey}`)?.value || '',
-      videoSource: document.getElementById(`bridge-video-source-${formKey}`)?.value || '',
-      inputDevice: document.getElementById(`bridge-input-device-${formKey}`)?.value || '',
-      inputLeftChannel: inputPair.left,
-      inputRightChannel: inputPair.right,
-    };
-    if (payload.enabled) {
-      if (!payload.bridgeDevice) {
-        throw new Error('Bridge device is required when bridge endpoint is enabled');
-      }
-      validateOptionalBridgeDeviceChannel(payload.inputDevice, payload.inputLeftChannel, 'Input');
-    }
-
-    const res = await authedFetch(`/feeds/${feedId}/bridge-endpoint`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (res.ok) {
-      showMessage('Bridge feed endpoint saved', 'success', 'feed');
-      await refreshAdminLists({ feeds: true });
-    } else {
-      const response = await res.json().catch(() => ({}));
-      showMessage(response.error || 'Failed to save bridge feed endpoint', 'error', 'feed');
-    }
-  } catch (err) {
-    showMessage(err.message || 'Failed to save bridge feed endpoint', 'error', 'feed');
-    console.error(err);
-  } finally {
-    if (submitButton) submitButton.disabled = false;
-  }
-};
-
 window.deleteConference = async function (confId) {
   if (!await adminConfirm('Are you sure you want to delete this conference?', {
     title: 'Delete conference',
@@ -4832,76 +4875,62 @@ if (guestLoginEnabledInput) {
   });
 }
 
+function readDefaultClientSettings() {
+  return {
+    audioProfile: defaultClientAudioProfile?.value || 'ultra-low', dimAmountDb: Number(defaultClientDimAmount?.value ?? -15),
+    dimFeedsWhileSpeaking: Boolean(defaultClientDimSelf?.checked), dimWhenAddressed: Boolean(defaultClientDimIncoming?.checked),
+    audioAutoProcessing: Boolean(defaultClientAudioProcessing?.checked), playConnectionSounds: Boolean(defaultClientConnectionSounds?.checked),
+    showIncomingLevels: Boolean(defaultClientIncomingLevels?.checked), leftHandMode: Boolean(defaultClientLeftHand?.checked),
+    bigMainButton: Boolean(defaultClientBigMainButton?.checked), lockMultipleTargets: Boolean(defaultClientLockMultiple?.checked),
+    allowTargetRearrange: Boolean(defaultClientAllowTargetRearrange?.checked), allowTargetAddRemove: Boolean(defaultClientAllowTargetAddRemove?.checked),
+    allowFeedVideo: Boolean(defaultClientAllowFeedVideo?.checked),
+  };
+}
 if (defaultClientSettingsForm) {
   const keys = ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'bigMainButton', 'lockMultipleTargets', 'allowTargetRearrange', 'allowTargetAddRemove', 'allowFeedVideo'];
+  const applyButtons = new Map();
+  const saver = globalThis.TalktomeAdminAutoSave.create({
+    render: (text, retry) => renderAutoSaveFeedback('defaults-auto-save-status', text, retry),
+    async save(key, value) {
+      if (key === 'settings') return saveAdminJson('/admin/settings/default-client', { ...value, applyToAll: [] });
+      const entry = applyButtons.get(value.key);
+      try {
+        return await saveAdminJson('/admin/settings/default-client', { ...readDefaultClientSettings(), [value.key]: value.value, applyToAll: [value.key] });
+      } finally { if (entry) { entry.input.disabled = false; entry.button.disabled = false; } }
+    },
+    async onSaved(key, value) {
+      if (key === 'settings') return;
+      const entry = applyButtons.get(value.key);
+      if (entry) { entry.original = entry.input.checked; entry.button.hidden = true; }
+      saver.request('settings', readDefaultClientSettings);
+      await refreshAdminLists({ users: true, feeds: true });
+    },
+  });
   defaultClientSettingsForm.querySelectorAll('.default-client-setting-toggle').forEach((row, index) => {
-    const input = row.querySelector('input[role="switch"]');
-    const text = row.querySelector('span:first-child');
-    text.id = `${input.id}-label`;
-    input.setAttribute('aria-labelledby', text.id);
-    const controls = document.createElement('span');
-    controls.className = 'default-client-setting-controls';
-    const label = document.createElement('label');
-    label.className = 'default-client-apply-all';
-    label.hidden = true;
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    label.append(checkbox, document.createTextNode('Apply to all'));
-    const switchLabel = document.createElement('label');
-    switchLabel.className = 'admin-switch';
-    const oldSwitch = row.querySelector('.admin-switch');
-    switchLabel.append(...oldSwitch.childNodes);
-    oldSwitch.remove();
-    controls.append(label, switchLabel);
-    row.append(controls);
-    const entry = { key: keys[index], label, checkbox, original: input.checked };
-    defaultClientApplyAll.set(input, entry);
-    input.addEventListener('change', () => {
-      label.hidden = input.checked === entry.original;
-      if (label.hidden) checkbox.checked = false;
+    const input = row.querySelector('input[role="switch"]'), text = row.querySelector('span:first-child');
+    text.id = `${input.id}-label`; input.setAttribute('aria-labelledby', text.id);
+    const controls = document.createElement('span'); controls.className = 'default-client-setting-controls';
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'default-client-apply-all'; button.textContent = 'Apply to all'; button.hidden = true;
+    const switchLabel = document.createElement('label'); switchLabel.className = 'admin-switch';
+    const oldSwitch = row.querySelector('.admin-switch'); switchLabel.append(...oldSwitch.childNodes); oldSwitch.remove();
+    controls.append(button, switchLabel); row.append(controls);
+    const entry = { key: keys[index], button, input, original: input.checked }; applyButtons.set(entry.key, entry);
+    input.addEventListener('change', () => { button.hidden = input.checked === entry.original; });
+    button.addEventListener('click', () => {
+      input.disabled = true; button.disabled = true;
+      saver.request(`apply:${entry.key}`, () => ({ key: entry.key, value: input.checked }));
     });
     row.addEventListener('click', event => {
-      if (event.target === row || event.target === text) { input.checked = !input.checked; input.dispatchEvent(new Event('change')); }
+      if ((event.target === row || event.target === text) && !input.disabled) {
+        input.checked = !input.checked; input.dispatchEvent(new Event('change', { bubbles: true }));
+      }
     });
   });
-  defaultClientSettingsForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const submitButton = defaultClientSettingsForm.querySelector('button[type="submit"]');
-    const settings = {
-      audioProfile: defaultClientAudioProfile?.value || 'ultra-low',
-      dimAmountDb: Number(defaultClientDimAmount?.value ?? -15),
-      dimFeedsWhileSpeaking: Boolean(defaultClientDimSelf?.checked),
-      dimWhenAddressed: Boolean(defaultClientDimIncoming?.checked),
-      audioAutoProcessing: Boolean(defaultClientAudioProcessing?.checked),
-      playConnectionSounds: Boolean(defaultClientConnectionSounds?.checked),
-      showIncomingLevels: Boolean(defaultClientIncomingLevels?.checked),
-      leftHandMode: Boolean(defaultClientLeftHand?.checked),
-      bigMainButton: Boolean(defaultClientBigMainButton?.checked),
-      lockMultipleTargets: Boolean(defaultClientLockMultiple?.checked),
-      allowTargetRearrange: Boolean(defaultClientAllowTargetRearrange?.checked),
-      allowTargetAddRemove: Boolean(defaultClientAllowTargetAddRemove?.checked),
-      allowFeedVideo: Boolean(defaultClientAllowFeedVideo?.checked),
-    };
-
-    if (submitButton) submitButton.disabled = true;
-    try {
-      const res = await authedFetch('/admin/settings/default-client', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...settings, applyToAll: selectedDefaultClientOverrides() }),
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(payload.error || 'Failed to save default client settings');
-      await loadDefaultClientSettings();
-      await refreshAdminLists({ users: true, feeds: true });
-      showMessage('✅ Default client settings saved', 'success', 'config');
-    } catch (error) {
-      console.error('Failed to save default client settings:', error);
-      showMessage(`❌ ${error.message || 'Failed to save default client settings'}`, 'error', 'config');
-    } finally {
-      if (submitButton) submitButton.disabled = false;
-    }
+  defaultClientSettingsForm.addEventListener('defaults-loaded', () => {
+    for (const entry of applyButtons.values()) { entry.original = entry.input.checked; entry.button.hidden = true; }
   });
+  defaultClientSettingsForm.addEventListener('change', () => saver.request('settings', readDefaultClientSettings));
+  defaultClientSettingsForm.addEventListener('submit', event => { event.preventDefault(); saver.request('settings', readDefaultClientSettings); });
 }
 
 if (configExportBtn) {
@@ -4928,38 +4957,16 @@ if (configExportBtn) {
 }
 
 if (automaticBackupForm) {
+  const saver = globalThis.TalktomeAdminAutoSave.create({
+    render: (text, retry) => renderAutoSaveFeedback('backup-auto-save-status', text, retry),
+    save: (_key, value) => saveAdminJson('/admin/settings/automatic-backup', value),
+    onSaved: (_key, _value, result) => renderAutomaticBackupSettings(result),
+  });
+  const read = () => ({ enabled: Boolean(automaticBackupEnabled?.checked), intervalDays: Number(automaticBackupInterval?.value || 7) });
   automaticBackupEnabled?.addEventListener('change', syncAutomaticBackupVisibility);
   automaticBackupInterval?.addEventListener('change', syncAutomaticBackupVisibility);
-  automaticBackupForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const submitButton = automaticBackupForm.querySelector('button[type="submit"]');
-    if (submitButton) submitButton.disabled = true;
-    try {
-      const res = await authedFetch('/admin/settings/automatic-backup', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          enabled: Boolean(automaticBackupEnabled?.checked),
-          intervalDays: Number(automaticBackupInterval?.value || 7),
-        }),
-      });
-      const settings = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(settings.error || 'Failed to save automatic backup settings');
-      renderAutomaticBackupSettings(settings);
-      showMessage(
-        settings.lastError
-          ? `⚠️ Automatic backup is enabled, but the backup failed: ${settings.lastError}`
-          : '✅ Automatic backup settings saved',
-        settings.lastError ? 'warning' : 'success',
-        'config'
-      );
-    } catch (error) {
-      console.error('Failed to save automatic backup settings:', error);
-      showMessage(`❌ ${error.message || 'Failed to save automatic backup settings'}`, 'error', 'config');
-    } finally {
-      if (submitButton) submitButton.disabled = false;
-    }
-  });
+  automaticBackupForm.addEventListener('change', () => saver.request('backup', read));
+  automaticBackupForm.addEventListener('submit', event => { event.preventDefault(); saver.request('backup', read); });
 }
 
 if (apiKeyCopyBtn) {
@@ -5864,3 +5871,58 @@ userAudioSettingsDialog?.addEventListener('click', (event) => {
 });
 
 ensureAdminSession();
+
+
+function renderAdminBridgeAudio(kind, id, direction) {
+  const input = direction === 'input';
+  const gainId = `bridge-audio-gain-${kind}-${id}-${direction}`;
+  return `<div class="bridge-audio-row" data-direction="${direction}" aria-label="${input ? 'Input audio' : 'Output audio'}">
+    <div class="bridge-audio-inline">
+      <label class="admin-switch"><input type="checkbox" data-muted role="switch"><span class="admin-switch__track" aria-hidden="true"></span><span>Mute</span></label>
+      ${input ? '<label class="admin-switch"><input type="checkbox" data-noise-suppression role="switch"><span class="admin-switch__track" aria-hidden="true"></span><span>Noise suppression</span></label>' : ''}
+      <div class="bridge-audio-meter"><meter data-meter min="-96" max="0" value="-96" aria-label="${direction} RMS level in dBFS"></meter><span data-meter-label>−∞ dBFS</span></div>
+    </div>
+    <div class="field-group">
+      <label for="${gainId}" title="Audio changes are saved and applied immediately">${input ? 'Input' : 'Output'} gain (dB)</label>
+      <input id="${gainId}" aria-label="${direction} gain in dB" data-gain required type="number" min="-40" max="40" step="0.5" value="0" title="Saved and applied immediately">
+    </div>
+  </div>
+  ${input ? '<div class="bridge-audio-tone"><label>Input test tone <select data-test-tone aria-label="Input test tone" title="Replaces input at −20 dBFS RMS; applies immediately"><option value="0">Off</option><option value="400">400 Hz</option><option value="1000">1 kHz</option></select></label></div>' : ''}`;
+}
+let adminBridgeAudioPolling = false;
+async function pollAdminBridgeAudio() {
+  if (document.hidden || adminBridgeAudioPolling) return;
+  adminBridgeAudioPolling = true;
+  try {
+    for (const control of document.querySelectorAll('[data-bridge-audio-port]')) {
+      if (!control.getClientRects().length) continue;
+      const key = control.dataset.bridgeAudioPort;
+      const saver = adminFormAutoSavers.get(key.replace(':', '-'));
+      if (saver?.busy) continue;
+      if (!control.querySelector('input[id^="bridge-enabled-"]')?.checked) continue;
+      const [kind, id] = key.split(':');
+      try {
+        const response = await authedFetch(`/admin/bridge/ports/${kind}/${id}`);
+        if (!response.ok) throw new Error('Port audio unavailable; save the Bridge assignment first');
+        const data = await response.json();
+        if (!control.isConnected || saver?.busy) continue;
+        for (const row of control.querySelectorAll('[data-direction]')) {
+          const direction = row.dataset.direction;
+          const gain = row.querySelector('[data-gain]'); const mute = row.querySelector('[data-muted]');
+          const preserve = saver?.hasError(`levels/${direction}`);
+          if (!preserve && gain !== document.activeElement) gain.value = data.audioLevels[direction].gainDb;
+          if (!preserve && mute !== document.activeElement) mute.checked = data.audioLevels[direction].muted;
+          const noise = row.querySelector('[data-noise-suppression]');
+          if (!preserve && noise && noise !== document.activeElement) noise.checked = Boolean(data.audioLevels[direction].noiseSuppression);
+          const db = data.status?.bridgeOnline ? data.status?.[direction]?.rmsDb ?? -120 : -120;
+          row.querySelector('[data-meter]').value = Math.max(-96, Math.min(0, db));
+          row.querySelector('[data-meter-label]').textContent = db <= -96 ? '−∞ dBFS' : `${db.toFixed(1)} dBFS`;
+        }
+        const tone = control.querySelector('[data-test-tone]');
+        if (!saver?.hasError('tone') && tone !== document.activeElement) tone.value = String(data.status?.testToneHz || 0);
+        control.querySelector('[data-port-state]').textContent = [data.status?.state, ...bridgePortProblems(data.status)].filter(Boolean).join(' · ');
+      } catch (error) { control.querySelector('[data-port-state]').textContent = error.message; }
+    }
+  } finally { adminBridgeAudioPolling = false; }
+}
+setInterval(pollAdminBridgeAudio, 500);

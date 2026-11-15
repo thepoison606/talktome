@@ -34,6 +34,7 @@ test('status snapshots supply production choices and memberships independently o
   let membershipReads = 0;
   const server = vm.createContext({
     areMultipleProductionsEnabled: () => true,
+    buildBridgePortStatus: () => null,
     getAllUsers: () => [{ id: 1, name: 'Camera A' }, { id: 2, name: 'Camera B' }],
     getAllFeeds: () => [], getAllConferences: () => [],
     getAllProductions: () => [{ id: 10, name: 'Stage A' }, { id: 20, name: 'Empty production' }],

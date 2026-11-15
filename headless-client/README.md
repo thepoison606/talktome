@@ -108,6 +108,9 @@ desktops:
   `TALKTOME_WEB_PASSWORD`. The default password `admin` works once and then
   forces a change (that dialog is not the login overlay). The new password is
   written to the configuration file; saving Settings does the same rewrite.
+- Web logins remain valid across service restarts for up to 12 hours from login.
+  Session hashes are stored in `<state_dir>/web-sessions.json`; logout and password
+  changes invalidate old sessions. A password change keeps the current browser signed in.
 - **Status**: Talktome connection (state, server, user, production, transports,
   consumers, ICE servers, RTT, packet loss, receive concealment, reconnects,
   server heartbeat, PGM/PRV tally), audio devices with an input meter, every configured GPIO
