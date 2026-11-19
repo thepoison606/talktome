@@ -128,7 +128,7 @@ an installed build. Custom Docker builds should pass
 
 Use Node.js 24.22.1 or a newer Node 24 release for source development. CI reads
 the version from `.node-version`. The Docker base image and the standalone
-targets in `package.json` are pinned to 24.22.2; update these together when
+targets in `package.json` are pinned to 24.22.3. Update these together when
 updating the build runtime. `engines.node` defines the supported source-runtime
 minimum separately.
 
