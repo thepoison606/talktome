@@ -1,7 +1,7 @@
 const path = require('node:path');
 const { normalizeStorage, mergeStorage } = require('../../public/remotePanelState');
 const { validateCompleteTargetOrder } = require('./targetOrdering');
-const { normalize: normalizeAudioSettings } = require('../../public/userAudioSettings');
+const { normalizeForSave: normalizeAudioSettings } = require('../../public/userAudioSettings');
 
 function installRemotePanelControl(deps) {
   const { app, io, publicDir, requireAdmin, getAdminSession, getUserById,
@@ -176,8 +176,8 @@ function installRemotePanelControl(deps) {
       deps.targetAudioChanged?.(userId);
       outgoing.audio = audio;
     } else if (kind === 'audio-settings') {
-      outgoing.settings = normalizeAudioSettings(command.settings, { strict: true });
-      updateUserAudioSettings(userId, outgoing.settings);
+      updateUserAudioSettings(userId, normalizeAudioSettings(command.settings));
+      outgoing.settings = getResolvedUserAudioSettings(userId);
     } else if (kind === 'preferences') {
       const patch = normalizeStorage(command.patch, userId, { strict: true });
       settings.storage = mergeStorage(settings.storage, patch);

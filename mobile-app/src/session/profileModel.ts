@@ -12,7 +12,6 @@ export type SavedProfile = {
   username: string;
   rememberPassword: boolean;
   loginToken?: boolean;
-  allowInsecureLocalTLS?: boolean;
   productionId?: number | null;
   productionName?: string | null;
   guest?: RememberedGuest;

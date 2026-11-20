@@ -15,6 +15,7 @@ const dgram = require("dgram");
 const selfsigned = require("selfsigned");
 const QRCode = require("qrcode");
 const { resolveServerAppVersion } = require("./appVersion");
+const { createReleaseChecker } = require("./releaseUpdate");
 const { createBrowserSessionStore } = require("./browserSessions");
 const { loadProxySsoConfig, resolveProxySsoIdentity } = require("./proxySso");
 const { getDataDir } = require("./dataPaths");
@@ -61,11 +62,12 @@ const {
   canRouteTargetBetweenPeers,
 } = require("./productionRouting");
 const {
-  normalize: normalizeUserAudioSettings,
+  normalizeForSave: normalizeSavedUserAudioSettings,
   resolve: resolveUserAudioSettings,
 } = require("../../public/userAudioSettings");
 
 const SERVER_APP_VERSION = resolveServerAppVersion();
+const checkReleaseUpdate = createReleaseChecker(SERVER_APP_VERSION);
 const CLIENT_ICE_CONFIG = resolveClientIceConfig(process.env);
 
 const workerName = process.platform === "win32" ? "mediasoup-worker.exe" : "mediasoup-worker";
@@ -1447,8 +1449,9 @@ function sanitizeBridgeInventory(inventory = {}) {
       })),
     devices: devices.slice(0, 256).map((device, index) => {
       const direction = device?.direction === "output" ? "output" : "input";
-      const id = normalizeBridgeRegistryText(device?.id, `${direction}-${index}`);
-      const name = normalizeBridgeRegistryText(device?.name, id);
+      // Device IDs must still match the Bridge's native inventory after saving.
+      const id = String(device?.id ?? '').trim() || `${direction}-${index}`;
+      const name = normalizeBridgeRegistryText(device?.name, id.slice(0, 200));
       const maxChannels = normalizeBridgeRegistryChannel(device?.max_channels ?? device?.maxChannels) || 0;
       const channelPairs = sanitizeBridgeChannelPairs(device?.channel_pairs ?? device?.channelPairs);
       return {
@@ -2257,6 +2260,9 @@ function normalizeTalkCommandInput(input = {}) {
     : { action, targetType, targetId };
   if (normalizedInputKey) {
     payload.inputKey = normalizedInputKey;
+    if (action === "release" && typeof input?.tapToLock === "boolean") {
+      payload.tapToLock = input.tapToLock;
+    }
   }
 
   return { ok: true, value: { action, targetType, targetId, payload } };
@@ -2713,6 +2719,9 @@ function dispatchCompanionCommandToUser(userId, socketEvent, payload, { commandI
 }
 
 function dispatchTalkCommandToUser(userId, payload, options = {}) {
+  if (payload.tapToLock === true && !getResolvedUserAudioSettings(userId).tapToLock) {
+    payload = { ...payload, tapToLock: false };
+  }
   return dispatchCompanionCommandToUser(userId, "api-talk-command", payload, options);
 }
 
@@ -2922,7 +2931,7 @@ app.put('/admin/users/:id/audio-settings', requireAdmin, (req, res) => {
     if (!user || user.is_superadmin || user.is_guest_profile) {
       return res.status(404).json({ error: 'User not found' });
     }
-    const settings = normalizeUserAudioSettings(req.body?.settings, { strict: true });
+    const settings = normalizeSavedUserAudioSettings(req.body?.settings);
     updateUserAudioSettings(user.id, settings);
     const resolved = getResolvedUserAudioSettings(user.id);
     findUserPeerByUserId(user.id)?.peer?.socket?.emit('user-audio-settings-updated', { settings: resolved });
@@ -3360,6 +3369,11 @@ app.get("/admin/me", (req, res) => {
     mustChangePassword: !!user.admin_must_change,
     productionAdminOf: productionAdminOf.map(({ id, name: productionName }) => ({ id, name: productionName })),
   });
+});
+
+app.get("/admin/release-update", requireAdminSession, async (req, res) => {
+  const version = await checkReleaseUpdate();
+  res.set("Cache-Control", "no-store").json({ version });
 });
 
 app.get("/admin/productions", requireAdminSession, (req, res) => {
@@ -8497,7 +8511,7 @@ io.on("connection", (socket) => {
       if (Number(revision) !== remotePanels.savedSettings(peer.userId).revision) {
         return callback({ ok: false, error: 'Client settings changed remotely' });
       }
-      const normalized = normalizeUserAudioSettings(settings, { strict: true });
+      const normalized = normalizeSavedUserAudioSettings(settings);
       updateUserAudioSettings(peer.userId, normalized);
       callback({ ok: true, settings: getResolvedUserAudioSettings(peer.userId) });
     } catch (error) {

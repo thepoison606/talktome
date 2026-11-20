@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Admin password required · Talktome Headless</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <main class="login-overlay">
+      <div class="login-card">
+        <h1 class="login-title">Admin password required</h1>
+        <p class="muted">
+          Set <code>web.password</code> in the Headless configuration file or set
+          <code>TALKTOME_WEB_PASSWORD</code>. In TOML, set <code>password</code> under <code>[web]</code>.
+          Restart the Headless service, then reload this page.
+        </p>
+      </div>
+    </main>
+  </body>
+</html>

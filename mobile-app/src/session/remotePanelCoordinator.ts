@@ -31,7 +31,7 @@ export type RemotePanelHost = {
   selectProduction(id: number): Promise<void>;
   refreshTargets(): Promise<void>;
   press(inputKey: string, target: TalkTarget): Promise<void>;
-  release(inputKey: string): Promise<void>;
+  release(inputKey: string, tapToLock?: boolean): Promise<void>;
   lock(target: TalkTarget): Promise<void>;
   unlock(target: TalkTarget): Promise<void>;
   stopTalk(): Promise<void>;
@@ -201,13 +201,15 @@ export class RemotePanelCoordinator {
     };
   }
 
-  publish(localChanges = false): void {
+  publish(localChanges = false, tapToLock?: boolean): void {
     const report = this.report();
     if (!report || this.applying || !this.host.state().operatorReady) return;
     this.host.report(report);
     if (!localChanges) return;
     this.host.audioSnapshot(report.audioStates, this.revision);
     const settings = this.currentAudioSettings();
+    if (typeof tapToLock === 'boolean') settings.tapToLock = tapToLock;
+    else delete settings.tapToLock;
     const serialized = JSON.stringify(settings);
     if (serialized !== this.lastAudioSettings) {
       this.lastAudioSettings = serialized;
@@ -257,7 +259,7 @@ export class RemotePanelCoordinator {
         ? raw.inputKey.trim() : `${targetType}:${targetType === 'reply' ? '' : raw.targetId}`;
       const command = parsePanelCommand({ kind: 'talk', action: raw.action === 'lock-toggle' ? 'lock' : raw.action,
         targetType, targetId: raw.targetId, inputKey: `panel:companion:${key}` });
-      if (raw.action !== 'lock-toggle') return this.handleCommand(command);
+      if (raw.action !== 'lock-toggle') return this.handleCommand(command, raw.action === 'release' && raw.tapToLock === true);
       const epoch = this.epoch;
       const execute = () => {
         if (command.kind !== 'talk') throw new Error('Invalid Companion talk command.');
@@ -271,7 +273,7 @@ export class RemotePanelCoordinator {
     } catch (error) { return Promise.resolve({ ok: false, error: message(error) }); }
   }
 
-  handleCommand(value: unknown): Promise<PanelCommandResult> {
+  handleCommand(value: unknown, tapToLock = false): Promise<PanelCommandResult> {
     let command: PanelCommand;
     try { command = parsePanelCommand(value); }
     catch (error) { return Promise.resolve({ ok: false, error: message(error) }); }
@@ -281,18 +283,22 @@ export class RemotePanelCoordinator {
       if (command.action === 'press') {
         inputToken = Symbol(command.inputKey);
         this.inputTokens.set(command.inputKey!, inputToken);
-      } else if (command.action === 'release') this.inputTokens.delete(command.inputKey!);
+      } else if (command.action === 'release') {
+        const key = command.inputKey!;
+        if (tapToLock) inputToken = this.inputTokens.get(key);
+        else this.inputTokens.delete(key);
+      }
       else if (command.action === 'stop') this.inputTokens.clear();
     }
-    const execute = () => this.execute(command, epoch, inputToken);
+    const execute = () => this.execute(command, epoch, inputToken, tapToLock);
     // Releases must cancel a press that is still waiting for microphone access.
-    if (command.kind === 'talk' && (command.action === 'release' || command.action === 'stop')) return execute();
+    if (command.kind === 'talk' && ((command.action === 'release' && !tapToLock) || command.action === 'stop')) return execute();
     const result = this.queue.catch(() => {}).then(execute);
     this.queue = result;
     return result;
   }
 
-  private async execute(command: PanelCommand, epoch: number, inputToken?: symbol): Promise<PanelCommandResult> {
+  private async execute(command: PanelCommand, epoch: number, inputToken?: symbol, tapToLock = false): Promise<PanelCommandResult> {
     try {
       if (!this.enabled || epoch !== this.epoch || this.host.state().identity?.kind !== 'user') throw new Error('User session is not ready.');
       if (command.panelSettings && command.panelSettings.revision < this.revision) throw new Error('Stale panel command.');
@@ -302,7 +308,14 @@ export class RemotePanelCoordinator {
           this.storage = this.ownStorage(command.panelSettings.storage);
         }
         if (command.kind === 'talk') {
-          if (command.action === 'release') return this.host.release(command.inputKey!);
+          if (command.action === 'release') {
+            if (tapToLock) {
+              const key = command.inputKey!;
+              if (inputToken && this.inputTokens.get(key) === inputToken) this.inputTokens.delete(key);
+              return this.host.release(key, inputToken !== undefined);
+            }
+            return this.host.release(command.inputKey!);
+          }
           if (command.action === 'stop') return this.host.stopTalk();
           if (!this.host.state().operatorReady) throw new Error('Media is not ready.');
           const target = this.resolveTalkTarget(command);

@@ -56,6 +56,7 @@ const adminApp = document.getElementById('admin-app');
 const adminBar = document.getElementById('admin-bar');
 const adminBarMessage = document.getElementById('admin-bar-message');
 const adminNameLabel = document.getElementById('admin-name-label');
+const adminReleaseNotice = document.getElementById('admin-release-notice');
 const adminLogoutBtn = document.getElementById('admin-logout');
 const adminNavLinks = [...document.querySelectorAll('[data-admin-nav]')];
 const configTabs = [...document.querySelectorAll('[data-config-tab]')];
@@ -384,6 +385,7 @@ const collapsibleAdminSections = {
 };
 
 const ADMIN_SECTION_COLLAPSED_STORAGE_PREFIX = 'talktome:admin-section-collapsed:';
+const ADMIN_RELEASE_CHECK_INTERVAL = 30 * 60 * 1000;
 
 let currentAdminImageLightboxState = null;
 let currentBridgeRegistry = [];
@@ -396,6 +398,9 @@ let statusEventSource = null;
 let statusClockTimer = null;
 let statusFallbackTimer = null;
 let statusHealthTimer = null;
+let adminReleaseTimer;
+let adminReleaseRequest = null;
+let adminReleaseDue = 0;
 let latestAdminStatus = null;
 const statusUserFilters = { productionId: '' };
 let statusUserProductionOptionsKey = '';
@@ -425,8 +430,59 @@ function focusAdminLoginNameField() {
   });
 }
 
+function showAdminReleaseNotice(version) {
+  if (!adminReleaseNotice || adminReleaseNotice.dataset.version === version) return;
+  adminReleaseNotice.dataset.version = version;
+  if (!version) {
+    adminReleaseNotice.replaceChildren();
+    return;
+  }
+  const link = document.createElement('a');
+  link.className = 'admin-bar__release';
+  link.href = 'https://github.com/thepoison606/talktome/releases/latest';
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.title = `Talktome ${version} on GitHub`;
+  link.textContent = 'New Version available';
+  adminReleaseNotice.replaceChildren(link);
+}
+
+async function checkAdminRelease() {
+  window.clearTimeout(adminReleaseTimer);
+  if (!adminReleaseNotice || !adminState.isAuthenticated || document.hidden || adminReleaseRequest) return;
+
+  const delay = adminReleaseDue - Date.now();
+  if (delay > 0) {
+    adminReleaseTimer = window.setTimeout(checkAdminRelease, delay);
+    return;
+  }
+
+  const request = new AbortController();
+  adminReleaseRequest = request;
+  try {
+    const response = await authedFetch('/admin/release-update', { priority: 'low', signal: request.signal });
+    if (response.ok) {
+      const { version } = await response.json();
+      if (adminReleaseRequest === request) showAdminReleaseNotice(version || '');
+    }
+  } catch {
+    // The version notice is optional when the service or network is unavailable.
+  } finally {
+    if (adminReleaseRequest === request) {
+      adminReleaseRequest = null;
+      adminReleaseDue = Date.now() + ADMIN_RELEASE_CHECK_INTERVAL;
+      void checkAdminRelease();
+    }
+  }
+}
+
 function showLogin(message) {
   stopStatusStream();
+  window.clearTimeout(adminReleaseTimer);
+  adminReleaseRequest?.abort();
+  adminReleaseRequest = null;
+  adminReleaseDue = 0;
+  showAdminReleaseNotice('');
   closeAdminImageLightbox();
   clearApiKeyField();
   if (adminLogin) adminLogin.classList.remove('is-hidden');
@@ -445,6 +501,7 @@ function showAdminApp() {
   if (adminLogin) adminLogin.classList.add('is-hidden');
   if (adminApp) adminApp.classList.remove('is-hidden');
   if (adminBar) adminBar.classList.remove('is-hidden');
+  void checkAdminRelease();
   activateAdminView(getAdminViewFromHash() || activeAdminView || adminNavLinks[0]?.dataset.adminNav || 'status', {
     updateHash: false,
   });
@@ -3666,6 +3723,8 @@ async function loadDefaultClientSettings() {
   if (defaultClientLeftHand) defaultClientLeftHand.checked = settings.leftHandMode === true;
   if (defaultClientBigMainButton) defaultClientBigMainButton.checked = settings.bigMainButton === true;
   if (defaultClientLockMultiple) defaultClientLockMultiple.checked = settings.lockMultipleTargets === true;
+  const tapToLock = document.getElementById('default-client-tap-to-lock');
+  if (tapToLock) tapToLock.checked = settings.tapToLock !== false;
   if (defaultClientAllowTargetRearrange) defaultClientAllowTargetRearrange.checked = settings.allowTargetRearrange !== false;
   if (defaultClientAllowTargetAddRemove) defaultClientAllowTargetAddRemove.checked = settings.allowTargetAddRemove === true;
   if (defaultClientAllowFeedVideo) defaultClientAllowFeedVideo.checked = settings.allowFeedVideo === true;
@@ -4882,12 +4941,13 @@ function readDefaultClientSettings() {
     audioAutoProcessing: Boolean(defaultClientAudioProcessing?.checked), playConnectionSounds: Boolean(defaultClientConnectionSounds?.checked),
     showIncomingLevels: Boolean(defaultClientIncomingLevels?.checked), leftHandMode: Boolean(defaultClientLeftHand?.checked),
     bigMainButton: Boolean(defaultClientBigMainButton?.checked), lockMultipleTargets: Boolean(defaultClientLockMultiple?.checked),
+    tapToLock: document.getElementById('default-client-tap-to-lock')?.checked !== false,
     allowTargetRearrange: Boolean(defaultClientAllowTargetRearrange?.checked), allowTargetAddRemove: Boolean(defaultClientAllowTargetAddRemove?.checked),
     allowFeedVideo: Boolean(defaultClientAllowFeedVideo?.checked),
   };
 }
 if (defaultClientSettingsForm) {
-  const keys = ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'bigMainButton', 'lockMultipleTargets', 'allowTargetRearrange', 'allowTargetAddRemove', 'allowFeedVideo'];
+  const keys = ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'bigMainButton', 'lockMultipleTargets', 'tapToLock', 'allowTargetRearrange', 'allowTargetAddRemove', 'allowFeedVideo'];
   const applyButtons = new Map();
   const saver = globalThis.TalktomeAdminAutoSave.create({
     render: (text, retry) => renderAutoSaveFeedback('defaults-auto-save-status', text, retry),
@@ -5554,6 +5614,7 @@ if (adminLogoutBtn) {
 }
 
 document.addEventListener('visibilitychange', () => {
+  void checkAdminRelease();
   if (!document.hidden && adminState.isAuthenticated && latestAdminStatus && serverReachable !== false) {
     renderAdminStatus(latestAdminStatus);
   }
@@ -5782,6 +5843,7 @@ function renderUserAudioSettingsFields(settings, targets = []) {
     <label class="user-audio-settings-switch"><span>Incoming level meters</span><span class="admin-switch"><input id="admin-incoming-levels" type="checkbox" role="switch" ${checked('showIncomingLevels')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <label class="user-audio-settings-switch"><span>Left-hand mode</span><span class="admin-switch"><input id="admin-left-hand" type="checkbox" role="switch" ${checked('leftHandMode')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <label class="user-audio-settings-switch"><span>Lock multiple targets</span><span class="admin-switch"><input id="admin-lock-multiple" type="checkbox" role="switch" ${checked('lockMultipleTargets')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
+    <label class="user-audio-settings-switch"><span>Tap to lock</span><span class="admin-switch"><input id="admin-tap-to-lock" type="checkbox" role="switch" ${checked('tapToLock')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <div class="user-audio-settings-range"><label class="user-audio-settings-range__label" for="admin-mic-gain"><span>Manual mic gain</span><output id="admin-mic-gain-value">${Number(settings.userInputGainDb).toFixed(1)} dB</output></label><input id="admin-mic-gain" type="range" min="-40" max="40" step="0.5" value="${settings.userInputGainDb}"></div>
     <label class="user-audio-settings-switch"><span>Level trigger</span><span class="admin-switch"><input id="admin-level-trigger" type="checkbox" role="switch" ${checked('voiceTriggerEnabled')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <div class="user-audio-settings-row"><label for="admin-level-target">Target</label><select id="admin-level-target"><option value="">Select target</option>${targetOptions}</select></div>
@@ -5833,7 +5895,8 @@ function closeUserAudioSettings() {
 userAudioSettingsForm?.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!editingAudioSettingsUserId) return;
-  const settings = window.TalktomeUserAudioSettings.normalize({
+  const tapToLock = document.getElementById('admin-tap-to-lock');
+  const settings = window.TalktomeUserAudioSettings.normalizeForSave({
     audioProfile: document.getElementById('admin-audio-profile').value,
     dimAmountDb: Number(document.getElementById('admin-dim-amount').value),
     dimFeedsWhileSpeaking: document.getElementById('admin-dim-speaking').checked,
@@ -5843,11 +5906,12 @@ userAudioSettingsForm?.addEventListener('submit', async (event) => {
     showIncomingLevels: document.getElementById('admin-incoming-levels').checked,
     leftHandMode: document.getElementById('admin-left-hand').checked,
     lockMultipleTargets: document.getElementById('admin-lock-multiple').checked,
+    ...(tapToLock.checked !== tapToLock.defaultChecked ? { tapToLock: tapToLock.checked } : {}),
     userInputGainDb: Number(document.getElementById('admin-mic-gain').value),
     voiceTriggerEnabled: document.getElementById('admin-level-trigger').checked,
     voiceTriggerTarget: document.getElementById('admin-level-target').value,
     voiceTriggerThresholdDb: Number(document.getElementById('admin-level-threshold').value),
-  }, { strict: true });
+  });
   userAudioSettingsSave.disabled = true;
   try {
     const response = await authedFetch(`/admin/users/${editingAudioSettingsUserId}/audio-settings`, {

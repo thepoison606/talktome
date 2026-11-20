@@ -9,6 +9,7 @@ The app includes:
 - WebRTC talk/listen, per-target volume and mute, Reply and locked talk buttons.
   Hold several target buttons at once to address them together; releasing one
   button leaves the others active. Main/Reply and target cards own separate holds.
+  A tap shorter than 300 ms locks talk like a swipe. Toggle **Tap to lock** under **Layout**.
 - Server remote-panel control and synchronized operator preferences.
 - Drag target handles in Edit targets to reorder them, with edge scrolling and automatic saving.
   The order is shared with the browser for the selected production.
@@ -41,7 +42,7 @@ The app includes:
   While talking, the target and swipe hint sit near the top of the full-screen display. The ready
   beep plays through the selected external iPhone audio output, or on Watch when
   no external output is selected. The default is all targets.
-- Per-host certificate pinning for self-hosted servers with self-signed TLS.
+- Per-host certificate pinning for self-hosted servers with self-signed TLS. On a certificate error, the app displays the fingerprint and asks for confirmation before signing in.
 
 ## Development
 

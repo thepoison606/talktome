@@ -42,12 +42,18 @@ renames). The packaged unit also sets `ReadWritePaths=/etc/talktome-headless`
 because `ProtectSystem=strict` would otherwise make `/etc` read-only
 (`saving the password failed: … Read-only file system`).
 
-Minimum content: the server URL, the user's name and password and (for a
+Minimum content: the server URL (`server.url`), the user's name and password and (for a
 self-signed server certificate) `tls.ca_file`, `tls.fingerprint_sha256` or
 `tls.insecure = true`. The password can live in
 `/etc/talktome-headless/cam1.env` as `TALKTOME_USER_PASSWORD=...` instead of
 the configuration file; every `TALKTOME_<SECTION>_<KEY>` variable overrides
 the corresponding setting.
+
+To use the [web interface](#web-interface), set an individual admin password
+in the same configuration file while setting the server URL. In TOML, set
+`password` under `[web]`. You can also set `TALKTOME_WEB_PASSWORD` in the
+instance's `.env` file. Set the password before starting a new instance or
+upgrading one that still uses the former default password.
 
 Everything else (audio devices, Stream Deck, GPIO lines, local socket, volumes, web port)
 can be edited afterwards in the web interface (see below) or in the file.
@@ -99,15 +105,18 @@ daemon-reload`. `getent group audio plugdev gpio` shows which groups exist.
 
 ## Web interface
 
-Every instance serves an administration web interface on
-`http://<device>:<web.port>/` (default port 8080, `web.bind = "0.0.0.0"`; use
-a different port per instance). It is built for phones as much as for
-desktops:
+The administration web interface listens on `http://127.0.0.1:8080/` by
+default. For access from another device, set `web.bind` explicitly to the
+desired LAN address. Use a different port per instance.
 
-- Login is always the user `admin`; the password comes from `web.password` or
-  `TALKTOME_WEB_PASSWORD`. The default password `admin` works once and then
-  forces a change (that dialog is not the login overlay). The new password is
-  written to the configuration file; saving Settings does the same rewrite.
+- Set an individual password in `web.password` or `TALKTOME_WEB_PASSWORD`
+  for the `admin` login. An empty password or the former `admin` password
+  shows a setup notice with instructions to set the password and restart
+  the service. The intercom client keeps running. To keep admin access
+  after upgrading a device that still uses `admin`, set the password first.
+- Change the password from Settings after signing in. The new password is
+  written to the configuration file. If the environment supplies the
+  password, update it there as well so the change survives a restart.
 - Web logins remain valid across service restarts for up to 12 hours from login.
   Session hashes are stored in `<state_dir>/web-sessions.json`; logout and password
   changes invalidate old sessions. A password change keeps the current browser signed in.
@@ -135,6 +144,9 @@ desktops:
   `TALKTOME_TALK_MAIN_TARGET`) pins it to a user or conference, matching the
   web client Main button. A pin that is not in this user’s destinations does
   not fall back to another target.
+  When two audio sets are configured, the button to the left of **Reply**
+  shows the active set and switches to the other one without restarting the
+  client. If a device cannot open, the current set stays active.
   Leaving the tab or page releases this browser's held talk inputs without
   releasing an unrelated physical input. Local API requests that time out
   before handling cannot apply later.
@@ -145,6 +157,12 @@ desktops:
   instance was started with and keeps other file values even if the process
   has not restarted yet; secrets are never shown and stay unchanged unless
   replaced. `Save & restart` applies the change immediately.
+  Under **Audio**, use **+ Add second audio set** to give each set a name and
+  choose its input and output independently. Save and restart to apply the
+  definitions. The client starts on the first set. On a Stream Deck, open the
+  status key menu and press **AUDIO** in the top row to switch sets. If a device
+  is missing, the chosen set stays active and the client retries until the device
+  is available.
 - **Restart**: under systemd the service exits cleanly and `Restart=always`
   brings it back; without systemd the binary re-executes itself.
 

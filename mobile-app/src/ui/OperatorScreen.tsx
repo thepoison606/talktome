@@ -192,6 +192,7 @@ export function OperatorScreen() {
       disabled={!mainTarget}
       locked={mainLocked}
       leftHanded={store.leftHanded}
+      tapToLock={store.tapToLock}
       onPress={(inputKey) => { if (mainTarget) void session.pressTalk(mainTarget, inputKey); }}
       onLock={() => { if (mainTarget) void session.lockTalk(mainTarget); }}
       onRelease={(inputKey) => void session.releaseTalk(undefined, inputKey)}
@@ -257,7 +258,7 @@ export function OperatorScreen() {
     <View
       onTouchMove={(event) => moveTalkTouches(event.nativeEvent.changedTouches)}
       onTouchEnd={(event) => endTalkTouches(event.nativeEvent.changedTouches)}
-      onTouchCancel={(event) => endTalkTouches(event.nativeEvent.changedTouches)}
+      onTouchCancel={(event) => endTalkTouches(event.nativeEvent.changedTouches, true)}
       onLayout={(event) => {
         const next = event.nativeEvent.layout;
         setMeasured((current) =>

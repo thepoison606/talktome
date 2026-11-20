@@ -29,16 +29,16 @@ export type SessionUiState = {
   serverAddress: string;
   username: string;
   rememberPassword: boolean;
-  allowInsecureLocalTLS: boolean;
   leftHanded: boolean;
   lockMultipleTargets: boolean;
+  tapToLock: boolean;
   /** Empty string means Reply. A talk-target identity pins the bottom button. */
   mainButtonTargets: Record<string, string>;
   watchTargetSelections: WatchTargetSelections;
   bigMainButton: boolean;
   replyTarget: TalkTarget | null;
   loginOptions: LoginOptions | null;
-  pendingCertificate: CertificateProbe | null;
+  pendingCertificate: (CertificateProbe & { serverAddress: string }) | null;
   identity: OperatorIdentity | null;
   productions: Production[];
   productionId: number | null;
@@ -130,9 +130,9 @@ export const initialState: SessionUiState = {
   serverAddress: '',
   username: '',
   rememberPassword: true,
-  allowInsecureLocalTLS: false,
   leftHanded: false,
   lockMultipleTargets: false,
+  tapToLock: true,
   mainButtonTargets: {},
   watchTargetSelections: {},
   bigMainButton: false,

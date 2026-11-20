@@ -1,9 +1,48 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const vm = require('node:vm');
 const { sanitizePortReport, endpointIssues } = require('../src/server/bridgePortStatus');
 const source = fs.readFileSync('src/server/serverCore.js', 'utf8');
+
+test('long native audio device IDs survive inventory and database reload without truncation', t => {
+  const sharedPrefix = `DeviceId(CoreAudio, "${'usb:interface:'.repeat(20)}`;
+  const inputDevice = `${sharedPrefix}input")`;
+  const outputDevice = `${sharedPrefix}output")`;
+  const ctx = vm.createContext({});
+  vm.runInContext(source.slice(source.indexOf('function normalizeBridgeRegistryText('), source.indexOf('function serializeBridgeRegistryEntry(')), ctx);
+  const inventory = ctx.sanitizeBridgeInventory({ devices: [
+    { id: inputDevice, direction: 'input' }, { id: outputDevice, direction: 'output' },
+  ] });
+  assert.equal(inventory.devices[0].id, inputDevice);
+  assert.equal(inventory.devices[1].id, outputDevice);
+
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'talktome-bridge-device-id-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const run = script => execFileSync(process.execPath, ['-e', `
+    const assert = require('node:assert/strict');
+    const db = require('./src/server/dbHandler');
+    const [inputDevice, outputDevice] = process.argv.slice(1);
+    ${script}
+  `, inputDevice, outputDevice], { env: { ...process.env, TALKTOME_DATA_DIR: dataDir } });
+  run(`
+    const user = Number(db.createUser('Port', 'test-password'));
+    const feed = Number(db.createFeed('Feed', 'test-password'));
+    const route = { enabled: true, bridgeDevice: 'bridge-test', inputDevice, inputLeftChannel: 1, inputRightChannel: 1 };
+    db.updateUserBridgeEndpoint(user, { ...route, outputDevice, outputLeftChannel: 2, outputRightChannel: 2 });
+    db.updateFeedBridgeEndpoint(feed, route);
+  `);
+  run(`
+    const [user] = db.getBridgeEndpointsForDevice('bridge-test');
+    const [feed] = db.getFeedBridgeEndpointsForDevice('bridge-test');
+    assert.equal(user.input_device, inputDevice);
+    assert.equal(user.output_device, outputDevice);
+    assert.equal(feed.input_device, inputDevice);
+  `);
+});
 
 test('port diagnostics sanitize remote values and distinguish intentional silence from missing devices', () => {
   const row = { bridge_input_device: 'bridge:none', bridge_output_device: 'speaker', bridge_output_left_channel: 1, bridge_output_right_channel: 2 };

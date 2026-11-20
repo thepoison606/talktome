@@ -311,24 +311,11 @@ export function LoginScreen() {
             </>
           )}
 
-          <View style={styles.toggleRow}>
-            <Text style={styles.toggleLabel}>Allow self-signed local TLS</Text>
-            <Switch
-              value={store.allowInsecureLocalTLS}
-              onValueChange={(value) => store.setField('allowInsecureLocalTLS', value)}
-              trackColor={{ true: colors.accent }}
-            />
-          </View>
-          <Text style={styles.hint}>
-            {compact
-              ? 'Pin a local certificate fingerprint. TLS stays on.'
-              : 'When a local certificate is not in the system store, TalkToMe can pin its SHA-256 fingerprint. This never disables TLS checks for every host.'}
-          </Text>
-
           {store.pendingCertificate ? (
             <View style={styles.trust}>
               <Text style={styles.trustTitle}>Trust this certificate?</Text>
               <Text style={styles.trustBody}>{store.pendingCertificate.hostname}</Text>
+              <Text style={styles.trustBody}>Verify the fingerprint before trusting this server.</Text>
               <Text style={styles.fingerprint}>
                 SHA-256 {formatFingerprint(store.pendingCertificate.sha256)}
               </Text>
@@ -337,7 +324,7 @@ export function LoginScreen() {
               ) : null}
               <Pressable
                 style={styles.takeOver}
-                onPress={() => void run(() => session.acceptCertificateAndRetry('user'))}
+                onPress={() => void run(() => session.acceptCertificateAndRetry())}
                 disabled={busy}
                 accessibilityRole="button"
               >

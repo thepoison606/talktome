@@ -1506,37 +1506,37 @@ async function saveManagedBridgePort(key) {
 
   const card = getManagedPortElement(key);
   if (!card) return;
-  updateManagedPortDraftFromElement(card);
-  const saveRevision = managedPortDraftRevisions.get(key) || 0;
-  const draft = managedPortDrafts.get(key) || getManagedPortDraft(port);
-
-  if (draft.input.deviceId || port.kind !== "feed" || !draft.videoSource) validateManagedPortAssignment(draft.input, "Input");
-  if (bridgePortHasOutput(port)) {
-    validateManagedPortAssignment(draft.output, "Output");
-  }
-  validateManagedTrigger(draft.trigger);
-
-  const payload = {
-    ...(port.kind === "feed" ? { videoSource: draft.videoSource } : {}),
-    enabled: true,
-    inputDevice: draft.input.deviceId,
-    inputLeftChannel: draft.input.leftChannel,
-    inputRightChannel: draft.input.rightChannel,
-  };
-  if (bridgePortHasOutput(port)) {
-    payload.outputDevice = draft.output.deviceId;
-    payload.outputLeftChannel = draft.output.leftChannel;
-    payload.outputRightChannel = draft.output.rightChannel;
-  }
-  if (port.kind === "user") {
-    payload.triggerMode = bridgeTalkTrigger.mode(draft.trigger?.mode);
-    payload.triggerThresholdDb = draft.trigger?.thresholdDb ?? MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB;
-    payload.triggerTargets = draft.trigger?.targets || [];
-  }
-
-  managedPortEditStates.set(key, { saving: true });
-  renderManagedBridgePorts();
   try {
+    updateManagedPortDraftFromElement(card);
+    const saveRevision = managedPortDraftRevisions.get(key) || 0;
+    const draft = managedPortDrafts.get(key) || getManagedPortDraft(port);
+
+    if (draft.input.deviceId || port.kind !== "feed" || !draft.videoSource) validateManagedPortAssignment(draft.input, "Input");
+    if (bridgePortHasOutput(port)) {
+      validateManagedPortAssignment(draft.output, "Output");
+    }
+    validateManagedTrigger(draft.trigger);
+
+    const payload = {
+      ...(port.kind === "feed" ? { videoSource: draft.videoSource } : {}),
+      enabled: true,
+      inputDevice: draft.input.deviceId,
+      inputLeftChannel: draft.input.leftChannel,
+      inputRightChannel: draft.input.rightChannel,
+    };
+    if (bridgePortHasOutput(port)) {
+      payload.outputDevice = draft.output.deviceId;
+      payload.outputLeftChannel = draft.output.leftChannel;
+      payload.outputRightChannel = draft.output.rightChannel;
+    }
+    if (port.kind === "user") {
+      payload.triggerMode = bridgeTalkTrigger.mode(draft.trigger?.mode);
+      payload.triggerThresholdDb = draft.trigger?.thresholdDb ?? MANAGED_LEVEL_TRIGGER_DEFAULT_THRESHOLD_DB;
+      payload.triggerTargets = draft.trigger?.targets || [];
+    }
+
+    managedPortEditStates.set(key, { saving: true });
+    renderManagedBridgePorts();
     await suppressWindowFocusHide(500);
     const config = await bridgeApi(
       "PUT",
@@ -1667,11 +1667,13 @@ function handleManagedPortControlChange(event) {
     const channelSelect = card.querySelector(`[data-field="${direction}Channel"]`);
     if (channelSelect instanceof HTMLSelectElement) {
       const device = findDeviceByDirectionAndId(direction, control.value);
+      channelSelect.disabled = control.value === 'bridge:none';
       channelSelect.innerHTML = buildManagedChannelOptions(device, null, null);
       const firstRealOptionIndex = Array.from(channelSelect.options).findIndex((option) => option.value);
       if (firstRealOptionIndex >= 0) {
         channelSelect.selectedIndex = firstRealOptionIndex;
       }
+      managedSelectValues.set(channelSelect, channelSelect.value);
     }
   }
 
@@ -1728,9 +1730,18 @@ function managedFeedVideoStatus(port, session) {
 }
 
 function renderManagedBridgePorts() {
-  // Refresh live labels even while a select has focus and the form cannot be rebuilt.
+  // Refresh labels and save errors without rebuilding a focused control.
   for (const port of managedBridgeConfig?.ports || []) {
-    const status = getManagedPortElement(bridgePortKey(port))?.querySelector('[data-video-status]');
+    const key = bridgePortKey(port);
+    const card = getManagedPortElement(key);
+    const feedback = card?.querySelector('[data-managed-port-save-error]');
+    const error = managedPortEditStates.get(key)?.error;
+    const message = error ? `Not saved: ${error}` : '';
+    if (feedback && feedback.textContent !== message) {
+      feedback.textContent = message;
+      requestBridgeWindowResize();
+    }
+    const status = card?.querySelector('[data-video-status]');
     if (!status) continue;
     status.textContent = managedFeedVideoStatus(port, managedSessions.get(bridgePortKey(port)));
     status.hidden = !status.textContent;
@@ -1799,7 +1810,7 @@ function renderManagedBridgePorts() {
       </div>` : ""}
       ${port.kind === "feed" ? `<small data-video-status${port.videoSource ? "" : " hidden"}>${escapeHtml(managedFeedVideoStatus(port, session))}</small>` : ""}
       ${sessionError ? `<div class="managed-port-error">${escapeHtml(sessionError)}</div>` : ""}
-      ${editState.error ? `<div class="managed-port-error">${escapeHtml(editState.error)}</div>` : ""}
+      <div class="managed-port-error" data-managed-port-save-error role="status" aria-atomic="true">${editState.error ? `Not saved: ${escapeHtml(editState.error)}` : ""}</div>
       </article>
     `;
   }).join("");

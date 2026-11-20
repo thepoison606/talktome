@@ -89,6 +89,11 @@ function normalizeBridgeText(value) {
   return String(value).trim().slice(0, BRIDGE_ENDPOINT_TEXT_LIMIT);
 }
 
+function normalizeBridgeAudioDeviceId(value) {
+  // The Bridge uses the full native identifier to reopen the device.
+  return String(value ?? '').trim();
+}
+
 function normalizeBridgeChannel(value, label) {
   if (value === null || value === undefined || value === '') return null;
   const number = Number(value);
@@ -147,10 +152,10 @@ function normalizeBridgeTriggerThresholdDb(value) {
 function normalizeBridgeEndpointConfig(config = {}) {
   const enabled = Boolean(config.enabled);
   const bridgeDevice = normalizeBridgeText(config.bridgeDevice);
-  const inputDevice = normalizeBridgeText(config.inputDevice);
+  const inputDevice = normalizeBridgeAudioDeviceId(config.inputDevice);
   const inputLeftChannel = normalizeBridgeChannel(config.inputLeftChannel, 'Input left channel');
   const inputRightChannel = normalizeBridgeChannel(config.inputRightChannel, 'Input right channel');
-  const outputDevice = normalizeBridgeText(config.outputDevice);
+  const outputDevice = normalizeBridgeAudioDeviceId(config.outputDevice);
   const outputLeftChannel = normalizeBridgeChannel(config.outputLeftChannel, 'Output left channel');
   const outputRightChannel = normalizeBridgeChannel(config.outputRightChannel, 'Output right channel');
   const triggerMode = normalizeBridgeTriggerMode(config.triggerMode);
@@ -198,7 +203,7 @@ function normalizeFeedBridgeEndpointConfig(config = {}) {
   if (videoSource && !/^(ndi|omt|webcam):recv:[a-f0-9]{16}$/.test(videoSource)) {
     throw new Error('Video source must be a webcam, NDI or OMT input');
   }
-  const inputDevice = normalizeBridgeText(config.inputDevice);
+  const inputDevice = normalizeBridgeAudioDeviceId(config.inputDevice);
   const inputLeftChannel = normalizeBridgeChannel(config.inputLeftChannel, 'Input left channel');
   const inputRightChannel = normalizeBridgeChannel(config.inputRightChannel, 'Input right channel');
   validateBridgePair(inputLeftChannel, inputRightChannel, 'Input');
@@ -310,9 +315,12 @@ function getUserAudioSettings(userId) {
 function updateUserAudioSettings(userId, settings) {
   const normalized = normalizeUserAudioSettings(settings, { strict: true, partial: true });
   // Older clients and the audio-only editor do not send layout preferences.
-  if (!Object.prototype.hasOwnProperty.call(normalized, 'bigMainButton')) {
+  const layoutKeys = ['bigMainButton', 'tapToLock'].filter(key => !Object.hasOwn(normalized, key));
+  if (layoutKeys.length) {
     const previous = getUserAudioSettings(userId);
-    if (typeof previous?.bigMainButton === 'boolean') normalized.bigMainButton = previous.bigMainButton;
+    for (const key of layoutKeys) {
+      if (typeof previous?.[key] === 'boolean') normalized[key] = previous[key];
+    }
   }
   const result = db.prepare('UPDATE users SET audio_settings = ? WHERE id = ?')
     .run(JSON.stringify(normalized), userId);

@@ -195,6 +195,29 @@
         color: var(--text);
       }
 
+      .admin-bar__session {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        column-gap: 0.65rem;
+        min-width: 0;
+      }
+
+      .admin-bar__release {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        color: var(--muted);
+        font-size: 0.82rem;
+        text-decoration: underline;
+        text-underline-offset: 0.2em;
+      }
+
+      .admin-bar__release:hover,
+      .admin-bar__release:focus-visible {
+        color: var(--text);
+      }
+
       .admin-bar__nav {
         display: flex;
         align-items: center;
@@ -3990,7 +4013,10 @@
     <div id="admin-bar" class="admin-bar is-hidden">
       <div class="admin-bar__meta">
         <img class="admin-brand-icon" src="/images/talktome-mark.png" alt="" aria-hidden="true" />
-        <span>Logged in as <strong id="admin-name-label"></strong></span>
+        <div class="admin-bar__session">
+          <span>Logged in as <strong id="admin-name-label"></strong></span>
+          <span id="admin-release-notice" role="status"></span>
+        </div>
       </div>
       <nav class="admin-bar__nav" aria-label="Admin sections">
         <a href="#status" data-admin-nav="status">Status</a>
@@ -4823,6 +4849,13 @@
                     <span>Lock multiple targets</span>
                     <span class="admin-switch">
                       <input type="checkbox" id="default-client-lock-multiple" role="switch" />
+                      <span class="admin-switch__track" aria-hidden="true"></span>
+                    </span>
+                  </div>
+                  <div class="default-client-setting-toggle" title="Let users briefly tap a talk button to lock it.">
+                    <span>Tap to lock</span>
+                    <span class="admin-switch">
+                      <input type="checkbox" id="default-client-tap-to-lock" role="switch" />
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
                   </div>

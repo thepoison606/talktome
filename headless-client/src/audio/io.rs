@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig, SupportedStreamConfig};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::codec::SAMPLE_RATE;
 use super::mixer::{Mixer, MixerHealth};
@@ -75,20 +75,53 @@ impl AudioStatus {
 #[derive(Debug, Clone, Default)]
 pub struct DeviceSwitch(Arc<Mutex<PendingSwitch>>);
 
-/// Requested (capture, playback) devices not yet applied.
-type PendingSwitch = (Option<Option<String>>, Option<Option<String>>);
+#[derive(Debug, Default)]
+struct PendingSwitch {
+    input: Option<Option<String>>,
+    output: Option<Option<String>>,
+    pair: Option<PairSwitch>,
+}
+
+#[derive(Debug)]
+struct PairSwitch {
+    input: Option<String>,
+    output: Option<String>,
+    reply: oneshot::Sender<Result<()>>,
+}
 
 impl DeviceSwitch {
     pub fn request_input(&self, device: Option<String>) {
         if let Ok(mut pending) = self.0.lock() {
-            pending.0 = Some(device);
+            pending.input = Some(device);
         }
     }
 
     pub fn request_output(&self, device: Option<String>) {
         if let Ok(mut pending) = self.0.lock() {
-            pending.1 = Some(device);
+            pending.output = Some(device);
         }
+    }
+
+    pub async fn switch_pair(&self, input: Option<String>, output: Option<String>) -> Result<()> {
+        let (reply, result) = oneshot::channel();
+        {
+            let mut pending = self
+                .0
+                .lock()
+                .map_err(|_| anyhow!("Audio thread unavailable"))?;
+            if pending.pair.is_some() {
+                anyhow::bail!("An audio device change is already pending");
+            }
+            pending.pair = Some(PairSwitch {
+                input,
+                output,
+                reply,
+            });
+        }
+        tokio::time::timeout(Duration::from_secs(3), result)
+            .await
+            .context("Audio device change timed out")?
+            .context("Audio thread unavailable")?
     }
 
     fn take(&self) -> PendingSwitch {
@@ -319,7 +352,11 @@ fn run_supervisor(
         let now = Instant::now();
 
         // The session only sends real ALSA devices here, never tone/wav.
-        let (input, output) = devices.take();
+        let PendingSwitch {
+            input,
+            output,
+            pair,
+        } = devices.take();
         if let Some(device) = input {
             tracing::info!(event = "audio-device-switch", direction = "capture", device = ?device);
             config.input_device = device;
@@ -333,6 +370,39 @@ fn run_supervisor(
             playback = None;
             playback_wanted = true;
             next_attempt = now;
+        }
+
+        if let Some(request) = pair.filter(|request| !request.reply.is_closed()) {
+            let input_changed = config.input_device != request.input;
+            let output_changed = config.output_device != request.output;
+            let mut next = config.clone();
+            next.input_device = request.input;
+            next.output_device = request.output;
+
+            let changes_virtual_device = input_changed
+                && (tone_frequency(&config.input_device).is_some()
+                    || tone_frequency(&next.input_device).is_some())
+                || output_changed
+                    && (wav_sink_path(&config.output_device).is_some()
+                        || wav_sink_path(&next.output_device).is_some());
+            if changes_virtual_device {
+                let _ = request.reply.send(Err(anyhow!(
+                    "Test tone and WAV devices require a restart to change"
+                )));
+            } else if request.reply.send(Ok(())).is_ok() {
+                // Select the requested devices first. Release superseded streams before
+                // opening replacements so aliases of an exclusive PCM can be switched too.
+                config = next;
+                if input_changed {
+                    capture = None;
+                    capture_wanted = wanted(&config.input_device);
+                }
+                if output_changed {
+                    playback = None;
+                    playback_wanted = wanted(&config.output_device);
+                }
+                next_attempt = now;
+            }
         }
 
         if let Some(open) = capture.as_ref() {
@@ -409,14 +479,7 @@ fn run_supervisor(
                 ) {
                     Ok(open) => {
                         tracing::info!(event = "audio-device-restored", direction = "playback", device = %open.name);
-                        if let Err(error) = super::system_volume::configure_outputs(
-                            open.card,
-                            config.speaker_level_db,
-                            config.headphone_level_db,
-                        ) {
-                            tracing::warn!(event = "output-level-config-failed", error = %error);
-                        }
-                        output_levels = super::system_volume::output_levels(open.card);
+                        output_levels = configure_playback_levels(&open, &config);
                         playback = Some(open);
                     }
                     Err(error) => {
@@ -1019,6 +1082,20 @@ fn open_playback(
     })
 }
 
+fn configure_playback_levels(
+    open: &OpenStream,
+    config: &AudioConfig,
+) -> super::system_volume::OutputLevels {
+    if let Err(error) = super::system_volume::configure_outputs(
+        open.card,
+        config.speaker_level_db,
+        config.headphone_level_db,
+    ) {
+        tracing::warn!(event = "output-level-config-failed", error = %error);
+    }
+    super::system_volume::output_levels(open.card)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1029,6 +1106,63 @@ mod tests {
         note_stream_error, peak_dbfs, requested_buffer_size, stalled_for, tone_frequency,
         wav_sink_path, StreamActivity,
     };
+
+    #[tokio::test]
+    async fn a_missing_device_does_not_prevent_selecting_or_leaving_a_set() {
+        use super::{AudioConfig, AudioIo, Mixer, ProcessingControl};
+        use std::sync::{Arc, Mutex};
+
+        let config = AudioConfig {
+            input_device: Some("none".into()),
+            output_device: Some("none".into()),
+            ..Default::default()
+        };
+        let processing = ProcessingControl::from_audio(&config);
+        let mixer = Arc::new(Mutex::new(Mixer::new(1.0, -15.0, false, false, 20, 400)));
+        let (frames, _received) = tokio::sync::mpsc::channel(4);
+        let audio = AudioIo::start(config, 240, mixer, frames, processing);
+        let mut status = audio.status.clone();
+
+        let selected = audio
+            .devices
+            .switch_pair(
+                Some("off".into()),
+                Some("talktome-missing-audio-device".into()),
+            )
+            .await;
+        selected.unwrap();
+        let missing = tokio::time::timeout(
+            Duration::from_secs(1),
+            status.wait_for(|status| {
+                status.capture_device.as_deref() == Some("off")
+                    && !status.playback_ok
+                    && status
+                        .last_error
+                        .as_deref()
+                        .is_some_and(|error| error.starts_with("playback:"))
+            }),
+        )
+        .await
+        .map(|result| result.is_ok());
+        let switched = audio
+            .devices
+            .switch_pair(Some("off".into()), Some("off".into()))
+            .await;
+        let new_status = tokio::time::timeout(
+            Duration::from_secs(1),
+            status.wait_for(|status| {
+                status.capture_device.as_deref() == Some("off")
+                    && status.playback_device.as_deref() == Some("off")
+            }),
+        )
+        .await
+        .map(|result| result.is_ok());
+        audio.stop();
+
+        assert!(missing.unwrap());
+        switched.unwrap();
+        assert!(new_status.unwrap());
+    }
 
     #[test]
     fn capture_backlog_keeps_only_the_newest_fresh_frame() {

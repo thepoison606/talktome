@@ -120,6 +120,24 @@ describe('native remote panel', () => {
     expect(f.host.release).toHaveBeenCalledWith('panel:companion:a'); finish(); await pending;
   });
 
+  it('preserves the press for a Companion tap and handles an unpaired release without latching', async () => {
+    const f = fixture(); await f.register();
+    let finish!: () => void;
+    vi.mocked(f.host.press).mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    const target = { targetType: 'user', targetId: 9, inputKey: 'a' };
+    const press = f.panel.handleCompanionTalk({ ...target, action: 'press' });
+    await vi.waitFor(() => expect(f.host.press).toHaveBeenCalled());
+    const tap = f.panel.handleCompanionTalk({ ...target, action: 'release', tapToLock: true });
+    const nextPress = f.panel.handleCompanionTalk({ ...target, action: 'press' });
+    expect(f.host.release).not.toHaveBeenCalled();
+    finish();
+    await Promise.all([press, tap, nextPress]);
+    expect(f.host.release).toHaveBeenCalledWith('panel:companion:a', true);
+    expect(f.host.press).toHaveBeenCalledTimes(2);
+    await f.panel.handleCompanionTalk({ ...target, inputKey: 'other', action: 'release', tapToLock: true });
+    expect(f.host.release).toHaveBeenLastCalledWith('panel:companion:other', false);
+  });
+
   it('restores server audio, conference, feed, main-button settings before reporting', async () => {
     const f = fixture();
     const storage = { 'conferenceListenExclusions:user:1': '{"2":[9]}', 'conferenceMemberLevels:user:1': '{"2":{"9":0.3}}', 'stoppedFeeds:user:1': '{"feed-4":true}', 'mainButtonTarget:user:1:7': 'conference-2', 'targetHotkeys:1:production:8': '{"user-9":"KeyA"}', 'mainButtonTarget:user:99:7': 'user-9' };

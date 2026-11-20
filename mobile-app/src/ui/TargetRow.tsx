@@ -73,6 +73,7 @@ export function TargetRow({
     (state) => state.audioPreferences[key] ?? DEFAULT_AUDIO_PREFERENCE,
   );
   const leftHanded = useSessionStore((state) => state.leftHanded);
+  const tapToLock = useSessionStore((state) => state.tapToLock);
   const feedStopped = useSessionStore((state) => state.stoppedFeedKeys.includes(key));
   const feedOnline = useSessionStore((state) => state.activeFeedKeys.includes(key));
   const volumeFader = useSessionStore((state) => state.operatorAudio.volumeFader);
@@ -168,6 +169,7 @@ export function TargetRow({
           disabled={!canTalk}
           locked={locked}
           leftHanded={leftHanded}
+          tapToLock={tapToLock}
           onPress={(inputKey) => void session.pressTalk(target, inputKey)}
           onLock={() => void session.lockTalk(target)}
           onRelease={(inputKey) => void session.releaseTalk(target, inputKey)}

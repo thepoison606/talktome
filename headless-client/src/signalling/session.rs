@@ -176,6 +176,7 @@ pub struct Session {
     /// ALSA devices in use; the remote panel can switch them while running.
     input_device: Option<String>,
     output_device: Option<String>,
+    active_device_set: usize,
     /// Wanted production (`user.production`); the remote panel can change it.
     production: Option<String>,
     /// Production the server put this client in (its default when none is
@@ -246,8 +247,9 @@ impl Session {
         let dim_when_addressed = config.audio.dim_when_addressed;
         let vox_threshold_db = config.vox.threshold_db;
         let production = config.user.production.clone();
-        let input_device = config.audio.input_device.clone();
-        let output_device = config.audio.output_device.clone();
+        let (input, output) = config.audio.devices_for_set(0);
+        let input_device = input.clone();
+        let output_device = output.clone();
         Ok(Self {
             frame_duration: Duration::from_millis(profile.frame_ms() as u64),
             config,
@@ -299,6 +301,7 @@ impl Session {
             vox_threshold_db,
             input_device,
             output_device,
+            active_device_set: 0,
             production,
             active_production: None,
             saved_profile: serde_json::to_value(profile)
@@ -421,6 +424,7 @@ impl Session {
                 request.respond(result);
             }
             Command::SystemVolume(action) => self.system_volume_command(action),
+            Command::ToggleAudioDeviceSet => self.toggle_audio_device_set().await,
             Command::MuteToggle(key) => {
                 let level = self.audio.toggle_mute(key);
                 self.apply_level(key, level);
@@ -1426,6 +1430,7 @@ impl Session {
                 request.respond(result);
             }
             Command::SystemVolume(action) => self.system_volume_command(action),
+            Command::ToggleAudioDeviceSet => self.toggle_audio_device_set().await,
             Command::TalkPress { source, target } => {
                 if !self.target_is_talkable(target) {
                     self.detail = "user offline".into();
@@ -1860,7 +1865,8 @@ impl Session {
                 }
             }
             ("release", Some(target)) => {
-                let change = self.talk.release(source, target, now);
+                let tap_to_lock = payload.get("tapToLock").and_then(Value::as_bool);
+                let change = self.talk.release_with_tap(source, target, now, tap_to_lock);
                 (true, None, change)
             }
             ("release", None) => (true, None, None),
@@ -2064,11 +2070,28 @@ impl Session {
         }
         // Ordering is server-authorized and is intentionally not a local-only
         // cosmetic reorder that would disagree with the physical panel.
-        let mut result = if command["kind"] == "order" {
-            json!({ "ok": false, "error": "Change target order in server Admin" })
-        } else {
-            self.handle_panel_command(connected, &command).await
+        let mut result = match command["kind"].as_str() {
+            Some("order") => json!({ "ok": false, "error": "Change target order in server Admin" }),
+            Some("audio-device-set") => {
+                let outcome = self
+                    .select_audio_device_set(command["index"].as_u64())
+                    .await;
+                let report = self.panel_report().await;
+                match outcome {
+                    Ok(()) => json!({ "ok": true, "report": report }),
+                    Err(error) => {
+                        json!({ "ok": false, "error": error.to_string(), "report": report })
+                    }
+                }
+            }
+            _ => self.handle_panel_command(connected, &command).await,
         };
+        if result.get("report").is_some() && !self.config.audio.device_sets.is_empty() {
+            result["report"]["runtime"]["audioDeviceSets"] = json!({
+                "names": self.config.audio.device_sets.iter().map(|set| set.name.trim()).collect::<Vec<_>>(),
+                "active": self.active_device_set,
+            });
+        }
         self.publish(true);
         result["snapshot"] = json!(self.build_snapshot());
         result["settings"] = panel::audio_settings(&self.server_audio, &self.local_audio());
@@ -2297,6 +2320,9 @@ impl Session {
     /// Switches the ALSA capture / playback device from the remote panel and
     /// saves the choice to the configuration file.
     async fn panel_switch_devices(&mut self, patch: &Value) -> Result<(), &'static str> {
+        if !self.config.audio.device_sets.is_empty() {
+            return Err("Use the audio set button or edit the two sets in Headless Settings");
+        }
         let devices = self.panel_device_list().await;
         let available = |kind: &str, id: &str| {
             id.is_empty()
@@ -2348,6 +2374,39 @@ impl Session {
                 tracing::warn!(event = "config-save-failed", error = %format!("{error:#}"));
             }
         }
+        Ok(())
+    }
+
+    async fn toggle_audio_device_set(&mut self) {
+        if self.config.audio.device_sets.len() != 2 {
+            return;
+        }
+        if let Err(error) = self
+            .select_audio_device_set(Some((1 - self.active_device_set) as u64))
+            .await
+        {
+            tracing::warn!(event = "audio-device-set-switch-failed", %error);
+        }
+        self.publish(true);
+    }
+
+    async fn select_audio_device_set(&mut self, index: Option<u64>) -> Result<()> {
+        let index = index
+            .and_then(|index| usize::try_from(index).ok())
+            .filter(|&index| index < self.config.audio.device_sets.len())
+            .context("Audio device set not configured")?;
+        if index == self.active_device_set {
+            return Ok(());
+        }
+        let set = &self.config.audio.device_sets[index];
+        self.io
+            .audio_devices
+            .switch_pair(set.input_device.clone(), set.output_device.clone())
+            .await?;
+        self.input_device.clone_from(&set.input_device);
+        self.output_device.clone_from(&set.output_device);
+        self.active_device_set = index;
+        self.panel_devices = None;
         Ok(())
     }
 
@@ -2806,14 +2865,8 @@ impl Session {
                 .find(|t| t.key == key)
                 .map(|t| t.name.clone())
         });
-        let capture_wanted = !matches!(
-            self.config.audio.input_device.as_deref(),
-            Some("none") | Some("off")
-        );
-        let playback_wanted = !matches!(
-            self.config.audio.output_device.as_deref(),
-            Some("none") | Some("off")
-        );
+        let capture_wanted = !matches!(self.input_device.as_deref(), Some("none") | Some("off"));
+        let playback_wanted = !matches!(self.output_device.as_deref(), Some("none") | Some("off"));
         let media = self.media_info.clone();
         Snapshot {
             instance: self.config.instance.clone(),
@@ -2849,6 +2902,11 @@ impl Session {
             audio_ok: audio_status.all_ok(capture_wanted, playback_wanted),
             system_volume: audio_status.system_volume.clone(),
             output_levels: audio_status.output_levels.clone(),
+            audio_device_set: self.active_device_set,
+            audio_device_set_names: match self.config.audio.device_sets.as_slice() {
+                [first, second] => Some([first.name.trim().into(), second.name.trim().into()]),
+                _ => None,
+            },
             targets,
             reply_target,
             reply_name,

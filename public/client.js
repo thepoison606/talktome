@@ -336,6 +336,7 @@ let leftHandModeEnabled = hasServerDefaultClientSetting('leftHandMode')
 let lockMultipleTargetsEnabled = hasServerDefaultClientSetting('lockMultipleTargets')
   ? serverDefaultClientSettings.lockMultipleTargets === true
   : false;
+let tapToLockEnabled = serverDefaultClientSettings.tapToLock !== false;
 let allowTargetRearrange = false;
 let allowTargetAddRemove = false;
 function canEditTargets() { return canArrangeTargets() || (session.kind === 'user' && allowTargetAddRemove); }
@@ -3516,6 +3517,19 @@ document.addEventListener("DOMContentLoaded", () => {
     setLockMultipleTargets(lockMultipleTargetsToggle.checked);
   });
 
+  const tapToLockToggle = document.getElementById('toggle-tap-to-lock');
+  let pendingTapToLock;
+  function setTapToLock(value) {
+    tapToLockEnabled = value;
+    if (tapToLockToggle) tapToLockToggle.checked = value;
+  }
+  setTapToLock(tapToLockEnabled);
+  tapToLockToggle?.addEventListener('change', () => {
+    setTapToLock(tapToLockToggle.checked);
+    pendingTapToLock = tapToLockEnabled;
+    persistUserAudioSettingsHandler();
+  });
+
   const storedQuality = clientLocalStorage.getItem('audioQualityProfile');
   const defaultQuality = QUALITY_PROFILES[serverDefaultClientSettings.audioProfile]
     ? serverDefaultClientSettings.audioProfile
@@ -6179,6 +6193,7 @@ let cachedOperatorTargets = null;
   });
 
   function renderReplyButtonLabel() {
+    if (btnReply.dataset.locked === 'true') return;
     if (getConfiguredMainButtonIdentity()) {
       const target = getMainButtonTarget();
       btnReply.setAttribute('data-label', target?.label || 'Unavailable target');
@@ -6234,8 +6249,9 @@ let cachedOperatorTargets = null;
     refreshLastTargetLabel();
     const target = getMainButtonTarget();
     const replyUserSocketId = resolveReplyUserSocketId(target);
-    btnReply.disabled = !socket.connected || !isOperatorSession() || !target
-      || (target.type === 'user' && !replyUserSocketId);
+    const targetUnavailable = !target || (target.type === 'user' && !replyUserSocketId);
+    btnReply.disabled = !socket.connected || !isOperatorSession()
+      || (targetUnavailable && btnReply.dataset.locked !== 'true');
     renderReplyButtonLabel();
   }
 
@@ -8522,6 +8538,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     targetType = 'conference',
     targetId = null,
     inputKey = null,
+    tapToLock = false,
   } = {}) => {
     if (session.kind !== 'user') {
       emitApiTalkCommandResult({
@@ -8599,23 +8616,22 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       }
 
       if (action === 'release') {
-        if (targetType === 'reply') {
-          btnReply.classList.remove('active');
+        const held = normalizedInputKey ? activeTalkPointers.get(normalizedInputKey)?.target : null;
+        if (held && tapToLock) {
+          const button = targetType === 'reply' ? btnReply : findTalkButtonForTarget(held);
+          if (isTalkTargetLocked(held)) removeTalkLock(held);
+          else if (button) activateTalkLock(held, button);
         }
-        handleStopTalking(
-          normalizedInputKey
-            ? { preventDefault() {}, currentTarget: null, talkInputKey: normalizedInputKey }
-            : { preventDefault() {}, currentTarget: null }
-        );
+        if (targetType === 'reply' && (!normalizedInputKey || held)) {
+          setReplyButtonActive(Boolean(held && isTalkTargetLocked(held)));
+        }
+        if (!normalizedInputKey || held) handleStopTalking(dummyEvent);
         emitApiTalkCommandResult({
           commandId,
           ok: true,
           action,
           targetType,
           targetId,
-          talking: false,
-          lockActive: false,
-          target: null,
         });
         return;
       }
@@ -9108,8 +9124,11 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     if (session.kind !== 'user' || !socket.connected || applyingClientPanelSettings || remotePanel?.applying) return;
     clearTimeout(userAudioSettingsSaveTimer);
     userAudioSettingsSaveTimer = setTimeout(() => {
-      if (remotePanel) { remotePanel.command({ kind: 'audio-settings', settings: currentUserAudioSettings() }); return; }
-      socket.emit('user-audio-settings-update', { settings: currentUserAudioSettings(), revision: clientPanelRevision }, (result = {}) => {
+      const settings = currentUserAudioSettings();
+      if (typeof pendingTapToLock === 'boolean') settings.tapToLock = pendingTapToLock;
+      pendingTapToLock = undefined;
+      if (remotePanel) { remotePanel.command({ kind: 'audio-settings', settings }); return; }
+      socket.emit('user-audio-settings-update', { settings, revision: clientPanelRevision }, (result = {}) => {
         if (!result.ok) console.warn('Unable to save user audio settings:', result.error);
       });
     }, 120);
@@ -9133,6 +9152,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     setLeftHandMode(settings.leftHandMode, { persist: false });
     if (typeof settings.bigMainButton === 'boolean') setBigMainButton(settings.bigMainButton);
     setLockMultipleTargets(settings.lockMultipleTargets, { persist: false });
+    setTapToLock(typeof value.tapToLock === 'boolean' ? value.tapToLock : serverDefaultClientSettings.tapToLock !== false);
     setUserInputGainDb(Number(settings.userInputGainDb), { persist: false });
     setVoiceTriggerTargetIdentity(settings.voiceTriggerTarget, { persist: false });
     setVoiceTriggerThresholdDb(Number(settings.voiceTriggerThresholdDb), { persist: false });
@@ -9603,60 +9623,11 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       talkIcon.alt = '';
       talkIcon.setAttribute('aria-hidden', 'true');
       talkBtn.appendChild(talkIcon);
-      talkBtn.addEventListener('pointerdown', e => {
-        const currentSocketId = resolveCurrentUserSocketId();
-        if (!currentSocketId) return;
-        e.stopPropagation();
-        li.classList.add('ptt-pressing');
-
-        const normalizedTarget = { type: 'user', id: currentSocketId };
-
-        if (!remotePanel && hasActiveTalkLocks()) {
-          if (isTalkTargetLocked(normalizedTarget)) {
-            li.classList.remove('ptt-pressing');
-            if (lockMultipleTargetsEnabled) {
-              removeTalkLock(normalizedTarget);
-            } else {
-              handleStopTalking({ preventDefault() {}, currentTarget: talkBtn });
-            }
-            return;
-          }
-          if (!lockMultipleTargetsEnabled) {
-            suspendActiveLockState();
-            handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
-          }
-        }
-
-        const startX = e.clientX;
-        let lockedByGesture = false;
-
-        const onMove = (ev) => {
-          if (lockedByGesture || isTalkButtonLocked(talkBtn)) return;
-          if (didReachSlideToLockThreshold(ev.clientX, startX)) {
-            lockedByGesture = true;
-            activateTalkLock(normalizedTarget, talkBtn);
-          }
-        };
-
-        const cleanup = () => {
-          talkBtn.removeEventListener('pointermove', onMove);
-          talkBtn.removeEventListener('pointerup', onEnd);
-          talkBtn.removeEventListener('pointercancel', onEnd);
-          try { talkBtn.releasePointerCapture(e.pointerId); } catch {}
-        };
-
-        const onEnd = (ev) => {
-          cleanup();
-          li.classList.remove('ptt-pressing');
-          handleStopTalking(ev);
-        };
-
-        try { talkBtn.setPointerCapture(e.pointerId); } catch {}
-        talkBtn.addEventListener('pointermove', onMove);
-        talkBtn.addEventListener('pointerup', onEnd);
-        talkBtn.addEventListener('pointercancel', onEnd);
-        handleTalk(e, normalizedTarget);
-      });
+      const getUserTalkTarget = () => {
+        const socketId = resolveCurrentUserSocketId();
+        return socketId ? { type: 'user', id: socketId } : null;
+      };
+      bindTalkPointer(talkBtn, talkBtn, getUserTalkTarget, { row: li });
       if (!isOnline) {
         talkBtn.disabled = true;
       }
@@ -9691,75 +9662,15 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
       if (isOnline) {
         const lockEntry = getTalkLockEntry({ type: 'user', id: socketId });
-        if (lockEntry) {
+        if (lockEntry && lockEntry.button !== btnReply) {
           lockEntry.button = talkBtn;
           setTalkButtonLocked(talkBtn, true);
         }
       }
 
-      let rowPttGestureActive = false;
-      let rowPttStartX = 0;
-      let rowPttLockedByGesture = false;
-      li.addEventListener('pointermove', (e) => {
-        if (!rowPttGestureActive) return;
-        if (rowPttLockedByGesture || isTalkButtonLocked(talkBtn)) return;
-        if (didReachSlideToLockThreshold(e.clientX, rowPttStartX)) {
-          const currentSocketId = resolveCurrentUserSocketId();
-          if (!currentSocketId) return;
-          rowPttLockedByGesture = true;
-          activateTalkLock({ type: 'user', id: currentSocketId }, talkBtn);
-        }
-      });
-
-      ['down', 'up', 'leave', 'cancel'].forEach(ev => {
-        li.addEventListener(`pointer${ev}`, e => {
-          if (
-            e.target.closest('.talk-btn') ||
-            e.target.closest('.mute-btn') ||
-            e.target.closest('.volume-slider')
-          ) return;
-          if (ev === 'down') {
-            const currentSocketId = resolveCurrentUserSocketId();
-            if (!currentSocketId) return;
-            const targetData = { type: 'user', id: currentSocketId };
-            const existingLock = getTalkLockEntry(targetData);
-            if (existingLock) {
-              if (lockMultipleTargetsEnabled) {
-                removeTalkLock(targetData);
-              } else {
-                handleStopTalking({ preventDefault() {}, currentTarget: existingLock.button });
-              }
-              return;
-            }
-            if (!remotePanel && hasActiveTalkLocks() && !lockMultipleTargetsEnabled) {
-              suspendActiveLockState();
-              handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
-              rowPttGestureActive = true;
-              rowPttLockedByGesture = false;
-              rowPttStartX = e.clientX;
-              li.classList.add('ptt-pressing');
-              try { li.setPointerCapture(e.pointerId); } catch {}
-              handleTalk(e, targetData);
-              return;
-            }
-
-            rowPttGestureActive = true;
-            rowPttLockedByGesture = false;
-            rowPttStartX = e.clientX;
-            li.classList.add('ptt-pressing');
-            try { li.setPointerCapture(e.pointerId); } catch {}
-            handleTalk(e, targetData);
-            return;
-          }
-
-          if (ev === 'up' || ev === 'leave' || ev === 'cancel') {
-            if (!rowPttGestureActive) return;
-            rowPttGestureActive = false;
-            li.classList.remove('ptt-pressing');
-            try { li.releasePointerCapture(e.pointerId); } catch {}
-          }
-          handleStopTalking(e);
-        });
+      bindTalkPointer(li, talkBtn, getUserTalkTarget, {
+        row: li,
+        ignore: '.talk-btn, .mute-btn, .volume-slider',
       });
 
       return li;
@@ -10272,129 +10183,22 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       talkIcon.alt = '';
       talkIcon.setAttribute('aria-hidden', 'true');
       talkBtn.appendChild(talkIcon);
-      talkBtn.addEventListener('pointerdown', e => {
-        e.stopPropagation();
-        li.classList.add('ptt-pressing');
-
-        const normalizedTarget = { type: 'conference', id };
-
-        if (!remotePanel && hasActiveTalkLocks()) {
-          if (isTalkTargetLocked(normalizedTarget)) {
-            li.classList.remove('ptt-pressing');
-            if (lockMultipleTargetsEnabled) {
-              removeTalkLock(normalizedTarget);
-            } else {
-              handleStopTalking({ preventDefault() {}, currentTarget: talkBtn });
-            }
-            return;
-          }
-          if (!lockMultipleTargetsEnabled) {
-            suspendActiveLockState();
-            handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
-          }
-        }
-
-        const startX = e.clientX;
-        let lockedByGesture = false;
-
-        const onMove = (ev) => {
-          if (lockedByGesture || isTalkButtonLocked(talkBtn)) return;
-          if (didReachSlideToLockThreshold(ev.clientX, startX)) {
-            lockedByGesture = true;
-            activateTalkLock(normalizedTarget, talkBtn);
-          }
-        };
-
-        const cleanup = () => {
-          talkBtn.removeEventListener('pointermove', onMove);
-          talkBtn.removeEventListener('pointerup', onEnd);
-          talkBtn.removeEventListener('pointercancel', onEnd);
-          try { talkBtn.releasePointerCapture(e.pointerId); } catch {}
-        };
-
-        const onEnd = (ev) => {
-          cleanup();
-          li.classList.remove('ptt-pressing');
-          handleStopTalking(ev);
-        };
-
-        try { talkBtn.setPointerCapture(e.pointerId); } catch {}
-        talkBtn.addEventListener('pointermove', onMove);
-        talkBtn.addEventListener('pointerup', onEnd);
-        talkBtn.addEventListener('pointercancel', onEnd);
-        handleTalk(e, normalizedTarget);
-      });
+      const getConferenceTalkTarget = () => ({ type: 'conference', id });
+      bindTalkPointer(talkBtn, talkBtn, getConferenceTalkTarget, { row: li });
 
       actions.append(muteBtn, talkBtn);
 
       li.append(icon, createTargetLevelMeter(), info, actions, hint);
 
       const lockEntry = getTalkLockEntry({ type: 'conference', id });
-      if (lockEntry) {
+      if (lockEntry && lockEntry.button !== btnReply) {
         lockEntry.button = talkBtn;
         setTalkButtonLocked(talkBtn, true);
       }
 
-      let rowPttGestureActive = false;
-      let rowPttStartX = 0;
-      let rowPttLockedByGesture = false;
-      li.addEventListener('pointermove', (e) => {
-        if (!rowPttGestureActive) return;
-        if (rowPttLockedByGesture || isTalkButtonLocked(talkBtn)) return;
-        if (didReachSlideToLockThreshold(e.clientX, rowPttStartX)) {
-          rowPttLockedByGesture = true;
-          activateTalkLock({ type: 'conference', id }, talkBtn);
-        }
-      });
-
-      ['down', 'up', 'leave', 'cancel'].forEach(ev => {
-        li.addEventListener(`pointer${ev}`, e => {
-          if (
-            e.target.closest('.talk-btn') ||
-            e.target.closest('.mute-btn') ||
-            e.target.closest('.volume-slider') ||
-            e.target.closest('.conf-icon')
-          ) return;
-          if (ev === 'down') {
-            const targetData = { type: 'conference', id };
-            const existingLock = getTalkLockEntry(targetData);
-            if (existingLock) {
-              if (lockMultipleTargetsEnabled) {
-                removeTalkLock(targetData);
-              } else {
-                handleStopTalking({ preventDefault() {}, currentTarget: existingLock.button });
-              }
-              return;
-            }
-            if (!remotePanel && hasActiveTalkLocks() && !lockMultipleTargetsEnabled) {
-              suspendActiveLockState();
-              handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
-              rowPttGestureActive = true;
-              rowPttLockedByGesture = false;
-              rowPttStartX = e.clientX;
-              li.classList.add('ptt-pressing');
-              try { li.setPointerCapture(e.pointerId); } catch {}
-              handleTalk(e, targetData);
-              return;
-            }
-
-            rowPttGestureActive = true;
-            rowPttLockedByGesture = false;
-            rowPttStartX = e.clientX;
-            li.classList.add('ptt-pressing');
-            try { li.setPointerCapture(e.pointerId); } catch {}
-            handleTalk(e, targetData);
-            return;
-          }
-
-          if (ev === 'up' || ev === 'leave' || ev === 'cancel') {
-            if (!rowPttGestureActive) return;
-            rowPttGestureActive = false;
-            li.classList.remove('ptt-pressing');
-            try { li.releasePointerCapture(e.pointerId); } catch {}
-          }
-          handleStopTalking(e);
-        });
+      bindTalkPointer(li, talkBtn, getConferenceTalkTarget, {
+        row: li,
+        ignore: '.talk-btn, .mute-btn, .volume-slider, .conf-icon',
       });
 
       list.appendChild(li);
@@ -12049,6 +11853,10 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       button.setAttribute('aria-pressed', 'false');
       button.title = 'Hold to talk';
     }
+    if (button === btnReply) {
+      setReplyButtonActive(isLocked);
+      updateReplyButtonState();
+    }
   }
 
   function cancelSuspendedLockRestore() {
@@ -12214,6 +12022,65 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   function toggleTargetLock(target) {
     toggleTalkLock(target);
+  }
+
+  function bindTalkPointer(surface, button, getTarget, { row = null, ignore = '', reply = false } = {}) {
+    let press = null;
+    const hasHold = (id) => remotePanel ? remotePanel.heldInputs.has(String(id)) : activeTalkPointers.has(id);
+
+    surface.addEventListener('pointerdown', (event) => {
+      if (press || event.button !== 0 || button.disabled || !isOperatorSession()
+        || (ignore && event.target.closest(ignore))) return;
+      const ownedLock = reply && getActiveTalkLockEntries().find((entry) => entry.button === button);
+      const target = ownedLock?.target ?? resolveLiveTalkTarget(getTarget());
+      if (!target || (remotePanel && !remotePanel.state?.online)) return;
+      event.preventDefault();
+      if (surface !== row) event.stopPropagation();
+      if (isTalkTargetLocked(target)) {
+        if (reply) setReplyButtonActive(false);
+        removeTalkLock(target);
+        return;
+      }
+      if (!remotePanel && hasActiveTalkLocks() && !lockMultipleTargetsEnabled) {
+        suspendActiveLockState();
+        handleStopTalking({ preventDefault() {}, currentTarget: null, suppressLockRestore: true });
+      }
+      press = { id: event.pointerId, x: event.clientX, y: event.clientY,
+        startedAt: event.timeStamp, moved: false, locked: false, target };
+      row?.classList.add('ptt-pressing');
+      if (reply) setReplyButtonActive(true);
+      try { surface.setPointerCapture(press.id); } catch {}
+      void handleTalk(event, target);
+    });
+
+    const movedTooFar = (event, start) => Math.hypot(event.clientX - start.x, event.clientY - start.y) > 12;
+    surface.addEventListener('pointermove', (event) => {
+      if (!press || event.pointerId !== press.id || press.locked || button.disabled) return;
+      press.moved ||= movedTooFar(event, press);
+      if (hasHold(press.id) && didReachSlideToLockThreshold(event.clientX, press.x)) {
+        press.locked = true;
+        activateTalkLock(press.target, button);
+      }
+    });
+    const finish = (event) => {
+      const start = press;
+      if (!start || event.pointerId !== start.id) return;
+      press = null;
+      row?.classList.remove('ptt-pressing');
+      try { surface.releasePointerCapture(start.id); } catch {}
+      if (!hasHold(start.id)) return;
+      if (!start.locked && !button.disabled && event.type === 'pointerup') {
+        const slid = didReachSlideToLockThreshold(event.clientX, start.x);
+        const tapped = tapToLockEnabled && !start.moved
+          && !movedTooFar(event, start) && event.timeStamp - start.startedAt < 300;
+        if (slid || tapped) activateTalkLock(start.target, button);
+      }
+      handleStopTalking({ preventDefault: () => event.preventDefault(), pointerId: start.id, currentTarget: null });
+    };
+    surface.addEventListener('pointerup', finish);
+    surface.addEventListener('pointercancel', finish);
+    surface.addEventListener('lostpointercapture', finish);
+    if (surface === row) surface.addEventListener('pointerleave', finish);
   }
 
   async function handleTalk(e, target) {
@@ -12457,23 +12324,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     btnReply.setAttribute("aria-pressed", isActive ? "true" : "false");
   }
 
-    btnReply.addEventListener("pointerdown", e => {
-      e.preventDefault();
-      if (!isOperatorSession()) return;
-    const target = getMainButtonTarget();
-    if (!target || btnReply.disabled) return;
-    setReplyButtonActive(true);
-    try { btnReply.setPointerCapture(e.pointerId); } catch {}
-    handleTalk(e, { type: target.type, id: target.id });
-  });
-
-  const handleReplyPointerEnd = (e) => {
-    try { btnReply.releasePointerCapture(e.pointerId); } catch {}
-    handleStopTalking(e);
-  };
-
-  btnReply.addEventListener("pointerup", handleReplyPointerEnd);
-  btnReply.addEventListener("pointercancel", handleReplyPointerEnd);
+  bindTalkPointer(btnReply, btnReply, getMainButtonTarget, { reply: true });
 
   function handleStopTalking(e) {
     e.preventDefault();

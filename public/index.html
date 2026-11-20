@@ -1004,6 +1004,13 @@
         box-shadow: 0 0 12px rgba(139, 92, 246, 0.35);
       }
 
+      #reply .target-talk-lock-icon {
+        position: absolute;
+        inset-block-start: 0.4rem;
+        inset-inline-end: 0.5rem;
+        pointer-events: none;
+      }
+
       /* Hidden audio container */
       #audio-streams {
         position: absolute;
@@ -1461,7 +1468,7 @@
         flex-wrap: nowrap;
       }
 
-      #targets-list .target-talk-lock-icon {
+      .target-talk-lock-icon {
         display: none;
         width: 1rem;
         height: 1rem;
@@ -1473,7 +1480,8 @@
         stroke-linejoin: round;
       }
 
-      #targets-list li.target-item.talk-locked .target-talk-lock-icon {
+      #targets-list li.target-item.talk-locked .target-talk-lock-icon,
+      #reply[data-locked="true"] .target-talk-lock-icon {
         display: block;
       }
 
@@ -2653,6 +2661,13 @@
                 </label>
               </div>
               <div class="processing-options processing-options--close-to-previous">
+                <label class="settings-switch" title="Tap a talk button briefly to lock it. Holding still works as push-to-talk.">
+                  <input type="checkbox" id="toggle-tap-to-lock" role="switch" />
+                  <span class="settings-switch__track" aria-hidden="true"></span>
+                  <span>Tap to lock</span>
+                </label>
+              </div>
+              <div class="processing-options processing-options--close-to-previous">
                 <label class="settings-switch" title="Show received audio before playback volume and dimming.">
                   <input type="checkbox" id="toggle-incoming-levels" role="switch" />
                   <span class="settings-switch__track" aria-hidden="true"></span>
@@ -2790,7 +2805,7 @@
           data-label="🔊 REPLY"
           aria-label="Reply"
           disabled
-        ></button>
+        ><svg class="target-talk-lock-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3"/><rect x="5" y="10" width="14" height="11" rx="2"/></svg></button>
       </div>
       <div id="audio-streams"></div>
     </div>

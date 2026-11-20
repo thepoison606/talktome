@@ -925,7 +925,7 @@ values (e.g. `TALKTOME_USER_PASSWORD`), which is also how the systemd
                         { "line": "GPIO23", "action": "reply", "active_low": true } ],
             "target_outputs": [ { "line": "GPIO18", "target": "conference:1", "when": "receiving" } ] },
   "socket": { "enabled": true, "path": null, "tcp": null },  // Unix JSONL; tcp is loopback-only
-  "web": { "enabled": true, "bind": "0.0.0.0", "port": 8080, "password": "admin" },
+  "web": { "enabled": true, "bind": "127.0.0.1", "port": 8080, "password": "" },
   "health": { "port": null, "bind": "127.0.0.1" },  // optional /healthz listener
   "log": { "level": "info", "format": "auto" }, // auto = JSON unless stderr is a terminal
   "state_dir": null                          // default: $STATE_DIRECTORY or /var/lib/talktome-headless/<instance>
@@ -1015,8 +1015,8 @@ Raspberry Pi OS. `User=` already applies the groups recorded for
 
 ### 13.1 Web interface
 
-Each instance serves a local administration UI (`web.bind:web.port`,
-default `0.0.0.0:8080`; one port per instance) built with axum and plain
+Each configured instance serves a local administration UI (`web.bind:web.port`,
+default `127.0.0.1:8080`; one port per instance) built with axum and plain
 HTML/CSS/JS embedded in the binary. It follows the Talktome Admin panel's
 look (dark navy, cards, blue primary) and is laid out for phones first,
 because in the field it is opened from a smartphone. The favicon and
@@ -1026,12 +1026,13 @@ or the black-on-white Bridge. An opaque apple-touch icon is served for
 home-screen bookmarks.
 
 - **Login**: the user is always `admin`; the password is `web.password`
-  (or `TALKTOME_WEB_PASSWORD`). The default `admin` is accepted once and then
-  a password change is enforced (a separate dialog, not the login overlay);
-  the new password is written into the configuration file (`web.password`).
-  Sessions are in-memory cookies
-  (`HttpOnly`, `SameSite=Strict`, 12 h); five failed logins throttle further
-  attempts for 30 s.
+  (or `TALKTOME_WEB_PASSWORD`). An empty password or the former `admin`
+  password serves only a setup notice. The login and administration API
+  become available after setting an individual password and restarting.
+  The listener defaults to loopback. Password changes from Settings are
+  written to `web.password`. Session cookies use `HttpOnly` and
+  `SameSite=Strict` and expire after 12 hours. Five failed logins throttle
+  further attempts for 30 seconds.
 - **Status**: connection (state, detail, server, user id, production,
   registration age, reconnects, send/receive transport state, consumers,
   producer id, ICE URLs announced by the server and the local webrtc-rs

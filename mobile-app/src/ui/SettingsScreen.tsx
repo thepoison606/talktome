@@ -446,6 +446,7 @@ function LayoutSettingsPage({
         />
         <SettingsNavRow label="Main button target" value={main.label} onPress={onOpenMainButton} />
         <SettingsNavRow label="Keyboard shortcuts" value="1–9 · Space" onPress={onOpenKeyboard} />
+        <SettingsSwitchRow label="Tap to lock" value={store.tapToLock} onValueChange={(value) => session.setTapToLock(value)} />
         <SettingsSwitchRow
           label="Big main button"
           value={store.bigMainButton}

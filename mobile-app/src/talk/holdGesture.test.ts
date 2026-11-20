@@ -7,6 +7,29 @@ function callbacks(options = {}) {
 const touch = (identifier: number, pageX = 100) => ({ identifier, pageX });
 
 describe('independent talk touches', () => {
+  it('latches only completed, stationary taps below 300 ms when enabled', () => {
+    for (const [elapsed, enabled, move, cancelled, expected] of [
+      [299, true, false, false, true],
+      [300, true, false, false, false],
+      [100, false, false, false, false],
+      [100, true, true, false, false],
+      [100, true, false, true, false],
+    ] as const) {
+      let now = 0;
+      const gesture = createHoldGesture(() => now), action = callbacks({ tapToLock: enabled });
+      gesture.start(touch(1), action);
+      expect(action.onPress).toHaveBeenCalledOnce();
+      if (move) gesture.move([{ ...touch(1), pageY: 20 }]);
+      now = elapsed;
+      gesture.end([touch(2)]);
+      expect(action.onRelease).not.toHaveBeenCalled();
+      gesture.end([touch(1)], cancelled);
+      expect(action.onLock).toHaveBeenCalledTimes(Number(expected));
+      expect(action.onRelease).toHaveBeenCalledOnce();
+      if (expected) expect(action.onLock.mock.invocationCallOrder[0]).toBeLessThan(action.onRelease.mock.invocationCallOrder[0]!);
+    }
+  });
+
   it('allows two surfaces to be held and released independently in either order', () => {
     for (const first of [0, 1]) {
       const gestures = [createHoldGesture(), createHoldGesture()];
@@ -56,7 +79,7 @@ describe('independent talk touches', () => {
   });
 
   it('unlocks an already locked button without relocking from the same touch', () => {
-    const gesture = createHoldGesture(), action = callbacks({ locked: true });
+    const gesture = createHoldGesture(), action = callbacks({ locked: true, tapToLock: true });
     gesture.start(touch(1), action); gesture.move([touch(1, 40)]); gesture.end([touch(1)]);
     expect(action.onPress).toHaveBeenCalledOnce(); expect(action.onLock).not.toHaveBeenCalled();
   });
