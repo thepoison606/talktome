@@ -48,6 +48,22 @@ async function fixture(t) {
     getUserPanelSettings: id => settings.get(Number(id)) || {},
     updateUserPanelSettings: (id, value) => settings.set(Number(id), structuredClone(value)),
     getResolvedUserAudioSettings: () => ({}), updateUserAudioSettings() {}, updateProductionTargetOrder() {}, notifyTargetChange() {},
+    getAvailableProductionTargets: () => targets,
+    changeProductionTargetSelection(productionId, userId, { action, targetType, targetId }) {
+      assert.equal(productionId, 1);
+      assert.equal(userId, 7);
+      assert.equal(action, 'remove');
+      const index = targets.findIndex(target => target.targetType === targetType && target.targetId === targetId);
+      if (index < 0) throw new Error('Target is not assigned');
+      targets.splice(index, 1);
+    },
+    updateTargetColor(productionId, userId, { targetType, targetId, color }) {
+      assert.equal(productionId, 1);
+      assert.equal(userId, 7);
+      const target = targets.find(target => target.targetType === targetType && target.targetId === targetId);
+      if (!target) throw new Error('Target is not assigned');
+      target.color = color;
+    },
   });
   io.on('connection', socket => {
     const peer = { kind: 'user', userId: 7, socket, productionId: 1 };
@@ -156,6 +172,27 @@ test('panel namespace and HTML require an admin session', async t => {
   assert.match(error.message, /Admin login required/);
   assert.equal((await fetch(`${f.url}/panel?userId=7`)).status, 401);
   assert.equal((await fetch(`${f.url}/panel?userId=7`, { headers: { cookie: 'admin_session=test-admin' } })).status, 200);
+});
+
+test('remote target edits save in the watched production even while the user is offline', async t => {
+  const f = await fixture(t);
+  const panel = await f.openPanel();
+  assert.equal(f.control.snapshot(7).capabilities.editTargets, true);
+  const target = { targetType: 'user', targetId: 8 };
+  const catalog = await panel.emitWithAck('panel-command', { kind: 'target-catalog', productionId: 1 });
+  assert.equal(catalog.ok, true);
+  assert.equal(catalog.available.length, 2);
+  const wrongProduction = await panel.emitWithAck('panel-command', { kind: 'target-color', productionId: 2, ...target, color: '#24505b' });
+  assert.equal(wrongProduction.ok, false);
+  assert.equal(f.targets[0].color, undefined);
+  const colored = await panel.emitWithAck('panel-command', { kind: 'target-color', productionId: 1, ...target, color: '#24505b' });
+  assert.equal(colored.ok, true);
+  assert.equal(colored.state.targets[0].color, '#24505b');
+  const removed = await panel.emitWithAck('panel-command', { kind: 'target-selection', productionId: 1, ...target, action: 'remove' });
+  assert.equal(removed.ok, true);
+  assert.deepEqual(removed.state.targets.map(target => target.targetId), [4]);
+  assert.equal(f.settings.size, 0);
+  assert.equal(f.commands.length, 0);
 });
 
 test('offline absolute audio changes persist without deleting other targets', async t => {

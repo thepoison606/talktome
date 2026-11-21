@@ -56,7 +56,7 @@ test('client order endpoint rejects a disabled user before changing target order
   assert.equal(saved, false);
 });
 
-test('revoking target rearrange hides the client option and closes its open settings view', () => {
+test('the target editor stays available for colors when rearranging is revoked', () => {
   const source = fs.readFileSync(require.resolve('../public/client'), 'utf8');
   const start = source.indexOf('let allowTargetRearrange = false;');
   const end = source.indexOf('let feedInputProcessingEnabled', start);
@@ -70,8 +70,14 @@ test('revoking target rearrange hides the client option and closes its open sett
   assert.equal(context.arrangeTargetsOpenButton.hidden, false);
   context.activeSettingsView = 'arrange';
   context.applyTargetRearrangePermission(false);
+  assert.equal(context.canArrangeTargets(), false);
+  assert.equal(context.arrangeTargetsOpenButton.hidden, false);
+  assert.equal(context.activeSettingsView, 'arrange');
+  context.session.kind = 'guest';
+  context.applyTargetRearrangePermission(false);
   assert.equal(context.arrangeTargetsOpenButton.hidden, true);
   assert.equal(context.activeSettingsView, 'main');
+  context.session.kind = 'user';
   context.remotePanel = {};
   context.applyTargetRearrangePermission(false);
   assert.equal(context.arrangeTargetsOpenButton.hidden, false);

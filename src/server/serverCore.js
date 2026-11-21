@@ -214,6 +214,9 @@ const {
   setProductionConferenceListenOnly,
   removeProductionConferenceMembership,
   getProductionTargets,
+  setProductionTargetColor,
+  resetProductionTargetColors,
+  ensureSingleProductionCatalog,
   getAvailableProductionTargets,
   editProductionTarget,
   getBridgeTargetsForUser,
@@ -2813,8 +2816,16 @@ function emitCompanionTallyEvent(productionId, payload) {
 // === GET ===
 app.get("/users", requireAdmin, (req, res) => {
   const defaults = resolveDefaultClientSettings((loadRuntimeConfig() || {}).defaultClientSettings);
+  const productionIdsByUser = new Map();
+  if (areMultipleProductionsEnabled()) {
+    for (const { production_id, user_id } of getAllProductionMemberships()) {
+      if (!productionIdsByUser.has(user_id)) productionIdsByUser.set(user_id, []);
+      productionIdsByUser.get(user_id).push(production_id);
+    }
+  }
   res.json(getAllUsers().map(user => ({
     ...user,
+    targetProductionIds: productionIdsByUser.get(user.id) || [],
     allowTargetRearrange: canUserRearrangeTargets(user, defaults),
     allowTargetAddRemove: canUserAddRemoveTargets(user, defaults),
   })));
@@ -3035,16 +3046,19 @@ app.get('/api/v1/client/targets/available', (req, res) => {
   res.json(getAvailableProductionTargets(editor.userId, editor.productionId));
 });
 
+function changeProductionTargetSelection(productionId, userId, { action, targetType, targetId }) {
+  if (!['add', 'remove'].includes(action) || !['user', 'conference', 'feed'].includes(targetType)
+    || !Number.isSafeInteger(targetId) || targetId < 1) throw new Error('Invalid target change');
+  editProductionTarget(productionId, userId, targetType, targetId, action);
+  notifyTargetChange(userId);
+  if (targetType === 'conference') notifyConferenceMembersChanged(targetId);
+}
+
 app.put('/api/v1/client/targets/selection', (req, res) => {
   const editor = clientTargetEditor(req, res, req.body?.productionId);
   if (!editor) return;
-  const { action, targetType, targetId } = req.body || {};
-  if (!['add', 'remove'].includes(action) || !['user', 'conference', 'feed'].includes(targetType)
-    || !Number.isSafeInteger(targetId) || targetId < 1) return res.status(400).json({ error: 'Invalid target change' });
   try {
-    editProductionTarget(editor.productionId, editor.userId, targetType, targetId, action);
-    notifyTargetChange(editor.userId);
-    if (targetType === 'conference') notifyConferenceMembersChanged(targetId);
+    changeProductionTargetSelection(editor.productionId, editor.userId, req.body || {});
     res.json({ ok: true });
   } catch (error) { res.status(400).json({ error: error.message || 'Could not edit targets' }); }
 });
@@ -3104,6 +3118,52 @@ app.get("/guest/targets", (req, res) => {
     console.error("Guest targets error:", err);
     res.status(500).json({ error: err.message || "Failed to load guest targets" });
   }
+});
+
+function updateTargetColor(productionId, userId, { targetType, targetId, color }) {
+  setProductionTargetColor(productionId, userId, targetType, targetId, color);
+  notifyTargetColorsChanged(productionId, userId, { targetType, targetId, color });
+}
+
+function notifyTargetColorsChanged(productionId, userId, changes) {
+  const change = { colorOnly: true, productionId, ...changes };
+  for (const peer of peers.values()) {
+    const profileId = peer.kind === 'guest' ? peer.guestProfileUserId : peer.userId;
+    if (isOperatorPeer(peer) && Number(profileId) === Number(userId) && Number(peer.productionId) === productionId) {
+      peer.socket.emit('user-targets-updated', change);
+    }
+  }
+}
+
+function saveTargetColor(res, productionId, userId, body) {
+  try {
+    updateTargetColor(productionId, userId, body || {});
+    remotePanels.publish(userId);
+    res.sendStatus(204);
+  } catch (error) {
+    res.status(error.statusCode || 400).json({ error: error.message || 'Could not change target color' });
+  }
+}
+
+app.put('/api/v1/client/targets/color', (req, res) => {
+  const session = getBrowserSession(req)?.session;
+  if (session?.kind !== 'user') return res.status(401).json({ error: 'User login required' });
+  const userId = Number(session.userId);
+  const user = getUserById(userId);
+  if (!user || user.is_superadmin || user.is_guest_profile) {
+    return res.status(403).json({ error: 'User cannot change target colors' });
+  }
+  const requestedProductionId = req.body?.productionId;
+  let productionId;
+  try {
+    productionId = normalizeActiveProductionId(requestedProductionId, userId);
+  } catch (error) {
+    return res.status(403).json({ error: error.message });
+  }
+  if (requestedProductionId != null && Number(requestedProductionId) !== productionId) {
+    return res.status(409).json({ error: 'The selected production changed' });
+  }
+  return saveTargetColor(res, productionId, userId, req.body);
 });
 
 function buildLoginIdentity(user, kind = "user") {
@@ -3597,6 +3657,42 @@ app.post('/admin/matrix/disconnect-all', requireAdmin, (req, res) => {
 
 app.post('/admin/productions/:productionId/targets/disconnect-all', requireProductionManager, (req, res) => {
   updateMatrixTargets(req, res, req.productionId, true);
+});
+
+app.put('/admin/productions/:productionId/users/:userId/targets/color', requireProductionManager, (req, res) => {
+  return saveTargetColor(res, req.productionId, req.params.userId, req.body);
+});
+
+app.delete('/admin/productions/:productionId/users/:userId/targets/colors', requireProductionManager, (req, res) => {
+  const { productionId } = req;
+  const { userId } = req.params;
+  if (!isUserInProduction(userId, productionId)) {
+    return res.status(404).json({ error: 'User is not a member of this production' });
+  }
+  try {
+    const resetTargets = resetProductionTargetColors(productionId, userId);
+    if (resetTargets.length) {
+      notifyTargetColorsChanged(productionId, userId, {
+        changes: resetTargets.map(target => ({ ...target, color: null })),
+      });
+      remotePanels.publish(userId);
+    }
+    return res.sendStatus(204);
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({ error: error.message || 'Could not reset target colors' });
+  }
+});
+
+app.get('/admin/productions/:productionId/users/:userId/targets', requireProductionManager, (req, res) => {
+  const { productionId } = req;
+  const { userId } = req.params;
+  if (!isUserInProduction(userId, productionId)) {
+    return res.status(404).json({ error: 'User is not a member of this production' });
+  }
+  res.json({
+    targets: getProductionTargets(userId, productionId),
+    available: getAvailableProductionTargets(userId, productionId),
+  });
 });
 
 app.post("/admin/productions/:productionId/users/:userId/targets", requireProductionManager, (req, res) => {
@@ -4772,6 +4868,7 @@ app.put("/admin/settings/multiple-productions", requireAdmin, (req, res) => {
   const enabled = req.body?.enabled === true;
   try {
     const currentConfig = loadRuntimeConfig() || {};
+    if (!enabled) ensureSingleProductionCatalog();
     const configPath = saveRuntimeConfig({
       ...currentConfig,
       multipleProductions: enabled,
@@ -4974,6 +5071,7 @@ app.post("/admin/config/import", requireAdmin, (req, res) => {
         nextConfig.guestLogin.profileUserId = fallbackGuestProfile.id;
       }
     }
+    if (!areMultipleProductionsEnabled(nextConfig)) ensureSingleProductionCatalog();
     saveRuntimeConfig(nextConfig);
     syncFeedVideoPermissions();
     automaticConfigBackup.settingsChanged({
@@ -8167,6 +8265,7 @@ const remotePanels = require('./remotePanelControl').installRemotePanelControl({
   },
   mergeUserTargetAudioStates, getUserPanelSettings, updateUserPanelSettings,
   getResolvedUserAudioSettings, updateUserAudioSettings, updateProductionTargetOrder, notifyTargetChange,
+  getAvailableProductionTargets, changeProductionTargetSelection, updateTargetColor,
   targetAudioChanged(userId) {
     updateCompanionUserState(userId, { targetAudioStates: getUserTargetAudioStates(userId) }, { reason: 'remote-panel-audio' });
   },
@@ -9755,6 +9854,7 @@ function logWebServerReady() {
 }
 
 function startWebServer() {
+  if (!areMultipleProductionsEnabled()) ensureSingleProductionCatalog();
   server.listen(HTTPS_PORT, logWebServerReady);
 }
 

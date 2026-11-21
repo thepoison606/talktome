@@ -9,6 +9,7 @@
     <title>Talktome Admin</title>
     <link rel="icon" type="image/png" href="/images/talktome-icon.png" />
     <link rel="stylesheet" href="/login.css" />
+    <link rel="stylesheet" href="/targetColorPicker.css" />
     <link rel="stylesheet" href="/targetPicker.css" />
     <style>
       :root {
@@ -1793,6 +1794,10 @@
         align-items: center;
         justify-content: center;
         padding: 1.5rem;
+      }
+
+      .admin-action-dialog,
+      .target-color-dialog--admin::backdrop {
         background: rgba(11, 17, 32, 0.82);
         backdrop-filter: blur(6px);
       }
@@ -1806,6 +1811,17 @@
         border-radius: 16px;
         background: rgba(19, 26, 42, 0.99);
         box-shadow: 0 28px 64px rgba(0, 0, 0, 0.45);
+      }
+
+      .target-color-dialog--admin {
+        overflow: visible;
+      }
+
+      .target-color-dialog--admin .admin-action-dialog__panel {
+        max-width: 100%;
+        max-height: calc(100dvh - 2rem);
+        overflow: auto;
+        overscroll-behavior: contain;
       }
 
       .admin-action-dialog__title,
@@ -2149,8 +2165,8 @@
 
       .production-layout--single #production-detail > .production-detail-header,
       .production-layout--single .production-members-panel,
-      .production-layout--single .production-order-row,
-      .production-layout--single #production-order-list {
+      .production-layout--single:not(.production-layout--scoped-admin) .production-order-row,
+      .production-layout--single:not(.production-layout--scoped-admin) #production-order-list {
         display: none;
       }
 
@@ -2343,7 +2359,8 @@
         margin-top: 0.35rem;
       }
 
-      .entity-detail-item :is(.nested, .nested-block) > .inline-controls {
+      .entity-detail-item :is(.nested, .nested-block) > .inline-controls,
+      .entity-detail-item .user-target-controls > .field-group {
         align-items: center;
         margin-top: 0.55rem;
       }
@@ -2353,6 +2370,10 @@
         min-height: 2.2rem;
         padding-top: 0.3rem;
         padding-bottom: 0.3rem;
+      }
+
+      .user-target-actions > .user-target-reset-colors {
+        margin-inline-start: auto;
       }
 
       .entity-detail-item[hidden] {
@@ -3827,6 +3848,10 @@
           width: 100%;
         }
 
+        #user-list .nested-block > .user-target-actions button {
+          grid-column: auto;
+        }
+
         #matrix-section > .card-header,
         #matrix-section > .card-header .card-header__actions {
           width: 100%;
@@ -4491,8 +4516,8 @@
               </div>
 
               <div class="production-order-row matrix-subheading--secondary">
-                <h3 class="matrix-subheading">Button order</h3>
-                <select id="production-order-user" aria-label="Select member for button order"></select>
+                <h3 class="matrix-subheading">Target buttons</h3>
+                <select id="production-order-user" aria-label="Select member for target buttons"></select>
               </div>
               <ul id="production-order-list" class="production-order-list"></ul>
             </div>
@@ -4959,6 +4984,7 @@
     <script src="/bridgeTalkTrigger.js"></script>
     <script src="/targetPicker.js"></script>
     <script src="/adminAutoSave.js"></script>
+    <script src="/targetEditor.js"></script>
     <script src="admin.js"></script>
   </body>
 </html>

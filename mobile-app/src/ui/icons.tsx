@@ -28,6 +28,7 @@ const SPEAKER_ON = require('../../assets/icons/speaker-white.png') as ImageSourc
 const SPEAKER_MUTED = require('../../assets/icons/speaker-muted.png') as ImageSourcePropType;
 const PLAY = require('../../assets/icons/play-rounded.png') as ImageSourcePropType;
 const REPLY = require('../../assets/icons/reply.png') as ImageSourcePropType;
+const PALETTE = require('../../assets/icons/palette.png') as ImageSourcePropType;
 
 export function targetAvatarBackground(
   type: 'user' | 'guest' | 'conference' | 'feed',
@@ -204,6 +205,10 @@ export function QrIcon({ color = colors.text, size = 20 }: IconProps) {
       <View style={[styles.qrFinder, { bottom: inset, left: inset, width: finder, height: finder, borderColor: color }]} />
     </View>
   );
+}
+
+export function PaletteIcon({ color = colors.text, size = 20 }: IconProps) {
+  return <AssetIcon source={PALETTE} color={color} size={size} />;
 }
 
 export function TrashIcon({ color = colors.danger, size = 20 }: IconProps) {

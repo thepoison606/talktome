@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { normalize: normalizeUserAudioSettings } = require('../../public/userAudioSettings');
 const bridgeAudioLevels = require('../../public/bridgeAudioLevels');
 const bridgeTalkTrigger = require('../../public/bridgeTalkTrigger');
+const targetColors = new Set(require('../../public/targetColors.json').map(({ value }) => value));
 const { loginNameKey, assertUniqueLoginNames } = require('./loginNames');
 
 const BRIDGE_ENDPOINT_TEXT_LIMIT = 200;
@@ -544,6 +545,16 @@ function materializePrimaryProductionFromGlobal() {
   return productionId;
 }
 
+const ensureSingleProductionCatalog = db.transaction(() => {
+  const productionId = materializePrimaryProductionFromGlobal();
+  db.prepare(`INSERT OR IGNORE INTO production_users (production_id, user_id, is_admin)
+    SELECT ?, id, 0 FROM users WHERE is_superadmin = 0`).run(productionId);
+  db.prepare(`INSERT OR IGNORE INTO production_conferences (production_id, conference_id)
+    SELECT ?, id FROM conferences`).run(productionId);
+  db.prepare(`INSERT OR IGNORE INTO production_feeds (production_id, feed_id)
+    SELECT ?, id FROM feeds`).run(productionId);
+});
+
 function getAllProductionMemberships() {
   return db.prepare('SELECT production_id, user_id FROM production_users').all();
 }
@@ -905,7 +916,46 @@ function getProductionTargets(userId, productionId) {
       ? isUserInProduction(target.targetId, productionId)
       : Boolean(db.prepare('SELECT 1 FROM production_conferences WHERE production_id = ? AND conference_id = ?')
         .get(Number(productionId), target.targetId))) : [];
-  return mergeBridgeTargets(manual, managed);
+  const colors = new Map(db.prepare(`
+    SELECT target_type, target_id, color FROM production_target_colors
+    WHERE production_id = ? AND user_id = ?
+  `).all(Number(productionId), Number(userId))
+    .map(row => [`${row.target_type}:${row.target_id}`, row.color]));
+  return mergeBridgeTargets(manual, managed).map(target => {
+    const color = colors.get(`${target.targetType}:${target.targetId}`);
+    return targetColors.has(color) ? { ...target, color } : target;
+  });
+}
+
+const setProductionTargetColor = db.transaction((productionId, userId, targetType, targetId, color) => {
+  const pid = Number(productionId);
+  const uid = Number(userId);
+  if (!Number.isSafeInteger(targetId) || targetId < 1 || (color !== null && !targetColors.has(color))) {
+    throw new Error('Invalid target color change');
+  }
+  if (!isUserInProduction(uid, pid)
+    || !getProductionTargets(uid, pid).some(target => target.targetType === targetType && target.targetId === targetId)) {
+    const error = new Error('Target is not assigned in this production');
+    error.statusCode = 404;
+    throw error;
+  }
+  if (color === null) {
+    db.prepare(`DELETE FROM production_target_colors
+      WHERE production_id = ? AND user_id = ? AND target_type = ? AND target_id = ?`)
+      .run(pid, uid, targetType, targetId);
+  } else {
+    db.prepare(`INSERT INTO production_target_colors (production_id, user_id, target_type, target_id, color)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (production_id, user_id, target_type, target_id) DO UPDATE SET color = excluded.color`)
+      .run(pid, uid, targetType, targetId, color);
+  }
+});
+
+function resetProductionTargetColors(productionId, userId) {
+  return db.prepare(`
+    DELETE FROM production_target_colors WHERE production_id = ? AND user_id = ?
+    RETURNING target_type AS targetType, target_id AS targetId
+  `).all(Number(productionId), Number(userId));
 }
 
 function getAvailableProductionTargets(userId, productionId) {
@@ -1160,6 +1210,11 @@ function exportDatabaseSnapshot() {
       FROM production_user_targets
       ORDER BY production_id, user_id, target_type, target_id
     `).all(),
+    productionTargetColors: db.prepare(`
+      SELECT production_id, user_id, target_type, target_id, color
+      FROM production_target_colors
+      ORDER BY production_id, user_id, target_type, target_id
+    `).all(),
     productionTargetOrder: db.prepare(`
       SELECT production_id, user_id, target_type, target_id, position
       FROM production_target_order
@@ -1297,6 +1352,7 @@ function importDatabaseSnapshot(snapshot) {
     db.prepare('DELETE FROM user_bridge_endpoints').run();
     db.prepare('DELETE FROM feed_bridge_endpoints').run();
     db.prepare('DELETE FROM production_user_conference').run();
+    db.prepare('DELETE FROM production_target_colors').run();
     db.prepare('DELETE FROM production_target_order').run();
     db.prepare('DELETE FROM production_user_targets').run();
     db.prepare('DELETE FROM production_feeds').run();
@@ -1519,6 +1575,18 @@ function importDatabaseSnapshot(snapshot) {
         Number(row.production_id), Number(row.user_id), String(row.target_type), Number(row.target_id)
       );
     });
+    const insertProductionTargetColor = db.prepare(`
+      INSERT INTO production_target_colors (production_id, user_id, target_type, target_id, color)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    for (const row of Array.isArray(snapshot.productionTargetColors) ? snapshot.productionTargetColors : []) {
+      if (!targetColors.has(row.color) || !['user', 'conference', 'feed'].includes(row.target_type)) {
+        throw new Error('Invalid target color in snapshot');
+      }
+      insertProductionTargetColor.run(
+        Number(row.production_id), Number(row.user_id), row.target_type, Number(row.target_id), row.color
+      );
+    }
     productionTargetOrder.forEach((row) => {
       insertProductionTargetOrder.run(
         Number(row.production_id), Number(row.user_id), String(row.target_type),
@@ -2079,6 +2147,7 @@ function deleteUser(userId) {
   db.prepare('DELETE FROM production_target_order WHERE user_id = ?').run(userId);
   db.prepare('DELETE FROM production_user_targets WHERE user_id = ?').run(userId);
   db.prepare("DELETE FROM production_target_order WHERE target_type = 'user' AND target_id = ?").run(userId);
+  db.prepare("DELETE FROM production_target_colors WHERE target_type = 'user' AND target_id = ?").run(userId);
   db.prepare("DELETE FROM production_user_targets WHERE target_type = 'user' AND target_id = ?").run(userId);
   db.prepare('DELETE FROM production_users WHERE user_id = ?').run(userId);
   db.prepare('DELETE FROM user_feed_targets WHERE user_id = ?').run(userId);
@@ -2093,6 +2162,7 @@ function deleteConference(confId) {
     db.prepare('DELETE FROM production_user_conference WHERE conference_id = ?').run(id);
     db.prepare('DELETE FROM production_conferences WHERE conference_id = ?').run(id);
     db.prepare("DELETE FROM production_target_order WHERE target_type = 'conference' AND target_id = ?").run(id);
+    db.prepare("DELETE FROM production_target_colors WHERE target_type = 'conference' AND target_id = ?").run(id);
     db.prepare("DELETE FROM production_user_targets WHERE target_type = 'conference' AND target_id = ?").run(id);
     db.prepare("DELETE FROM user_target_order WHERE target_type = 'conference' AND target_id = ?").run(id);
     db.prepare("DELETE FROM user_target_audio_state WHERE target_type = 'conference' AND target_id = ?").run(id);
@@ -2107,6 +2177,7 @@ function deleteFeed(feedId) {
   const tx = db.transaction(id => {
     db.prepare('DELETE FROM production_feeds WHERE feed_id = ?').run(id);
     db.prepare("DELETE FROM production_target_order WHERE target_type = 'feed' AND target_id = ?").run(id);
+    db.prepare("DELETE FROM production_target_colors WHERE target_type = 'feed' AND target_id = ?").run(id);
     db.prepare("DELETE FROM production_user_targets WHERE target_type = 'feed' AND target_id = ?").run(id);
     db.prepare('DELETE FROM user_feed_targets WHERE feed_id = ?').run(id);
     db.prepare("DELETE FROM user_target_order WHERE target_type = 'feed' AND target_id = ?").run(id);
@@ -2504,6 +2575,9 @@ module.exports = {
   setProductionConferenceListenOnly,
   removeProductionConferenceMembership,
   getProductionTargets,
+  setProductionTargetColor,
+  resetProductionTargetColors,
+  ensureSingleProductionCatalog,
   getAvailableProductionTargets,
   editProductionTarget,
   getBridgeTargetsForUser,

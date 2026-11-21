@@ -57,12 +57,12 @@ test('switching production clears old targets and ignores a response from the ol
 test('saving a target change disables existing controls without rebuilding them during the request', async () => {
   const f = fixture(); let respond; let busyUpdates = 0, reloads = 0;
   Object.assign(f.context, {
-    allowTargetAddRemove: true, arrangeTargetsSaving: false,
+    canChangeTargetSelection: () => true, arrangeTargetsSaving: false,
     updateArrangeTargetsBusy() { busyUpdates++; },
     fetch: () => new Promise(resolve => { respond = resolve; }),
     loadArrangeTargets: async () => { reloads++; },
   });
-  const start = source.indexOf('  async function changeSelectedTarget(');
+  const start = source.indexOf('  async function sendPanelTargetCommand(');
   const end = source.indexOf("  addTargetsButton?.addEventListener('click'", start);
   vm.runInContext(source.slice(start, end), f.context);
   const save = f.context.changeSelectedTarget('remove', f.original[0]);

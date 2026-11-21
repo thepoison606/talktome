@@ -99,6 +99,8 @@ pub async fn asset(Path(path): Path<String>) -> Response {
         }
         "remotePanel.js" => Some(include_bytes!("../../../public/remotePanel.js")),
         "remotePanelState.js" => Some(include_bytes!("../../../public/remotePanelState.js")),
+        "targetColorPicker.css" => Some(include_bytes!("../../../public/targetColorPicker.css")),
+        "targetEditor.js" => Some(include_bytes!("../../../public/targetEditor.js")),
         "targetIdentity.js" => Some(include_bytes!("../../../public/targetIdentity.js")),
         "targetLayers.js" => Some(include_bytes!("../../../public/targetLayers.js")),
         "targetPicker.css" => Some(include_bytes!("../../../public/targetPicker.css")),

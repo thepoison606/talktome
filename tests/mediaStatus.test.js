@@ -51,6 +51,35 @@ function fixture() {
   return { peer, browser, broadcasts, transport, handler, status: () => describePeerMediaStatus(peer) };
 }
 
+test('the remote panel distinguishes an offline client from a lost server connection', () => {
+  const source = fs.readFileSync(require.resolve('../public/client'), 'utf8');
+  const label = { textContent: '' };
+  const badge = { className: '', title: '' };
+  const context = vm.createContext({
+    remotePanel: { state: { online: false, runtime: null } },
+    socket: { connected: true }, mediaConnectionState: { signaling: 'connected' },
+    mediaConnectionStatusEl: badge, mediaConnectionStatusLabelEl: label,
+  });
+  vm.runInContext(source.slice(
+    source.indexOf('  function renderMediaConnectionStatus('),
+    source.indexOf('  function setSignalingConnectionState('),
+  ), context);
+  context.renderMediaConnectionStatus();
+  assert.equal(label.textContent, 'Client offline');
+  assert.doesNotMatch(badge.className, /is-failed/);
+
+  context.socket.connected = false;
+  context.mediaConnectionState.signaling = 'disconnected';
+  context.renderMediaConnectionStatus();
+  assert.equal(label.textContent, 'Server unavailable');
+  assert.match(badge.className, /is-failed/);
+
+  context.socket.connected = true;
+  context.remotePanel.state = { online: true, runtime: { mediaConnection: { signaling: 'connected', send: 'failed', receive: 'idle' } } };
+  context.renderMediaConnectionStatus();
+  assert.equal(label.textContent, 'Media failed');
+});
+
 test('blocked WebRTC is visible even while signaling remains online, then recovers', () => {
   const f = fixture();
   const send = f.transport('send');

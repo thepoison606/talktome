@@ -189,6 +189,25 @@ export class ApiClient {
     if (!response.ok) throw await this.serverError(response);
   }
 
+  async fetchTargetColors(): Promise<{ name: string; value: string }[]> {
+    const response = await this.http.request('/targetColors.json');
+    if (response.status === 404) throw new ApiClientError('This Talktome server does not support target colors.', 404);
+    if (!response.ok) throw await this.serverError(response);
+    const palette = await readJson<{ name: string; value: string }[]>(response);
+    if (!Array.isArray(palette)) throw new ApiClientError('Could not load target colors.');
+    return palette.filter(color => typeof color?.name === 'string'
+      && typeof color.value === 'string' && /^#[0-9a-f]{6}$/.test(color.value));
+  }
+
+  async saveTargetColor(productionId: number | null, target: TalkTarget, color: string | null): Promise<void> {
+    const response = await this.http.request('/api/v1/client/targets/color', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productionId, targetType: target.type, targetId: Number(target.id), color }),
+    });
+    if (!response.ok) throw await this.serverError(response);
+    if (response.status !== 204) throw new ApiClientError('Server did not confirm the target color change.');
+  }
+
   /** TalkToMe 1.5.8. The list must be the complete current target set. */
   async saveTargetOrder(
     productionId: number | null,

@@ -3,10 +3,6 @@
 
 export const SLIDE_TO_LOCK_THRESHOLD = 42;
 
-export function slideToLockHint(leftHanded: boolean): string {
-  return leftHanded ? 'Slide to lock →' : '← Slide to lock';
-}
-
 export function didReachSlideToLockThreshold(
   currentX: number,
   startX: number,

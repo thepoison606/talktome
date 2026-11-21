@@ -254,3 +254,35 @@ test('migrates legacy production layouts once without restoring removed membersh
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test('single-production mode includes accounts and targets created in other layouts', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'talktome-single-catalog-'));
+  try {
+    execFileSync(process.execPath, ['-e', `
+      const assert = require('node:assert/strict');
+      const db = require(${JSON.stringify(require.resolve('../src/server/dbHandler'))});
+      const primary = db.getPrimaryProduction().id;
+      const separate = db.createProduction('Evening');
+      const existing = Number(db.createUser('Existing', 'password'));
+      const newcomer = Number(db.createUser('Newcomer', 'password'));
+      const conference = db.createConference('Stage');
+      const feed = db.createFeed('Program', 'password');
+      db.setProductionUser(primary, existing, { isAdmin: true });
+      db.setProductionUser(separate, newcomer);
+      db.setProductionConference(separate, conference);
+      db.setProductionFeed(separate, feed);
+      db.addProductionTarget(separate, newcomer, 'feed', feed);
+      assert.equal(db.isUserInProduction(newcomer, primary), false);
+      db.ensureSingleProductionCatalog();
+      db.ensureSingleProductionCatalog();
+      assert.deepEqual(db.getProductionMembers(primary).map(member => member.id), [existing, newcomer]);
+      assert.equal(db.isUserProductionAdmin(existing, primary), true);
+      assert.equal(db.getProductionConferences(primary)[0].id, Number(conference));
+      assert.equal(db.getProductionFeeds(primary)[0].id, Number(feed));
+      assert.deepEqual(db.getProductionTargets(newcomer, primary), []);
+      assert.equal(db.getProductionTargets(newcomer, separate)[0].targetId, Number(feed));
+      db.addProductionTarget(primary, existing, 'user', newcomer);
+      assert.equal(db.getProductionTargets(existing, primary)[0].targetId, newcomer);
+    `], { env: { ...process.env, TALKTOME_DATA_DIR: dir }, stdio: 'pipe' });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

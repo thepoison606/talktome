@@ -434,7 +434,7 @@ function LayoutSettingsPage({
     replyTarget: store.replyTarget,
     canTalk: (target) => session.canTalkTo(target),
   });
-  const canArrange = store.identity?.kind === 'user' && (store.allowTargetRearrange || store.allowTargetAddRemove);
+  const canEditTargets = store.identity?.kind === 'user';
 
   return (
     <>
@@ -452,7 +452,7 @@ function LayoutSettingsPage({
           value={store.bigMainButton}
           onValueChange={(value) => session.setBigMainButton(value)}
         />
-        {canArrange ? (
+        {canEditTargets ? (
           <SettingsNavRow label="Edit targets" onPress={onOpenArrange} />
         ) : null}
         <SettingsSwitchRow

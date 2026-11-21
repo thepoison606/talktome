@@ -40,7 +40,6 @@ import { startBleNative } from '../ble/native';
 import { loadBlePreferences } from '../ble/preferences';
 import type { BleTargetSelection } from '../ble/target';
 import type { PttButton } from '../hardware/events';
-import { slideToLockHint } from '../talk/slideToLock';
 import { loadAudioPreferences } from './audioPrefs';
 import { loadConferenceListen } from './conferenceListen';
 import {
@@ -838,7 +837,7 @@ export class SessionController {
 
   setLeftHanded(leftHanded: boolean): void {
     this.leftHandedExplicit = true;
-    useSessionStore.setState({ leftHanded, statusMessage: slideToLockHint(leftHanded) });
+    useSessionStore.setState({ leftHanded });
     this.persistLayout();
   }
 
@@ -1396,6 +1395,22 @@ export class SessionController {
     if (action === 'remove' && state.talkingTargetKeys.includes(talkTargetIdentity(target))) await this.talk.unlockTalk();
     await this.requireApi().editTargetSelection(productionId, action, target.type, Number(target.id));
     if (profileId === useSessionStore.getState().activeProfileId && productionId === useSessionStore.getState().productionId) await this.mediaCoordinator.refreshTargets();
+  }
+
+  async targetColors() {
+    return this.requireApi().fetchTargetColors();
+  }
+
+  async saveTargetColor(target: TalkTarget, color: string | null): Promise<void> {
+    const { identity, activeProfileId, productionId } = useSessionStore.getState();
+    if (identity?.kind !== 'user') throw new Error('User login required.');
+    await this.requireApi().saveTargetColor(productionId, target, color);
+    const current = useSessionStore.getState();
+    if (activeProfileId !== current.activeProfileId || productionId !== current.productionId) return;
+    const key = talkTargetIdentity(target);
+    useSessionStore.setState({ targets: current.targets.map(item =>
+      talkTargetIdentity(item) === key ? { ...item, color: color ?? undefined } : item
+    ) });
   }
 
   async saveTargetOrder(next: TalkTarget[]): Promise<void> {

@@ -9,6 +9,7 @@ function installRemotePanelControl(deps) {
     buildOperatorTargetsForUser, getBridgeTargetsForUser, buildIncomingTalkStateForUser,
     getUserTargetAudioStates, mergeUserTargetAudioStates, getUserPanelSettings, updateUserPanelSettings,
     getResolvedUserAudioSettings, updateUserAudioSettings, updateProductionTargetOrder, notifyTargetChange,
+    getAvailableProductionTargets, changeProductionTargetSelection, updateTargetColor,
   } = deps;
   const namespace = io.of('/panel');
   const reports = new Map();
@@ -36,18 +37,26 @@ function installRemotePanelControl(deps) {
     const preferred = Number(settings.storage[`activeProduction:${userId}`]);
     const primaryId = getPrimaryProduction()?.id;
     const fallbackProductionId = productions[0]?.id ?? (primaryId && deps.isUserInProduction?.(userId, primaryId) ? primaryId : null);
-    const productionId = found?.peer?.productionId ?? (productions.some(p => Number(p.id) === preferred)
-      ? preferred : fallbackProductionId);
+    const activeProductionId = found?.peer?.productionId;
+    const productionId = activeProductionId != null && deps.isUserInProduction(userId, activeProductionId)
+      ? activeProductionId : productions.some(p => Number(p.id) === preferred) ? preferred : fallbackProductionId;
     const isBridge = Boolean(found?.peer?.isBridgePeer);
     const report = reports.get(Number(userId));
     const fresh = Boolean(found && report?.socketId === found.socketId && Date.now() - report.at < 10000);
-    const targets = isBridge ? getBridgeTargetsForUser(userId) : productionId == null ? [] : buildOperatorTargetsForUser(userId, productionId);
+    const canEditTargets = productionId != null && deps.isUserInProduction(userId, productionId);
+    const editorTargets = canEditTargets ? buildOperatorTargetsForUser(userId, productionId) : [];
+    const targets = isBridge ? getBridgeTargetsForUser(userId).map(target => {
+      const scoped = editorTargets.find(item => item.targetType === target.targetType && item.targetId === target.targetId);
+      return scoped ? { ...target, color: scoped.color } : target;
+    }) : editorTargets;
     const activeFeedIds = new Set(deps.getActiveFeedIds?.() || []);
     return {
       userId: Number(userId), name: user.name, online: Boolean(found), clientConnected: fresh,
       connectionType: isBridge ? 'bridge' : 'browser', productionId,
       productions, productionName: productions.find(p => Number(p.id) === Number(productionId))?.name || null,
       targets,
+      ...(isBridge ? { editorTargets } : {}),
+      capabilities: { editTargets: canEditTargets, rearrangeTargets: canEditTargets && !isBridge },
       activeFeedKeys: targets.filter(target => target.targetType === 'feed' && activeFeedIds.has(Number(target.targetId)))
         .map(target => `feed-${target.targetId}`),
       users: getUserList(), settings: getResolvedUserAudioSettings(userId),
@@ -151,8 +160,29 @@ function installRemotePanelControl(deps) {
     validUser(userId);
     const state = snapshot(userId);
     const peer = findUserPeerByUserId(userId)?.peer;
-    let settings = savedSettings(userId);
     const kind = command.kind;
+    if (['target-catalog', 'target-selection', 'target-color', 'order'].includes(kind)) {
+      const requestedProductionId = kind === 'order' ? command.productionId ?? state.productionId : command.productionId;
+      if (!state.capabilities.editTargets || Number(requestedProductionId) !== Number(state.productionId)) {
+        throw new Error('The selected production changed');
+      }
+      if (kind === 'target-catalog') {
+        return { ok: true, available: getAvailableProductionTargets(userId, state.productionId) };
+      }
+      if (kind === 'target-color') {
+        updateTargetColor(state.productionId, userId, command);
+      } else if (kind === 'target-selection') {
+        changeProductionTargetSelection(state.productionId, userId, command);
+      } else {
+        if (!state.capabilities.rearrangeTargets) throw new Error('Target order is unavailable for this panel');
+        const items = validateCompleteTargetOrder(command.items, state.targets);
+        updateProductionTargetOrder(state.productionId, userId, items);
+        notifyTargetChange(userId);
+      }
+      publish(userId);
+      return { ok: true, state: snapshot(userId) };
+    }
+    const settings = savedSettings(userId);
     const target = state.targets.find(t => t.targetType === command.targetType && Number(t.targetId) === Number(command.targetId));
     const outgoing = { ...command };
     if (kind === 'talk') {
@@ -185,10 +215,6 @@ function installRemotePanelControl(deps) {
       if (!state.productions.some(p => Number(p.id) === Number(command.productionId))) throw new Error('Production not assigned');
       settings.storage[`activeProduction:${userId}`] = String(command.productionId);
       if (!peer) settings.pendingProductionId = Number(command.productionId);
-    } else if (kind === 'order') {
-      outgoing.items = validateCompleteTargetOrder(command.items, state.targets);
-      updateProductionTargetOrder(state.productionId, userId, outgoing.items);
-      notifyTargetChange(userId);
     } else throw new Error('Unsupported panel action');
     if (kind !== 'talk') {
       settings.revision++;

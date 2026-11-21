@@ -12,7 +12,6 @@ import { missingAccessoryNotice } from '../ble/bindings';
 import { connectionHealthFromSession } from '../session/connectionHealth';
 import { mainButtonStorageKey, resolveMainButton } from '../session/mainButton';
 import { session, useSessionStore } from '../session/store';
-import { slideToLockHint } from '../talk/slideToLock';
 import { ConferenceMembersModal } from './ConferenceMembersModal';
 import { AudioRouteButton, AudioRouteMenu } from './AudioRouteButton';
 import { ConnectionStatusBadge } from './ConnectionStatusBadge';
@@ -247,9 +246,6 @@ export function OperatorScreen() {
             {mainButton.label}
           </Text>
         </View>
-        {mainTarget && !compact ? (
-          <Text style={styles.replyHint}>{slideToLockHint(store.leftHanded)}</Text>
-        ) : null}
       </View>
     </HoldToTalk>
   );
@@ -698,10 +694,5 @@ const styles = StyleSheet.create({
   },
   replyMuted: {
     color: 'rgba(255,255,255,0.5)',
-  },
-  replyHint: {
-    color: colors.muted,
-    fontSize: 11,
-    textAlign: 'center',
   },
 });

@@ -91,6 +91,9 @@ export function TargetRow({
   const tight = compact || (height != null && height < 64);
 
   const speaking = receiving;
+  const customColor = target.color && !speaking && !talking && !keyboardHeld && !adjustingVolume
+    ? dimmed ? { backgroundColor: `${target.color}80`, opacity: 0.8 } : { backgroundColor: target.color }
+    : null;
 
   const meta =
     target.type === 'feed'
@@ -147,7 +150,7 @@ export function TargetRow({
       <View style={styles.nameRow}>
         {locked ? <LockIcon color={colors.text} size={14} /> : null}
         <Text
-          style={[styles.label, compactLabel && styles.labelCompact, dimmed && styles.dimText]}
+          style={[styles.label, compactLabel && styles.labelCompact, dimmed && !customColor && styles.dimText]}
           numberOfLines={1}
           adjustsFontSizeToFit
           minimumFontScale={0.85}
@@ -221,6 +224,7 @@ export function TargetRow({
     leftHanded && styles.rowLeft,
     tight && styles.rowCompact,
     dimmed && styles.rowOffline,
+    customColor,
     (talking || keyboardHeld) && styles.rowTalking,
     speaking && !talking && !keyboardHeld && styles.rowSpeaking,
     adjustingVolume && styles.rowAdjusting,
@@ -228,7 +232,7 @@ export function TargetRow({
   ];
 
   return (
-    <View style={[otherVolumeAdjusting && { opacity: 0.3 }, videoExpanded ? [styles.videoCard, speaking && styles.rowSpeaking, dimmed && styles.rowOffline,
+    <View style={[otherVolumeAdjusting && { opacity: 0.3 }, videoExpanded ? [styles.videoCard, speaking && styles.rowSpeaking, dimmed && styles.rowOffline, customColor,
       height != null && { height: height + videoHeight }] : height != null ? { height } : undefined]}>
       {canToggleVideo ? <Pressable
         accessibilityRole="button" accessibilityLabel={`${videoExpanded ? 'Hide' : 'Show'} video, ${target.label}`}

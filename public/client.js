@@ -339,7 +339,15 @@ let lockMultipleTargetsEnabled = hasServerDefaultClientSetting('lockMultipleTarg
 let tapToLockEnabled = serverDefaultClientSettings.tapToLock !== false;
 let allowTargetRearrange = false;
 let allowTargetAddRemove = false;
-function canEditTargets() { return canArrangeTargets() || (session.kind === 'user' && allowTargetAddRemove); }
+function canEditTargets() { return canChangeTargetColors() || canArrangeTargets(); }
+
+function canChangeTargetColors() {
+  return session.kind === 'user' && (!remotePanel || remotePanel.state?.capabilities?.editTargets === true);
+}
+
+function canChangeTargetSelection() {
+  return session.kind === 'user' && (remotePanel ? canChangeTargetColors() : allowTargetAddRemove);
+}
 
 function canArrangeTargets() {
   return session.kind === 'user' && remotePanel?.state?.capabilities?.rearrangeTargets !== false && (Boolean(remotePanel) || allowTargetRearrange);
@@ -2280,9 +2288,17 @@ function setActiveSettingsView(nextView = 'main') {
     settingsArrangeView.hidden = resolvedView !== 'arrange';
   }
 
-  if (resolvedView === 'shortcuts') {
+  if (resolvedView === 'main') return;
+
+  const isShortcutsView = resolvedView === 'shortcuts';
+  const view = isShortcutsView ? settingsShortcutsView : settingsArrangeView;
+  const backButton = isShortcutsView ? shortcutSettingsBackButton : arrangeTargetsBackButton;
+  if (view?.parentElement) view.parentElement.scrollTop = 0;
+  backButton?.focus({ preventScroll: true });
+
+  if (isShortcutsView) {
     renderTargetHotkeySettingsHandler();
-  } else if (resolvedView === 'arrange') {
+  } else {
     loadArrangeTargetsHandler();
   }
 }
@@ -3498,7 +3514,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (wasEnabled && !lockMultipleTargetsEnabled && activeTalkLocks.size > 1) {
       const [lockToKeep, ...locksToRemove] = getActiveTalkLockEntries();
       locksToRemove.forEach((entry) => {
-        setTalkButtonLocked(entry.button, false);
+        setTalkButtonLocked(entry.button, false, entry.target);
         activeTalkLocks.delete(getTalkTargetIdentity(entry.target));
       });
       setCurrentTalkTargets(collectActiveTalkTargetsFromPointers());
@@ -3735,17 +3751,26 @@ document.addEventListener("DOMContentLoaded", () => {
   function renderMediaConnectionStatus() {
     if (!mediaConnectionStatusEl || !mediaConnectionStatusLabelEl) return;
 
+    const panelState = remotePanel?.state;
+    const reportedMedia = panelState?.runtime?.mediaConnection;
     const connection = remotePanel
-      ? remotePanel.state?.online
-        ? remotePanel.state.runtime?.mediaConnection || { signaling: 'connected', send: 'idle', receive: 'idle' }
-        : { signaling: 'failed', send: 'idle', receive: 'idle' }
+      ? reportedMedia || { signaling: mediaConnectionState.signaling, send: 'idle', receive: 'idle' }
       : mediaConnectionState;
     const states = [connection.send, connection.receive];
     const iceStates = [connection.sendIce, connection.receiveIce];
-    let label = remotePanel && !remotePanel.state?.runtime?.mediaConnection ? 'Media status unavailable' : 'Media idle';
+    let label = remotePanel && !reportedMedia ? 'Media status unavailable' : 'Media idle';
     let className = '';
+    let title;
 
-    if (connection.signaling === 'failed') {
+    if (remotePanel && !socket.connected) {
+      const connecting = mediaConnectionState.signaling === 'connecting';
+      label = connecting ? 'Server connecting' : 'Server unavailable';
+      className = connecting ? 'is-connecting' : 'is-failed';
+      title = connecting ? 'Connecting the remote panel to the server' : 'Remote panel connection to the server is unavailable';
+    } else if (panelState?.online === false && !reportedMedia) {
+      label = 'Client offline';
+      title = 'Remote panel connected. The controlled client is offline.';
+    } else if (connection.signaling === 'failed') {
       label = 'Server unavailable';
       className = 'is-failed';
     } else if (connection.signaling !== 'connected') {
@@ -3779,11 +3804,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     mediaConnectionStatusEl.className = `media-connection-status${className ? ` ${className}` : ''}`;
     mediaConnectionStatusLabelEl.textContent = label;
-    mediaConnectionStatusEl.title = [
+    mediaConnectionStatusEl.title = title || [
       `Signaling: ${connection.signaling}`,
       `Server heartbeat: ${connection.heartbeatInterrupted ? 'missing' : 'no interruption detected'}`,
-      `Send media: ${remotePanel && !remotePanel.state?.runtime?.mediaConnection ? 'not reported' : connection.send}`,
-      `Receive media: ${remotePanel && !remotePanel.state?.runtime?.mediaConnection ? 'not reported' : connection.receive}`,
+      `Send media: ${remotePanel && !reportedMedia ? 'not reported' : connection.send}`,
+      `Receive media: ${remotePanel && !reportedMedia ? 'not reported' : connection.receive}`,
       `Send ICE: ${connection.sendIce || 'not reported'}`,
       `Receive ICE: ${connection.receiveIce || 'not reported'}`,
       connection.iceError ? `Last ICE error: ${connection.iceError}` : null,
@@ -4288,6 +4313,25 @@ let cachedOperatorTargets = null;
   let arrangeTargetsForProductionId = null;
   let arrangeTargetsDrag = null;
 
+  function applyOperatorTargetColor({ targetType, targetId, color }) {
+    const matchesTarget = item => item.targetType === targetType && Number(item.targetId) === targetId;
+    for (const targets of [cachedOperatorTargets, arrangeTargetsDraft, arrangeTargetsSaved]) {
+      const target = targets?.find(matchesTarget);
+      if (target) {
+        if (color === null) delete target.color;
+        else target.color = color;
+      }
+    }
+    const draftIndex = arrangeTargetsDraft.findIndex(matchesTarget);
+    const paletteButton = arrangeTargetsList?.children[draftIndex]?.querySelector('.target-color-button');
+    if (paletteButton) window.targetEditor.applyColor(paletteButton, color);
+    document.querySelectorAll('#targets-list li.target-item').forEach(row => {
+      if (row.dataset.type === targetType && Number(row.dataset.id) === targetId) {
+        window.targetEditor.applyColor(row, color);
+      }
+    });
+  }
+
   function setArrangeTargetsMessage(message = '', isError = false) {
     if (!arrangeTargetsMessage) return;
     arrangeTargetsMessage.textContent = message;
@@ -4298,7 +4342,7 @@ let cachedOperatorTargets = null;
   function renderArrangeTargets() {
     if (!arrangeTargetsList || !arrangeTargetsEmpty) return;
     arrangeTargetsList.replaceChildren();
-    if (addTargetsButton) { addTargetsButton.hidden = !allowTargetAddRemove || Boolean(remotePanel); addTargetsButton.disabled = arrangeTargetsSaving; }
+    if (addTargetsButton) { addTargetsButton.hidden = !canChangeTargetSelection(); addTargetsButton.disabled = arrangeTargetsSaving; }
     arrangeTargetsEmpty.hidden = arrangeTargetsDraft.length > 0;
 
     arrangeTargetsDraft.forEach((target, index) => {
@@ -4332,15 +4376,24 @@ let cachedOperatorTargets = null;
       type.textContent = kind;
       identity.append(label, type);
       row.append(handle, identity);
-      if (allowTargetAddRemove && !remotePanel) {
-        const remove = document.createElement('button');
-        remove.type = 'button'; remove.className = 'edit-targets__remove';
-        remove.setAttribute('aria-label', `Remove ${name}`); remove.title = `Remove ${name}`;
-        remove.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>';
-        remove.disabled = arrangeTargetsSaving;
-        remove.addEventListener('click', () => changeSelectedTarget('remove', target));
-        row.append(remove);
+      const actions = document.createElement('div');
+      actions.className = 'arrange-targets__actions';
+      if (canChangeTargetColors()) {
+        const userId = session.userId;
+        const productionId = session.productionId;
+        actions.append(window.targetEditor.createColorButton(target, async (color) => {
+          if (session.userId !== userId || session.productionId !== productionId) {
+            throw new Error('The selected production changed');
+          }
+          const change = { targetType: target.targetType, targetId: Number(target.targetId), color };
+          await saveTargetEdit('color', productionId, change);
+          if (session.userId === userId && session.productionId === productionId) applyOperatorTargetColor(change);
+        }));
       }
+      if (canChangeTargetSelection()) {
+        actions.append(window.targetEditor.createRemoveButton(name, () => changeSelectedTarget('remove', target), 'edit-targets__remove'));
+      }
+      if (actions.childElementCount) row.append(actions);
       arrangeTargetsList.appendChild(row);
     });
     updateArrangeTargetsBusy();
@@ -4354,31 +4407,47 @@ let cachedOperatorTargets = null;
     addTargetsList?.querySelectorAll('button').forEach(button => { button.disabled = arrangeTargetsSaving; });
   }
 
+  async function sendPanelTargetCommand(kind, productionId, change = {}) {
+    const result = await remotePanel.command({ kind, productionId, ...change });
+    if (!result.ok) throw new Error(result.error || 'Could not edit targets');
+    return result;
+  }
+
+  async function saveTargetEdit(kind, productionId, change) {
+    if (remotePanel) return sendPanelTargetCommand(`target-${kind}`, productionId, change);
+    const response = await fetch(`/api/v1/client/targets/${kind}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productionId, ...change }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || 'Could not edit targets');
+    }
+    if (kind === 'color' && response.status !== 204) throw new Error('Server did not confirm the target color change');
+  }
+
   async function changeSelectedTarget(action, target) {
-    if (!allowTargetAddRemove || remotePanel || arrangeTargetsSaving) return;
+    if (!canChangeTargetSelection() || arrangeTargetsSaving) return;
     const productionId = session.productionId, userId = session.userId;
     arrangeTargetsSaving = true;
     clearArrangeTargetsDrag(); updateArrangeTargetsBusy(); setArrangeTargetsMessage('Saving…');
     try {
-      const response = await fetch('/api/v1/client/targets/selection', {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productionId, action, targetType: target.targetType, targetId: Number(target.targetId) }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Could not edit targets');
+      await saveTargetEdit('selection', productionId, { action, targetType: target.targetType, targetId: Number(target.targetId) });
       if (session.userId === userId && session.productionId === productionId) await loadArrangeTargets();
     } catch (error) { setArrangeTargetsMessage(error.message, true); }
     finally { arrangeTargetsSaving = false; renderArrangeTargets(); }
   }
 
   addTargetsButton?.addEventListener('click', async () => {
-    if (!allowTargetAddRemove || arrangeTargetsSaving || remotePanel) return;
+    if (!canChangeTargetSelection() || arrangeTargetsSaving) return;
     if (!addTargetsList.hidden) { addTargetsList.hidden = true; return; }
     const userId = session.userId, productionId = session.productionId;
     setArrangeTargetsMessage('Loading…');
     try {
-      const available = await fetchJSON(`/api/v1/client/targets/available?productionId=${encodeURIComponent(productionId ?? '')}`);
-      if (!allowTargetAddRemove || session.userId !== userId || session.productionId !== productionId || activeSettingsView !== 'arrange') return;
+      const available = remotePanel
+        ? (await sendPanelTargetCommand('target-catalog', productionId)).available
+        : await fetchJSON(`/api/v1/client/targets/available?productionId=${encodeURIComponent(productionId ?? '')}`);
+      if (!canChangeTargetSelection() || session.userId !== userId || session.productionId !== productionId || activeSettingsView !== 'arrange') return;
       addTargetsList.replaceChildren();
       const selected = new Set(arrangeTargetsDraft.map(t => `${t.targetType}:${t.targetId}`));
       for (const target of available.filter(t => !selected.has(`${t.targetType}:${t.targetId}`))) {
@@ -4501,7 +4570,7 @@ let cachedOperatorTargets = null;
     setArrangeTargetsMessage('Loading…');
     try {
       const productionQuery = productionId ? `?productionId=${encodeURIComponent(productionId)}` : '';
-      const targets = remotePanel ? remotePanel.state.targets : await fetchJSON(`/users/${encodeURIComponent(userId)}/targets${productionQuery}`);
+      const targets = remotePanel ? remotePanel.state.editorTargets ?? remotePanel.state.targets : await fetchJSON(`/users/${encodeURIComponent(userId)}/targets${productionQuery}`);
       if (generation !== arrangeTargetsLoadGeneration || activeSettingsView !== 'arrange'
         || session.userId !== userId || session.productionId !== productionId) return false;
       arrangeTargetsDraft = Array.isArray(targets) ? targets.map((target) => ({ ...target })) : [];
@@ -4535,8 +4604,9 @@ let cachedOperatorTargets = null;
     let refreshOnFinish = false;
     try {
       if (remotePanel) {
-        const result = await remotePanel.command({ kind: 'order', items: submitted.map(({ targetType, targetId }) => ({ targetType, targetId })) });
-        if (!result.ok) throw new Error(result.error || 'Could not save target order');
+        await sendPanelTargetCommand('order', productionId, {
+          items: submitted.map(({ targetType, targetId }) => ({ targetType, targetId })),
+        });
         arrangeTargetsSaved = submitted;
         setArrangeTargetsMessage('Saved');
         return;
@@ -7870,12 +7940,21 @@ let cachedOperatorTargets = null;
       setSessionDisplay(state.name);
       applyProductionSessionUI();
       applySessionUI();
+      if (activeSettingsView === 'arrange' && arrangeTargetsForProductionId !== session.productionId) {
+        await loadArrangeTargets();
+      }
       cachedUsers = state.users;
       latestServerUsers = state.users;
-      const signature = JSON.stringify([state.productionId, state.targets, state.users]);
+      const signature = JSON.stringify([state.productionId, state.targets.map(({ color, ...target }) => target), state.users]);
       if (signature !== remoteLayoutSignature) {
         remoteLayoutSignature = signature;
         await renderTargetList(cachedUsers);
+      } else {
+        state.targets.forEach((target, index) => {
+          if (target.color !== cachedOperatorTargets?.[index]?.color) {
+            applyOperatorTargetColor({ ...target, targetId: Number(target.targetId), color: target.color ?? null });
+          }
+        });
       }
       const settingsSignature = JSON.stringify([state.productionId, state.panelSettings, state.settings, state.targetAudioStates]);
       if (!remotePanel.busy && (remotePanel.needsRefresh || settingsSignature !== remoteSettingsSignature)) {
@@ -7911,7 +7990,7 @@ let cachedOperatorTargets = null;
       incomingTalkState = normalizeIncomingTalkState(state.incomingTalkState);
       applyIncomingTalkState();
       syncRenderedTargetStateUi();
-      for (const entry of activeTalkLocks.values()) setTalkButtonLocked(entry.button, false);
+      for (const entry of activeTalkLocks.values()) setTalkButtonLocked(entry.button, false, entry.target);
       activeTalkLocks.clear();
       for (const target of runtime?.lockedTargets || []) {
         const liveTarget = resolveLiveTalkTarget(target);
@@ -8005,6 +8084,7 @@ let cachedOperatorTargets = null;
   socket.on("disconnect", (reason) => {
     connectionHealth.stop();
     if (remotePanel) {
+      setSignalingConnectionState('disconnected');
       remotePanel.heldInputs.clear();
       document.querySelectorAll('.talk-btn, #reply').forEach(button => { button.disabled = true; });
       return;
@@ -8109,8 +8189,14 @@ let cachedOperatorTargets = null;
     }
   });
 
-  socket.on('user-targets-updated', async () => {
+  socket.on('user-targets-updated', async (change) => {
     if (!isOperatorSession()) return;
+    if (change?.colorOnly) {
+      if (session.productionId == null || Number(session.productionId) === change.productionId) {
+        for (const target of change.changes ?? [change]) applyOperatorTargetColor(target);
+      }
+      return;
+    }
     if (cachedUsers.length) {
       await renderTargetList(cachedUsers);
     }
@@ -9548,6 +9634,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       const targetKey = `user-${keyId}`;
       li.id = targetKey;
       li.classList.add('target-item', 'user-target');
+      window.targetEditor.applyColor(li, target.color);
       li.dataset.type = 'user';
       li.dataset.id = String(targetIdNum);
       li.dataset.socketId = socketId || '';
@@ -9662,7 +9749,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
       if (isOnline) {
         const lockEntry = getTalkLockEntry({ type: 'user', id: socketId });
-        if (lockEntry && lockEntry.button !== btnReply) {
+        if (lockEntry?.button === btnReply) {
+          li.classList.add('talk-locked');
+        } else if (lockEntry) {
           lockEntry.button = talkBtn;
           setTalkButtonLocked(talkBtn, true);
         }
@@ -9694,6 +9783,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     existingRow.dataset.id = String(targetIdNum);
     existingRow.dataset.socketId = socketId || '';
     existingRow.classList.toggle('is-offline', !isOnline);
+    existingRow.classList.toggle('talk-locked', isOnline && isTalkTargetLocked({ type: 'user', id: socketId }));
 
     const icon = existingRow.querySelector('.user-icon');
     if (icon) {
@@ -10077,6 +10167,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
         li.classList.add('monitor-only-target');
         listenOnlyConferenceKeys.add(key);
       }
+      window.targetEditor.applyColor(li, target.color);
       li.dataset.type = 'conference';
       li.dataset.id = String(id);
 
@@ -10191,7 +10282,9 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       li.append(icon, createTargetLevelMeter(), info, actions, hint);
 
       const lockEntry = getTalkLockEntry({ type: 'conference', id });
-      if (lockEntry && lockEntry.button !== btnReply) {
+      if (lockEntry?.button === btnReply) {
+        li.classList.add('talk-locked');
+      } else if (lockEntry) {
         lockEntry.button = talkBtn;
         setTalkButtonLocked(talkBtn, true);
       }
@@ -10213,6 +10306,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
       li.id = key;
       li.classList.add('target-item', 'feed-target');
       li.classList.toggle('is-offline', !activeFeedKeys.has(key));
+      window.targetEditor.applyColor(li, target.color);
       li.dataset.type = 'feed';
       li.dataset.id = String(id);
 
@@ -11835,15 +11929,18 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
 
   function clearLockState() {
     if (!hasActiveTalkLocks()) return;
-    getActiveTalkLockEntries().forEach((entry) => setTalkButtonLocked(entry.button, false));
+    getActiveTalkLockEntries().forEach((entry) => setTalkButtonLocked(entry.button, false, entry.target));
     activeTalkLocks.clear();
     setSelfTalkingKey(null);
     emitPttState('lock-cleared', { lockActive: false });
   }
 
-  function setTalkButtonLocked(button, isLocked) {
+  function setTalkButtonLocked(button, isLocked, target) {
     if (!button) return;
-    button.closest('li.target-item')?.classList.toggle('talk-locked', isLocked);
+    const row = button === btnReply
+      ? document.getElementById(keyFromTarget(target))
+      : button.closest('li.target-item');
+    row?.classList.toggle('talk-locked', isLocked);
     if (isLocked) {
       button.dataset.locked = 'true';
       button.setAttribute('aria-pressed', 'true');
@@ -11884,13 +11981,13 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     if (!lockMultipleTargetsEnabled) {
       getActiveTalkLockEntries().forEach((entry) => {
         if (getTalkTargetIdentity(entry.target) !== identity) {
-          setTalkButtonLocked(entry.button, false);
+          setTalkButtonLocked(entry.button, false, entry.target);
           activeTalkLocks.delete(getTalkTargetIdentity(entry.target));
         }
       });
     }
     activeTalkLocks.set(identity, { target: normalizedTarget, button });
-    setTalkButtonLocked(button, true);
+    setTalkButtonLocked(button, true, normalizedTarget);
     emitPttState('lock-activated', {
       lockActive: true,
       target: normalizedTarget,
@@ -11961,7 +12058,7 @@ function emitTargetAudioStateSnapshot(reason = 'target-audio-state') {
     const identity = getTalkTargetIdentity(target);
     const entry = identity ? activeTalkLocks.get(identity) : null;
     if (!entry) return false;
-    setTalkButtonLocked(entry.button, false);
+    setTalkButtonLocked(entry.button, false, entry.target);
     activeTalkLocks.delete(identity);
     setCurrentTalkTargets(collectActiveTalkTargetsFromPointers());
 

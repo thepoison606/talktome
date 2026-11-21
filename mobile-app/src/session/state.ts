@@ -121,7 +121,7 @@ export type SessionUiState = {
 
 export const FOREGROUND_REASON =
   'In-app talk. Backgrounding keeps the session while the process is alive. The app does not wake for a new caller.';
-export const HOLD_HINT = 'Hold to talk. Slide to lock.';
+export const HOLD_HINT = 'Hold to talk.';
 
 export const initialState: SessionUiState = {
   hydrated: false,
