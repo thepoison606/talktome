@@ -28,7 +28,6 @@ type RememberedProfile = {
   serverAddress: string;
   username: string;
   rememberPassword: boolean;
-  allowInsecureLocalTLS?: boolean;
   leftHanded?: boolean;
   guest?: RememberedGuest;
 };
@@ -126,7 +125,6 @@ async function migrateLegacyProfile(): Promise<ProfileBundle> {
       serverAddress: profile.serverAddress,
       username: profile.username,
       rememberPassword: profile.rememberPassword,
-      allowInsecureLocalTLS: profile.allowInsecureLocalTLS,
       guest: profile.guest,
     };
     const bundle: ProfileBundle = {

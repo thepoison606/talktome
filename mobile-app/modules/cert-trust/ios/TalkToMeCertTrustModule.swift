@@ -88,12 +88,12 @@ private final class ProbeDelegate: NSObject, URLSessionTaskDelegate {
     _ challenge: URLAuthenticationChallenge,
     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
   ) {
-    hostname = challenge.protectionSpace.host
     if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
        let trust = challenge.protectionSpace.serverTrust {
+      hostname = challenge.protectionSpace.host
       sha256 = sha256OfTrust(trust)
       issuer = issuerOfTrust(trust)
-      completionHandler(.useCredential, URLCredential(trust: trust))
+      completionHandler(.cancelAuthenticationChallenge, nil)
       return
     }
     completionHandler(.performDefaultHandling, nil)

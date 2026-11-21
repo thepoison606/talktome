@@ -12,6 +12,7 @@ function fixture() {
     matches() { return true; }
     closest() { return card; }
     addEventListener(name, callback) { this.listeners[name] = callback; }
+    set selectedIndex(index) { this.value = this.options[index].value; }
   }
   const label = { title: '' };
   const targets = { hidden: false, querySelector: () => label };
@@ -88,6 +89,28 @@ test('trigger-dependent fields update while the dropdown retains focus', () => {
   f.context.handleManagedPortControlChange({ target: select, type: 'input' });
   assert.equal(f.targets.hidden, true);
   assert.match(f.label.title, /API/);
+});
+
+test('switching from None re-enables channels and saves a previously selected channel again', () => {
+  const f = fixture();
+  f.channel.options = [{ value: '' }, { value: '1:1' }, { value: '2:2' }];
+  const device = new f.Select('inputDevice', 'bridge:none');
+  f.context.handleManagedPortControlChange({ target: device, type: 'input' });
+  assert.equal(f.channel.disabled, true);
+
+  device.value = 'mic-a';
+  f.context.handleManagedPortControlChange({ target: device, type: 'input' });
+  assert.equal(f.channel.disabled, false);
+  f.channel.value = '2:2';
+  f.context.handleManagedPortControlChange({ target: f.channel, type: 'input' });
+
+  device.value = 'mic-b';
+  f.context.handleManagedPortControlChange({ target: device, type: 'input' });
+  assert.equal(f.channel.value, '1:1');
+  const before = f.saved.length;
+  f.channel.value = '2:2';
+  f.context.handleManagedPortControlChange({ target: f.channel, type: 'change' });
+  assert.equal(f.saved.length, before + 1);
 });
 
 test('manual device/channel dropdowns accept input and change-only engines without duplicates', () => {

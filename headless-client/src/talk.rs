@@ -272,11 +272,21 @@ impl TalkModel {
         target: TargetRef,
         now: Instant,
     ) -> Option<TalkChange> {
+        self.release_with_tap(source, target, now, None)
+    }
+
+    pub fn release_with_tap(
+        &mut self,
+        source: InputSource,
+        target: TargetRef,
+        now: Instant,
+        tap_to_lock: Option<bool>,
+    ) -> Option<TalkChange> {
         let (key, held) = self.held.remove(&(source, target))?;
         let mut toggled = None;
-        if now.duration_since(held.since) < Duration::from_millis(self.tap_ms)
-            && !held.unlocked_on_press
-        {
+        let tap = tap_to_lock
+            .unwrap_or_else(|| now.duration_since(held.since) < Duration::from_millis(self.tap_ms));
+        if tap && !held.unlocked_on_press {
             self.lock(key);
             toggled = Some((key, true));
         }
@@ -618,6 +628,34 @@ mod tests {
         let grouped = step_target_volume(0.1, -0.12);
         let single = (0..3).fold(0.1, |v, _| step_target_volume(v, -0.04));
         assert!((grouped - single).abs() < 0.000001);
+    }
+
+    #[test]
+    fn companion_release_uses_the_reported_gesture() {
+        let mut model = TalkModel::new(250, false);
+        let source = InputSource::Companion("demo".into());
+        let target = TargetRef::Key(TargetKey::Conference(1));
+        let t0 = Instant::now();
+        model.press(source.clone(), target, t0).unwrap();
+        let change = model
+            .release_with_tap(source.clone(), target, t0, Some(false))
+            .unwrap();
+        assert!(!change.talking);
+        model.press(source.clone(), target, t0).unwrap();
+        let change = model
+            .release_with_tap(
+                source.clone(),
+                target,
+                t0 + Duration::from_secs(1),
+                Some(true),
+            )
+            .unwrap();
+        assert!(change.lock_active);
+        model.press(source.clone(), target, t0).unwrap();
+        let change = model
+            .release_with_tap(source, target, t0, Some(true))
+            .unwrap();
+        assert!(!change.talking);
     }
 
     #[test]

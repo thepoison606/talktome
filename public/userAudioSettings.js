@@ -15,6 +15,7 @@
     showIncomingLevels: false,
     leftHandMode: false,
     lockMultipleTargets: false,
+    tapToLock: true,
     userInputGainDb: 18,
     voiceTriggerEnabled: false,
     voiceTriggerTarget: '',
@@ -41,7 +42,7 @@
       if (DIM_AMOUNT_DB_OPTIONS.includes(number)) output.dimAmountDb = number;
       else reject('Invalid dim amount.');
     }
-    ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'bigMainButton', 'lockMultipleTargets', 'voiceTriggerEnabled']
+    ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'bigMainButton', 'lockMultipleTargets', 'tapToLock', 'voiceTriggerEnabled']
       .forEach((key) => {
         if (!has(key)) return;
         if (typeof value[key] === 'boolean') output[key] = value[key];
@@ -65,6 +66,12 @@
     return output;
   }
 
+  function normalizeForSave(value) {
+    const settings = normalize(value, { strict: true });
+    if (!Object.hasOwn(value, 'tapToLock')) delete settings.tapToLock;
+    return settings;
+  }
+
   function resolve(value, configuredDefaults = {}) {
     const defaults = normalize(configuredDefaults, { partial: true });
     // Layout defaults are applied by each client until explicitly overridden per user.
@@ -76,5 +83,5 @@
     };
   }
 
-  return Object.freeze({ AUDIO_PROFILES, DIM_AMOUNT_DB_OPTIONS, DEFAULTS, normalize, resolve });
+  return Object.freeze({ AUDIO_PROFILES, DIM_AMOUNT_DB_OPTIONS, DEFAULTS, normalize, normalizeForSave, resolve });
 }));

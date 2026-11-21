@@ -75,17 +75,8 @@ export function operatorFacingServerMessage(status: number, serverText: unknown)
 }
 
 export class TlsUntrustedError extends Error {
-  readonly hostname: string;
-  readonly likelyLocal: boolean;
-
-  constructor(hostname: string, likelyLocal: boolean) {
-    super(
-      likelyLocal
-        ? 'Could not trust this server certificate. Turn on “Allow self-signed local TLS” to pin its fingerprint, or install a certificate the device already trusts.'
-        : 'TLS handshake failed. Check the server URL and certificate.',
-    );
+  constructor() {
+    super('Could not verify this server certificate. Check the server address and certificate.');
     this.name = 'TlsUntrustedError';
-    this.hostname = hostname;
-    this.likelyLocal = likelyLocal;
   }
 }

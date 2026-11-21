@@ -10,8 +10,8 @@ const mountedGestures = new Set<ReturnType<typeof createHoldGesture>>();
 export function moveTalkTouches(touches: readonly HoldTouch[]) {
   mountedGestures.forEach(gesture => gesture.move(touches));
 }
-export function endTalkTouches(touches: readonly HoldTouch[]) {
-  mountedGestures.forEach(gesture => gesture.end(touches));
+export function endTalkTouches(touches: readonly HoldTouch[], cancelled = false) {
+  mountedGestures.forEach(gesture => gesture.end(touches, cancelled));
 }
 
 type Props = {
@@ -19,6 +19,7 @@ type Props = {
   disabled?: boolean;
   locked?: boolean;
   leftHanded?: boolean;
+  tapToLock?: boolean;
   style?: StyleProp<ViewStyle>;
   onPress: (inputKey: string) => void;
   onLock: (inputKey: string) => void;
@@ -31,6 +32,7 @@ export function HoldToTalk({
   disabled,
   locked,
   leftHanded = false,
+  tapToLock = true,
   style,
   onPress,
   onLock,
@@ -48,14 +50,14 @@ export function HoldToTalk({
   }, [gesture]);
   useEffect(() => { if (disabled) gesture.cancel(); }, [disabled, gesture]);
   const options = {
-    disabled, locked, leftHanded,
+    disabled, locked, leftHanded, tapToLock,
     onPress: () => onPress(inputKey),
     onLock: () => onLock(inputKey),
     onRelease: () => onRelease(inputKey),
   };
-  const pointerTouch = (event: PointerEvent) => ({ identifier: event.nativeEvent.pointerId, pageX: event.nativeEvent.pageX });
-  const endPointer = (event: PointerEvent) => {
-    gesture.end([pointerTouch(event)]);
+  const pointerTouch = (event: PointerEvent) => ({ identifier: event.nativeEvent.pointerId, pageX: event.nativeEvent.pageX, pageY: event.nativeEvent.pageY });
+  const endPointer = (event: PointerEvent, cancelled = false) => {
+    gesture.end([pointerTouch(event)], cancelled);
     const id = event.nativeEvent.pointerId;
     if (viewRef.current?.hasPointerCapture(id)) viewRef.current.releasePointerCapture(id);
   };
@@ -77,12 +79,12 @@ export function HoldToTalk({
         },
         onPointerMove: (event: PointerEvent) => gesture.move([pointerTouch(event)]),
         onPointerUp: endPointer,
-        onPointerCancel: endPointer,
+        onPointerCancel: (event: PointerEvent) => endPointer(event, true),
       } : {
         onTouchStart: (event: GestureResponderEvent) => gesture.start(event.nativeEvent, options),
         onTouchMove: (event: GestureResponderEvent) => gesture.move(event.nativeEvent.changedTouches),
         onTouchEnd: (event: GestureResponderEvent) => gesture.end(event.nativeEvent.changedTouches),
-        onTouchCancel: (event: GestureResponderEvent) => gesture.end(event.nativeEvent.changedTouches),
+        onTouchCancel: (event: GestureResponderEvent) => gesture.end(event.nativeEvent.changedTouches, true),
       })}
       onAccessibilityTap={() => {
         if (disabled) return;

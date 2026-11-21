@@ -1,0 +1,126 @@
+:is(button.target-color-button, .user-target-controls button.target-remove-button) {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  inline-size: 2.25rem;
+  block-size: 2.25rem;
+  min-height: 0;
+  padding: .35rem;
+  border-radius: .45rem;
+}
+
+button.target-color-button,
+button.target-color-button:hover {
+  border: 1px solid #8794a7;
+  background: var(--target-color, #1f2937);
+  color: #f1f5f9;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:is(.arrange-targets__actions, .user-target-controls) button.target-color-button {
+  border: 0;
+  background: var(--target-color, transparent);
+}
+
+.user-target-controls .draggable-target {
+  border-inline-start: 3px solid var(--target-color, transparent);
+}
+
+.target-color-button:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.target-color-dialog--admin {
+  box-sizing: border-box;
+  width: min(460px, calc(100% - 2rem));
+  max-height: calc(100% - 2rem);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  color-scheme: dark;
+  overscroll-behavior: contain;
+}
+
+.target-color-dialog--admin::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.target-color-dialog h2 {
+  overflow-wrap: anywhere;
+}
+
+.target-color-dialog h2:focus {
+  outline: none;
+}
+
+.target-color-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .65rem;
+  margin: 0;
+  min-width: 0;
+  padding: .25rem 0 0;
+  border: 0;
+}
+
+.target-color-dialog button.target-color-swatch {
+  display: grid;
+  place-items: center;
+  min-height: 3.25rem;
+  padding: 0;
+  border: 1px solid #a3afc2;
+  border-radius: .4rem;
+  background: var(--target-color, #1f2937);
+  color: #f1f5f9;
+  font-size: .875rem;
+  forced-color-adjust: none;
+}
+
+.target-color-dialog button.target-color-swatch:hover {
+  background: var(--target-color, #1f2937);
+}
+
+.target-color-swatch::after {
+  content: '';
+  width: .65rem;
+  height: .35rem;
+  border: solid currentColor;
+  border-width: 0 0 2px 2px;
+  transform: translateY(-.08rem) rotate(-45deg);
+  display: none;
+}
+
+.target-color-swatch[aria-pressed="true"]::after {
+  display: block;
+}
+
+.target-color-status {
+  margin: .5rem 0;
+  overflow-wrap: anywhere;
+}
+
+.target-color-status:empty {
+  display: none;
+}
+
+.target-color-button:focus-visible,
+.target-color-dialog.client-dialog button:focus-visible,
+.target-color-dialog--admin button:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+
+.target-color-dialog button.target-color-swatch:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .target-color-dialog button.target-color-swatch:focus-visible {
+    outline-color: Highlight;
+  }
+}

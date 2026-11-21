@@ -152,6 +152,9 @@ pub struct AudioConfig {
     pub input_device: Option<String>,
     /// ALSA/cpal device name; `null` = system default. `"none"` disables playback.
     pub output_device: Option<String>,
+    /// Optional named device pairs. The first pair is selected on startup.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub device_sets: Vec<AudioDeviceSet>,
     /// Fixed analog output levels, applied when the playback device opens.
     pub speaker_level_db: f32,
     pub headphone_level_db: f32,
@@ -195,6 +198,14 @@ pub struct AudioConfig {
     /// Default per-target volume in dB (0 = unity). Overrides `default_volume`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_volume_db: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioDeviceSet {
+    pub name: String,
+    pub input_device: Option<String>,
+    pub output_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -479,13 +490,20 @@ pub struct WebConfig {
     pub enabled: bool,
     pub bind: String,
     pub port: u16,
-    /// Password of the fixed `admin` login. The default forces a change on
-    /// first login. Can also come from `TALKTOME_WEB_PASSWORD`.
+    /// Password of the fixed `admin` login. Required to use web administration.
+    /// Can also come from `TALKTOME_WEB_PASSWORD`.
     pub password: String,
 }
 
-pub const WEB_DEFAULT_PASSWORD: &str = "admin";
 pub const WEB_ADMIN_USER: &str = "admin";
+
+pub fn validate_web_password(password: &str) -> Result<()> {
+    let password = password.trim();
+    if password.is_empty() || password == "admin" {
+        bail!("the web interface requires an individual admin password");
+    }
+    Ok(())
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -535,6 +553,7 @@ impl Default for AudioConfig {
         Self {
             input_device: None,
             output_device: None,
+            device_sets: Vec::new(),
             speaker_level_db: 0.0,
             headphone_level_db: 0.0,
             profile: AudioProfile::UltraLow,
@@ -566,6 +585,13 @@ fn default_device_period_ms() -> u32 {
 }
 
 impl AudioConfig {
+    pub fn devices_for_set(&self, index: usize) -> (&Option<String>, &Option<String>) {
+        match self.device_sets.get(index) {
+            Some(set) => (&set.input_device, &set.output_device),
+            None => (&self.input_device, &self.output_device),
+        }
+    }
+
     pub fn default_volume_linear(&self) -> f32 {
         self.default_volume_db
             .map(crate::audio::mixer::db_to_volume)
@@ -773,9 +799,9 @@ impl Default for WebConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            bind: "0.0.0.0".into(),
+            bind: "127.0.0.1".into(),
             port: 8080,
-            password: WEB_DEFAULT_PASSWORD.into(),
+            password: String::new(),
         }
     }
 }
@@ -877,7 +903,12 @@ where
         if !sections.contains(&section) || key.is_empty() {
             continue;
         }
-        let value = parse_env_value(&raw);
+        let value = if section == "web" && key == "password" {
+            // Keep passwords as strings, including an explicitly empty override.
+            Value::String(serde_json::from_str::<String>(&raw).unwrap_or(raw))
+        } else {
+            parse_env_value(&raw)
+        };
         let section_value = doc
             .as_object_mut()
             .expect("document is an object")
@@ -1163,6 +1194,12 @@ impl Config {
                 bail!("audio speaker/headphone levels must be between -120 and 24 dB");
             }
         }
+        match self.audio.device_sets.as_slice() {
+            [] => {}
+            [first, second] if !first.name.trim().is_empty() && !second.name.trim().is_empty() => {}
+            [_, _] => bail!("both audio device sets need a name"),
+            _ => bail!("audio.device_sets must be empty or contain exactly two sets"),
+        }
         if !(-30.0..=40.0).contains(&self.audio.input_gain_db) {
             bail!("audio.input_gain_db must be between -30 and 40");
         }
@@ -1310,9 +1347,6 @@ impl Config {
             }
             if self.web.bind.trim().is_empty() {
                 bail!("web.bind is required when web.enabled is true");
-            }
-            if self.web.password.is_empty() {
-                bail!("web.password must not be empty");
             }
         }
         if let Some(bind) = self.socket.tcp_bind() {
@@ -1658,13 +1692,45 @@ mod tests {
     fn web_defaults_and_validation() {
         let mut config = from_document(minimal_json()).unwrap();
         assert!(config.web.enabled);
+        assert_eq!(config.web.bind, "127.0.0.1");
         assert_eq!(config.web.port, 8080);
-        assert_eq!(config.web.password, WEB_DEFAULT_PASSWORD);
+        assert!(config.web.password.is_empty());
+        config.validate().unwrap();
+        for password in ["", " \t", "admin", " admin "] {
+            assert!(validate_web_password(password).is_err());
+        }
+        config.web.password = "custom-passphrase".into();
+        validate_web_password(&config.web.password).unwrap();
         assert_eq!(config.redacted().web.password, REDACTED);
-        config.web.password.clear();
+        config.web.port = 0;
         assert!(config.validate().is_err());
         config.web.enabled = false;
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn web_password_override_is_validated_as_the_effective_password() {
+        for (stored, override_value, accepted) in [
+            ("admin", "custom-passphrase", true),
+            ("custom-passphrase", "admin", false),
+            ("custom-passphrase", "", false),
+            ("custom-passphrase", " \t", false),
+            ("admin", "1234567890", true),
+        ] {
+            let mut doc = minimal_json();
+            doc["web"] = serde_json::json!({ "password": stored });
+            apply_env_overrides(
+                &mut doc,
+                [("TALKTOME_WEB_PASSWORD".into(), override_value.into())],
+            );
+            let config = from_document(doc).unwrap();
+            config.validate().unwrap();
+            assert_eq!(config.web.password, override_value);
+            assert_eq!(
+                validate_web_password(&config.web.password).is_ok(),
+                accepted
+            );
+        }
     }
 
     #[test]

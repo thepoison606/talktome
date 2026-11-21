@@ -12,6 +12,7 @@ const BUILTIN_DEFAULT_CLIENT_SETTINGS = Object.freeze({
   leftHandMode: false,
   bigMainButton: false,
   lockMultipleTargets: false,
+  tapToLock: true,
   allowTargetRearrange: true,
   allowTargetAddRemove: false,
   allowFeedVideo: false,

@@ -47,8 +47,12 @@ pub async fn run(loaded: LoadedConfig) -> Result<RunOutcome> {
     // queue would send audio that is already late (64 × 20 ms was over a second).
     let (frames_tx, frames_rx) = mpsc::channel(4);
     let processing = ProcessingControl::from_audio(&config.audio);
+    let mut audio_config = config.audio.clone();
+    let (input, output) = config.audio.devices_for_set(0);
+    audio_config.input_device.clone_from(input);
+    audio_config.output_device.clone_from(output);
     let audio_io = AudioIo::start(
-        config.audio.clone(),
+        audio_config,
         frame_samples,
         mixer.clone(),
         frames_tx,

@@ -518,6 +518,7 @@ fn role_label(role: Role) -> String {
         Role::Production(index) => format!("production:{index}"),
         Role::ClearLocks => "clear-locks".into(),
         Role::Restart => "restart".into(),
+        Role::AudioSetToggle => "audio-set-toggle".into(),
         Role::Menu(page) => format!("menu:{}", menu_label(page)),
         Role::Info(index) => format!("info:{index}"),
         Role::SystemVolume => "system-volume".into(),
@@ -1110,6 +1111,10 @@ async fn run_device(
                             state.touch_layer();
                         }
                         Role::Restart => state.touch_layer(),
+                        Role::AudioSetToggle => {
+                            let _ = bus.commands.send(Command::ToggleAudioDeviceSet).await;
+                            state.touch_layer();
+                        }
                         Role::Menu(page) => {
                             if page == MenuPage::Info {
                                 state.local_ip = local_ip_towards(&snapshot.server_url).await;

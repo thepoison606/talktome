@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Animated, findNodeHandle, ScrollView, StyleSheet, Text, View, type GestureResponderEvent } from 'react-native';
 
 import { talkTargetIdentity, type TalkTarget } from '../protocol';
 import { session, useSessionStore } from '../session/store';
 import { moveTargetOrder } from '../session/targetOrder';
-import { TrashIcon } from './icons';
+import { PaletteIcon, TrashIcon } from './icons';
 import { SettingsButton, SettingsFootnote, SettingsHint, SettingsSection, useSettingsStyles, useSettingsTheme } from './settingsChrome';
 import { targetOrderDropIndex, targetOrderScrollStep, type TargetRowLayout } from './targetOrderDrag';
 
@@ -36,6 +36,9 @@ export function ArrangeTargetsPage() {
   const { palette } = useSettingsTheme();
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [colorTargetKey, setColorTargetKey] = useState<string | null>(null);
+  const [colors, setColors] = useState<{ name: string; value: string }[] | null>(null);
+  const colorRequest = useRef<Promise<{ name: string; value: string }[]> | null>(null);
   const saving = useRef(false);
   const [dragged, setDragged] = useState<number | null>(null);
   const [dropY, setDropY] = useState<number | null>(null);
@@ -67,13 +70,18 @@ export function ArrangeTargetsPage() {
   useEffect(() => {
     clearDrag();
   }, [targets, allowReorder, profileId, productionId]);
+  useEffect(() => setColorTargetKey(null), [profileId, productionId]);
+  useEffect(() => {
+    colorRequest.current = null;
+    setColors(null);
+  }, [profileId]);
   useEffect(() => () => {
     stopTimer();
     drag.current = null;
   }, []);
 
   const move = async (from: number, to: number) => {
-    if (saving.current || !useSessionStore.getState().allowTargetRearrange) return;
+    if (colorTargetKey || saving.current || !useSessionStore.getState().allowTargetRearrange) return;
     const next = moveTargetOrder(useSessionStore.getState().targets, from, to);
     if (!next) return;
     saving.current = true;
@@ -156,6 +164,43 @@ export function ArrangeTargetsPage() {
     finally { saving.current = false; setBusy(false); }
   };
 
+  const toggleColors = async (target: TalkTarget) => {
+    const key = talkTargetIdentity(target);
+    if (colorTargetKey === key) { setColorTargetKey(null); return; }
+    setColorTargetKey(key);
+    setMessage('');
+    if (colors) return;
+    const request = colorRequest.current ??= session.targetColors();
+    try {
+      const palette = await request;
+      if (colorRequest.current === request) setColors(palette);
+    } catch (error) {
+      if (colorRequest.current === request) {
+        setColorTargetKey(null);
+        setMessage(error instanceof Error ? error.message : 'Could not load target colors');
+      }
+    } finally {
+      if (colorRequest.current === request) colorRequest.current = null;
+    }
+  };
+
+  const saveColor = async (target: TalkTarget, color: string | null) => {
+    if (saving.current) return;
+    saving.current = true;
+    setBusy(true);
+    setMessage('Saving…');
+    try {
+      await session.saveTargetColor(target, color);
+      setColorTargetKey(null);
+      setMessage('Saved');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not save target color');
+    } finally {
+      saving.current = false;
+      setBusy(false);
+    }
+  };
+
   return (
     <View
       style={styles.scroll}
@@ -163,7 +208,7 @@ export function ArrangeTargetsPage() {
       onStartShouldSetResponderCapture={event => {
         const index = [...handleNodes.current].find(([, tag]) => tag === Number(event.nativeEvent.target))?.[0];
         pendingHandle.current = index ?? null;
-        return index !== undefined && !saving.current && !drag.current
+        return index !== undefined && !colorTargetKey && !saving.current && !drag.current
           && useSessionStore.getState().allowTargetRearrange && targets.length > 1;
       }}
       onResponderGrant={event => {
@@ -203,54 +248,75 @@ export function ArrangeTargetsPage() {
         ) : (
           <SettingsSection style={[styles.orderList, localStyles.list]}>
             {targets.map((target, index) => {
-              const disabled = busy || targets.length < 2;
+              const key = talkTargetIdentity(target);
+              const disabled = busy || colorTargetKey !== null || targets.length < 2;
               return (
-                <Animated.View
-                  key={talkTargetIdentity(target)}
-                  onLayout={event => { layouts.current.set(talkTargetIdentity(target), event.nativeEvent.layout); }}
-                  style={[
-                    styles.orderRow, index > 0 && styles.orderRowDivider,
-                    dragged === index && { backgroundColor: palette.card, zIndex: 2, elevation: 4, opacity: 0.85, transform: [{ translateY: translation }] },
-                  ]}
-                >
-                  {allowReorder ? (
-                    <View
-                      ref={node => {
-                        const tag = node ? findNodeHandle(node) : null;
-                        if (tag !== null) handleNodes.current.set(index, tag);
-                        else handleNodes.current.delete(index);
-                      }}
-                      collapsable={false}
-                      style={styles.orderButton}
-                      accessible
-                      accessibilityRole="adjustable"
-                      accessibilityLabel={`Reorder ${target.label}`}
-                      accessibilityHint="Drag up or down to move this target."
-                      accessibilityState={{ disabled }}
-                      accessibilityValue={{ min: 1, max: targets.length, now: index + 1 }}
-                      accessibilityActions={[{ name: 'decrement', label: 'Move up' }, { name: 'increment', label: 'Move down' }]}
-                      onAccessibilityAction={event => {
-                        if (drag.current) return;
-                        const action = event.nativeEvent.actionName;
-                        if (action === 'decrement' || action === 'increment') void move(index, index + (action === 'decrement' ? -1 : 1));
-                      }}
-                    >
-                      <View pointerEvents="none" accessible={false} style={localStyles.grip}>
-                        {[0, 1, 2].map(line => <View key={line} style={[localStyles.gripLine, { backgroundColor: disabled ? palette.disabled : palette.link }]} />)}
+                <Fragment key={key}>
+                  <Animated.View
+                    onLayout={event => { layouts.current.set(talkTargetIdentity(target), event.nativeEvent.layout); }}
+                    style={[
+                      styles.orderRow, index > 0 && styles.orderRowDivider,
+                      dragged === index && { backgroundColor: palette.card, zIndex: 2, elevation: 4, opacity: 0.85, transform: [{ translateY: translation }] },
+                    ]}
+                  >
+                    {allowReorder ? (
+                      <View
+                        ref={node => {
+                          const tag = node ? findNodeHandle(node) : null;
+                          if (tag !== null) handleNodes.current.set(index, tag);
+                          else handleNodes.current.delete(index);
+                        }}
+                        collapsable={false}
+                        style={styles.orderButton}
+                        accessible
+                        accessibilityRole="adjustable"
+                        accessibilityLabel={`Reorder ${target.label}`}
+                        accessibilityHint="Drag up or down to move this target."
+                        accessibilityState={{ disabled }}
+                        accessibilityValue={{ min: 1, max: targets.length, now: index + 1 }}
+                        accessibilityActions={[{ name: 'decrement', label: 'Move up' }, { name: 'increment', label: 'Move down' }]}
+                        onAccessibilityAction={event => {
+                          if (drag.current) return;
+                          const action = event.nativeEvent.actionName;
+                          if (action === 'decrement' || action === 'increment') void move(index, index + (action === 'decrement' ? -1 : 1));
+                        }}
+                      >
+                        <View pointerEvents="none" accessible={false} style={localStyles.grip}>
+                          {[0, 1, 2].map(line => <View key={line} style={[localStyles.gripLine, { backgroundColor: disabled ? palette.disabled : palette.link }]} />)}
+                        </View>
                       </View>
+                    ) : null}
+                    <View style={styles.orderText}>
+                      <Text style={styles.orderName} numberOfLines={1}>{target.label}</Text>
+                      <Text style={styles.orderKind}>{arrangeKind(target)}</Text>
+                    </View>
+                    <SettingsButton style={[styles.orderButton, localStyles.paletteButton, target.color && { backgroundColor: target.color }]}
+                      accessibilityLabel={colorTargetKey === key ? `Close colors for ${target.label}` : `Change color for ${target.label}`}
+                      disabled={busy || dragged !== null} onPress={() => void toggleColors(target)}>
+                      <PaletteIcon color={target.color ? '#f1f5f9' : palette.link} />
+                    </SettingsButton>
+                    {allowAddRemove ? (
+                      <SettingsButton style={styles.orderButton} accessibilityLabel={`Remove ${target.label}`}
+                        disabled={busy || dragged !== null} onPress={() => void remove(target)}>
+                        <TrashIcon color={palette.danger} />
+                      </SettingsButton>
+                    ) : null}
+                  </Animated.View>
+                  {colorTargetKey === key ? (
+                    <View style={localStyles.colors}>
+                      {colors ? [{ name: 'None', value: null }, ...colors].map(({ name, value }) => (
+                        <SettingsButton key={name} disabled={busy}
+                          accessibilityLabel={`${name}${(target.color ?? null) === value ? ', selected' : ''}`}
+                          style={[localStyles.colorOption, { backgroundColor: value ?? '#1f2937' }]}
+                          onPress={() => void saveColor(target, value)}>
+                          <Text accessible={false} style={[localStyles.colorLabel, value === null && target.color != null && localStyles.noneLabel]}>
+                            {(target.color ?? null) === value ? '✓' : value === null ? name : ''}
+                          </Text>
+                        </SettingsButton>
+                      )) : <SettingsFootnote>Loading colors…</SettingsFootnote>}
                     </View>
                   ) : null}
-                  <View style={styles.orderText}>
-                    <Text style={styles.orderName} numberOfLines={1}>{target.label}</Text>
-                    <Text style={styles.orderKind}>{arrangeKind(target)}</Text>
-                  </View>
-                  {allowAddRemove ? (
-                    <SettingsButton style={styles.orderButton} accessibilityLabel={`Remove ${target.label}`}
-                      disabled={busy || dragged !== null} onPress={() => void remove(target)}>
-                      <TrashIcon color={palette.danger} />
-                    </SettingsButton>
-                  ) : null}
-                </Animated.View>
+                </Fragment>
               );
             })}
             {dropY !== null ? <View pointerEvents="none" style={[localStyles.dropLine, { top: dropY - 1, backgroundColor: palette.link }]} /> : null}
@@ -270,5 +336,10 @@ const localStyles = StyleSheet.create({
   list: { overflow: 'visible' },
   grip: { width: 20, gap: 4 },
   gripLine: { height: 2, borderRadius: 1 },
+  paletteButton: { borderRadius: 8 },
+  colors: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, padding: 8 },
+  colorOption: { minHeight: 52, flexBasis: '29%', flexGrow: 1, borderRadius: 8, borderWidth: 1, borderColor: '#a3afc2', alignItems: 'center', justifyContent: 'center' },
+  colorLabel: { color: '#f1f5f9', fontSize: 21, fontWeight: '600' },
+  noneLabel: { fontSize: 14 },
   dropLine: { position: 'absolute', left: 8, right: 8, height: 2, zIndex: 3 },
 });

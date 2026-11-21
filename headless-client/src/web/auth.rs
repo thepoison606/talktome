@@ -9,8 +9,6 @@ use sha2::{Digest, Sha256};
 
 use rand::RngCore;
 
-use crate::config::WEB_DEFAULT_PASSWORD;
-
 pub const SESSION_COOKIE: &str = "talktome_web";
 pub const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
 const MAX_FAILURES: usize = 5;
@@ -107,10 +105,6 @@ impl AuthState {
         result
     }
 
-    pub fn must_change_password(&self) -> bool {
-        self.password == WEB_DEFAULT_PASSWORD
-    }
-
     pub fn password_from_env(&self) -> bool {
         self.password_from_env
     }
@@ -204,13 +198,18 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::distr::{Alphanumeric, SampleString};
+
+    fn test_password() -> String {
+        Alphanumeric.sample_string(&mut rand::rng(), 32)
+    }
 
     #[test]
     fn login_sessions_and_throttle() {
-        let mut auth = AuthState::new("admin".into(), false);
-        assert!(auth.must_change_password());
+        let password = test_password();
+        let mut auth = AuthState::new(password.clone(), false);
         assert!(auth.login("wrong").is_none());
-        let token = auth.login("admin").unwrap();
+        let token = auth.login(&password).unwrap();
         assert_eq!(token.len(), 64);
         assert!(auth.validate(&token));
         auth.logout(&token);
@@ -220,20 +219,21 @@ mod tests {
             assert!(auth.login("nope").is_none());
         }
         assert!(auth.throttled().is_some());
-        auth.set_password("secret1".into());
-        assert!(!auth.must_change_password());
-        assert!(auth.check_password("secret1"));
-        assert!(!auth.check_password("secret"));
+        let password = test_password();
+        auth.set_password(password.clone());
+        assert!(auth.check_password(&password));
+        assert!(!auth.check_password(&password[..password.len() - 1]));
     }
     #[test]
     fn sessions_survive_restart_and_logout_remains_revoked() {
         let dir = tempfile::tempdir().unwrap();
-        let mut auth = AuthState::load("secret1".into(), false, dir.path());
-        let token = auth.login("secret1").unwrap();
+        let password = test_password();
+        let mut auth = AuthState::load(password.clone(), false, dir.path());
+        let token = auth.login(&password).unwrap();
         let expiry = auth.sessions[&auth.session_key(&token)];
         let contents = std::fs::read_to_string(dir.path().join("web-sessions.json")).unwrap();
         assert!(!contents.contains(&token));
-        assert!(!contents.contains("secret1"));
+        assert!(!contents.contains(&password));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -247,42 +247,45 @@ mod tests {
             );
         }
         drop(auth);
-        let mut restarted = AuthState::load("secret1".into(), false, dir.path());
+        let mut restarted = AuthState::load(password.clone(), false, dir.path());
         assert!(restarted.validate(&token));
         assert_eq!(restarted.sessions[&restarted.session_key(&token)], expiry);
         restarted.logout(&token);
         drop(restarted);
-        assert!(!AuthState::load("secret1".into(), false, dir.path()).validate(&token));
+        assert!(!AuthState::load(password, false, dir.path()).validate(&token));
     }
 
     #[test]
     fn expired_sessions_and_password_changes_do_not_survive_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let mut auth = AuthState::load("secret1".into(), false, dir.path());
-        let expired = auth.login("secret1").unwrap();
+        let password = test_password();
+        let mut auth = AuthState::load(password.clone(), false, dir.path());
+        let expired = auth.login(&password).unwrap();
         auth.sessions
             .insert(auth.session_key(&expired), unix_now() - 1);
         auth.persist_sessions();
         drop(auth);
-        let mut auth = AuthState::load("secret1".into(), false, dir.path());
+        let mut auth = AuthState::load(password.clone(), false, dir.path());
         assert!(!auth.validate(&expired));
-        let token = auth.login("secret1").unwrap();
+        let token = auth.login(&password).unwrap();
         // An externally changed password also invalidates the old cookie.
-        assert!(!AuthState::load("different".into(), true, dir.path()).validate(&token));
-        auth.set_password("secret2".into());
+        assert!(!AuthState::load(test_password(), true, dir.path()).validate(&token));
+        let new_password = test_password();
+        auth.set_password(new_password.clone());
         assert!(!auth.validate(&token));
         drop(auth);
-        assert!(!AuthState::load("secret2".into(), false, dir.path()).validate(&token));
-        assert!(!AuthState::load("secret1".into(), false, dir.path()).validate(&token));
+        assert!(!AuthState::load(new_password, false, dir.path()).validate(&token));
+        assert!(!AuthState::load(password, false, dir.path()).validate(&token));
     }
 
     #[test]
     fn malformed_session_file_does_not_prevent_a_new_login() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("web-sessions.json"), "broken").unwrap();
-        let mut auth = AuthState::load("secret1".into(), false, dir.path());
+        let password = test_password();
+        let mut auth = AuthState::load(password.clone(), false, dir.path());
         assert!(!auth.validate(&"a".repeat(64)));
-        let token = auth.login("secret1").unwrap();
-        assert!(AuthState::load("secret1".into(), false, dir.path()).validate(&token));
+        let token = auth.login(&password).unwrap();
+        assert!(AuthState::load(password, false, dir.path()).validate(&token));
     }
 }

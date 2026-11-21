@@ -89,8 +89,15 @@ pub async fn get_config(State(state): State<Shared>) -> Response {
         .and_then(|p| config::read_document(p).ok())
         .map(|raw| config::file_differs_from_running(&raw, &state.ctx.config))
         .unwrap_or(false);
+    let snapshot = state.ctx.bus.snapshots.borrow();
+    let (_, active_output) = state
+        .ctx
+        .config
+        .audio
+        .devices_for_set(snapshot.audio_device_set);
     Json(json!({
-        "output_levels": state.ctx.bus.snapshots.borrow().output_levels,
+        "output_levels": snapshot.output_levels,
+        "active_output_device": active_output,
         "document": document,
         "file_document": file_document,
         "editor_document": editor_document,
@@ -132,11 +139,19 @@ pub async fn put_config(State(state): State<Shared>, Json(body): Json<PutConfigB
     };
     let speaker = level("speaker_level_db", audio.speaker_level_db);
     let headphone = level("headphone_level_db", audio.headphone_level_db);
-    let selected = body
-        .document
-        .pointer("/audio/output_device")
-        .map(|v| v.as_str());
-    let changed_device = selected.is_some_and(|value| value != audio.output_device.as_deref());
+    let selected = if let Some(first) = body.document.pointer("/audio/device_sets/0") {
+        first.get("output_device").and_then(Value::as_str)
+    } else if let Some(device) = body.document.pointer("/audio/output_device") {
+        device.as_str()
+    } else {
+        audio.devices_for_set(0).1.as_deref()
+    };
+    let snapshot = state.ctx.bus.snapshots.borrow();
+    let active_output = audio
+        .devices_for_set(snapshot.audio_device_set)
+        .1
+        .as_deref();
+    let changed_device = selected != active_output;
     let validation = if changed_device
         && (speaker != audio.speaker_level_db || headphone != audio.headphone_level_db)
     {
@@ -145,7 +160,7 @@ pub async fn put_config(State(state): State<Shared>, Json(body): Json<PutConfigB
         ))
     } else if !changed_device {
         crate::audio::system_volume::validate_output_levels(
-            &state.ctx.bus.snapshots.borrow().output_levels,
+            &snapshot.output_levels,
             speaker,
             headphone,
         )

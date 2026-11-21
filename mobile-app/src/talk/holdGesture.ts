@@ -1,18 +1,21 @@
 import { didReachSlideToLockThreshold } from './slideToLock';
 
-export type HoldTouch = { identifier: string | number; pageX: number };
+export type HoldTouch = { identifier: string | number; pageX: number; pageY?: number };
 type HoldOptions = {
   disabled?: boolean;
   locked?: boolean;
   leftHanded?: boolean;
+  tapToLock?: boolean;
   onPress(): void;
   onLock(): void;
   onRelease(): void;
 };
 
 /** Each talk surface owns its touch, independently of React Native's single responder. */
-export function createHoldGesture() {
-  let active: { id: string; startX: number; latched: boolean; options: HoldOptions } | null = null;
+export function createHoldGesture(now = () => performance.now()) {
+  let active: { id: string; start: HoldTouch; startedAt: number; moved: boolean; latched: boolean; options: HoldOptions } | null = null;
+  const movedTooFar = (start: HoldTouch, touch: HoldTouch) =>
+    Math.hypot(touch.pageX - start.pageX, (touch.pageY ?? 0) - (start.pageY ?? 0)) > 12;
   function finish() {
     const previous = active;
     active = null;
@@ -24,19 +27,26 @@ export function createHoldGesture() {
     start(touch: HoldTouch, options: HoldOptions) {
       if (active || options.disabled) return;
       // Keep the callbacks/target from touch-down, even if Reply changes while held.
-      active = { id: String(touch.identifier), startX: touch.pageX, latched: Boolean(options.locked), options };
+      active = { id: String(touch.identifier), start: touch, startedAt: now(), moved: false, latched: Boolean(options.locked), options };
       options.onPress();
     },
     move(changedTouches: readonly HoldTouch[]) {
       if (!active || active.latched) return;
       const touch = changedTouches.find(item => String(item.identifier) === active?.id);
-      if (touch && didReachSlideToLockThreshold(touch.pageX, active.startX, active.options.leftHanded ?? false)) {
+      if (!touch) return;
+      active.moved ||= movedTooFar(active.start, touch);
+      if (didReachSlideToLockThreshold(touch.pageX, active.start.pageX, active.options.leftHanded ?? false)) {
         active.latched = true;
         active.options.onLock();
       }
     },
-    end(changedTouches: readonly HoldTouch[]) {
-      if (active && changedTouches.some(item => String(item.identifier) === active?.id)) finish();
+    end(changedTouches: readonly HoldTouch[], cancelled = false) {
+      if (!active) return;
+      const touch = changedTouches.find(item => String(item.identifier) === active?.id);
+      if (!touch) return;
+      if (!cancelled && active.options.tapToLock && !active.latched && !active.moved
+        && !movedTooFar(active.start, touch) && now() - active.startedAt < 300) active.options.onLock();
+      finish();
     },
     cancel: finish,
   };

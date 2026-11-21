@@ -154,6 +154,10 @@ pub struct Snapshot {
     pub audio_ok: bool,
     pub system_volume: Option<crate::audio::system_volume::SystemVolume>,
     pub output_levels: crate::audio::system_volume::OutputLevels,
+    #[serde(skip)]
+    pub audio_device_set: usize,
+    #[serde(skip)]
+    pub audio_device_set_names: Option<[String; 2]>,
     pub targets: Vec<TargetInfo>,
     /// Effective Reply / Main destination (pin when assigned, else last incoming).
     pub reply_target: Option<TargetKey>,
@@ -204,6 +208,8 @@ impl Snapshot {
             audio_ok: false,
             system_volume: None,
             output_levels: Default::default(),
+            audio_device_set: 0,
+            audio_device_set_names: None,
             targets: Vec::new(),
             reply_target: None,
             reply_name: None,
@@ -450,6 +456,7 @@ impl PanelRequest {
 #[derive(Debug, Clone)]
 pub enum Command {
     LocalPanel(Arc<PanelRequest>),
+    ToggleAudioDeviceSet,
     SystemVolume(crate::audio::system_volume::Action),
     TalkPress {
         source: InputSource,

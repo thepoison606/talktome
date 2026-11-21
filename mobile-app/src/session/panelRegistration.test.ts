@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SessionConflictError } from '../auth/errors';
+import { SessionConflictError, TlsUntrustedError } from '../auth/errors';
 import { HTTP_REQUEST_TIMEOUT_MS } from '../auth/http';
 import type { MediaEngine } from '../media/engine';
 import type { OperatorIdentity, Production } from '../protocol';
@@ -8,9 +8,12 @@ import { SignalingConnectCancelledError } from '../signaling/client';
 import { SessionController } from './sessionController';
 import { initialState, useSessionStore } from './state';
 
-const mocks = vi.hoisted(() => ({ registration: {} as Record<string, unknown>, entered: vi.fn(), connect: vi.fn<() => Promise<string>>(), order: [] as string[] }));
+const mocks = vi.hoisted(() => ({ registration: {} as Record<string, unknown>, entered: vi.fn(), connect: vi.fn<() => Promise<string>>(), order: [] as string[], probe: vi.fn(), setPins: vi.fn() }));
 vi.mock('react-native', () => ({ AppState: { currentState: 'active' }, Platform: { OS: 'android' } }));
-vi.mock('expo-modules-core', () => ({ requireNativeModule: () => { throw new Error('No device'); } }));
+vi.mock('expo-modules-core', () => ({ requireNativeModule: (name: string) => {
+  if (name === 'TalkToMeCertTrust') return { probe: mocks.probe, setPins: mocks.setPins };
+  throw new Error('No device');
+} }));
 vi.mock('expo-secure-store', () => ({ getItemAsync: vi.fn(async () => null), setItemAsync: vi.fn(async () => {}), deleteItemAsync: vi.fn(async () => {}) }));
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: { getItem: vi.fn(async () => null), setItem: vi.fn(async () => {}) } }));
 vi.mock('../audio/session', () => ({ audioSessionAvailable: () => false, playConnectionCue: vi.fn() }));
@@ -43,6 +46,7 @@ const controllers: SessionController[] = [];
 beforeEach(() => {
   mocks.entered.mockClear(); mocks.order = [];
   mocks.connect.mockReset().mockResolvedValue('new-socket');
+  mocks.probe.mockReset(); mocks.setPins.mockClear();
   useSessionStore.setState({ ...initialState, serverAddress: 'https://example.test', activeProfileId: 'profile', productionId: 7, productionName: 'Studio', productions: [{ id: 7, name: 'Studio' }, { id: 8, name: 'Field' }] });
   mocks.registration = { ok: true, productionId: 8, productions: [{ id: 7, name: 'Studio' }, { id: 8, name: 'Field' }], panelSettings: { revision: 2, storage: { 'activeProduction:1': '8' } }, userAudioSettings: PANEL_AUDIO_DEFAULTS };
 });
@@ -60,6 +64,56 @@ function fixture({ serverDefaults = false } = {}) {
 }
 
 describe('panel registration in the native session', () => {
+  it('offers the fingerprint after a TLS failure and pins it only after consent', async () => {
+    const { c } = fixture();
+    const login = { serverAddress: 'https://192.168.1.5:8443', username: 'Me', password: 'test', rememberPassword: false };
+    const probe = { hostname: '192.168.1.5', sha256: '12'.repeat(32) };
+    mocks.probe.mockResolvedValue(probe);
+    const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error('TLS certificate is not trusted'));
+    vi.stubGlobal('fetch', fetchImpl);
+    try {
+      await expect(c.login(login)).rejects.toBeInstanceOf(TlsUntrustedError);
+      expect(mocks.probe).toHaveBeenCalledWith(login.serverAddress);
+      expect(useSessionStore.getState().pendingCertificate).toEqual({ ...probe, serverAddress: login.serverAddress });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(mocks.setPins).not.toHaveBeenCalled();
+      const retry = vi.spyOn(c, 'login').mockResolvedValue();
+      await c.acceptCertificateAndRetry();
+      expect(mocks.setPins).toHaveBeenCalledWith(expect.arrayContaining([probe]));
+      expect(retry).toHaveBeenCalledWith(login);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('refuses a fingerprint from a different host or a previous server address', async () => {
+    const { c } = fixture();
+    const serverAddress = 'https://192.168.1.6:8443';
+    const login = { serverAddress, username: 'Me', password: 'test', rememberPassword: false };
+    mocks.probe.mockResolvedValue({ hostname: 'other.test', sha256: '34'.repeat(32) });
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockRejectedValue(new Error('TLS certificate is not trusted')));
+    try {
+      await expect(c.login(login)).rejects.toBeInstanceOf(TlsUntrustedError);
+      expect(useSessionStore.getState().pendingCertificate).toBeNull();
+      mocks.probe.mockResolvedValue({ hostname: '192.168.1.6', sha256: '34'.repeat(32) });
+      await expect(c.login(login)).rejects.toBeInstanceOf(TlsUntrustedError);
+      useSessionStore.setState({ serverAddress: 'https://192.168.1.6:4443' });
+      await expect(c.acceptCertificateAndRetry()).rejects.toThrow('The server address changed');
+      expect(mocks.setPins).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('retries the original guest login after trusting a certificate', async () => {
+    const { c } = fixture();
+    const login = { serverAddress: 'https://192.168.1.7', displayName: 'Guest', force: true };
+    mocks.probe.mockResolvedValue({ hostname: '192.168.1.7', sha256: '56'.repeat(32) });
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockRejectedValue(new Error('TLS certificate is not trusted')));
+    try {
+      await expect(c.loginGuest(login)).rejects.toBeInstanceOf(TlsUntrustedError);
+      const retry = vi.spyOn(c, 'loginGuest').mockResolvedValue();
+      await c.acceptCertificateAndRetry();
+      expect(retry).toHaveBeenCalledWith(login);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('cancels an unreachable profile immediately and ignores its late reply after a new attempt', async () => {
     vi.useFakeTimers();
     let reply!: (response: Response) => void;

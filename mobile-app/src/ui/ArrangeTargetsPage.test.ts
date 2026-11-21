@@ -9,6 +9,8 @@ const f = vi.hoisted(() => ({
   states: [] as unknown[], refs: [] as { current: unknown }[], stateCursor: 0, refCursor: 0,
   save: vi.fn(async (_targets: TalkTarget[]) => {}),
   remove: vi.fn(async () => {}),
+  colors: vi.fn(async () => [{ name: 'Petrol', value: '#24505b' }]),
+  saveColor: vi.fn(async (_target: TalkTarget, _color: string | null) => {}),
 }));
 vi.mock('react', async original => ({ ...await original<typeof import('react')>(),
   useRef: (current: unknown) => {
@@ -30,13 +32,13 @@ vi.mock('react-native', () => ({
 }));
 vi.mock('../session/store', () => ({
   useSessionStore: Object.assign((select: (state: typeof f.state) => unknown) => select(f.state), { getState: () => f.state }),
-  session: { saveTargetOrder: f.save, editTargetSelection: f.remove },
+  session: { saveTargetOrder: f.save, editTargetSelection: f.remove, targetColors: f.colors, saveTargetColor: f.saveColor },
 }));
 vi.mock('./settingsChrome', () => ({
   SettingsButton: 'Pressable', SettingsFootnote: 'Footnote', SettingsHint: 'Hint', SettingsSection: 'Section',
   useSettingsStyles: () => ({}), useSettingsTheme: () => ({ palette: {} }),
 }));
-vi.mock('./icons', () => ({ TrashIcon: 'Trash' }));
+vi.mock('./icons', () => ({ PaletteIcon: 'Palette', TrashIcon: 'Trash' }));
 
 import { ArrangeTargetsPage } from './ArrangeTargetsPage';
 
@@ -69,10 +71,34 @@ function fixture() {
 
 beforeEach(() => {
   vi.useFakeTimers(); f.effects = []; f.states = []; f.refs = []; f.stateCursor = 0; f.refCursor = 0; f.save.mockClear(); f.remove.mockClear();
+  f.colors.mockClear(); f.saveColor.mockClear();
   f.state = { targets: ['Alice', 'Stage', 'Feed'].map((label, id) => ({ label, id, type: 'user', canTalk: true })),
     allowTargetRearrange: true, allowTargetAddRemove: true, activeProfileId: 'profile', productionId: 1 };
 });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+
+it('sets a target color from the palette without add/remove or reorder permissions', async () => {
+  f.state.allowTargetRearrange = false;
+  f.state.allowTargetAddRemove = false;
+  const action = (name: string) => elements(renderPage()).find(element => element.props.accessibilityLabel === name);
+  await call(action('Change color for Alice')!, 'onPress');
+  expect(f.colors).toHaveBeenCalledTimes(1);
+  expect(action('None, selected')).toBeDefined();
+  await call(action('Petrol')!, 'onPress');
+  expect(f.saveColor).toHaveBeenLastCalledWith(f.state.targets[0], '#24505b');
+  expect(action('Petrol')).toBeUndefined();
+
+  f.state.targets[0]!.color = '#24505b';
+  const paletteButton = action('Change color for Alice')!;
+  expect(paletteButton.props.style).toContainEqual({ backgroundColor: '#24505b' });
+  expect(paletteButton.props.style).toContainEqual({ borderRadius: 8 });
+  await call(paletteButton, 'onPress');
+  expect(action('Petrol, selected')).toBeDefined();
+  await call(action('None')!, 'onPress');
+  expect(f.saveColor).toHaveBeenLastCalledWith(f.state.targets[0], null);
+  expect(f.colors).toHaveBeenCalledTimes(1);
+  expect(action('None')).toBeUndefined();
+});
 
 describe('mobile target drag', () => {
   it('owns the gesture above the ScrollView and blocks native responders before React re-renders', () => {
@@ -154,11 +180,12 @@ describe('mobile target drag', () => {
     expect(f.save).not.toHaveBeenCalled();
   });
 
-  it('hides the handles for accounts that can only remove targets', () => {
+  it('shows color and removal controls when reordering is disabled', () => {
     f.state.allowTargetRearrange = false;
     const { handles, all } = fixture();
     expect(handles).toHaveLength(0);
-    expect(all.filter(e => e.type === 'Pressable')).toHaveLength(3);
+    const controls = all.filter(e => e.type === 'Pressable').map(e => e.props.accessibilityLabel);
+    expect(controls).toEqual(['Change color for Alice', 'Remove Alice', 'Change color for Stage', 'Remove Stage', 'Change color for Feed', 'Remove Feed']);
   });
 
   it('keeps reordering available to screen readers without arrow buttons', () => {

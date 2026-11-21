@@ -9,6 +9,7 @@
     <title>Talktome Admin</title>
     <link rel="icon" type="image/png" href="/images/talktome-icon.png" />
     <link rel="stylesheet" href="/login.css" />
+    <link rel="stylesheet" href="/targetColorPicker.css" />
     <link rel="stylesheet" href="/targetPicker.css" />
     <style>
       :root {
@@ -192,6 +193,29 @@
       }
 
       .admin-bar__meta strong {
+        color: var(--text);
+      }
+
+      .admin-bar__session {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        column-gap: 0.65rem;
+        min-width: 0;
+      }
+
+      .admin-bar__release {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        color: var(--muted);
+        font-size: 0.82rem;
+        text-decoration: underline;
+        text-underline-offset: 0.2em;
+      }
+
+      .admin-bar__release:hover,
+      .admin-bar__release:focus-visible {
         color: var(--text);
       }
 
@@ -1770,6 +1794,10 @@
         align-items: center;
         justify-content: center;
         padding: 1.5rem;
+      }
+
+      .admin-action-dialog,
+      .target-color-dialog--admin::backdrop {
         background: rgba(11, 17, 32, 0.82);
         backdrop-filter: blur(6px);
       }
@@ -1783,6 +1811,17 @@
         border-radius: 16px;
         background: rgba(19, 26, 42, 0.99);
         box-shadow: 0 28px 64px rgba(0, 0, 0, 0.45);
+      }
+
+      .target-color-dialog--admin {
+        overflow: visible;
+      }
+
+      .target-color-dialog--admin .admin-action-dialog__panel {
+        max-width: 100%;
+        max-height: calc(100dvh - 2rem);
+        overflow: auto;
+        overscroll-behavior: contain;
       }
 
       .admin-action-dialog__title,
@@ -2126,8 +2165,8 @@
 
       .production-layout--single #production-detail > .production-detail-header,
       .production-layout--single .production-members-panel,
-      .production-layout--single .production-order-row,
-      .production-layout--single #production-order-list {
+      .production-layout--single:not(.production-layout--scoped-admin) .production-order-row,
+      .production-layout--single:not(.production-layout--scoped-admin) #production-order-list {
         display: none;
       }
 
@@ -2320,7 +2359,8 @@
         margin-top: 0.35rem;
       }
 
-      .entity-detail-item :is(.nested, .nested-block) > .inline-controls {
+      .entity-detail-item :is(.nested, .nested-block) > .inline-controls,
+      .entity-detail-item .user-target-controls > .field-group {
         align-items: center;
         margin-top: 0.55rem;
       }
@@ -2330,6 +2370,10 @@
         min-height: 2.2rem;
         padding-top: 0.3rem;
         padding-bottom: 0.3rem;
+      }
+
+      .user-target-actions > .user-target-reset-colors {
+        margin-inline-start: auto;
       }
 
       .entity-detail-item[hidden] {
@@ -3804,6 +3848,10 @@
           width: 100%;
         }
 
+        #user-list .nested-block > .user-target-actions button {
+          grid-column: auto;
+        }
+
         #matrix-section > .card-header,
         #matrix-section > .card-header .card-header__actions {
           width: 100%;
@@ -3990,7 +4038,10 @@
     <div id="admin-bar" class="admin-bar is-hidden">
       <div class="admin-bar__meta">
         <img class="admin-brand-icon" src="/images/talktome-mark.png" alt="" aria-hidden="true" />
-        <span>Logged in as <strong id="admin-name-label"></strong></span>
+        <div class="admin-bar__session">
+          <span>Logged in as <strong id="admin-name-label"></strong></span>
+          <span id="admin-release-notice" role="status"></span>
+        </div>
       </div>
       <nav class="admin-bar__nav" aria-label="Admin sections">
         <a href="#status" data-admin-nav="status">Status</a>
@@ -4465,8 +4516,8 @@
               </div>
 
               <div class="production-order-row matrix-subheading--secondary">
-                <h3 class="matrix-subheading">Button order</h3>
-                <select id="production-order-user" aria-label="Select member for button order"></select>
+                <h3 class="matrix-subheading">Target buttons</h3>
+                <select id="production-order-user" aria-label="Select member for target buttons"></select>
               </div>
               <ul id="production-order-list" class="production-order-list"></ul>
             </div>
@@ -4826,6 +4877,13 @@
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
                   </div>
+                  <div class="default-client-setting-toggle" title="Let users briefly tap a talk button to lock it.">
+                    <span>Tap to lock</span>
+                    <span class="admin-switch">
+                      <input type="checkbox" id="default-client-tap-to-lock" role="switch" />
+                      <span class="admin-switch__track" aria-hidden="true"></span>
+                    </span>
+                  </div>
                   <div class="default-client-setting-toggle" title="Allow users to change the order of their target buttons. Can be overridden per user.">
                     <span>Allow target rearrange</span>
                     <span class="admin-switch">
@@ -4926,6 +4984,7 @@
     <script src="/bridgeTalkTrigger.js"></script>
     <script src="/targetPicker.js"></script>
     <script src="/adminAutoSave.js"></script>
+    <script src="/targetEditor.js"></script>
     <script src="admin.js"></script>
   </body>
 </html>

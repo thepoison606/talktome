@@ -19,6 +19,7 @@ export type ServerClientDefaults = {
   leftHandMode?: boolean;
   bigMainButton?: boolean;
   lockMultipleTargets?: boolean;
+  tapToLock?: boolean;
 };
 
 const BOOLEAN_KEYS = [
@@ -29,6 +30,7 @@ const BOOLEAN_KEYS = [
   'leftHandMode',
   'bigMainButton',
   'lockMultipleTargets',
+  'tapToLock',
 ] as const;
 
 export function migrateDimAmountDb(value: number): number {
