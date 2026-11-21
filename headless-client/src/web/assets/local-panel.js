@@ -4,6 +4,10 @@
   'use strict';
   const handlers = new Map();
   const held = new Map();
+  const audioSwitch = root.document?.getElementById?.('headless-audio-switch');
+  const audioFeedback = root.document?.getElementById?.('headless-audio-feedback');
+  let audioSets = null;
+  let switchingAudio = false;
   const inputPrefix = `local-panel:${root.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}:`;
   let connected = false, timer = null, pending = false;
   let visible = !root.parent?.document?.body?.dataset?.view || root.parent.document.body.dataset.view === 'remote';
@@ -73,8 +77,43 @@
   }
   function receive(result) {
     if (!result.snapshot) return;
+    if (!switchingAudio) renderAudioSets(result.report?.runtime?.audioDeviceSets);
     fire('panel-state', stateOf(result));
   }
+
+  function renderAudioSets(sets) {
+    if (!audioSwitch) return;
+    audioSets = sets?.names?.length === 2 ? sets : null;
+    audioSwitch.parentElement.hidden = !audioSets;
+    if (!audioSets) return;
+    const current = audioSets.names[audioSets.active];
+    const next = audioSets.names[1 - audioSets.active];
+    const label = `Audio set ${current} active. Switch to ${next}.`;
+    if (audioSwitch.textContent !== current) audioSwitch.textContent = current;
+    if (audioSwitch.title !== label) {
+      audioSwitch.title = label;
+      audioSwitch.setAttribute('aria-label', label);
+    }
+  }
+
+  audioSwitch?.addEventListener('click', async () => {
+    if (!audioSets || switchingAudio) return;
+    const index = 1 - audioSets.active;
+    switchingAudio = true;
+    audioSwitch.setAttribute('aria-disabled', 'true');
+    audioFeedback.textContent = '';
+    try {
+      const result = await request({ kind: 'audio-device-set', index });
+      renderAudioSets(result.report?.runtime?.audioDeviceSets || audioSets);
+      receive(result);
+      if (!result.ok) audioFeedback.textContent = result.error || 'Could not switch audio sets.';
+    } catch (error) {
+      audioFeedback.textContent = error.message;
+    } finally {
+      switchingAudio = false;
+      audioSwitch.removeAttribute('aria-disabled');
+    }
+  });
   async function poll() {
     if (pending || !connected || !visible) return;
     pending = true;

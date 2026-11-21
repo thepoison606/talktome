@@ -180,11 +180,11 @@ enabled = true
 
 [web]
 # Local administration web interface (status, Stream Deck view, settings).
-# Login is always "admin"; the default password must be changed on first login.
+# Set an individual password for the "admin" login to use the web interface.
 enabled = true
-bind = "0.0.0.0"
+bind = "127.0.0.1"          # set a LAN address explicitly for remote access
 port = 8080
-password = "admin"        # or TALKTOME_WEB_PASSWORD in the .env file
+password = ""               # or TALKTOME_WEB_PASSWORD in the .env file
 
 [health]
 # port = 9911               # GET http://127.0.0.1:9911/healthz

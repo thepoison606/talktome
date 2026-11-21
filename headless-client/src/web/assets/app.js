@@ -242,7 +242,6 @@
       $('#topbar-instance').textContent = `Talktome Headless · ${session.instance || ''}`;
       if (session.authenticated) {
         showApp();
-        if (session.must_change_password) openPasswordDialog(true);
       } else {
         showLogin();
       }
@@ -258,13 +257,12 @@
     const message = $('#login-message');
     message.textContent = '';
     try {
-      const result = await api('POST', '/api/login', {
+      await api('POST', '/api/login', {
         username: form.username.value,
         password: form.password.value,
       });
       form.password.value = '';
       showApp();
-      if (result.must_change_password) openPasswordDialog(true);
     } catch (error) {
       message.textContent = error.message;
     }
@@ -283,13 +281,8 @@
   // Password dialog
   // ---------------------------------------------------------------------
 
-  function openPasswordDialog(forced) {
+  function openPasswordDialog() {
     const dialog = $('#password-dialog');
-    dialog.dataset.forced = forced ? '1' : '';
-    $('#password-intro').textContent = forced
-      ? 'The default password is in use. Choose a new one before continuing.'
-      : 'Choose a new password for the admin login.';
-    $('#password-cancel').classList.toggle('is-hidden', Boolean(forced));
     $('#password-message').textContent = '';
     $('#password-form').reset();
     dialog.classList.remove('is-hidden');
@@ -297,7 +290,7 @@
   }
 
   $('#password-cancel').addEventListener('click', () => $('#password-dialog').classList.add('is-hidden'));
-  $('#change-password-button').addEventListener('click', () => openPasswordDialog(false));
+  $('#change-password-button').addEventListener('click', openPasswordDialog);
 
   $('#password-form').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -983,8 +976,7 @@
       title: 'Audio',
       desc: 'devices, codec profile, dimming, jitter buffer',
       fields: [
-        { path: 'audio.input_device', label: 'Input device', type: 'device', direction: 'inputs', nullable: true, help: 'Use tone or tone:440 on a VM with no microphone' },
-        { path: 'audio.output_device', label: 'Output device', type: 'device', direction: 'outputs', nullable: true, help: 'wav:/tmp/out.wav records the mix when there is no speaker' },
+        { type: 'audio-device-sets' },
         { path: 'audio.speaker_level_db', label: 'Speaker output level (dB)', type: 'output-level', step: 1, min: -120, max: 24, help: 'Default: 0 dB. Fixed analog level, when supported by the selected sound card. Main controls Playback separately. Restart to apply.' },
         { path: 'audio.headphone_level_db', label: 'Headphone output level (dB)', type: 'output-level', step: 1, min: -120, max: 24, help: 'Default: 0 dB. Applied only to a separate Headphone control with dB support. Restart to apply.' },
         { path: 'audio.profile', label: 'Codec profile', type: 'select', options: [['ultra-low', 'Ultra low (5 ms)'], ['low', 'Low (10 ms)'], ['standard', 'Standard (20 ms, FEC)']], help: 'Default matches the web client (5 ms, no FEC). If audio crackles or the log says audio-stream-error, use Low or Standard. Restart to apply.' },
@@ -1220,12 +1212,15 @@
       details.append(fields);
       form.append(details);
     }
-    const output = form.querySelector('select[data-path="audio.output_device"]');
-    output?.addEventListener('change', () => {
+    const audioEditor = form.querySelector('[data-editor="audio-device-sets"]');
+    const updateOutputLevels = () => {
+      const output = $('[data-field="output_device"]', audioEditor);
       for (const input of form.querySelectorAll('[data-output-level]')) {
-        input.disabled = output.value !== (getPath(state.runningDoc, 'audio.output_device') || '') || !(state.config?.output_levels?.[input.dataset.outputLevel]?.length);
+        input.disabled = output.value !== (state.config?.active_output_device || '') || !(state.config?.output_levels?.[input.dataset.outputLevel]?.length);
       }
-    });
+    };
+    audioEditor.addEventListener('change', updateOutputLevels);
+    updateOutputLevels();
     const network = form.querySelector('select[data-path="audio.network"]');
     if (network) {
       network.addEventListener('change', () => {
@@ -1238,6 +1233,7 @@
   }
 
   function renderField(field, doc) {
+    if (field.type === 'audio-device-sets') return renderAudioDeviceSets(doc.audio || {});
     if (field.type === 'gpio-outputs') return renderGpioOutputs(doc);
     if (field.type === 'gpio-target-outputs') return renderGpioTargetOutputs(doc);
     if (field.type === 'gpio-inputs') return renderGpioInputs(doc);
@@ -1277,7 +1273,6 @@
         input.required = true;
       }
       input.value = values.includes(Number(value)) ? String(value) : values.length ? '' : '0';
-      input.disabled ||= (getPath(doc, 'audio.output_device') || '') !== (getPath(state.runningDoc, 'audio.output_device') || '');
     } else if (field.type === 'production') {
       input = el('select', { dataset: { path: field.path, type: 'select', nullable: '1', production: '1' }, autocomplete: 'off' });
       fillProductionSelect(input, value == null ? '' : String(value));
@@ -1306,26 +1301,6 @@
         input.append(el('option', { value: optionValue, text: label }));
       }
       input.value = current;
-    } else if (field.type === 'device') {
-      input = el('select', { dataset: { path: field.path, type: 'select', nullable: '1' }, autocomplete: 'off' });
-      const current = value == null ? '' : String(value);
-      const devices = state.audioDevices[field.direction] || [];
-      const special = field.direction === 'inputs'
-        ? [['none', 'none (no capture)'], ['tone', 'tone (test tone)'], ['tone:440', 'tone:440'], ['tone:1000', 'tone:1000']]
-        : [['none', 'none (no playback)'], ['wav:/tmp/talktome-out.wav', 'wav:/tmp/talktome-out.wav (record to file)']];
-      const known = new Set(['', ...devices.map((device) => device.id), ...special.map(([id]) => id)]);
-      const option = (id, label) => el('option', { value: id, text: label && label !== id ? `${id} — ${label}` : id });
-      input.append(el('option', { value: '', text: 'System default' }));
-      if (!known.has(current)) input.append(option(current, 'not found'));
-      const groups = [
-        ['Configured devices (asound.conf)', devices.filter((device) => !device.card)],
-        ['Sound cards', devices.filter((device) => device.card)],
-      ];
-      for (const [label, list] of groups) {
-        if (list.length) input.append(el('optgroup', { label }, list.map((device) => option(device.id, device.label))));
-      }
-      input.append(el('optgroup', { label: 'Testing' }, special.map(([id, label]) => el('option', { value: id, text: label }))));
-      input.value = current;
     } else if (field.type === 'json') {
       input = el('textarea', { rows: 3, dataset: { path: field.path, type: 'json', nullable: field.nullable ? '1' : '' } });
       input.value = value == null ? '' : JSON.stringify(value, null, 1);
@@ -1347,6 +1322,77 @@
     wrapper.append(input);
     if (field.help) wrapper.append(el('span', { class: 'help', text: field.help }));
     return wrapper;
+  }
+
+  function audioDeviceSelect(key, value, paired) {
+    const capture = key === 'input_device';
+    const input = el('select', { dataset: { field: key }, autocomplete: 'off' });
+    const current = value == null ? '' : String(value);
+    const devices = state.audioDevices[capture ? 'inputs' : 'outputs'] || [];
+    const testing = paired ? [] : capture
+      ? [['tone', 'Test tone'], ['tone:440', '440 Hz test tone'], ['tone:1000', '1000 Hz test tone']]
+      : [['wav:/tmp/talktome-out.wav', 'Record to file']];
+    const known = new Set(['', 'none', ...devices.map((device) => device.id), ...testing.map(([id]) => id)]);
+    const option = (id, label) => el('option', { value: id, text: label && label !== id ? `${id} — ${label}` : id });
+    input.append(el('option', { value: '', text: 'System default' }));
+    if (!known.has(current)) input.append(option(current, 'not listed'));
+    const groups = [
+      ['Configured devices (asound.conf)', devices.filter((device) => !device.card)],
+      ['Sound cards', devices.filter((device) => device.card)],
+    ];
+    for (const [label, list] of groups) {
+      if (list.length) input.append(el('optgroup', { label }, list.map((device) => option(device.id, device.label))));
+    }
+    input.append(el('option', { value: 'none', text: capture ? 'No capture' : 'No playback' }));
+    if (testing.length) input.append(el('optgroup', { label: 'Testing' }, testing.map(([id, label]) => option(id, label))));
+    input.value = current;
+    return input;
+  }
+
+  function readAudioDeviceSets(editor) {
+    return Array.from(editor.querySelectorAll('fieldset'), (row) => ({
+      name: $('[data-field="name"]', row)?.value.trim() || '',
+      input_device: $('[data-field="input_device"]', row).value || null,
+      output_device: $('[data-field="output_device"]', row).value || null,
+    }));
+  }
+
+  function renderAudioDeviceSets(audio) {
+    const editor = el('div', { class: 'list-editor', dataset: { editor: 'audio-device-sets' } });
+    const draw = (sets) => {
+      const paired = sets.length === 2;
+      const add = el('button', { type: 'button', class: 'btn btn-small', text: '+ Add second audio set', onclick: () => {
+        const [first] = readAudioDeviceSets(editor);
+        draw([first, { ...first }]);
+        $('[data-field="name"]', editor).focus();
+      } });
+      editor.replaceChildren(...sets.map((set, index) => {
+        const field = (label, key, input) => {
+          const id = `audio-set-${index}-${key}`;
+          input.id = id;
+          input.name = id;
+          return el('label', { class: 'field', for: id }, [el('span', { text: label }), input]);
+        };
+        const row = el('fieldset', { class: 'list-row audio-device-set' }, [
+          el('legend', { text: paired ? `Audio set ${index + 1}` : 'Audio devices' }),
+          paired ? field('Name', 'name', el('input', { type: 'text', value: set.name, required: '', dataset: { field: 'name' } })) : null,
+          field('Input device', 'input_device', audioDeviceSelect('input_device', set.input_device, paired)),
+          field('Output device', 'output_device', audioDeviceSelect('output_device', set.output_device, paired)),
+        ]);
+        return row;
+      }));
+      if (paired) {
+        editor.append(el('div', {}, el('button', { type: 'button', class: 'btn btn-small', text: 'Remove second audio set', onclick: () => {
+          draw(readAudioDeviceSets(editor).slice(0, 1));
+          $('button', editor).focus();
+        } })));
+      } else {
+        editor.append(el('div', {}, add));
+      }
+      editor.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    draw(audio.device_sets?.length === 2 ? audio.device_sets : [audio]);
+    return editor;
   }
 
   function targetSelectOptions(current, { allowEmpty = true, kinds = null, emptyLabel = '—' } = {}) {
@@ -1581,6 +1627,19 @@
         continue;
       }
       setPath(doc, path, value);
+    }
+    const audioSets = readAudioDeviceSets($('[data-editor="audio-device-sets"]'));
+    const paired = audioSets.length === 2;
+    if (paired && audioSets.some((set) => !set.name)) throw new Error('Enter a name for both audio sets.');
+    if (paired || hasPath(fileDoc || doc, 'audio.device_sets') || hasPath(runningDoc, 'audio.device_sets')) {
+      setPath(doc, 'audio.device_sets', paired ? audioSets : []);
+    }
+    for (const key of ['input_device', 'output_device']) {
+      const path = `audio.${key}`;
+      const value = audioSets[0][key];
+      if (!fileDoc || hasPath(fileDoc, path) || value !== (getPath(runningDoc, path) ?? null)) {
+        setPath(doc, path, value);
+      }
     }
     const outputs = {};
     for (const row of $$('[data-editor="gpio-outputs"] [data-output]')) {

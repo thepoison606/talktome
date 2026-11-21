@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const vm = require("node:vm");
 
 const clientSource = fs.readFileSync(
   path.join(PROJECT_ROOT, "public", "client.js"),
@@ -35,6 +36,32 @@ test("settings handlers do not reference the closure-scoped cached user list", (
   assert.doesNotMatch(openHandler, /cachedUsers/);
   assert.match(viewHandler, /renderTargetHotkeySettingsHandler\(\);/);
   assert.doesNotMatch(viewHandler, /cachedUsers/);
+});
+
+test("both settings subviews start at the top and focus their Back button without scrolling", () => {
+  for (const view of ["shortcuts", "arrange"]) {
+    const menu = { scrollTop: 400 };
+    const focusCalls = [];
+    const loaded = [];
+    const context = vm.createContext({
+      activeSettingsView: "main",
+      settingsMainView: {},
+      settingsShortcutsView: { parentElement: menu },
+      settingsArrangeView: { parentElement: menu },
+      shortcutSettingsBackButton: { focus: options => focusCalls.push(["shortcuts", options.preventScroll]) },
+      arrangeTargetsBackButton: { focus: options => focusCalls.push(["arrange", options.preventScroll]) },
+      canEditTargets: () => true,
+      stopHotkeyCaptureHandler() {},
+      cancelArrangeTargetsDragHandler() {},
+      renderTargetHotkeySettingsHandler: () => loaded.push("shortcuts"),
+      loadArrangeTargetsHandler: () => loaded.push("arrange"),
+    });
+    vm.runInContext(sourceBetween("function setActiveSettingsView(", "function bindSettingsViewButton("), context);
+    context.setActiveSettingsView(view);
+    assert.equal(menu.scrollTop, 0);
+    assert.deepEqual(focusCalls, [[view, true]]);
+    assert.deepEqual(loaded, [view]);
+  }
 });
 
 test("feed ducking does not change listen-only conference playback levels", () => {

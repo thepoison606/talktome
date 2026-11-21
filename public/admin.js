@@ -56,6 +56,7 @@ const adminApp = document.getElementById('admin-app');
 const adminBar = document.getElementById('admin-bar');
 const adminBarMessage = document.getElementById('admin-bar-message');
 const adminNameLabel = document.getElementById('admin-name-label');
+const adminReleaseNotice = document.getElementById('admin-release-notice');
 const adminLogoutBtn = document.getElementById('admin-logout');
 const adminNavLinks = [...document.querySelectorAll('[data-admin-nav]')];
 const configTabs = [...document.querySelectorAll('[data-config-tab]')];
@@ -384,18 +385,25 @@ const collapsibleAdminSections = {
 };
 
 const ADMIN_SECTION_COLLAPSED_STORAGE_PREFIX = 'talktome:admin-section-collapsed:';
+const ADMIN_SELECTED_USER_STORAGE_PREFIX = 'talktome:admin-selected-user:';
+const ADMIN_TARGET_PRODUCTION_STORAGE_PREFIX = 'talktome:admin-target-production:';
+const ADMIN_RELEASE_CHECK_INTERVAL = 30 * 60 * 1000;
 
 let currentAdminImageLightboxState = null;
 let currentBridgeRegistry = [];
 let currentAdminCatalog = { users: [], conferences: [], feeds: [] };
 const targetAssignmentsByUser = new Map();
 const targetEditorRefreshTimers = new Map();
+const userTargetProductionSelections = new Map();
 const conferenceMembershipEditorRefreshes = new Map();
 let statusLoadPromise = null;
 let statusEventSource = null;
 let statusClockTimer = null;
 let statusFallbackTimer = null;
 let statusHealthTimer = null;
+let adminReleaseTimer;
+let adminReleaseRequest = null;
+let adminReleaseDue = 0;
 let latestAdminStatus = null;
 const statusUserFilters = { productionId: '' };
 let statusUserProductionOptionsKey = '';
@@ -425,8 +433,59 @@ function focusAdminLoginNameField() {
   });
 }
 
+function showAdminReleaseNotice(version) {
+  if (!adminReleaseNotice || adminReleaseNotice.dataset.version === version) return;
+  adminReleaseNotice.dataset.version = version;
+  if (!version) {
+    adminReleaseNotice.replaceChildren();
+    return;
+  }
+  const link = document.createElement('a');
+  link.className = 'admin-bar__release';
+  link.href = 'https://github.com/thepoison606/talktome/releases/latest';
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.title = `Talktome ${version} on GitHub`;
+  link.textContent = 'New Version available';
+  adminReleaseNotice.replaceChildren(link);
+}
+
+async function checkAdminRelease() {
+  window.clearTimeout(adminReleaseTimer);
+  if (!adminReleaseNotice || !adminState.isAuthenticated || document.hidden || adminReleaseRequest) return;
+
+  const delay = adminReleaseDue - Date.now();
+  if (delay > 0) {
+    adminReleaseTimer = window.setTimeout(checkAdminRelease, delay);
+    return;
+  }
+
+  const request = new AbortController();
+  adminReleaseRequest = request;
+  try {
+    const response = await authedFetch('/admin/release-update', { priority: 'low', signal: request.signal });
+    if (response.ok) {
+      const { version } = await response.json();
+      if (adminReleaseRequest === request) showAdminReleaseNotice(version || '');
+    }
+  } catch {
+    // The version notice is optional when the service or network is unavailable.
+  } finally {
+    if (adminReleaseRequest === request) {
+      adminReleaseRequest = null;
+      adminReleaseDue = Date.now() + ADMIN_RELEASE_CHECK_INTERVAL;
+      void checkAdminRelease();
+    }
+  }
+}
+
 function showLogin(message) {
   stopStatusStream();
+  window.clearTimeout(adminReleaseTimer);
+  adminReleaseRequest?.abort();
+  adminReleaseRequest = null;
+  adminReleaseDue = 0;
+  showAdminReleaseNotice('');
   closeAdminImageLightbox();
   clearApiKeyField();
   if (adminLogin) adminLogin.classList.remove('is-hidden');
@@ -445,6 +504,7 @@ function showAdminApp() {
   if (adminLogin) adminLogin.classList.add('is-hidden');
   if (adminApp) adminApp.classList.remove('is-hidden');
   if (adminBar) adminBar.classList.remove('is-hidden');
+  void checkAdminRelease();
   activateAdminView(getAdminViewFromHash() || activeAdminView || adminNavLinks[0]?.dataset.adminNav || 'status', {
     updateHash: false,
   });
@@ -1255,6 +1315,12 @@ function applyAdminState(payload) {
   adminState.mustChangePassword = Boolean(payload?.mustChangePassword);
   adminState.userId = payload?.id ?? null;
   adminState.name = payload?.name ?? '';
+  entityMasterDetailState.users.selectedId = null;
+  if (adminState.isGlobalAdmin && adminState.userId != null) {
+    try {
+      entityMasterDetailState.users.selectedId = sessionStorage.getItem(`${ADMIN_SELECTED_USER_STORAGE_PREFIX}${adminState.userId}`);
+    } catch {}
+  }
   if (adminNameLabel) {
     adminNameLabel.textContent = adminState.name || 'Admin';
   }
@@ -2146,6 +2212,11 @@ async function syncEntityMasterDetail(kind, items = getEntityMasterDetailItems(k
   const requestedId = preferredId == null ? state.selectedId : preferredId;
   const selected = items.find((item) => Number(item.id) === Number(requestedId)) || items[0] || null;
   state.selectedId = selected?.id ?? null;
+  if (kind === 'users' && selected && adminState.userId != null) {
+    try {
+      sessionStorage.setItem(`${ADMIN_SELECTED_USER_STORAGE_PREFIX}${adminState.userId}`, String(selected.id));
+    } catch {}
+  }
   renderEntityMasterDetailPicker(kind, items);
 
   config.empty?.classList.toggle('is-hidden', Boolean(selected));
@@ -2453,6 +2524,7 @@ async function handleMatrixConnectAll(container, button) {
     const result = await response.json();
     if (production) {
       if (selectedProductionId === productionId) await loadProductionDetail(productionId, { preferredOrderUserId: productionOrderUser?.value });
+      for (const id of result.userIds) scheduleUserTargetEditorRefresh(id);
     } else {
       for (const id of result.userIds) {
         cacheUserTargetAssignments(id, await fetchJSON(`/users/${id}/targets`));
@@ -2536,6 +2608,22 @@ function renderProductionTargetMatrix(payload) {
   `;
 }
 
+function createAdminTargetColorButton(productionId, userId, target, { preview, onSaved } = {}) {
+  return window.targetEditor.createColorButton(target, async (color) => {
+    const response = await productionRequest(`/admin/productions/${productionId}/users/${userId}/targets/color`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetType: target.targetType, targetId: Number(target.targetId), color }),
+    });
+    if (response.status !== 204) throw new Error('Server did not confirm the target color change');
+    const displayedTarget = Number(selectedProductionPayload?.production.id) === Number(productionId)
+      && selectedProductionPayload.targets[String(userId)]?.find(item =>
+        item.targetType === target.targetType && Number(item.targetId) === Number(target.targetId));
+    if (displayedTarget) displayedTarget.color = color;
+    onSaved?.(color);
+  }, { admin: true, preview });
+}
+
 function renderProductionOrder(payload, preferredUserId = null) {
   if (!productionOrderUser || !productionOrderList) return;
   const current = String(preferredUserId || productionOrderUser.value || payload.members[0]?.id || '');
@@ -2552,6 +2640,9 @@ function renderProductionOrder(payload, preferredUserId = null) {
       <span class="badge">${escapeHtml(target.targetType)}</span>
     </li>
   `).join('') || '<li class="section-note">No target buttons assigned to this member.</li>';
+  [...productionOrderList.querySelectorAll('.draggable-target')].forEach((chip, index) => {
+    chip.append(createAdminTargetColorButton(payload.production.id, userId, targets[index]));
+  });
   initProductionTargetOrdering(Number(userId), productionOrderList);
 }
 
@@ -2666,6 +2757,7 @@ async function loadProductions({ selectId = selectedProductionId } = {}) {
   }
   if (productionSidebar) productionSidebar.hidden = !multipleProductionsEnabled;
   productionLayout?.classList.toggle('production-layout--single', !multipleProductionsEnabled);
+  productionLayout?.classList.toggle('production-layout--scoped-admin', !adminState.isGlobalAdmin);
   productionSummaries = await fetchJSON('/admin/productions');
   if (productionEmpty) productionEmpty.textContent = 'Select a matrix layout to configure it.';
   if (!multipleProductionsEnabled) selectId = mode?.primaryProductionId ?? productionSummaries[0]?.id ?? null;
@@ -3234,18 +3326,28 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
               <span>Allow target add/remove</span>
             </label>
           </div>
-          ${multipleProductionsEnabled ? '' : `
-          <div class="inline-controls">
-            <select id="add-target-type-${user.id}">
+          ${multipleProductionsEnabled ? `
+          <div class="field-group">
+            <label for="target-production-${user.id}">Production</label>
+            <select id="target-production-${user.id}">
+              ${productionSummaries.filter(production => user.targetProductionIds?.includes(production.id))
+                .map(production => `<option value="${production.id}">${escapeHtml(production.name)}</option>`).join('')
+                || '<option value="">No productions assigned</option>'}
+            </select>
+          </div>
+          ` : ''}
+          <div class="inline-controls user-target-actions">
+            <select id="add-target-type-${user.id}" aria-label="Target type" disabled>
               <option value="user">User</option>
               <option value="conference">Conference</option>
               <option value="feed">Feed</option>
             </select>
-            <select id="add-target-id-${user.id}"></select>
-            <button type="button" id="add-target-btn-${user.id}" class="small" onclick="addTarget(${user.id})">Add target</button>
+            <select id="add-target-id-${user.id}" aria-label="Target to add" disabled></select>
+            <button type="button" id="add-target-btn-${user.id}" class="small" onclick="addTarget(${user.id})" disabled>Add target</button>
+            <button type="button" id="reset-target-colors-${user.id}" class="small user-target-reset-colors" disabled>Reset colors</button>
           </div>
+          <p id="user-targets-status-${user.id}" class="section-note" role="status" hidden></p>
           <ul id="user-targets-${user.id}"></ul>
-          `}
         </div>
       `;
     const detailControls = targetControls || bridgeControls
@@ -3280,10 +3382,24 @@ async function renderUserList(users, conferences, feeds, bridges = currentBridge
     `;
 
     userList.appendChild(li);
+    const productionSelect = document.getElementById(`target-production-${user.id}`);
+    if (productionSelect) {
+      const storageKey = `${ADMIN_TARGET_PRODUCTION_STORAGE_PREFIX}${adminState.userId}:${user.id}`;
+      let preferred = userTargetProductionSelections.get(storageKey);
+      try { preferred ??= sessionStorage.getItem(storageKey); } catch {}
+      preferred ??= String(selectedProductionId);
+      if ([...productionSelect.options].some(option => option.value === preferred)) productionSelect.value = preferred;
+      productionSelect.disabled = !productionSelect.value;
+      productionSelect.addEventListener('change', () => {
+        userTargetProductionSelections.set(storageKey, productionSelect.value);
+        try { sessionStorage.setItem(storageKey, productionSelect.value); } catch {}
+        loadUserTargets(user.id, users, conferences, feeds).catch(console.error);
+      });
+    }
   }
 
   const targetLoads = await Promise.allSettled(visibleUsers.map(async (user) => {
-    if (user.is_superadmin || multipleProductionsEnabled) {
+    if (user.is_superadmin) {
       cacheUserTargetAssignments(user.id, []);
       await loadBridgeTriggerTargets(user.id);
       return;
@@ -3666,6 +3782,8 @@ async function loadDefaultClientSettings() {
   if (defaultClientLeftHand) defaultClientLeftHand.checked = settings.leftHandMode === true;
   if (defaultClientBigMainButton) defaultClientBigMainButton.checked = settings.bigMainButton === true;
   if (defaultClientLockMultiple) defaultClientLockMultiple.checked = settings.lockMultipleTargets === true;
+  const tapToLock = document.getElementById('default-client-tap-to-lock');
+  if (tapToLock) tapToLock.checked = settings.tapToLock !== false;
   if (defaultClientAllowTargetRearrange) defaultClientAllowTargetRearrange.checked = settings.allowTargetRearrange !== false;
   if (defaultClientAllowTargetAddRemove) defaultClientAllowTargetAddRemove.checked = settings.allowTargetAddRemove === true;
   if (defaultClientAllowFeedVideo) defaultClientAllowFeedVideo.checked = settings.allowFeedVideo === true;
@@ -3829,17 +3947,21 @@ async function updateConferenceParticipantOptions(confId, allUsers, previousInde
   selectNextByIndex(select, previousIndex);
 }
 
-function createAssignmentChip(label, onRemove) {
+function createAssignmentChip(label, onRemove, { icon = false } = {}) {
   const chip = document.createElement('li');
   chip.className = 'list-chip';
   const name = document.createElement('span');
   name.className = 'chip-label';
   name.textContent = String(label ?? '');
-  const remove = document.createElement('button');
-  remove.type = 'button';
-  remove.className = 'small danger';
-  remove.textContent = 'Remove';
-  remove.addEventListener('click', onRemove);
+  const remove = icon
+    ? window.targetEditor.createRemoveButton(label, onRemove, 'small danger icon-button target-remove-button')
+    : document.createElement('button');
+  if (!icon) {
+    remove.type = 'button';
+    remove.className = 'small danger';
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', onRemove);
+  }
   chip.append(name, remove);
   return chip;
 }
@@ -3865,30 +3987,91 @@ async function renderConferenceParticipantList(confId) {
   )));
 }
 
-// Fetch and render targets + rebuild the “type → id” dropdown
+function adminUserTargetPath(userId, productionId) {
+  return productionId ? `/admin/productions/${productionId}/users/${userId}/targets` : `/users/${userId}/targets`;
+}
+
 async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
-  const targets = await fetchJSON(`/users/${userId}/targets`);
-  cacheUserTargetAssignments(userId, targets);
-  const usedByType = targets.reduce((acc, target) => {
-    const type = String(target.targetType || '');
-    const id = String(target.targetId || '');
-    if (!type) return acc;
-    if (!acc[type]) acc[type] = new Set();
-    acc[type].add(id);
-    return acc;
-  }, {});
   const ul = document.getElementById(`user-targets-${userId}`);
+  if (!ul) return;
+  const productionSelect = document.getElementById(`target-production-${userId}`);
+  const productionId = productionSelect?.value;
+  const path = adminUserTargetPath(userId, productionId);
+  const selType = document.getElementById(`add-target-type-${userId}`);
+  const selId = document.getElementById(`add-target-id-${userId}`);
+  const addBtn = document.getElementById(`add-target-btn-${userId}`);
+  const resetColors = document.getElementById(`reset-target-colors-${userId}`);
+  const status = document.getElementById(`user-targets-status-${userId}`);
+  const load = Symbol();
+  ul.targetLoad = load;
+  selType.disabled = selId.disabled = addBtn.disabled = true;
+  if (resetColors) resetColors.disabled = true;
+  if (ul.dataset.productionId !== (productionId || '')) ul.replaceChildren();
+  ul.dataset.productionId = productionId || '';
   updateBridgeTriggerTargetOptions(userId, [
     ...allUsers.filter(user => !user.is_superadmin && !user.is_guest_profile && Number(user.id) !== Number(userId))
       .map(user => ({ type: 'user', id: user.id, name: user.name })),
     ...allConfs.map(conference => ({ type: 'conference', id: conference.id, name: conference.name })),
   ]);
-  if (!ul) return;
+  if (productionSelect && !productionId) return;
+
+  status.hidden = false;
+  status.textContent = 'Loading targets…';
+  let targets, available;
+  try {
+    const payload = await fetchJSON(path);
+    if (!ul.isConnected || ul.targetLoad !== load) return;
+    targets = productionId ? payload.targets : payload;
+    available = productionId ? payload.available : [
+      ...allUsers.filter(user => !user.is_superadmin && !user.is_guest_profile && Number(user.id) !== Number(userId))
+        .map(user => ({ targetType: 'user', targetId: user.id, name: user.name })),
+      ...allConfs.map(conference => ({ targetType: 'conference', targetId: conference.id, name: conference.name })),
+      ...allFeeds.map(feed => ({ targetType: 'feed', targetId: feed.id, name: feed.name })),
+    ];
+  } catch (error) {
+    if (ul.isConnected && ul.targetLoad === load) status.textContent = error.message || 'Could not load targets';
+    throw error;
+  }
+
+  if (!productionId) cacheUserTargetAssignments(userId, targets);
+  const used = new Set(targets.map(target => targetAssignmentKey(target.targetType, target.targetId)));
+  const colorProductionId = productionId || productionSummaries.find(production => production.isPrimary)?.id;
+  let resetting = false;
+  const syncResetButton = () => {
+    if (resetColors && ul.targetLoad === load) {
+      resetColors.disabled = resetting || !colorProductionId || !targets.some(target => target.color);
+    }
+  };
+  if (resetColors) {
+    resetColors.onclick = async () => {
+      resetting = true;
+      syncResetButton();
+      try {
+        const response = await productionRequest(`/admin/productions/${colorProductionId}/users/${userId}/targets/colors`, {
+          method: 'DELETE',
+        });
+        if (response.status !== 204) throw new Error('Server did not confirm the target color reset');
+        if (Number(selectedProductionPayload?.production.id) === Number(colorProductionId)) {
+          selectedProductionPayload.targets[String(userId)]?.forEach(target => { delete target.color; });
+          renderProductionOrder(selectedProductionPayload, productionOrderUser?.value);
+        }
+        if (ul.isConnected && ul.targetLoad === load) await loadUserTargets(userId, allUsers, allConfs, allFeeds);
+        showMessage('Target colors reset', 'success', 'user');
+      } catch (error) {
+        showMessage(error.message || 'Could not reset target colors', 'error', 'user');
+      } finally {
+        resetting = false;
+        syncResetButton();
+      }
+    };
+    syncResetButton();
+  }
+  status.hidden = targets.length > 0;
+  status.textContent = targets.length ? '' : 'No target buttons assigned.';
   ul.replaceChildren(...targets.map(t => {
-    const isConference = t.targetType === 'conference';
     const targetType = String(t.targetType ?? '');
     const targetId = String(t.targetId ?? '');
-    const chip = createAssignmentChip(t.name, () => removeTarget(userId, targetType, targetId));
+    const chip = createAssignmentChip(t.name, () => removeTarget(userId, targetType, targetId, productionId), { icon: true });
     chip.classList.add('draggable-target');
     chip.draggable = true;
     chip.dataset.type = targetType;
@@ -3902,45 +4085,31 @@ async function loadUserTargets(userId, allUsers, allConfs, allFeeds = []) {
     badge.className = 'badge';
     badge.textContent = targetType;
     chip.insertBefore(badge, chip.lastElementChild);
-    if (isConference) {
-      const membership = document.createElement('span');
-      membership.className = 'badge';
-      membership.title = 'Conference membership';
-      membership.textContent = 'membership';
-      chip.insertBefore(membership, chip.lastElementChild);
+    if (targetType === 'conference' && t.canTalk === false) {
+      const listenOnly = document.createElement('span');
+      listenOnly.className = 'badge';
+      listenOnly.textContent = 'Listen only';
+      chip.insertBefore(listenOnly, chip.lastElementChild);
+    }
+    if (colorProductionId) {
+      const colorButton = createAdminTargetColorButton(colorProductionId, userId, t, {
+        preview: chip,
+        onSaved(color) {
+          t.color = color;
+          syncResetButton();
+        },
+      });
+      chip.insertBefore(colorButton, chip.lastElementChild);
     }
     return chip;
   }));
   initTargetOrdering(userId, ul);
 
-  const selType = document.getElementById(`add-target-type-${userId}`);
-  const selId   = document.getElementById(`add-target-id-${userId}`);
-  const addBtn  = document.getElementById(`add-target-btn-${userId}`);
+  selType.disabled = false;
   const refreshTargetSelectors = () => {
-    const type = selType.value;
-    const selectableUsers = allUsers.filter(item => (
-      !item.is_superadmin &&
-      !item.is_guest_profile &&
-      Number(item.id) !== Number(userId)
-    ));
-    let options = [];
-    if (type === 'user') {
-      const used = usedByType.user || new Set();
-      options = selectableUsers
-        .filter(item => !used.has(String(item.id)))
-        .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
-    } else if (type === 'conference') {
-      const used = usedByType.conference || new Set();
-      options = allConfs
-        .filter(item => !used.has(String(item.id)))
-        .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
-    } else if (type === 'feed') {
-      const used = usedByType.feed || new Set();
-      options = allFeeds
-        .filter(item => !used.has(String(item.id)))
-        .map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`);
-    }
-
+    const options = available.filter(item => (
+      item.targetType === selType.value && !used.has(targetAssignmentKey(item.targetType, item.targetId))
+    )).map(item => `<option value="${item.targetId}">${escapeHtml(item.name)}</option>`);
     if (options.length === 0) {
       selId.disabled = true;
       selId.innerHTML = '<option value="" disabled selected>No entries available</option>';
@@ -4090,7 +4259,7 @@ async function saveTargetOrder(userId, ul) {
   }));
 
   try {
-    const res = await authedFetch(`/users/${userId}/targets/order`, {
+    const res = await authedFetch(`${adminUserTargetPath(userId, ul.dataset.productionId)}/order`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ items }),
@@ -4113,8 +4282,9 @@ window.addTarget = async function(userId) {
   const type = typeSelect?.value;
   const id = idSelect?.value;
   const prevIdIndex = idSelect?.selectedIndex ?? -1;
+  const productionId = document.getElementById(`target-production-${userId}`)?.value;
   try {
-    const res = await authedFetch(`/users/${userId}/targets`, {
+    const res = await authedFetch(adminUserTargetPath(userId, productionId), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ targetType: type, targetId: id })
@@ -4122,9 +4292,11 @@ window.addTarget = async function(userId) {
     if (!res.ok) {
       showMessage('❌ Failed to add target', 'error', 'user');
     } else {
-      setCachedTargetAssignment(userId, type, id, true);
-      if (type === 'conference') {
-        scheduleConferenceMembershipEditorRefresh(id, userId);
+      if (!productionId) {
+        setCachedTargetAssignment(userId, type, id, true);
+        if (type === 'conference') scheduleConferenceMembershipEditorRefresh(id, userId);
+      } else if (Number(productionId) === selectedProductionId) {
+        await loadProductionDetail(productionId);
       }
       // Refresh only that user’s target list
       const users = await fetchJSON('/users');
@@ -4133,6 +4305,7 @@ window.addTarget = async function(userId) {
       await loadUserTargets(userId, users, confs, feeds);
       const nextTypeSelect = document.getElementById(`add-target-type-${userId}`);
       const nextIdSelect = document.getElementById(`add-target-id-${userId}`);
+      if (document.getElementById(`target-production-${userId}`)?.value !== productionId) return;
       if (nextTypeSelect && type) {
         nextTypeSelect.value = type;
         nextTypeSelect.dispatchEvent(new Event('change'));
@@ -4148,17 +4321,19 @@ window.addTarget = async function(userId) {
 };
 
 // Called by each 🗑️ in the target list
-window.removeTarget = async function(userId, type, tid) {
+window.removeTarget = async function(userId, type, tid, productionId) {
   try {
     const res = await authedFetch(
-      `/users/${userId}/targets/${type}/${tid}`, { method: 'DELETE' }
+      `${adminUserTargetPath(userId, productionId)}/${type}/${tid}`, { method: 'DELETE' }
     );
     if (!res.ok) {
       showMessage('❌ Failed to remove target', 'error', 'user');
     } else {
-      setCachedTargetAssignment(userId, type, tid, false);
-      if (type === 'conference') {
-        scheduleConferenceMembershipEditorRefresh(tid, userId);
+      if (!productionId) {
+        setCachedTargetAssignment(userId, type, tid, false);
+        if (type === 'conference') scheduleConferenceMembershipEditorRefresh(tid, userId);
+      } else if (Number(productionId) === selectedProductionId) {
+        await loadProductionDetail(productionId);
       }
       const users = await fetchJSON('/users');
       const confs = await fetchJSON('/conferences');
@@ -4882,12 +5057,13 @@ function readDefaultClientSettings() {
     audioAutoProcessing: Boolean(defaultClientAudioProcessing?.checked), playConnectionSounds: Boolean(defaultClientConnectionSounds?.checked),
     showIncomingLevels: Boolean(defaultClientIncomingLevels?.checked), leftHandMode: Boolean(defaultClientLeftHand?.checked),
     bigMainButton: Boolean(defaultClientBigMainButton?.checked), lockMultipleTargets: Boolean(defaultClientLockMultiple?.checked),
+    tapToLock: document.getElementById('default-client-tap-to-lock')?.checked !== false,
     allowTargetRearrange: Boolean(defaultClientAllowTargetRearrange?.checked), allowTargetAddRemove: Boolean(defaultClientAllowTargetAddRemove?.checked),
     allowFeedVideo: Boolean(defaultClientAllowFeedVideo?.checked),
   };
 }
 if (defaultClientSettingsForm) {
-  const keys = ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'bigMainButton', 'lockMultipleTargets', 'allowTargetRearrange', 'allowTargetAddRemove', 'allowFeedVideo'];
+  const keys = ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'bigMainButton', 'lockMultipleTargets', 'tapToLock', 'allowTargetRearrange', 'allowTargetAddRemove', 'allowFeedVideo'];
   const applyButtons = new Map();
   const saver = globalThis.TalktomeAdminAutoSave.create({
     render: (text, retry) => renderAutoSaveFeedback('defaults-auto-save-status', text, retry),
@@ -5309,6 +5485,7 @@ async function handleProductionTargetToggle(toggle, forcedEnabled = null) {
       ));
     }
     renderProductionOrder(selectedProductionPayload, productionOrderUser?.value);
+    scheduleUserTargetEditorRefresh(userId);
   } catch (error) {
     setProductionTargetToggleState(toggle, previousState);
     showMessage(error.message || 'Target update failed', 'error', 'productions');
@@ -5333,6 +5510,7 @@ multipleProductionsInput?.addEventListener('change', async () => {
       body: JSON.stringify({ enabled }),
     });
     await loadProductions({ selectId: selectedProductionId });
+    await fetchAdminCollections();
     await Promise.all([
       renderUserList(
         currentAdminCatalog.users,
@@ -5400,6 +5578,8 @@ productionRenameButton?.addEventListener('click', async () => {
       body: JSON.stringify({ name }),
     });
     await loadProductions({ selectId: selectedProductionId });
+    const { users, conferences, feeds, bridges } = await fetchAdminCollections();
+    await renderUserList(users, conferences, feeds, bridges);
     showMessage('Production renamed.', 'success', 'productions');
   } catch (error) {
     showMessage(error.message || 'Failed to rename production', 'error', 'productions');
@@ -5420,6 +5600,8 @@ productionDeleteButton?.addEventListener('click', async () => {
     await productionRequest(`/admin/productions/${selectedProductionId}`, { method: 'DELETE' });
     selectedProductionId = null;
     await loadProductions();
+    const { users, conferences, feeds, bridges } = await fetchAdminCollections();
+    await renderUserList(users, conferences, feeds, bridges);
     showMessage('Production deleted.', 'success', 'productions');
   } catch (error) {
     showMessage(error.message || 'Failed to delete production', 'error', 'productions');
@@ -5448,6 +5630,10 @@ async function updateProductionEntity(button, shouldBeMember) {
     await loadProductionDetail(selectedProductionId, {
       preferredOrderUserId: entityType === 'user' && shouldBeMember ? entityId : null,
     });
+    if (entityType === 'user' && adminState.isGlobalAdmin && multipleProductionsEnabled) {
+      const { users, conferences, feeds, bridges } = await fetchAdminCollections();
+      await renderUserList(users, conferences, feeds, bridges);
+    }
   } catch (error) {
     button.disabled = false;
     showMessage(error.message || 'Failed to update production contents', 'error', 'matrix');
@@ -5554,6 +5740,7 @@ if (adminLogoutBtn) {
 }
 
 document.addEventListener('visibilitychange', () => {
+  void checkAdminRelease();
   if (!document.hidden && adminState.isAuthenticated && latestAdminStatus && serverReachable !== false) {
     renderAdminStatus(latestAdminStatus);
   }
@@ -5782,6 +5969,7 @@ function renderUserAudioSettingsFields(settings, targets = []) {
     <label class="user-audio-settings-switch"><span>Incoming level meters</span><span class="admin-switch"><input id="admin-incoming-levels" type="checkbox" role="switch" ${checked('showIncomingLevels')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <label class="user-audio-settings-switch"><span>Left-hand mode</span><span class="admin-switch"><input id="admin-left-hand" type="checkbox" role="switch" ${checked('leftHandMode')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <label class="user-audio-settings-switch"><span>Lock multiple targets</span><span class="admin-switch"><input id="admin-lock-multiple" type="checkbox" role="switch" ${checked('lockMultipleTargets')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
+    <label class="user-audio-settings-switch"><span>Tap to lock</span><span class="admin-switch"><input id="admin-tap-to-lock" type="checkbox" role="switch" ${checked('tapToLock')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <div class="user-audio-settings-range"><label class="user-audio-settings-range__label" for="admin-mic-gain"><span>Manual mic gain</span><output id="admin-mic-gain-value">${Number(settings.userInputGainDb).toFixed(1)} dB</output></label><input id="admin-mic-gain" type="range" min="-40" max="40" step="0.5" value="${settings.userInputGainDb}"></div>
     <label class="user-audio-settings-switch"><span>Level trigger</span><span class="admin-switch"><input id="admin-level-trigger" type="checkbox" role="switch" ${checked('voiceTriggerEnabled')}><span class="admin-switch__track" aria-hidden="true"></span></span></label>
     <div class="user-audio-settings-row"><label for="admin-level-target">Target</label><select id="admin-level-target"><option value="">Select target</option>${targetOptions}</select></div>
@@ -5833,7 +6021,8 @@ function closeUserAudioSettings() {
 userAudioSettingsForm?.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!editingAudioSettingsUserId) return;
-  const settings = window.TalktomeUserAudioSettings.normalize({
+  const tapToLock = document.getElementById('admin-tap-to-lock');
+  const settings = window.TalktomeUserAudioSettings.normalizeForSave({
     audioProfile: document.getElementById('admin-audio-profile').value,
     dimAmountDb: Number(document.getElementById('admin-dim-amount').value),
     dimFeedsWhileSpeaking: document.getElementById('admin-dim-speaking').checked,
@@ -5843,11 +6032,12 @@ userAudioSettingsForm?.addEventListener('submit', async (event) => {
     showIncomingLevels: document.getElementById('admin-incoming-levels').checked,
     leftHandMode: document.getElementById('admin-left-hand').checked,
     lockMultipleTargets: document.getElementById('admin-lock-multiple').checked,
+    ...(tapToLock.checked !== tapToLock.defaultChecked ? { tapToLock: tapToLock.checked } : {}),
     userInputGainDb: Number(document.getElementById('admin-mic-gain').value),
     voiceTriggerEnabled: document.getElementById('admin-level-trigger').checked,
     voiceTriggerTarget: document.getElementById('admin-level-target').value,
     voiceTriggerThresholdDb: Number(document.getElementById('admin-level-threshold').value),
-  }, { strict: true });
+  });
   userAudioSettingsSave.disabled = true;
   try {
     const response = await authedFetch(`/admin/users/${editingAudioSettingsUserId}/audio-settings`, {

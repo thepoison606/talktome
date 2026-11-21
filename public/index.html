@@ -10,6 +10,7 @@
     <title>Talktome</title>
     <link rel="icon" type="image/png" href="/images/talktome-icon.png" />
     <link rel="stylesheet" href="/login.css" />
+    <link rel="stylesheet" href="/targetColorPicker.css" />
     <style>
       /* Prevent double-tap zoom on iOS */
       html,
@@ -492,6 +493,67 @@
         background: rgba(51, 65, 85, 0.88);
       }
 
+      .client-dialog {
+        box-sizing: border-box;
+        width: min(28rem, calc(100% - 2rem));
+        max-height: calc(100dvh - 2rem);
+        padding: 1rem;
+        border: 1px solid #475569;
+        border-radius: .75rem;
+        background: #111827;
+        color: #e2e8f0;
+        overscroll-behavior: contain;
+      }
+
+      .client-dialog::backdrop {
+        background: #020817b8;
+        overflow: hidden;
+        overscroll-behavior: contain;
+      }
+
+      .client-dialog__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        margin-bottom: .5rem;
+      }
+
+      .client-dialog h2 {
+        margin: 0;
+        font-size: 1.1rem;
+      }
+
+      .client-dialog button {
+        padding: .6rem .75rem;
+        border: 1px solid #334155;
+        border-radius: .4rem;
+        background: #1e293b;
+        color: #e2e8f0;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .client-dialog button:hover {
+        background: #334155;
+      }
+
+      .client-dialog button.client-dialog__close {
+        flex: 0 0 2rem;
+        width: 2rem;
+        min-height: 2rem;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        font-size: 1.5rem;
+        text-align: center;
+      }
+
+      .client-dialog :focus-visible {
+        outline: 2px solid #60a5fa;
+        outline-offset: 2px;
+      }
+
       .shortcut-settings {
         display: grid;
         gap: 0.8rem;
@@ -566,6 +628,7 @@
         position: relative;
       }
 
+      .arrange-targets__actions { display: flex; gap: .4rem; align-items: center; }
       .edit-targets__remove { background: none; border: 0; color: #f87171; cursor: pointer; padding: .5rem; display: grid; place-items: center; }
       #edit-targets-available[hidden] { display: none; }
       #edit-targets-available { margin-bottom: .75rem; }
@@ -999,9 +1062,17 @@
 
       /* Active state (lila) */
       #reply.active {
+        transition-duration: 0s;
         border-color: rgba(139, 92, 246, 0.8);
         background: rgba(139, 92, 246, 0.12);
         box-shadow: 0 0 12px rgba(139, 92, 246, 0.35);
+      }
+
+      #reply .target-talk-lock-icon {
+        position: absolute;
+        inset-block-start: 0.4rem;
+        inset-inline-start: 0.5rem;
+        pointer-events: none;
       }
 
       /* Hidden audio container */
@@ -1091,7 +1162,7 @@
         gap: 0.6rem;
         padding: 0;
         margin: 0.35rem 0;
-        background: #1f2937;
+        background: var(--target-color, #1f2937);
         border-radius: 6px;
         border: 1px solid transparent;
         transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
@@ -1288,7 +1359,7 @@
       /* Hover effect (desktop pointers only) */
       @media (hover: hover) and (pointer: fine) {
         #targets-list li.target-item:hover:not(.you):not(.talking-to):not(.speaking):not(.hotkey-active):not(.is-offline) {
-          background: #273549;
+          background: var(--target-color, #273549);
         }
       }
 
@@ -1306,6 +1377,12 @@
         background: rgba(15, 23, 42, 0.35);
         box-shadow: none;
         opacity: 0.6;
+      }
+
+      #targets-list li.target-item.is-offline:not(.speaking):not(.talking-to):not(.hotkey-active) {
+        background: var(--target-color, rgba(15, 23, 42, 0.35));
+        background-image: var(--offline-target-tint, none);
+        opacity: var(--custom-target-opacity, .6);
       }
 
       #targets-list li.target-item.is-offline .user-icon,
@@ -1461,7 +1538,7 @@
         flex-wrap: nowrap;
       }
 
-      #targets-list .target-talk-lock-icon {
+      .target-talk-lock-icon {
         display: none;
         width: 1rem;
         height: 1rem;
@@ -1473,7 +1550,8 @@
         stroke-linejoin: round;
       }
 
-      #targets-list li.target-item.talk-locked .target-talk-lock-icon {
+      #targets-list li.target-item.talk-locked .target-talk-lock-icon,
+      #reply[data-locked="true"] .target-talk-lock-icon {
         display: block;
       }
 
@@ -1753,11 +1831,6 @@
 
         .target-layer-switcher {
           margin-left: auto;
-        }
-
-        .reply-bar button {
-          width: 100%;
-          min-width: 0;
         }
       }
 
@@ -2186,37 +2259,72 @@
         font-size: 1.625rem;
       }
 
-      @media (orientation: landscape) and (pointer: coarse) and (max-height: 520px) {
-        :root {
-          --phone-landscape-reply-width: clamp(9.375rem, 26vw, 13.75rem);
-          --phone-landscape-target-gap: 0.375rem;
+      @media (max-width: 699px), (orientation: landscape) and (pointer: coarse) and (max-height: 520px) {
+        #intercom-app {
+          --target-row-height: 4.125rem;
+          --target-row-radius: 6px;
+          --target-row-gap: 0.7rem;
+          --main-button-height: var(--target-row-height);
+          --main-button-radius: 10px;
         }
 
-        body.big-main-button {
-          --phone-landscape-reply-width: clamp(11rem, 30vw, 16rem);
+        body.big-main-button #intercom-app {
+          --main-button-height: calc(var(--target-row-height) + 3rem);
         }
 
+        #targets-list {
+          row-gap: var(--target-row-gap);
+        }
+
+        #targets-list li.target-item {
+          margin-block: 0;
+          min-block-size: var(--target-row-height);
+          border-radius: var(--target-row-radius);
+        }
+
+        .reply-bar {
+          height: auto;
+          padding-inline: 0;
+          padding-block: var(--target-row-gap) calc(var(--target-row-gap) / 2 + env(safe-area-inset-bottom));
+          background: transparent;
+          backdrop-filter: none;
+        }
+
+        .reply-bar #reply,
         body.big-main-button .reply-bar #reply {
           width: 100%;
+          min-width: 0;
+          block-size: var(--main-button-height);
+          padding: 0;
+          border-radius: var(--main-button-radius);
           font-size: 1.25rem;
+          transition-property: background, border-color, box-shadow, opacity;
+        }
+      }
+
+      @media (orientation: landscape) and (pointer: coarse) and (max-height: 520px) {
+        #intercom-app {
+          --target-row-height: 3rem;
+          --target-row-radius: 16px;
+          --target-row-gap: 0.375rem;
+          --main-button-radius: var(--target-row-radius);
         }
 
         #intercom-app[style*="flex"] {
           display: grid !important;
-          grid-template-columns: minmax(0, 1fr) var(--phone-landscape-reply-width);
+          grid-template-columns: repeat(2, minmax(0, 1fr));
           grid-template-rows: auto auto minmax(0, 1fr);
           grid-template-areas:
             "session session"
             "feed feed"
             "targets reply";
-          column-gap: 0.5rem;
+          column-gap: var(--target-row-gap);
           row-gap: 0.25rem;
           padding-bottom: 0;
           min-height: 0;
         }
 
         body.left-hand-mode #intercom-app[style*="flex"] {
-          grid-template-columns: var(--phone-landscape-reply-width) minmax(0, 1fr);
           grid-template-areas:
             "session session"
             "feed feed"
@@ -2244,7 +2352,6 @@
           display: flex;
           flex-direction: column;
           justify-content: flex-end;
-          gap: var(--phone-landscape-target-gap);
           min-height: 0;
           overflow: hidden;
         }
@@ -2254,9 +2361,6 @@
           --target-row-pad-x: 0.38rem;
           --ptt-btn-size: clamp(3.25rem, 17vh, 5.5rem);
           flex: 0 0 auto;
-          margin: 0;
-          min-height: 0;
-          border-radius: 16px;
           gap: 0.35rem;
         }
 
@@ -2293,36 +2397,18 @@
         }
 
         .reply-bar {
-          position: static;
           grid-area: reply;
-          width: auto;
-          height: auto;
           padding: 0;
-          background: transparent;
-          backdrop-filter: none;
-          align-items: stretch;
-          justify-content: stretch;
+          align-items: flex-end;
         }
 
-        .reply-bar button {
-          width: 100%;
-          min-width: 0;
-          height: 100%;
-          min-height: 0;
-          margin: 0;
-          padding: 0;
-          border-radius: 18px;
+        .reply-bar #reply {
+          max-block-size: 100%;
         }
 
         .reply-bar button[data-label]::after {
-          inset: 0;
-          align-items: center;
-          justify-content: center;
-          padding: 0 1rem;
+          padding-inline: 1rem;
           font-size: 1.15rem;
-          text-align: center;
-          white-space: normal;
-          transform: none;
         }
       }
       /* Keep menu layout scoped; target buttons and admin dialogs are unchanged. */
@@ -2331,10 +2417,25 @@
         width: min(580px, calc(100vw - 1rem)); padding: 16px;
         box-sizing: border-box; overflow-y: auto;
       }
+      #settings-menu.settings-body--fullscreen {
+        height: 100vh;
+        height: 100dvh;
+        align-content: start;
+        padding-left: max(16px, env(safe-area-inset-left));
+        padding-right: max(16px, env(safe-area-inset-right));
+        padding-bottom: max(16px, env(safe-area-inset-bottom));
+        border: 0;
+        border-radius: 12px 12px 0 0;
+        box-shadow: none;
+      }
       #settings-menu [hidden] { display: none !important; }
-      #settings-main-view { gap: 16px; }
+      #settings-main-view {
+        --settings-section-gap: 16px;
+        --settings-group-gap: 12px;
+        gap: var(--settings-section-gap);
+      }
       #settings-menu .settings-group,
-      #settings-menu .settings-group-content { display: grid; gap: 12px; min-width: 0; }
+      #settings-menu .settings-group-content { display: grid; gap: var(--settings-group-gap); min-width: 0; }
       #settings-menu .settings-group + .settings-group {
         border-top: 1px solid #334155; padding-top: 16px;
       }
@@ -2360,7 +2461,10 @@
         font-size: 0.72rem; line-height: 1.5; margin: 0;
       }
       #settings-menu .settings-details { border-top: 1px solid #334155; padding-top: 10px; }
-      #settings-menu .settings-details--level-trigger:not([open]) { padding-top: 6px; margin-bottom: -6px; }
+      #settings-menu .settings-details:not([open]) { padding-top: 6px; margin-bottom: -6px; }
+      #settings-menu .settings-details:last-child:not([open]) {
+        margin-bottom: calc(-6px - (var(--settings-section-gap) - var(--settings-group-gap)));
+      }
       #settings-menu summary { cursor: pointer; font-size: 0.82rem; color: #cbd5e1; padding: 6px 0; }
       #settings-menu .settings-details[open] > summary { margin-bottom: 8px; }
       #settings-menu .processing-options--close-to-previous { margin-top: -6px; }
@@ -2376,7 +2480,8 @@
       #settings-menu .settings-nav-button__desc { font-size: 0.72rem; }
       #settings-menu .settings-actions { position: static; padding: 8px 0 0; border: 0; }
       @media (max-width: 480px) {
-        #settings-menu .device-selector { grid-template-columns: 1fr; gap: 4px; }
+        #settings-menu .device-selector:not(.device-selector--inline) { grid-template-columns: 1fr; gap: 4px; }
+        #settings-menu .device-selector--inline { grid-template-columns: minmax(0, 7.5rem) minmax(0, 1fr); }
         #settings-menu select { min-height: 40px; font-size: 16px; }
       }
       .remote-panel-banner { font-size: .8rem; font-weight: 600; color: #fbbf24; }
@@ -2492,12 +2597,12 @@
           <button id="feed-logout-btn" type="button" class="logout-btn feed-session-logout">Logout</button>
           <div class="settings-body" id="settings-menu" hidden>
             <div class="settings-view" id="settings-main-view">
-              <div id="production-session-selector" class="device-selector feed-optional" hidden>
+              <div id="production-session-selector" class="device-selector device-selector--inline feed-optional" hidden>
                 <label for="production-session-select">Production</label>
                 <select id="production-session-select"></select>
               </div>
               <section class="settings-group" aria-label="Audio">
-              <div class="device-selector feed-optional">
+              <div class="device-selector device-selector--inline feed-optional">
                 <label for="input-select">Microphone</label>
                 <select id="input-select">
                   <option value="">select device</option>
@@ -2591,7 +2696,7 @@
               </div>
               </div>
               </details>
-              <details class="settings-details settings-details--level-trigger feed-optional">
+              <details class="settings-details feed-optional">
               <summary>Level trigger</summary>
               <div class="voice-trigger-controls feed-optional" id="voice-trigger-controls">
                 <label class="settings-switch">
@@ -2625,7 +2730,7 @@
               </section>
               <section class="settings-group feed-optional" aria-labelledby="settings-controls-heading">
               <h3 id="settings-controls-heading">Controls</h3>
-              <div class="device-selector feed-optional">
+              <div class="device-selector device-selector--inline feed-optional">
                 <label for="main-button-target">Main button target</label>
                 <select id="main-button-target">
                   <option value="">Reply</option>
@@ -2650,6 +2755,13 @@
                   <input type="checkbox" id="toggle-lock-multiple-targets" role="switch" />
                   <span class="settings-switch__track" aria-hidden="true"></span>
                   <span>Lock multiple targets</span>
+                </label>
+              </div>
+              <div class="processing-options processing-options--close-to-previous">
+                <label class="settings-switch" title="Tap a talk button briefly to lock it. Holding still works as push-to-talk.">
+                  <input type="checkbox" id="toggle-tap-to-lock" role="switch" />
+                  <span class="settings-switch__track" aria-hidden="true"></span>
+                  <span>Tap to lock</span>
                 </label>
               </div>
               <div class="processing-options processing-options--close-to-previous">
@@ -2790,16 +2902,16 @@
           data-label="🔊 REPLY"
           aria-label="Reply"
           disabled
-        ></button>
+        ><svg class="target-talk-lock-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10V7a5 5 0 0 1 10 0v3"/><rect x="5" y="10" width="14" height="11" rx="2"/></svg></button>
       </div>
       <div id="audio-streams"></div>
     </div>
   </div>
 
-  <dialog id="feed-camera-picker" class="feed-camera-picker" aria-labelledby="feed-camera-picker-title">
-    <header>
+  <dialog id="feed-camera-picker" class="client-dialog feed-camera-picker" aria-labelledby="feed-camera-picker-title">
+    <header class="client-dialog__header">
       <h2 id="feed-camera-picker-title">Video source</h2>
-      <button id="feed-camera-picker-close" type="button" aria-label="Close camera selection">×</button>
+      <button id="feed-camera-picker-close" class="client-dialog__close" type="button" aria-label="Close camera selection">×</button>
     </header>
     <p id="feed-camera-picker-status" role="status"></p>
     <div id="feed-camera-picker-list"></div>
@@ -2856,6 +2968,9 @@
       const settingsBody = settingsPanel?.querySelector(".settings-body");
 
       if (settingsPanel && settingsTrigger && settingsBody) {
+        const fullscreenSettings = window.matchMedia(
+          '(max-width: 699px), (orientation: landscape) and (pointer: coarse) and (max-height: 520px)'
+        );
         const positionSettings = () => {
           if (settingsBody.hidden) return;
           const viewport = window.visualViewport;
@@ -2864,17 +2979,21 @@
           const viewportWidth = viewport?.width || window.innerWidth;
           const viewportHeight = viewport?.height || window.innerHeight;
           const header = settingsPanel.closest('.session-bar').getBoundingClientRect();
-          const gap = 8;
-          const width = Math.min(580, viewportWidth - gap * 2);
-          const top = Math.max(header.bottom + gap, viewportTop + gap);
-          const left = Math.max(viewportLeft + gap,
-            Math.min(header.right - width, viewportLeft + viewportWidth - width - gap));
+          const fullscreen = fullscreenSettings.matches;
+          const edgeGap = fullscreen ? 0 : 8;
+          const headerGap = fullscreen ? 6 : edgeGap;
+          const width = fullscreen ? viewportWidth : Math.min(580, viewportWidth - edgeGap * 2);
+          const top = Math.max(header.bottom, viewportTop) + headerGap;
+          const left = fullscreen ? viewportLeft : Math.max(viewportLeft + edgeGap,
+            Math.min(header.right - width, viewportLeft + viewportWidth - width - edgeGap));
+          settingsBody.classList.toggle('settings-body--fullscreen', fullscreen);
           settingsBody.style.top = `${top}px`;
           settingsBody.style.left = `${left}px`;
           settingsBody.style.width = `${width}px`;
-          settingsBody.style.maxHeight = `${Math.max(0, viewportTop + viewportHeight - top - gap)}px`;
+          settingsBody.style.maxHeight = `${Math.max(0, viewportTop + viewportHeight - top - edgeGap)}px`;
         };
         window.addEventListener('resize', positionSettings);
+        fullscreenSettings.addEventListener('change', positionSettings);
         window.visualViewport?.addEventListener('resize', positionSettings);
         window.visualViewport?.addEventListener('scroll', positionSettings);
         new ResizeObserver(positionSettings).observe(settingsPanel.closest('.session-bar'));
@@ -2922,7 +3041,8 @@
         );
 
         document.addEventListener("keydown", (event) => {
-          if (event.key === "Escape" && settingsPanel.classList.contains("is-open")) {
+          if (event.key === "Escape" && settingsPanel.classList.contains("is-open")
+            && !settingsPanel.querySelector('.target-color-dialog[open]')) {
             closeSettings();
             settingsTrigger.focus();
           }
@@ -2944,6 +3064,7 @@
   <script src="/clientDeviceStatus.js"></script>
   <script src="/targetLayers.js"></script>
   <script src="/feedVideo.js"></script>
+  <script src="/targetEditor.js"></script>
   <script src="/client.js"></script>
   <script>
     (function () {

@@ -1,0 +1,42 @@
+body.remote-panel .container {
+  margin-top: 0;
+  margin-bottom: 0;
+  height: 100%;
+}
+
+#logout-btn {
+  display: none;
+}
+
+#headless-audio-sets {
+  position: relative;
+  flex: 0 1 11rem;
+  min-inline-size: 0;
+}
+
+#headless-audio-switch {
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 2.75rem;
+  padding-inline: 0.65rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#headless-audio-switch[aria-disabled="true"] {
+  opacity: 0.65;
+}
+
+#headless-audio-feedback:not(:empty) {
+  position: absolute;
+  inset-block-end: 100%;
+  inset-inline-start: 0;
+  z-index: 1;
+  inline-size: min(16rem, 65vw);
+  padding: 0.5rem 0.7rem;
+  border-radius: 0.5rem;
+  color: #ffe4e6;
+  background: #4c1620;
+  overflow-wrap: anywhere;
+}

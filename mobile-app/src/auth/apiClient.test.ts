@@ -33,6 +33,41 @@ function clientWith(fetchImpl: typeof fetch, cookies: CookieMap = {}) {
 }
 
 describe('ApiClient', () => {
+  it('shares the server palette and saves or clears a color for the selected production', async () => {
+    let savedColor: string | null = null;
+    const { client } = clientWith(mockFetch((url, init) => {
+      if (url.endsWith('/targetColors.json')) {
+        return jsonResponse(200, [{ name: 'Petrol', value: '#24505b' }, { name: 'Invalid', value: ['#24505b'] }]);
+      }
+      if (url.endsWith('/targets/color')) {
+        expect(init?.method).toBe('PUT');
+        expect(new Headers(init?.headers).get('Cookie')).toBe('talktome_session=test-session');
+        const { color, ...target } = JSON.parse(String(init?.body));
+        expect(target).toEqual({ productionId: 7, targetType: 'feed', targetId: 4 });
+        savedColor = color;
+        return new Response(null, { status: 204 });
+      }
+      expect(url).toBe('https://intercom.local/users/1/targets?includeMemberships=1&productionId=7');
+      return jsonResponse(200, [{ targetType: 'feed', targetId: 4, name: 'Program', canTalk: false, color: savedColor }]);
+    }), { talktome_session: 'test-session' });
+
+    expect(await client.fetchTargetColors()).toEqual([{ name: 'Petrol', value: '#24505b' }]);
+    const [target] = await client.fetchTargets(1, 7);
+    await client.saveTargetColor(7, target!, '#24505b');
+    expect((await client.fetchTargets(1, 7))[0]?.color).toBe('#24505b');
+    await client.saveTargetColor(7, target!, null);
+    expect((await client.fetchTargets(1, 7))[0]?.color).toBeUndefined();
+  });
+
+  it('reports when an older server does not confirm the target color edit', async () => {
+    const { client } = clientWith(mockFetch(url => url.endsWith('/targetColors.json')
+      ? new Response(null, { status: 404 })
+      : new Response('<html>Talktome</html>', { status: 200 })));
+    await expect(client.fetchTargetColors()).rejects.toThrow('This Talktome server does not support target colors.');
+    await expect(client.saveTargetColor(7, { type: 'feed', id: 4, label: 'Program', canTalk: false }, null))
+      .rejects.toThrow('Server did not confirm the target color change.');
+  });
+
   it('loads the production target catalog and sends scoped add/remove changes', async () => {
     const calls: { url: string; init?: RequestInit }[] = [];
     const { client } = clientWith(mockFetch((url, init) => {

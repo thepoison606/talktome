@@ -180,6 +180,7 @@ pub enum Role {
     VolumeDown,
     MuteSelected,
     SystemVolume,
+    AudioSetToggle,
     /// Index into `Snapshot::productions` on the production page.
     Production(usize),
     ClearLocks,
@@ -760,6 +761,7 @@ fn layer_page_counts(
 fn command_roles(
     geometry: &Geometry,
     state: &DeckState,
+    snapshot: &Snapshot,
     key_pages: usize,
     encoder_pages: usize,
 ) -> Vec<(u8, Role)> {
@@ -838,10 +840,15 @@ fn command_roles(
     };
 
     if state.menu.is_some() {
-        // Menu pages are pages of their own: status = back, paging; nothing else.
+        // Menu pages keep their own back and paging keys.
         row[0] = Some(Role::Status);
         if key_pages > 1 && cols > 1 {
             row[cols - 1] = Some(Role::NextPage);
+        }
+        if state.menu == Some(MenuPage::Root) && snapshot.audio_device_set_names.is_some() {
+            if let Some(slot) = row.iter_mut().find(|slot| slot.is_none()) {
+                *slot = Some(Role::AudioSetToggle);
+            }
         }
     } else if state.member_layer {
         overlay(&mut row, Role::MembersToggle);
@@ -1324,6 +1331,23 @@ fn appearance_for_role(
             .get(index)
             .map(|production| production_appearance(production, snapshot))
             .unwrap_or_else(Appearance::blank),
+        Role::AudioSetToggle => {
+            let mut appearance = Appearance::simple("AUDIO", palette::MENU);
+            if let Some(name) = snapshot
+                .audio_device_set_names
+                .as_ref()
+                .and_then(|names| names.get(snapshot.audio_device_set))
+            {
+                appearance.subtitle.clone_from(name);
+            }
+            appearance.footer = if snapshot.audio_ok {
+                "switch"
+            } else {
+                "no device"
+            }
+            .into();
+            appearance
+        }
         Role::Restart => {
             let mut a = Appearance::simple("RESTART", palette::MENU);
             a.subtitle = "hold 2s".into();
@@ -1392,7 +1416,7 @@ pub fn layout(
         })
         .collect();
     let (key_pages, encoder_pages) = layer_page_counts(geometry, snapshot, state);
-    for (key, role) in command_roles(geometry, state, key_pages, encoder_pages) {
+    for (key, role) in command_roles(geometry, state, snapshot, key_pages, encoder_pages) {
         let Some(slot) = keys.get_mut(key as usize) else {
             continue;
         };
@@ -2225,6 +2249,31 @@ mod tests {
             &options(),
         );
         assert_eq!(keys[0].appearance.subtitle, "Andys-Superproduktion");
+    }
+
+    #[test]
+    fn audio_set_switch_fits_in_the_menu_even_with_multiple_target_pages() {
+        let geometry = geometry("mini");
+        let mut state = DeckState::default();
+        let mut snapshot = snapshot(7);
+        snapshot.audio_device_set_names = Some(["Desk".into(), "Headset".into()]);
+        snapshot.audio_device_set = 1;
+        snapshot.audio_ok = false;
+        let keys = layout(&geometry, &snapshot, &state, &options());
+        assert_eq!(keys[1].role, Role::NextPage);
+        state.open_menu(MenuPage::Root);
+        let keys = layout(&geometry, &snapshot, &state, &options());
+        assert_eq!(keys[1].role, Role::AudioSetToggle);
+        assert_eq!(keys[1].appearance.subtitle, "Headset");
+        assert_eq!(keys[1].appearance.footer, "no device");
+        snapshot.audio_ok = true;
+        let keys = layout(&geometry, &snapshot, &state, &options());
+        assert_eq!(keys[1].appearance.footer, "switch");
+        snapshot.audio_device_set_names = None;
+        assert_eq!(
+            layout(&geometry, &snapshot, &state, &options())[1].role,
+            Role::Empty
+        );
     }
 
     #[test]

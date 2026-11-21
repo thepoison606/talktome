@@ -29,16 +29,16 @@ export type SessionUiState = {
   serverAddress: string;
   username: string;
   rememberPassword: boolean;
-  allowInsecureLocalTLS: boolean;
   leftHanded: boolean;
   lockMultipleTargets: boolean;
+  tapToLock: boolean;
   /** Empty string means Reply. A talk-target identity pins the bottom button. */
   mainButtonTargets: Record<string, string>;
   watchTargetSelections: WatchTargetSelections;
   bigMainButton: boolean;
   replyTarget: TalkTarget | null;
   loginOptions: LoginOptions | null;
-  pendingCertificate: CertificateProbe | null;
+  pendingCertificate: (CertificateProbe & { serverAddress: string }) | null;
   identity: OperatorIdentity | null;
   productions: Production[];
   productionId: number | null;
@@ -121,7 +121,7 @@ export type SessionUiState = {
 
 export const FOREGROUND_REASON =
   'In-app talk. Backgrounding keeps the session while the process is alive. The app does not wake for a new caller.';
-export const HOLD_HINT = 'Hold to talk. Slide to lock.';
+export const HOLD_HINT = 'Hold to talk.';
 
 export const initialState: SessionUiState = {
   hydrated: false,
@@ -130,9 +130,9 @@ export const initialState: SessionUiState = {
   serverAddress: '',
   username: '',
   rememberPassword: true,
-  allowInsecureLocalTLS: false,
   leftHanded: false,
   lockMultipleTargets: false,
+  tapToLock: true,
   mainButtonTargets: {},
   watchTargetSelections: {},
   bigMainButton: false,

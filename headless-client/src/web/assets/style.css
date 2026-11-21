@@ -862,6 +862,12 @@ body[data-view='remote'] #flash {
   border-radius: 10px;
 }
 
+.audio-device-set {
+  min-inline-size: 0;
+  margin: 0;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+}
+
 .raw-json {
   min-height: 24rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;

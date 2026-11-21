@@ -37,6 +37,11 @@ export function storedPinForHost(hostname: string): TlsPin | undefined {
   return pinForHost(cachedPins, hostname);
 }
 
+export function sameTlsHostname(first: string, second: string): boolean {
+  const normalize = (hostname: string) => hostname.toLowerCase().replace(/^\[([^\]]+)\]$/, '$1');
+  return normalize(first) === normalize(second);
+}
+
 export async function probeServerCertificate(url: string): Promise<CertificateProbe | null> {
   const native = await loadNativeCertTrust();
   if (!native?.probe) {

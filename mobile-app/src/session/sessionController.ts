@@ -24,13 +24,14 @@ import {
 } from '../protocol';
 import { audioSessionAvailable, playConnectionCue } from '../audio/session';
 import { hasSystemRoutePicker } from '../audio/routes';
-import { isLikelyLocalHost, parseServerAddress } from '../servers/parseServerAddress';
+import { parseServerAddress } from '../servers/parseServerAddress';
 import { looksLikeTlsFailure } from '../servers/tlsFailure';
 import { pinMatches } from '../servers/tlsPins';
 import {
   hydrateTlsPins,
   probeServerCertificate,
   rememberTlsPin,
+  sameTlsHostname,
   storedPinForHost,
 } from '../servers/tlsTrust';
 import { isRegisterConflict, isRegisterOk, SignalingClient, SignalingConnectCancelledError } from '../signaling/client';
@@ -39,7 +40,6 @@ import { startBleNative } from '../ble/native';
 import { loadBlePreferences } from '../ble/preferences';
 import type { BleTargetSelection } from '../ble/target';
 import type { PttButton } from '../hardware/events';
-import { slideToLockHint } from '../talk/slideToLock';
 import { loadAudioPreferences } from './audioPrefs';
 import { loadConferenceListen } from './conferenceListen';
 import {
@@ -94,6 +94,7 @@ export class SessionController {
   private http: TalkToMeHttp | null = null;
   private pendingPassword?: string;
   private pendingLoginToken = false;
+  private certificateRetry?: () => Promise<void>;
   private reconnecting = false;
   private profileAttempt: AbortController | null = null;
   private reconnectFailures = 0;
@@ -137,6 +138,7 @@ export class SessionController {
       if (typeof settings.bigMainButton === 'boolean') this.setBigMainButton(settings.bigMainButton);
       this.setLeftHanded(settings.leftHandMode);
       this.setLockMultipleTargets(settings.lockMultipleTargets);
+      if (typeof settings.tapToLock === 'boolean') this.setTapToLock(settings.tapToLock, false);
       await this.mediaCoordinator.setOperatorAudio({
         feedDimDb: settings.dimAmountDb, feedDimSelf: settings.dimFeedsWhileSpeaking,
         feedDimIncoming: settings.dimWhenAddressed, playConnectionSounds: settings.playConnectionSounds,
@@ -184,7 +186,7 @@ export class SessionController {
     },
     refreshTargets: () => this.mediaCoordinator.refreshTargets(),
     press: (key, target) => this.talk.pressRemote(key, target),
-    release: key => this.talk.releaseRemote(key),
+    release: (key, tapToLock) => this.talk.releaseRemote(key, tapToLock),
     lock: target => this.talk.lockRemote(target),
     unlock: target => this.talk.unlockRemote(target),
     stopTalk: () => this.talk.unlockTalk(),
@@ -215,7 +217,6 @@ export class SessionController {
       serverAddress: last?.serverAddress ?? '',
       username: last?.username ?? '',
       rememberPassword: last?.rememberPassword ?? true,
-      allowInsecureLocalTLS: last?.allowInsecureLocalTLS ?? false,
       productionId: last?.productionId ?? null,
       productionName: last?.productionName ?? null,
       leftHanded: bundle.leftHanded ?? false,
@@ -293,7 +294,7 @@ export class SessionController {
     const attempt = this.profileAttempt;
     this.pendingLoginToken = false;
     this.beginConnect(input.serverAddress, input.username, input.rememberPassword);
-    await this.probeAndHealth();
+    await this.probeAndHealth(() => this.login(input));
     if (attempt?.signal.aborted) return;
     useSessionStore.setState({ statusMessage: 'Signing in…' });
     const identity = await this.requireApi().login(input.username, input.password);
@@ -314,7 +315,7 @@ export class SessionController {
     const attempt = this.profileAttempt;
     this.pendingLoginToken = true;
     this.beginConnect(input.serverAddress, useSessionStore.getState().username, input.rememberPassword ?? true);
-    await this.probeAndHealth();
+    await this.probeAndHealth(() => this.loginWithToken(input));
     if (attempt?.signal.aborted) return;
     useSessionStore.setState({ statusMessage: 'Signing in with login link…' });
     const identity = await this.requireApi().loginToken(input.token);
@@ -330,7 +331,7 @@ export class SessionController {
     const attempt = this.profileAttempt;
     this.pendingLoginToken = false;
     this.beginConnect(input.serverAddress, input.displayName ?? useSessionStore.getState().username, false);
-    await this.probeAndHealth();
+    await this.probeAndHealth(() => this.loginGuest(input));
     if (attempt?.signal.aborted) return;
     useSessionStore.setState({ statusMessage: 'Signing in as guest…' });
     const identity = await this.requireApi().loginGuest(input.displayName);
@@ -339,32 +340,23 @@ export class SessionController {
     await this.persistCurrentProfile();
   }
 
-  async acceptCertificateAndRetry(kind: 'user' | 'guest' = 'user'): Promise<void> {
+  async acceptCertificateAndRetry(): Promise<void> {
     const pending = useSessionStore.getState().pendingCertificate;
-    if (!pending) {
+    const retry = this.certificateRetry;
+    if (!pending || !retry) {
       return;
+    }
+    const serverAddress = useSessionStore.getState().serverAddress;
+    if (serverAddress !== pending.serverAddress) {
+      this.certificateRetry = undefined;
+      useSessionStore.setState({ pendingCertificate: null });
+      throw new Error('The server address changed. Sign in again to review its certificate.');
     }
     await rememberTlsPin({ hostname: pending.hostname, sha256: pending.sha256 });
+    if (useSessionStore.getState().pendingCertificate !== pending) return;
+    this.certificateRetry = undefined;
     useSessionStore.setState({ pendingCertificate: null, error: null });
-    const state = useSessionStore.getState();
-    if (kind === 'guest') {
-      await this.loginGuest({ serverAddress: state.serverAddress, displayName: state.username });
-      return;
-    }
-    if (this.pendingLoginToken) {
-      await this.loginWithToken({
-        serverAddress: state.serverAddress,
-        token: this.pendingPassword ?? '',
-        rememberPassword: state.rememberPassword,
-      });
-      return;
-    }
-    await this.login({
-      serverAddress: state.serverAddress,
-      username: state.username,
-      password: this.pendingPassword ?? '',
-      rememberPassword: state.rememberPassword,
-    });
+    if (useSessionStore.getState().serverAddress === serverAddress) await retry();
   }
 
   async selectProduction(production: Production | null): Promise<void> {
@@ -515,7 +507,6 @@ export class SessionController {
       serverAddress: profile.serverAddress,
       username: profile.username,
       rememberPassword: profile.rememberPassword,
-      allowInsecureLocalTLS: Boolean(profile.allowInsecureLocalTLS),
       productionId: profile.productionId ?? null,
       productionName: profile.productionName ?? null,
       error: null,
@@ -558,7 +549,7 @@ export class SessionController {
         return;
       }
       if (error instanceof TlsUntrustedError) {
-        useSessionStore.setState({ addingProfile: true, status: 'idle' });
+        useSessionStore.setState({ addingProfile: true, status: 'idle', error: useSessionStore.getState().pendingCertificate ? null : error.message });
         return;
       }
       try {
@@ -751,9 +742,9 @@ export class SessionController {
       serverAddress: next.serverAddress,
       username: next.username,
       rememberPassword: next.rememberPassword,
-      allowInsecureLocalTLS: next.allowInsecureLocalTLS,
       leftHanded: next.leftHanded,
       lockMultipleTargets: next.lockMultipleTargets,
+      tapToLock: next.tapToLock,
       mainButtonTargets: next.mainButtonTargets,
       watchTargetSelections: next.watchTargetSelections,
       bigMainButton: next.bigMainButton,
@@ -814,7 +805,6 @@ export class SessionController {
       serverAddress: state.serverAddress,
       username: state.username,
       rememberPassword: state.rememberPassword,
-      allowInsecureLocalTLS: state.allowInsecureLocalTLS,
       productionId: state.operatorReady ? state.productionId : (existing?.productionId ?? state.productionId),
       productionName: state.operatorReady ? state.productionName : (existing?.productionName ?? state.productionName),
       guest,
@@ -847,7 +837,7 @@ export class SessionController {
 
   setLeftHanded(leftHanded: boolean): void {
     this.leftHandedExplicit = true;
-    useSessionStore.setState({ leftHanded, statusMessage: slideToLockHint(leftHanded) });
+    useSessionStore.setState({ leftHanded });
     this.persistLayout();
   }
 
@@ -858,6 +848,11 @@ export class SessionController {
       void this.talk.collapseToSingleLock();
     }
     this.persistLayout();
+  }
+
+  setTapToLock(tapToLock: boolean, persist = true): void {
+    useSessionStore.setState({ tapToLock });
+    if (persist) this.remotePanel.publish(true, tapToLock);
   }
 
   setBigMainButton(bigMainButton: boolean): void {
@@ -1130,6 +1125,7 @@ export class SessionController {
 
   private beginConnect(serverAddress: string, username: string, rememberPassword: boolean): void {
     this.sessionEnding = false;
+    this.certificateRetry = undefined;
     useSessionStore.setState({
       status: 'connecting',
       error: null,
@@ -1170,12 +1166,13 @@ export class SessionController {
     this.api = new ApiClient(this.http);
   }
 
-  private async probeAndHealth(): Promise<void> {
-    const state = useSessionStore.getState();
-    const parsed = parseServerAddress(state.serverAddress);
-    const hostname = new URL(parsed.baseUrl).hostname;
+  private async probeAndHealth(retry: () => Promise<void>): Promise<void> {
+    const { serverAddress } = useSessionStore.getState();
+    const server = new URL(parseServerAddress(serverAddress).baseUrl);
+    const attempt = this.profileAttempt;
+    const api = this.requireApi();
     try {
-      const health = await this.requireApi().health();
+      const health = await api.health();
       this.serverAppVersion = health.appVersion;
       useSessionStore.setState({ serverAppVersion: health.appVersion ?? null });
     } catch (error) {
@@ -1188,16 +1185,11 @@ export class SessionController {
         return;
       }
 
-      let probe = null;
-      if (state.allowInsecureLocalTLS) {
-        try {
-          probe = await probeServerCertificate(parsed.baseUrl);
-        } catch {
-          probe = null;
-        }
-      }
+      const probe = await probeServerCertificate(server.origin);
+      if (attempt?.signal.aborted) return;
+      if (this.api !== api) throw new TlsUntrustedError();
 
-      if (probe) {
+      if (probe && sameTlsHostname(probe.hostname, server.hostname) && useSessionStore.getState().serverAddress === serverAddress) {
         const known = storedPinForHost(probe.hostname);
         if (pinMatches(known, probe.sha256)) {
           useSessionStore.setState({
@@ -1205,16 +1197,16 @@ export class SessionController {
           });
           return;
         }
+        this.certificateRetry = retry;
         useSessionStore.setState({
           status: 'idle',
-          pendingCertificate: probe,
+          pendingCertificate: { ...probe, serverAddress },
           error: null,
           statusMessage: 'This certificate is not in the system trust store.',
         });
-        throw new TlsUntrustedError(hostname, isLikelyLocalHost(hostname));
       }
 
-      throw new TlsUntrustedError(hostname, isLikelyLocalHost(hostname));
+      throw new TlsUntrustedError();
     }
   }
 
@@ -1340,6 +1332,7 @@ export class SessionController {
   private async refreshServerClientDefaults(): Promise<void> {
     this.serverClientDefaults = (await this.api?.defaultClientSettings()) ?? {};
     const defaults = this.serverClientDefaults;
+    useSessionStore.setState({ tapToLock: defaults.tapToLock !== false });
     const operatorAudio = resolveOperatorAudio(this.operatorAudioOverrides, defaults);
     useSessionStore.setState({ operatorAudio });
     this.media?.setOperatorAudio(operatorAudio);
@@ -1402,6 +1395,22 @@ export class SessionController {
     if (action === 'remove' && state.talkingTargetKeys.includes(talkTargetIdentity(target))) await this.talk.unlockTalk();
     await this.requireApi().editTargetSelection(productionId, action, target.type, Number(target.id));
     if (profileId === useSessionStore.getState().activeProfileId && productionId === useSessionStore.getState().productionId) await this.mediaCoordinator.refreshTargets();
+  }
+
+  async targetColors() {
+    return this.requireApi().fetchTargetColors();
+  }
+
+  async saveTargetColor(target: TalkTarget, color: string | null): Promise<void> {
+    const { identity, activeProfileId, productionId } = useSessionStore.getState();
+    if (identity?.kind !== 'user') throw new Error('User login required.');
+    await this.requireApi().saveTargetColor(productionId, target, color);
+    const current = useSessionStore.getState();
+    if (activeProfileId !== current.activeProfileId || productionId !== current.productionId) return;
+    const key = talkTargetIdentity(target);
+    useSessionStore.setState({ targets: current.targets.map(item =>
+      talkTargetIdentity(item) === key ? { ...item, color: color ?? undefined } : item
+    ) });
   }
 
   async saveTargetOrder(next: TalkTarget[]): Promise<void> {

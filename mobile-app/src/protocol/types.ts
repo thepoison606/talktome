@@ -46,6 +46,7 @@ export type TalkTarget = {
   id: number | string;
   label: string;
   canTalk: boolean;
+  color?: string;
   members?: ConferenceMember[];
 };
 
@@ -54,6 +55,7 @@ export type TalkTargetResponse = {
   targetId: number;
   name: string;
   canTalk?: boolean;
+  color?: unknown;
   members?: unknown;
 };
 
@@ -154,6 +156,7 @@ export function talkTargetFromResponse(row: TalkTargetResponse): TalkTarget {
     label: row.name,
     canTalk: row.canTalk ?? true,
   };
+  if (typeof row.color === 'string' && /^#[0-9a-f]{6}$/.test(row.color)) target.color = row.color;
   if (row.targetType === 'conference') {
     target.members = parseConferenceMemberList(row.members);
   }

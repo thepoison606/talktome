@@ -19,6 +19,9 @@
         "TALKTOME_MOBILE_BUILD_NUMBER": "62",
         "TALKTOME_MOBILE_VERSION": "1.1.2"
       },
+      "ios": {
+        "image": "macos-tahoe-26.6-xcode-27.2"
+      },
       "android": {
         "buildType": "app-bundle"
       }

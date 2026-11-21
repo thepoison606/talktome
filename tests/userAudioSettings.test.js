@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { DEFAULTS, normalize, resolve } = require('../public/userAudioSettings');
+const { DEFAULTS, normalize, normalizeForSave, resolve } = require('../public/userAudioSettings');
 
 test('normalizes complete per-user audio settings', () => {
   assert.deepEqual(normalize({
@@ -17,6 +17,7 @@ test('normalizes complete per-user audio settings', () => {
     showIncomingLevels: true,
     leftHandMode: true,
     lockMultipleTargets: true,
+    tapToLock: false,
     userInputGainDb: 12.5,
     voiceTriggerEnabled: true,
     voiceTriggerTarget: 'conference:42',
@@ -31,11 +32,20 @@ test('normalizes complete per-user audio settings', () => {
     showIncomingLevels: true,
     leftHandMode: true,
     lockMultipleTargets: true,
+    tapToLock: false,
     userInputGainDb: 12.5,
     voiceTriggerEnabled: true,
     voiceTriggerTarget: 'conference:42',
     voiceTriggerThresholdDb: -28,
   });
+});
+
+test('tap to lock defaults on and inherits server defaults until explicitly changed', () => {
+  assert.equal(resolve({}).tapToLock, true);
+  assert.equal(resolve(normalizeForSave({ leftHandMode: true }), { tapToLock: false }).tapToLock, false);
+  assert.equal(resolve(normalizeForSave({ tapToLock: true }), { tapToLock: false }).tapToLock, true);
+  assert.equal(resolve(normalizeForSave({ tapToLock: false })).tapToLock, false);
+  assert.throws(() => normalizeForSave({ tapToLock: 'false' }), /boolean/);
 });
 
 test('resolves missing values and rejects unsafe settings', () => {

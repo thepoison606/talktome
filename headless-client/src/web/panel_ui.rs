@@ -9,9 +9,27 @@ pub async fn page() -> Html<String> {
     let html = include_str!("../../../public/index.html")
         .replace("src=\"/", "src=\"/panel-assets/")
         .replace("href=\"/", "href=\"/panel-assets/")
-        .replace("<script src=\"/panel-assets/socket.io.js\"></script>",
-            "<script src=\"/local-panel.js\"></script>")
-        .replace("</head>", "<style>body.remote-panel .container { margin-top: 0; margin-bottom: 0; height: 100%; } #logout-btn { display:none; }</style></head>");
+        .replace(
+            "<script src=\"/panel-assets/socket.io.js\"></script>",
+            "<script src=\"/local-panel.js\"></script>",
+        )
+        .replace(
+            "<div class=\"reply-bar\">",
+            concat!(
+                "<div class=\"reply-bar\">",
+                "<div id=\"headless-audio-sets\" hidden>",
+                "<button type=\"button\" id=\"headless-audio-switch\"></button>",
+                "<span id=\"headless-audio-feedback\" role=\"status\"></span></div>",
+            ),
+        )
+        .replace(
+            "</head>",
+            concat!(
+                "<style>",
+                include_str!("assets/local-panel.css"),
+                "</style></head>"
+            ),
+        );
     Html(html)
 }
 
@@ -81,6 +99,8 @@ pub async fn asset(Path(path): Path<String>) -> Response {
         }
         "remotePanel.js" => Some(include_bytes!("../../../public/remotePanel.js")),
         "remotePanelState.js" => Some(include_bytes!("../../../public/remotePanelState.js")),
+        "targetColorPicker.css" => Some(include_bytes!("../../../public/targetColorPicker.css")),
+        "targetEditor.js" => Some(include_bytes!("../../../public/targetEditor.js")),
         "targetIdentity.js" => Some(include_bytes!("../../../public/targetIdentity.js")),
         "targetLayers.js" => Some(include_bytes!("../../../public/targetLayers.js")),
         "targetPicker.css" => Some(include_bytes!("../../../public/targetPicker.css")),

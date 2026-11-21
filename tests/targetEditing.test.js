@@ -88,3 +88,60 @@ test('target catalog and edits remain scoped to production, preserve existing li
     `], { env: { ...process.env, TALKTOME_DATA_DIR: dir }, stdio: 'pipe' });
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('colors support user, conference and feed targets, and are stored per production and operator', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'talktome-target-color-'));
+  try {
+    execFileSync(process.execPath, ['-e', `
+      const assert = require('node:assert/strict');
+      const db = require(${JSON.stringify(require.resolve('../src/server/dbHandler'))});
+      const user = Number(db.createUser('Editor', 'password'));
+      const other = Number(db.createUser('Other', 'password'));
+      const unassigned = Number(db.createUser('Unassigned', 'password'));
+      const conf = Number(db.createConference('Stage'));
+      const feed = Number(db.createFeed('Program', 'password'));
+      const first = db.getPrimaryProduction().id;
+      const second = db.createProduction('Second');
+      const color = '#24505b';
+      for (const production of [first, second]) {
+        for (const member of [user, other, unassigned]) db.setProductionUser(production, member);
+        db.setProductionConference(production, conf);
+        db.setProductionFeed(production, feed);
+        db.addProductionTarget(production, user, 'user', other);
+        db.setProductionConferenceListenOnly(production, user, conf);
+        db.addProductionTarget(production, user, 'feed', feed);
+        db.addProductionTarget(production, other, 'feed', feed);
+      }
+      assert.throws(() => db.setProductionTargetColor(first, user, 'user', unassigned, color), { statusCode: 404 });
+      assert.throws(() => db.setProductionTargetColor(first, user, 'user', other, '#22c55e'), /Invalid target color/);
+      const items = [
+        { targetType: 'feed', targetId: feed },
+        { targetType: 'conference', targetId: conf },
+        { targetType: 'user', targetId: other },
+      ];
+      for (const { targetType, targetId } of items) db.setProductionTargetColor(first, user, targetType, targetId, color);
+      db.updateProductionTargetOrder(first, user, items);
+      const snapshot = db.exportDatabaseSnapshot();
+      db.importDatabaseSnapshot(snapshot);
+      const targets = db.getProductionTargets(user, first);
+      assert.deepEqual(targets.map(t => t.targetType), items.map(t => t.targetType));
+      assert.deepEqual(targets.map(t => t.color), [color, color, color]);
+      assert.equal(targets[1].canTalk, false);
+      assert(db.getProductionTargets(user, second).every(t => !t.color));
+      assert(db.getProductionTargets(other, first).every(t => !t.color));
+      db.setProductionTargetColor(first, user, 'conference', conf, null);
+      assert.equal(db.getProductionTargets(user, first)[1].color, undefined);
+      db.setProductionTargetColor(second, user, 'feed', feed, color);
+      db.setProductionTargetColor(first, other, 'feed', feed, color);
+      const reset = db.resetProductionTargetColors(first, user);
+      assert.deepEqual(reset.map(t => t.targetType).sort(), ['feed', 'user']);
+      const resetTargets = db.getProductionTargets(user, first);
+      assert.deepEqual(resetTargets.map(t => t.targetType), items.map(t => t.targetType));
+      assert(resetTargets.every(t => !t.color));
+      assert.equal(resetTargets[1].canTalk, false);
+      assert.equal(db.getProductionTargets(user, second).find(t => t.targetType === 'feed').color, color);
+      assert.equal(db.getProductionTargets(other, first)[0].color, color);
+      assert.deepEqual(db.resetProductionTargetColors(first, user), []);
+    `], { env: { ...process.env, TALKTOME_DATA_DIR: dir }, stdio: 'pipe' });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

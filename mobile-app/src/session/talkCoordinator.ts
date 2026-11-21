@@ -77,11 +77,20 @@ export class TalkCoordinator {
     }
   }
 
-  async releaseRemote(inputKey: string): Promise<void> {
+  async releaseRemote(inputKey: string, tapToLock = false): Promise<void> {
     const hold = this.remoteHolds.get(inputKey);
     if (!hold) return;
-    this.remoteHolds.delete(inputKey);
-    if (!this.hasHold(hold.target)) await this.finishRelease(hold.target);
+    try {
+      if (tapToLock) {
+        if (this.isLocked(hold.target)) await this.unlockRemote(hold.target);
+        else await this.lockRemote(hold.target);
+      }
+    } finally {
+      if (this.remoteHolds.get(inputKey) === hold) {
+        this.remoteHolds.delete(inputKey);
+        if (!this.hasHold(hold.target)) await this.finishRelease(hold.target);
+      }
+    }
   }
 
   async lockRemote(target: TalkTarget): Promise<void> {

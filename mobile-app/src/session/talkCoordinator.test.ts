@@ -128,6 +128,17 @@ describe('panel Talk ownership', () => {
     await talk.unlockRemote(a); expect(c.talkingTargets).toEqual([]); expect(c.lockedTargets).toEqual([]);
   });
 
+  it('toggles a Companion tap lock and leaves a longer press momentary', async () => {
+    const { c, talk } = fixture();
+    const key = 'panel:companion:button';
+    await talk.pressRemote(key, a); await talk.releaseRemote(key, true);
+    expect(c.talkingTargets).toEqual([a]); expect(c.lockedTargets).toEqual([a]);
+    await talk.pressRemote(key, a); await talk.releaseRemote(key, true);
+    expect(c.talkingTargets).toEqual([]); expect(c.lockedTargets).toEqual([]);
+    await talk.pressRemote(key, a); await talk.releaseRemote(key, false);
+    expect(c.talkingTargets).toEqual([]); expect(c.lockedTargets).toEqual([]);
+  });
+
   it('keeps both targets transmitting for multi-lock and removes only the requested lock', async () => {
     store.state.lockMultipleTargets = true; const { c, talk } = fixture();
     await talk.lockRemote(a); await talk.lockRemote(b); expect(c.talkingTargets).toEqual([a, b]); expect(c.lockedTargets).toEqual([a, b]);

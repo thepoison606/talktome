@@ -155,6 +155,15 @@ db.exec(`
                                                              PRIMARY KEY (production_id, user_id, target_type, target_id)
     );
 
+    CREATE TABLE IF NOT EXISTS production_target_colors (
+      production_id INTEGER NOT NULL REFERENCES productions(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      target_type TEXT NOT NULL,
+      target_id INTEGER NOT NULL,
+      color TEXT NOT NULL,
+      PRIMARY KEY (production_id, user_id, target_type, target_id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_production_users_user
       ON production_users(user_id, production_id);
 
