@@ -6,9 +6,9 @@ WebRTC intercom app built with Node.js, mediasoup and Socket.IO.
 
 ## Community
 
-<a href="https://discord.gg/x5Q27F7HK"><img src="public/images/Discord-Logo-Blurple.svg" alt="Join the Talktome Discord community" width="150"></a>
+<a href="https://discord.gg/FWWb9JRz4"><img src="public/images/Discord-Logo-Blurple.svg" alt="Join the Talktome Discord community" width="150"></a>
 
-Join our [Discord server](https://discord.gg/x5Q27F7HK) for discussions, questions,
+Join our [Discord server](https://discord.gg/FWWb9JRz4) for discussions, questions,
 feedback and sharing how you use Talktome.
 
 If talktome helps you, you can support its development with a coffee.
