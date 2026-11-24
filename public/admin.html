@@ -1136,10 +1136,28 @@
       }
 
       .default-client-setting-field > label,
+      .default-client-settings-form .target-appearance-button,
       .default-client-setting-toggle > span:first-child {
         color: var(--text);
         font-size: 0.9rem;
         font-weight: 600;
+      }
+
+      .default-client-settings-form .target-appearance-button {
+        grid-template-columns: minmax(0, 1fr) auto;
+        inline-size: 100%;
+        text-align: start;
+      }
+
+      .default-client-settings-form .target-appearance-button:hover {
+        border-color: rgba(59, 130, 246, 0.58);
+        background: rgba(37, 99, 235, 0.18);
+      }
+
+      @media (pointer: coarse) {
+        .default-client-settings-form .target-appearance-button {
+          min-block-size: 44px;
+        }
       }
 
       .default-client-setting-toggle {
@@ -1408,7 +1426,7 @@
         min-width: 0;
       }
 
-      .config-panel button:not(.media-network-qr-button),
+      .config-panel button:not(.media-network-qr-button, .target-appearance-button),
       .admin-action-dialog__actions button,
       .user-audio-settings-dialog__close,
       .image-lightbox__close {
@@ -1422,7 +1440,7 @@
         box-shadow: none;
       }
 
-      .config-panel button:not(.media-network-qr-button):hover,
+      .config-panel button:not(.media-network-qr-button, .target-appearance-button):hover,
       .admin-action-dialog__actions button:hover,
       .user-audio-settings-dialog__close:hover,
       .image-lightbox__close:hover {
@@ -1506,11 +1524,64 @@
         white-space: normal;
       }
 
-      .rtc-port-form input {
+      .rtc-port-form .rtc-port-mode {
+        position: relative;
+        grid-column: 1 / -1;
+      }
+
+      .rtc-port-mode > label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        cursor: pointer;
+      }
+
+      @media (pointer: coarse) {
+        .rtc-port-mode > label {
+          min-block-size: 3rem;
+        }
+      }
+
+      .rtc-port-tooltip {
+        position: absolute;
+        inset-block-end: 100%;
+        inset-inline-end: 0;
+        z-index: 2;
+        max-inline-size: min(22rem, 100%);
+        padding: 0.55rem 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--card-bg);
+        color: var(--text);
+        font-size: 0.85rem;
+        visibility: hidden;
+      }
+
+      .rtc-port-mode:not([data-tip-dismissed]):has(input:focus-visible) .rtc-port-tooltip {
+        visibility: visible;
+      }
+
+      @media (hover: hover) {
+        .rtc-port-mode:not([data-tip-dismissed]):hover .rtc-port-tooltip {
+          visibility: visible;
+        }
+      }
+
+      .rtc-port-form .rtc-shared-port-field {
+        grid-column: 1 / -1;
+      }
+
+      .rtc-shared-port-field input {
+        max-width: 12rem;
+      }
+
+      .rtc-port-form input[type="number"] {
         width: 100%;
       }
 
-      .rtc-port-form button {
+      .rtc-port-form button[type="submit"] {
+        grid-column: -2 / -1;
         justify-self: end;
       }
 
@@ -3476,7 +3547,14 @@
           justify-content: stretch;
         }
 
-        .rtc-port-form,
+        .rtc-port-form {
+          grid-template-columns: minmax(0, 1fr) auto;
+        }
+
+        #rtc-port-start-field {
+          grid-column: 1 / -1;
+        }
+
         .guest-login-form {
           grid-template-columns: 1fr;
         }
@@ -4594,23 +4672,40 @@
             </section>
 
             <section class="config-panel" aria-labelledby="config-rtc-ports-heading">
-              <h3 id="config-rtc-ports-heading">RTC port range</h3>
+              <h3 id="config-rtc-ports-heading">RTC ports</h3>
 
-              <div class="setting-meta">
-                <div>Active RTC ports: <strong id="rtc-ports-active-range">Loading...</strong></div>
+              <div class="setting-meta" role="status">
+                <div>Active WebRTC ports: <strong id="rtc-ports-active-webrtc">Loading...</strong></div>
+                <div>Active plain RTP range: <strong id="rtc-ports-active-range">Loading...</strong></div>
                 <div id="rtc-ports-restart-hint">Changes require a server restart to take effect.</div>
-                <div id="rtc-ports-override-hint" class="is-hidden">An environment override is active. Saved changes will only apply after restart without `TALKTOME_RTC_PORT_START` or `TALKTOME_RTC_PORT_COUNT` overrides.</div>
+                <div id="rtc-ports-override-hint" class="is-hidden">Environment variables currently override the port range.</div>
               </div>
 
-              <form id="rtc-ports-form" class="rtc-port-form" autocomplete="off">
-                <div class="field-group field-group--stacked">
-                  <label for="rtc-port-start">Start port</label>
-                  <input type="number" id="rtc-port-start" min="1" max="65535" step="1" placeholder="40000" />
+              <form id="rtc-ports-form" class="rtc-port-form" aria-labelledby="config-rtc-ports-heading" autocomplete="off">
+                <div class="rtc-port-mode">
+                  <label for="rtc-shared-port-enabled">
+                    <span>Use a shared WebRTC port</span>
+                    <span class="admin-switch">
+                      <input type="checkbox" id="rtc-shared-port-enabled" role="switch" aria-controls="rtc-shared-port-field" aria-describedby="rtc-port-tooltip" />
+                      <span class="admin-switch__track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <div id="rtc-port-tooltip" class="rtc-port-tooltip" role="tooltip">WebRTC clients share one port over UDP and TCP. Bridges keep using the saved UDP range for plain RTP.</div>
+                </div>
+
+                <div id="rtc-shared-port-field" class="field-group field-group--stacked rtc-shared-port-field" hidden>
+                  <label for="rtc-shared-port">Shared WebRTC port</label>
+                  <input type="number" id="rtc-shared-port" name="webRtcSharedPort" min="1" max="65535" step="1" value="40000" disabled />
+                </div>
+
+                <div id="rtc-port-start-field" class="field-group field-group--stacked">
+                  <label for="rtc-port-start" id="rtc-port-start-label">Range start port</label>
+                  <input type="number" id="rtc-port-start" name="rtcPortStart" min="1" max="65535" step="1" placeholder="40000" />
                 </div>
 
                 <div class="field-group field-group--stacked">
-                  <label for="rtc-port-count">Number of ports</label>
-                  <input type="number" id="rtc-port-count" min="1" max="65535" step="1" placeholder="10000" />
+                  <label for="rtc-port-count" id="rtc-port-count-label">Number of ports</label>
+                  <input type="number" id="rtc-port-count" name="rtcPortCount" min="1" max="65535" step="1" placeholder="10000" />
                 </div>
 
                 <button type="submit">Save</button>
@@ -4905,6 +5000,14 @@
                       <span class="admin-switch__track" aria-hidden="true"></span>
                     </span>
                   </div>
+                  <label class="default-client-setting-toggle">
+                    <span>Keep target colors during talk</span>
+                    <span class="admin-switch">
+                      <input type="checkbox" id="default-client-keep-target-background" role="switch" />
+                      <span class="admin-switch__track" aria-hidden="true"></span>
+                    </span>
+                  </label>
+                  <div id="default-client-target-appearance"></div>
                   <div class="default-client-settings-actions"><span id="defaults-auto-save-status" class="auto-save-feedback" role="status" aria-live="polite"></span></div>
                 </div>
               </form>

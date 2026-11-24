@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import {
+  Alert,
   Image,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -24,6 +26,16 @@ import { isCompactOperatorScreen } from './layers';
 import { colors } from './theme';
 
 type LoginMethod = 'account' | 'link';
+
+const SERVER_SETUP_URL = 'https://github.com/thepoison606/talktome#quick-start';
+
+async function openServerSetup() {
+  try {
+    await Linking.openURL(SERVER_SETUP_URL);
+  } catch {
+    Alert.alert('Could not open the setup guide', `Open this address in your browser:\n${SERVER_SETUP_URL}`);
+  }
+}
 
 export function LoginScreen() {
   const store = useSessionStore();
@@ -291,6 +303,17 @@ export function LoginScreen() {
                   trackColor={{ true: colors.accent }}
                 />
               </View>
+              <Pressable
+                accessibilityRole="link"
+                accessibilityHint="Opens GitHub in your browser."
+                onPress={() => void openServerSetup()}
+                style={styles.serverSetup}
+              >
+                <Text style={styles.serverSetupHint}>
+                  A server is required.{' '}
+                  <Text style={styles.serverSetupLink}>Server setup on GitHub</Text>
+                </Text>
+              </Pressable>
             </>
           ) : (
             <>
@@ -592,6 +615,20 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 12,
     marginTop: 10,
+  },
+  serverSetup: {
+    minHeight: 44,
+    justifyContent: 'center',
+    marginTop: 6,
+    paddingVertical: 4,
+  },
+  serverSetupHint: {
+    color: colors.muted,
+    fontSize: 12,
+  },
+  serverSetupLink: {
+    color: colors.accent,
+    textDecorationLine: 'underline',
   },
   trust: {
     marginTop: 16,

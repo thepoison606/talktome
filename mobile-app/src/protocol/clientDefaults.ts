@@ -9,6 +9,22 @@ export type AudioProfileName = (typeof AUDIO_PROFILES)[number];
 export const DIM_AMOUNT_DB_OPTIONS = [-6, -12, -15, -18, -24] as const;
 export const DEFAULT_DIM_AMOUNT_DB = -15;
 
+export type TargetAppearance = {
+  colors: Record<string, string>;
+  keepBackgroundWhileTalking: boolean;
+};
+
+export const DEFAULT_TARGET_APPEARANCE: TargetAppearance = { colors: {}, keepBackgroundWhileTalking: false };
+
+export function targetColorForeground(color: string): string {
+  const channels = color.slice(1).match(/../g) ?? [];
+  const [r = 0, g = 0, b = 0] = channels.map(hex => {
+    const channel = parseInt(hex, 16) / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.179 ? '#000' : '#fff';
+}
+
 export type ServerClientDefaults = {
   audioProfile?: AudioProfileName;
   dimAmountDb?: number;
@@ -20,6 +36,7 @@ export type ServerClientDefaults = {
   bigMainButton?: boolean;
   lockMultipleTargets?: boolean;
   tapToLock?: boolean;
+  targetAppearance?: TargetAppearance;
 };
 
 const BOOLEAN_KEYS = [
@@ -54,6 +71,14 @@ export function normalizeServerClientDefaults(value: unknown): ServerClientDefau
     if (typeof raw[key] === 'boolean') {
       normalized[key] = raw[key] as boolean;
     }
+  }
+  const appearance = raw.targetAppearance as Partial<TargetAppearance> | undefined;
+  if (appearance && typeof appearance === 'object' && !Array.isArray(appearance)) {
+    const hex = /^#[0-9a-f]{6}$/;
+    const colors = Object.fromEntries(Object.entries(appearance.colors ?? {}).filter(
+      ([key, color]) => hex.test(key) && typeof color === 'string' && hex.test(color),
+    ));
+    normalized.targetAppearance = { colors, keepBackgroundWhileTalking: appearance.keepBackgroundWhileTalking === true };
   }
   return normalized;
 }

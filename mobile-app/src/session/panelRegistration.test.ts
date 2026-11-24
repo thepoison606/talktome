@@ -232,6 +232,25 @@ describe('panel registration in the native session', () => {
     expect(useSessionStore.getState().bigMainButton).toBe(false);
   });
 
+  it('refreshes the server palette and talk border setting when the app reconnects', async () => {
+    const { c, internal } = fixture({ serverDefaults: true });
+    const updated = { colors: { '#3e4b60': '#aabbcc' }, keepBackgroundWhileTalking: true };
+    const defaultClientSettings = vi.fn()
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ targetAppearance: updated })
+      .mockResolvedValueOnce({ targetAppearance: { colors: {}, keepBackgroundWhileTalking: false } });
+    c.api = { defaultClientSettings } as unknown as NonNullable<typeof c.api>;
+
+    await internal.finishIdentity(identity, false);
+    expect(useSessionStore.getState().targetAppearance).toEqual(initialState.targetAppearance);
+
+    await internal.handleReconnect();
+    expect(useSessionStore.getState().targetAppearance).toEqual(updated);
+
+    await internal.handleReconnect();
+    expect(useSessionStore.getState().targetAppearance).toEqual(initialState.targetAppearance);
+  });
+
   it('honors the production selected remotely while the phone was offline', async () => {
     const { internal } = fixture(); await internal.finishIdentity(identity, false);
     expect(mocks.entered).toHaveBeenCalledWith({ id: 8, name: 'Field' });

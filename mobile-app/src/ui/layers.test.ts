@@ -13,6 +13,7 @@ import {
   isCompactOperatorScreen,
   isTabletOperatorScreen,
   operatorLayout,
+  operatorViewport,
   replyBesideTargets,
   shouldOfferHeaderCollapse,
   targetGridColumns,
@@ -43,6 +44,20 @@ describe('target layers', () => {
     expect(layout.layerSize).toBe(8);
     expect(targetLayerCount(9, 844, 390)).toBe(2);
     expect(replyBesideTargets(844, 390)).toBe(true);
+  });
+
+  it('keeps Reply at the bottom when a portrait transition reports a short frame', () => {
+    const portrait = { width: 430, height: 932 };
+    const clipped = { width: 430, height: 320 };
+    expect(operatorLayout(operatorViewport(portrait, clipped))).toMatchObject({
+      replyBeside: false, columns: 1,
+    });
+    const landscape = { width: 932, height: 430 };
+    expect(operatorLayout(operatorViewport(landscape, clipped))).toMatchObject({
+      replyBeside: true, columns: 2,
+    });
+    const settled = { width: 430, height: 839 };
+    expect(operatorViewport(portrait, settled)).toEqual(settled);
   });
 
   it('pages sooner on a short screen instead of scrolling', () => {

@@ -93,7 +93,10 @@ docker run -d --restart unless-stopped --name talktome \
   thepoison606/talktome:latest
 ```
 
-Open `https://<HOST-IP>:8443/`. Allow the HTTPS port and the configured RTC port range in your firewall.
+Open `https://<HOST-IP>:8443/`. Allow the HTTPS port and the configured media ports in your firewall.
+With the default [shared WebRTC port](#shared-webrtc-port), publish
+`-p 40000:40000/udp -p 40000:40000/tcp` for WebRTC media. If a Bridge needs
+to reach the container over plain RTP, also publish the remaining ports in its UDP range.
 The web port defaults to 8443 in containers (443 outside containers). It can be
 changed in Admin → Config → Network → Web Access; restart the server and update
 Docker port publishing to match. An explicit `PORT` or `HTTPS_PORT` environment
@@ -149,7 +152,6 @@ with `--node-version` to inspect its runtime without starting services.
 - `server-app/` and `bridge-client/`: native desktop applications.
 - `headless-client/`: Rust intercom panel for Raspberry Pi and other Linux
   boards, shipped as Debian packages.
-- `vendor/`: locally maintained third-party patches.
 
 ## Configuration
 
@@ -194,6 +196,23 @@ Useful environment overrides:
 - `COMPANION_API_KEY`: fixed Companion/API key
 
 Changing media-network, RTC-port, browser ICE or SSO environment settings requires a server restart. Guest login changes apply immediately.
+
+### Shared WebRTC port
+
+In **Admin → Config → Network → RTC ports**, turn on **Use a shared WebRTC port**.
+The port defaults to `40000` and can be edited. For an unattended
+deployment, set `"webRtcSharedPort": 40000` in the server's `config.json`
+(`/data/config.json` in Docker). After restarting, all WebRTC send and receive
+transports use that port over UDP and TCP. Forward both protocols on the same
+port number. Turn off the switch or set the config value to `null` to allocate WebRTC ports
+from the range again.
+
+With the shared port enabled, use **Plain RTP start port** and **Plain RTP port
+count** to set the UDP range for Bridges and other plain RTP clients. If the
+shared port falls within that range, plain RTP transports skip it. Size the
+range for the number of simultaneous plain RTP transports, including separate
+audio and video transports where applicable. Restart the server if the
+addresses of the adapters used by the shared listener change.
 
 ## HTTPS reverse proxy
 

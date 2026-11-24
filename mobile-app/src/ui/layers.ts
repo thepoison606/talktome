@@ -54,6 +54,17 @@ export function isLandscape(width: number, height: number): boolean {
   return width > height;
 }
 
+type Viewport = { width: number; height: number };
+
+export function operatorViewport(window: Viewport, measured: Viewport): Viewport {
+  // A newly mounted screen can briefly report a clipped frame during a native transition.
+  if (measured.width <= 0 || measured.height <= 0 ||
+    isLandscape(measured.width, measured.height) !== isLandscape(window.width, window.height)) {
+    return window;
+  }
+  return measured;
+}
+
 export function isCompactOperatorScreen(width: number, height: number): boolean {
   return Math.min(width, height) <= COMPACT_SHORT_SIDE_MAX;
 }

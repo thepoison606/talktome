@@ -98,6 +98,8 @@ struct ServerRuntimeConfig {
     rtc_port_start: u16,
     #[serde(default = "default_rtc_port_count")]
     rtc_port_count: u16,
+    #[serde(default)]
+    web_rtc_shared_port: Option<u16>,
     #[serde(default = "default_media_network_mode")]
     media_network_mode: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -261,6 +263,7 @@ impl Default for ServerRuntimeConfig {
             http_port: default_http_port(),
             rtc_port_start: default_rtc_port_start(),
             rtc_port_count: default_rtc_port_count(),
+            web_rtc_shared_port: None,
             media_network_mode: default_media_network_mode(),
             media_interface_name: None,
             media_announced_address: None,
@@ -338,6 +341,9 @@ fn normalized_runtime_config(
     let rtc_end = u32::from(config.rtc_port_start) + u32::from(config.rtc_port_count) - 1;
     if rtc_end > 65535 {
         return Err("RTC port range exceeds 65535.".to_string());
+    }
+    if config.web_rtc_shared_port == Some(0) {
+        return Err("Shared WebRTC port must be between 1 and 65535.".to_string());
     }
 
     config.mdns_host = config.mdns_host.trim().to_string();

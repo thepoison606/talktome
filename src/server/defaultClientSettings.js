@@ -1,5 +1,10 @@
 const AUDIO_PROFILES = Object.freeze(["ultra-low", "low", "standard"]);
 const DIM_AMOUNT_DB_OPTIONS = Object.freeze([-6, -12, -15, -18, -24]);
+const TARGET_COLOR_KEYS = new Set(require("../../public/targetColors.json").map(({ value }) => value));
+const BUILTIN_TARGET_APPEARANCE = Object.freeze({
+  colors: Object.freeze({}),
+  keepBackgroundWhileTalking: false,
+});
 
 const BUILTIN_DEFAULT_CLIENT_SETTINGS = Object.freeze({
   audioProfile: "ultra-low",
@@ -16,6 +21,7 @@ const BUILTIN_DEFAULT_CLIENT_SETTINGS = Object.freeze({
   allowTargetRearrange: true,
   allowTargetAddRemove: false,
   allowFeedVideo: false,
+  targetAppearance: BUILTIN_TARGET_APPEARANCE,
 });
 
 const DEFAULT_CLIENT_SETTING_KEYS = Object.freeze(Object.keys(BUILTIN_DEFAULT_CLIENT_SETTINGS));
@@ -43,12 +49,39 @@ function normalizeConfiguredDefaultClientSettings(value, { strict = false } = {}
     else reject("Invalid default dim amount.");
   }
 
-  for (const key of DEFAULT_CLIENT_SETTING_KEYS.filter((entry) => (
-    entry !== "audioProfile" && entry !== "dimAmountDb"
-  ))) {
+  for (const key of DEFAULT_CLIENT_SETTING_KEYS) {
+    if (typeof BUILTIN_DEFAULT_CLIENT_SETTINGS[key] !== "boolean") continue;
     if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
     if (typeof value[key] === "boolean") normalized[key] = value[key];
     else reject(`Invalid boolean value for ${key}.`);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(value, "targetAppearance")) {
+    const appearance = value.targetAppearance;
+    if (!appearance || typeof appearance !== "object" || Array.isArray(appearance)) {
+      reject("Invalid target appearance settings.");
+      return normalized;
+    }
+    const { colors, keepBackgroundWhileTalking } = appearance;
+    const overrides = {};
+    if (colors && typeof colors === "object" && !Array.isArray(colors)) {
+      for (const [key, color] of Object.entries(colors)) {
+        if (!TARGET_COLOR_KEYS.has(key) || typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)) {
+          reject("Invalid target palette color.");
+        } else if (color.toLowerCase() !== key) {
+          overrides[key] = color.toLowerCase();
+        }
+      }
+    } else if (colors !== undefined) {
+      reject("Target palette colors must be an object.");
+    }
+    if (keepBackgroundWhileTalking !== undefined && typeof keepBackgroundWhileTalking !== "boolean") {
+      reject("Invalid background setting for talk.");
+    }
+    normalized.targetAppearance = {
+      colors: overrides,
+      keepBackgroundWhileTalking: keepBackgroundWhileTalking === true,
+    };
   }
 
   return normalized;

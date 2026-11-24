@@ -10,7 +10,7 @@ const { io } = require('socket.io-client');
 const root = require('./helpers/projectRoot');
 
 // Real mediasoup worker + authenticated Socket.IO, not a mock of the routing policy.
-test('audio and camera coexist; discovery, replacement and consumption respect video capability and feed assignment', { timeout: 25000 }, async t => {
+test('audio, camera and plain RTP coexist with a shared WebRTC port', { timeout: 25000 }, async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'talktome-video-signaling-'));
   const clients = []; let child, exited, output = '';
   t.after(async () => {
@@ -20,11 +20,19 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
     fs.rmSync(dir, { recursive: true, force: true });
   });
   const listener = net.createServer(); await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
-  const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
+  const port = listener.address().port;
+  const mediaListener = net.createServer();
+  await new Promise(resolve => mediaListener.listen(0, '0.0.0.0', resolve));
+  const webRtcSharedPort = mediaListener.address().port;
+  await Promise.all([listener, mediaListener].map(server => new Promise(resolve => server.close(resolve))));
+  const rtcPortCount = 32;
+  const rtcPortStart = Math.min(webRtcSharedPort, 65536 - rtcPortCount);
   const configPath = path.join(dir, 'config.json');
   fs.writeFileSync(configPath, JSON.stringify({ tlsMode: 'proxy', httpsPort: port, httpPort: 'off', mdnsHost: 'off',
-    multipleProductions: true, defaultClientSettings: { allowFeedVideo: true }, mediaNetworkMode: 'manual', mediaAnnouncedAddress: '127.0.0.1' }));
+    rtcPortStart, rtcPortCount, webRtcSharedPort, multipleProductions: true,
+    defaultClientSettings: { allowFeedVideo: true }, mediaNetworkMode: 'manual', mediaAnnouncedAddress: '127.0.0.1' }));
   const env = { ...process.env, TALKTOME_DATA_DIR: dir, TALKTOME_CONFIG_PATH: configPath, TALKTOME_NO_WIZARD: '1',
+    TALKTOME_RTC_PORT_START: String(rtcPortStart), TALKTOME_RTC_PORT_COUNT: String(rtcPortCount),
     TALKTOME_TLS_MODE: 'proxy', PORT: String(port), HTTPS_PORT: String(port), HTTP_PORT: 'off', MDNS_HOST: 'off', PUBLIC_IP: '127.0.0.1', COMPANION_API_KEY: 'video-test-only-key' };
   execFileSync(process.execPath, ['-e', `
     const db = require('./src/server/dbHandler');
@@ -79,6 +87,22 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
     }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const result = await response.json(); assert.equal(response.status, expected, JSON.stringify(result)); return result;
   }
+  const rtcSettings = '/admin/settings/rtc-ports';
+  const range = { rtcPortStart, rtcPortCount };
+  const activePorts = await admin('GET', rtcSettings);
+  assert.equal(activePorts.activeWebRtcSharedPort, webRtcSharedPort);
+  assert.equal(activePorts.environmentOverride, true);
+  assert.equal(activePorts.restartRequired, false);
+  assert.match((await admin('PUT', rtcSettings, { ...range, webRtcSharedPort: 65536 }, 400)).error, /between 1 and 65535/);
+  const pendingPorts = await admin('PUT', rtcSettings, { ...range, webRtcSharedPort: null });
+  assert.equal(pendingPorts.webRtcSharedPort, null);
+  assert.equal(pendingPorts.activeWebRtcSharedPort, webRtcSharedPort);
+  assert.equal(pendingPorts.restartRequired, true);
+  const restoredPorts = await admin('PUT', rtcSettings, { webRtcSharedPort });
+  assert.equal(restoredPorts.restartRequired, false);
+  assert.equal(restoredPorts.rtcPortStart, rtcPortStart);
+  assert.equal(restoredPorts.rtcPortCount, rtcPortCount);
+  assert.equal((await admin('PUT', rtcSettings, range)).webRtcSharedPort, webRtcSharedPort);
   assert.equal((await admin('GET', '/feeds'))[0].allow_feed_video, null);
   assert.equal((await admin('GET', '/feeds'))[0].allowFeedVideo, true);
   await admin('PUT', `/admin/feeds/${fixture.feed}/feed-video`, { allowFeedVideo: 'true' }, 400);
@@ -93,7 +117,14 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   const caps = await request(viewer, 'get-router-rtp-capabilities');
   assert(caps.codecs.some(c => c.mimeType === 'video/VP8'));
   assert(caps.codecs.some(c => c.mimeType === 'video/H264'));
-  assert((await request(feed, 'create-send-transport', null)).id);
+  function assertSharedTransport(transport) {
+    assert(transport.id, JSON.stringify(transport));
+    assert.equal(transport.iceParameters.iceLite, true);
+    assert.deepEqual(transport.iceCandidates.map(({ protocol, port }) => [protocol, port]), [
+      ['udp', webRtcSharedPort], ['tcp', webRtcSharedPort],
+    ]);
+  }
+  assertSharedTransport(await request(feed, 'create-send-transport', null));
   const produce = (kind, ssrc) => request(feed, 'produce', { kind, appData: { type: 'feed', id: fixture.feed }, rtpParameters: {
     mid: String(ssrc), codecs: kind === 'audio'
       ? [{ mimeType: 'audio/opus', payloadType: 111, clockRate: 48000, channels: 2 }]
@@ -109,7 +140,9 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   assert(active.some(p => p.producerId === audio.id)); assert(active.some(p => p.producerId === video.id));
   assert((await request(native, 'request-active-producers')).every(p => p.kind === 'audio'));
   assert.deepEqual(await request(unassigned, 'request-active-producers'), []);
-  for (const socket of [viewer, native, unassigned]) assert((await request(socket, 'create-recv-transport', null)).id);
+  for (const socket of [viewer, native, unassigned]) {
+    assertSharedTransport(await request(socket, 'create-recv-transport', null));
+  }
   const consumption = await request(viewer, 'consume', { producerId: video.id, rtpCapabilities: caps });
   assert.equal(consumption.kind, 'video'); assert(consumption.id);
   await request(viewer, 'resume-consumer', { consumerId: consumption.id });
@@ -121,7 +154,7 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   assert.equal(audioConsumer.kind, 'audio');
   assert((await request(native, 'create-video-recv-transport', null)).error);
   const separateVideo = await request(viewer, 'create-video-recv-transport', null);
-  assert(separateVideo.id);
+  assertSharedTransport(separateVideo);
   assert.match((await request(viewer, 'consume', { producerId: audio.id, rtpCapabilities: caps, transportId: separateVideo.id })).error, /cannot receive audio/);
   const videoConsumer = await request(viewer, 'consume', { producerId: video.id, rtpCapabilities: caps, transportId: separateVideo.id });
   assert.equal(videoConsumer.kind, 'video');
@@ -197,6 +230,11 @@ test('audio and camera coexist; discovery, replacement and consumption respect v
   const audioTransport = await api('POST', route + '/plain-send-transport', {});
   const bridgeAudio = await api('POST', route + '/producers', audioTransport);
   const videoTransport = await api('POST', route + '/video-send-transport', {});
+  for (const transport of [audioTransport, videoTransport]) {
+    assert(transport.port >= rtcPortStart && transport.port < rtcPortStart + rtcPortCount);
+    assert.notEqual(transport.port, webRtcSharedPort);
+  }
+  assert.notEqual(audioTransport.port, videoTransport.port);
   assert.equal(audioTransport.cname, videoTransport.cname, 'native encoders must use one feed synchronization identity');
   assert.equal(videoTransport.payloadType, 102);
   const bridgeVideo = await api('POST', route + '/video-producer', {});

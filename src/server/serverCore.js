@@ -27,7 +27,7 @@ const { normalizeRegisteredClientType, normalizeClientVersion, normalizeClientBu
 const { getFreshClientDeviceStatus, recordClientDeviceStatus, normalizeClientDeviceStatus } = require('./clientDeviceStatus');
 const { resetPeerMediaTransportStatus, updatePeerMediaTransportStatus, describePeerMediaStatus } = require("./mediaStatus");
 const { buildGuestLoginUrl, buildLoginUrl, buildMediaNetworkQrTargets, normalizeConnectUrl, selectAdminQrUrl } = require("./qrConnectUrl");
-const { buildWebRtcListenInfos, resolveClientIceConfig } = require("./webrtcConfig");
+const { buildWebRtcListenInfos, normalizeWebRtcSharedPort, resolveClientIceConfig } = require("./webrtcConfig");
 const { normalizeWebAccess, resolveWebAccess, createWebServer, requestConnectOrigin } = require("./webAccess");
 const { isRunningInContainer } = require("./runtimeEnvironment");
 const {
@@ -668,6 +668,10 @@ function getAvailableMediaNetworkInterfaces() {
 function resolveTransportAnnouncedAddress() {
   const availableInterfaces = getAvailableMediaNetworkInterfaces();
   return resolveTransportMediaRoute({ env: process.env, availableInterfaces });
+}
+
+function resolveWebRtcMediaRoute() {
+  return sharedWebRtcMediaRoute ?? resolveTransportAnnouncedAddress();
 }
 
 function getActiveRtcAddresses(mediaRoute) {
@@ -2768,7 +2772,11 @@ const HTTP_PORT = (() => {
   return null;
 })();
 const httpPortSource = process.env.HTTP_PORT ? "explicit" : (HTTP_PORT !== null ? "auto" : "disabled");
-const RTC_PORT_RANGE = resolveActiveRtcPortRange(loadRuntimeConfig() || {});
+const { range: RTC_PORT_RANGE, sharedPort: WEBRTC_SHARED_PORT } = (() => {
+  const config = loadRuntimeConfig() || {};
+  const range = resolveActiveRtcPortRange(config);
+  return { range, sharedPort: normalizeWebRtcSharedPort(config.webRtcSharedPort) };
+})();
 
 // Tally is transient and scoped to the active production.
 const tallyState = createTallyStateStore();
@@ -4581,7 +4589,7 @@ app.put("/admin/settings/web-access", requireAdmin, (req, res) => {
 app.get("/admin/settings/media-network", requireAdmin, async (req, res) => {
   const config = loadRuntimeConfig() || {};
   const saved = resolveSavedMediaNetworkConfig(config);
-  const active = resolveTransportAnnouncedAddress();
+  const active = resolveWebRtcMediaRoute();
   const environmentOverride = active.source === "env";
   const restartRequired = environmentOverride
     ? false
@@ -4612,24 +4620,28 @@ app.get("/admin/settings/media-network", requireAdmin, async (req, res) => {
   });
 });
 
-app.get("/admin/settings/rtc-ports", requireAdmin, (req, res) => {
-  const config = loadRuntimeConfig() || {};
-  const saved = resolveSavedRtcPortRange(config);
+function describeRtcPortSettings(saved, sharedPort) {
   const environmentOverride = RTC_PORT_RANGE.source === "env";
-
-  res.json({
+  return {
     rtcPortStart: saved.start,
     rtcPortCount: saved.count,
     rtcPortEnd: saved.end,
+    webRtcSharedPort: sharedPort,
     activeRtcPortStart: RTC_PORT_RANGE.start,
     activeRtcPortCount: RTC_PORT_RANGE.count,
     activeRtcPortEnd: RTC_PORT_RANGE.end,
-    restartRequired: environmentOverride
-      ? false
-      : saved.start !== RTC_PORT_RANGE.start || saved.count !== RTC_PORT_RANGE.count,
+    activeWebRtcSharedPort: WEBRTC_SHARED_PORT,
+    restartRequired: sharedPort !== WEBRTC_SHARED_PORT || (!environmentOverride && (
+      saved.start !== RTC_PORT_RANGE.start || saved.count !== RTC_PORT_RANGE.count
+    )),
     environmentOverride,
     configPath: getConfigPath(),
-  });
+  };
+}
+
+app.get("/admin/settings/rtc-ports", requireAdmin, (req, res) => {
+  const config = loadRuntimeConfig() || {};
+  res.json(describeRtcPortSettings(resolveSavedRtcPortRange(config), config.webRtcSharedPort ?? null));
 });
 
 app.get("/admin/settings/guest-login", requireAdmin, (req, res) => {
@@ -4726,7 +4738,7 @@ app.put("/admin/settings/media-network", requireAdmin, (req, res) => {
 
   try {
     const configPath = saveRuntimeConfig(updatedConfig);
-    const active = resolveTransportAnnouncedAddress();
+    const active = resolveWebRtcMediaRoute();
     const environmentOverride = active.source === "env";
     return res.json({
       mediaNetworkMode: nextMode,
@@ -4750,35 +4762,33 @@ app.put("/admin/settings/media-network", requireAdmin, (req, res) => {
 });
 
 app.put("/admin/settings/rtc-ports", requireAdmin, (req, res) => {
-  const nextRange = normalizeRtcPortRange(req.body?.rtcPortStart, req.body?.rtcPortCount);
+  const currentConfig = loadRuntimeConfig() || {};
+  const savedRange = resolveSavedRtcPortRange(currentConfig);
+  const { rtcPortStart = savedRange.start, rtcPortCount = savedRange.count } = req.body || {};
+  const nextRange = normalizeRtcPortRange(rtcPortStart, rtcPortCount);
   if (nextRange.error) {
     return res.status(400).json({ error: nextRange.error });
   }
 
-  const currentConfig = loadRuntimeConfig() || {};
+  let sharedPort;
+  try {
+    const value = Object.prototype.hasOwnProperty.call(req.body || {}, "webRtcSharedPort")
+      ? req.body.webRtcSharedPort
+      : currentConfig.webRtcSharedPort;
+    sharedPort = normalizeWebRtcSharedPort(value);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
   const updatedConfig = {
     ...currentConfig,
     rtcPortStart: nextRange.start,
     rtcPortCount: nextRange.count,
+    webRtcSharedPort: sharedPort,
   };
 
   try {
-    const configPath = saveRuntimeConfig(updatedConfig);
-    const environmentOverride = RTC_PORT_RANGE.source === "env";
-    return res.json({
-      rtcPortStart: nextRange.start,
-      rtcPortCount: nextRange.count,
-      rtcPortEnd: nextRange.end,
-      activeRtcPortStart: RTC_PORT_RANGE.start,
-      activeRtcPortCount: RTC_PORT_RANGE.count,
-      activeRtcPortEnd: RTC_PORT_RANGE.end,
-      restartRequired: !environmentOverride && (
-        nextRange.start !== RTC_PORT_RANGE.start ||
-        nextRange.count !== RTC_PORT_RANGE.count
-      ),
-      environmentOverride,
-      configPath,
-    });
+    saveRuntimeConfig(updatedConfig);
+    return res.json(describeRtcPortSettings(nextRange, sharedPort));
   } catch (err) {
     console.error("Error saving RTC port setting:", err);
     return res.status(500).json({ error: "Failed to save RTC port setting" });
@@ -4818,6 +4828,12 @@ app.put("/admin/settings/default-client", requireAdmin, (req, res) => {
     const settings = normalizeConfiguredDefaultClientSettings(req.body, { strict: true });
     const applyToAll = normalizeApplyToAll(req.body?.applyToAll, settings);
     const currentConfig = loadRuntimeConfig() || {};
+    const currentAppearance = currentConfig.defaultClientSettings?.targetAppearance;
+    if (settings.targetAppearance === undefined && currentAppearance !== undefined) {
+      settings.targetAppearance = normalizeConfiguredDefaultClientSettings({
+        targetAppearance: currentAppearance,
+      }).targetAppearance;
+    }
     const updatedConfig = {
       ...currentConfig,
       defaultClientSettings: settings,
@@ -4858,6 +4874,27 @@ app.put("/admin/settings/default-client", requireAdmin, (req, res) => {
     });
   } catch (err) {
     return res.status(400).json({ error: err.message || "Invalid default client settings" });
+  }
+});
+
+app.put("/admin/settings/target-appearance", requireAdmin, (req, res) => {
+  try {
+    const patch = req.body;
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+      return res.status(400).json({ error: "Invalid target appearance settings." });
+    }
+    const config = loadRuntimeConfig() || {};
+    const current = resolveDefaultClientSettings(config.defaultClientSettings).targetAppearance;
+    const { targetAppearance } = normalizeConfiguredDefaultClientSettings({
+      targetAppearance: { ...current, ...patch },
+    }, { strict: true });
+    saveRuntimeConfig({
+      ...config,
+      defaultClientSettings: { ...config.defaultClientSettings, targetAppearance },
+    });
+    return res.json({ targetAppearance });
+  } catch (err) {
+    return res.status(400).json({ error: err.message || "Invalid target appearance settings" });
   }
 });
 
@@ -4905,7 +4942,7 @@ function buildConfigBackupBundle() {
     format: "talktome-config",
     version: 1,
     exportedAt: new Date().toISOString(),
-    serverConfig: loadRuntimeConfig() || {},
+    serverConfig: { webRtcSharedPort: null, ...(loadRuntimeConfig() || {}) },
     database: exportDatabaseSnapshot(),
   };
 }
@@ -5022,6 +5059,14 @@ app.post("/admin/config/import", requireAdmin, (req, res) => {
         }
         nextConfig.rtcPortStart = importedRtcRange.start;
         nextConfig.rtcPortCount = importedRtcRange.count;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(bundle.serverConfig, "webRtcSharedPort")) {
+        try {
+          nextConfig.webRtcSharedPort = normalizeWebRtcSharedPort(bundle.serverConfig.webRtcSharedPort);
+        } catch (err) {
+          return res.status(400).json({ error: err.message });
+        }
       }
 
       if (bundle.serverConfig.guestLogin && typeof bundle.serverConfig.guestLogin === "object") {
@@ -7391,7 +7436,7 @@ if (HTTP_PORT !== null) {
   });
 }
 
-let worker, router;
+let worker, router, webRtcServer, sharedWebRtcMediaRoute;
 const peers = new Map();
 const GATEWAY_OPUS_PAYLOAD_TYPE = 100;
 const GATEWAY_OPUS_SSRC = 11111111;
@@ -7942,9 +7987,12 @@ function warnIfDockerAnnouncedIpLooksInternal(announcedIp) {
   if (typeof announcedIp !== "string") return;
   if (!/^172\.(1[6-9]|2\d|3[0-1])\./.test(announcedIp.trim())) return;
 
+  const ports = WEBRTC_SHARED_PORT === null
+    ? `${RTC_PORT_RANGE.start}-${RTC_PORT_RANGE.end}`
+    : `${WEBRTC_SHARED_PORT}/udp and ${WEBRTC_SHARED_PORT}/tcp`;
   console.warn(
     `[TRANSPORT][WARN] Auto-detected announced IP ${announcedIp} looks like a Docker-internal bridge address. ` +
-    `WebRTC media will usually fail from outside the container. Set PUBLIC_IP to the host/LAN IP and publish RTC ports ${RTC_PORT_RANGE.start}-${RTC_PORT_RANGE.end}, ` +
+    `WebRTC media will usually fail from outside the container. Set PUBLIC_IP to the host/LAN IP and publish WebRTC ports ${ports}, ` +
     `or use --network host on Linux.`
   );
 }
@@ -7972,7 +8020,20 @@ const mediaReadyPromise = (async () => {
     throw err;
   }
   console.log("[INIT] Worker created with PID:", worker.pid);
-  console.log(`[INIT] RTC ports: ${RTC_PORT_RANGE.start}-${RTC_PORT_RANGE.end}`);
+  if (WEBRTC_SHARED_PORT !== null) {
+    const mediaRoute = resolveTransportAnnouncedAddress();
+    try {
+      if (mediaRoute.error) throw new Error(mediaRoute.error);
+      const listenInfos = buildWebRtcListenInfos({ mediaRoute })
+        .map((info) => ({ ...info, port: WEBRTC_SHARED_PORT }));
+      webRtcServer = await worker.createWebRtcServer({ listenInfos });
+      sharedWebRtcMediaRoute = mediaRoute;
+    } catch (err) {
+      throw new Error(`Could not start shared WebRTC listener on port ${WEBRTC_SHARED_PORT} (UDP/TCP): ${err.message}`, { cause: err });
+    }
+    console.log(`[INIT] Shared WebRTC port: ${WEBRTC_SHARED_PORT} (UDP/TCP)`);
+  }
+  console.log(`[INIT] ${webRtcServer ? "Plain RTP" : "RTC"} ports: ${RTC_PORT_RANGE.start}-${RTC_PORT_RANGE.end}`);
   console.log(
     CLIENT_ICE_CONFIG.iceServers.length > 0
       ? `[INIT] Browser ICE: ${CLIENT_ICE_CONFIG.iceServers.length} configured server(s), policy ${CLIENT_ICE_CONFIG.iceTransportPolicy}`
@@ -8969,7 +9030,7 @@ io.on("connection", (socket) => {
       if (!router) {
         return callback({ error: "Media router is not ready, try again" });
       }
-      const mediaRoute = resolveTransportAnnouncedAddress();
+      const mediaRoute = resolveWebRtcMediaRoute();
       if (mediaRoute.error || !mediaRoute.announcedAddress) {
         console.error("[TRANSPORT] No usable announced IP:", mediaRoute.error || "unknown media network error");
         return callback({ error: mediaRoute.error || "No usable announced IP available" });
@@ -8984,7 +9045,7 @@ io.on("connection", (socket) => {
       warnIfDockerAnnouncedIpLooksInternal(mediaRoute.announcedAddress);
 
       const transport = await router.createWebRtcTransport({
-        listenInfos: buildWebRtcListenInfos({ mediaRoute, env: process.env }),
+        ...(webRtcServer ? { webRtcServer } : { listenInfos: buildWebRtcListenInfos({ mediaRoute }) }),
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
@@ -9023,7 +9084,7 @@ io.on("connection", (socket) => {
       if (!router) {
         return callback({ error: "Media router is not ready, try again" });
       }
-      const mediaRoute = resolveTransportAnnouncedAddress();
+      const mediaRoute = resolveWebRtcMediaRoute();
       if (mediaRoute.error || !mediaRoute.announcedAddress) {
         console.error("[TRANSPORT] No usable announced IP:", mediaRoute.error || "unknown media network error");
         return callback({ error: mediaRoute.error || "No usable announced IP available" });
@@ -9038,7 +9099,7 @@ io.on("connection", (socket) => {
       warnIfDockerAnnouncedIpLooksInternal(mediaRoute.announcedAddress);
 
       const transport = await router.createWebRtcTransport({
-        listenInfos: buildWebRtcListenInfos({ mediaRoute, env: process.env }),
+        ...(webRtcServer ? { webRtcServer } : { listenInfos: buildWebRtcListenInfos({ mediaRoute }) }),
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
@@ -9782,7 +9843,7 @@ function logWebServerReady() {
     ? process.env.PUBLIC_IP.trim()
     : "";
   const runningInContainer = isRunningInContainer();
-  const mediaRoute = resolveTransportAnnouncedAddress();
+  const mediaRoute = resolveWebRtcMediaRoute();
   console.log(`${WEB_PROTOCOL.toUpperCase()} Server running on port ${HTTPS_PORT}`);
   if (startupHosts.length > 0) {
     console.log("📍 Access via:");

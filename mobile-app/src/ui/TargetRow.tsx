@@ -8,6 +8,7 @@ import {
   talkTargetIdentity,
   type TalkTarget,
 } from '../protocol';
+import { targetColorForeground } from '../protocol/clientDefaults';
 import { session, useSessionStore } from '../session/store';
 import { incomingHighlightsTarget } from '../talk/replyTarget';
 import { HoldToTalk } from './HoldToTalk';
@@ -74,6 +75,7 @@ export function TargetRow({
   );
   const leftHanded = useSessionStore((state) => state.leftHanded);
   const tapToLock = useSessionStore((state) => state.tapToLock);
+  const targetAppearance = useSessionStore((state) => state.targetAppearance);
   const feedStopped = useSessionStore((state) => state.stoppedFeedKeys.includes(key));
   const feedOnline = useSessionStore((state) => state.activeFeedKeys.includes(key));
   const volumeFader = useSessionStore((state) => state.operatorAudio.volumeFader);
@@ -91,9 +93,18 @@ export function TargetRow({
   const tight = compact || (height != null && height < 64);
 
   const speaking = receiving;
-  const customColor = target.color && !speaking && !talking && !keyboardHeld && !adjustingVolume
-    ? dimmed ? { backgroundColor: `${target.color}80`, opacity: 0.8 } : { backgroundColor: target.color }
+  const outgoing = talking || keyboardHeld;
+  const override = target.color && targetAppearance?.colors[target.color];
+  const paletteColor = override ?? target.color;
+  const keepBackground = Boolean(paletteColor) && targetAppearance?.keepBackgroundWhileTalking === true;
+  const customColor = paletteColor && (keepBackground || (!speaking && !outgoing)) && !adjustingVolume
+    ? dimmed ? { backgroundColor: `${paletteColor}80`, opacity: 0.8 } : { backgroundColor: paletteColor }
     : null;
+  const talkHighlight = outgoing
+    ? keepBackground ? styles.rowTalkingBorder : styles.rowTalking
+    : speaking && (keepBackground ? styles.rowSpeakingBorder : styles.rowSpeaking);
+  const foreground = customColor && override && !dimmed ? targetColorForeground(override) : undefined;
+  const customTextStyle = foreground ? { color: foreground } : null;
 
   const meta =
     target.type === 'feed'
@@ -148,9 +159,9 @@ export function TargetRow({
   const identity = (
     <View style={styles.identity} pointerEvents="none">
       <View style={styles.nameRow}>
-        {locked ? <LockIcon color={colors.text} size={14} /> : null}
+        {locked ? <LockIcon color={foreground ?? colors.text} size={14} /> : null}
         <Text
-          style={[styles.label, compactLabel && styles.labelCompact, dimmed && !customColor && styles.dimText]}
+          style={[styles.label, compactLabel && styles.labelCompact, dimmed && !customColor && styles.dimText, customTextStyle]}
           numberOfLines={1}
           adjustsFontSizeToFit
           minimumFontScale={0.85}
@@ -158,7 +169,7 @@ export function TargetRow({
           {target.label}
         </Text>
       </View>
-      <Text style={styles.meta} numberOfLines={1}>
+      <Text style={[styles.meta, customTextStyle]} numberOfLines={1}>
         {meta}
       </Text>
     </View>
@@ -191,7 +202,7 @@ export function TargetRow({
     `Talk to ${target.label}`,
   );
 
-  const edgeIconColor = talking || keyboardHeld ? colors.talking : dimmed ? 'rgba(255,255,255,0.28)' : colors.text;
+  const edgeIconColor = foreground ?? (outgoing && !keepBackground ? colors.talking : dimmed ? 'rgba(255,255,255,0.28)' : colors.text);
   const talkSlotStyle = [styles.talkControl, edgeTalkAffordance && styles.edgeTalk];
 
   const talkControl = target.type === 'feed' ? (
@@ -204,9 +215,9 @@ export function TargetRow({
       style={[...talkSlotStyle, styles.feedButton, dimmed && styles.controlOffline]}
     >
       {feedStopped ? (
-        <PlayIcon color={feedOnline ? colors.text : WEB_AVATAR.offlineGlyph} size={18} />
+        <PlayIcon color={foreground ?? (feedOnline ? colors.text : WEB_AVATAR.offlineGlyph)} size={18} />
       ) : (
-        <StopIcon color={colors.text} />
+        <StopIcon color={foreground ?? colors.text} />
       )}
     </Pressable>
   ) : showTalkIcon ? (
@@ -225,14 +236,13 @@ export function TargetRow({
     tight && styles.rowCompact,
     dimmed && styles.rowOffline,
     customColor,
-    (talking || keyboardHeld) && styles.rowTalking,
-    speaking && !talking && !keyboardHeld && styles.rowSpeaking,
+    talkHighlight,
     adjustingVolume && styles.rowAdjusting,
     height != null ? { height, minHeight: height, flex: 1, paddingVertical: tight ? 4 : 8 } : null,
   ];
 
   return (
-    <View style={[otherVolumeAdjusting && { opacity: 0.3 }, videoExpanded ? [styles.videoCard, speaking && styles.rowSpeaking, dimmed && styles.rowOffline, customColor,
+    <View style={[otherVolumeAdjusting && { opacity: 0.3 }, videoExpanded ? [styles.videoCard, dimmed && styles.rowOffline, customColor, talkHighlight,
       height != null && { height: height + videoHeight }] : height != null ? { height } : undefined]}>
       {canToggleVideo ? <Pressable
         accessibilityRole="button" accessibilityLabel={`${videoExpanded ? 'Hide' : 'Show'} video, ${target.label}`}
@@ -321,14 +331,10 @@ const styles = StyleSheet.create({
     minHeight: 62,
     paddingHorizontal: 8,
   },
-  rowTalking: {
-    backgroundColor: 'rgba(139,92,246,0.12)',
-    borderColor: 'rgba(139,92,246,0.8)',
-  },
-  rowSpeaking: {
-    backgroundColor: 'rgba(34,197,94,0.12)',
-    borderColor: 'rgba(34,197,94,0.8)',
-  },
+  rowTalking: { backgroundColor: 'rgba(139,92,246,0.12)', borderColor: 'rgba(139,92,246,0.8)' },
+  rowSpeaking: { backgroundColor: 'rgba(34,197,94,0.12)', borderColor: 'rgba(34,197,94,0.8)' },
+  rowTalkingBorder: { borderColor: 'rgba(139,92,246,0.8)' },
+  rowSpeakingBorder: { borderColor: 'rgba(34,197,94,0.8)' },
   rowOffline: {
     opacity: 0.6,
     borderColor: 'rgba(148,163,184,0.25)',

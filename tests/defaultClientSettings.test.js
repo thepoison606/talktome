@@ -91,3 +91,29 @@ test("apply-to-all only accepts explicitly supplied boolean default keys", () =>
     assert.throws(() => normalizeApplyToAll(value, { audioProfile: 'low' }), /Invalid applyToAll/);
   }
 });
+
+test("target palette overrides preserve slot IDs and reset to built-in colors and talk highlighting", () => {
+  const { value: firstSlot } = require("../public/targetColors.json")[0];
+  const { value: secondSlot } = require("../public/targetColors.json")[1];
+  const targetAppearance = {
+    colors: { [firstSlot]: "#AABBCC", [secondSlot]: secondSlot },
+    keepBackgroundWhileTalking: true,
+  };
+  const configured = normalizeConfiguredDefaultClientSettings({ targetAppearance }, { strict: true });
+  assert.deepEqual(configured.targetAppearance, {
+    colors: { [firstSlot]: "#aabbcc" },
+    keepBackgroundWhileTalking: true,
+  });
+  assert.ok(serializeDefaultClientSettingsScript(configured).includes(JSON.stringify(configured)));
+  assert.deepEqual(resolveDefaultClientSettings({ targetAppearance: {} }).targetAppearance,
+    { colors: {}, keepBackgroundWhileTalking: false });
+  assert.throws(() => normalizeConfiguredDefaultClientSettings({
+    targetAppearance: { colors: { None: "#ffffff" } },
+  }, { strict: true }), /Invalid target palette color/);
+  assert.throws(() => normalizeConfiguredDefaultClientSettings({
+    targetAppearance: { colors: { [firstSlot]: "red" } },
+  }, { strict: true }), /Invalid target palette color/);
+  assert.throws(() => normalizeConfiguredDefaultClientSettings({
+    targetAppearance: { keepBackgroundWhileTalking: "false" },
+  }, { strict: true }), /Invalid background setting/);
+});

@@ -28,6 +28,12 @@ describe('parseDefaultClientSettingsScript', () => {
     expect(parseDefaultClientSettingsScript(body)).toEqual({ lockMultipleTargets: true });
   });
 
+  it('parses the configured palette overrides and talk indicator from the same script', () => {
+    const targetAppearance = { colors: { '#3e4b60': '#abcdef' }, keepBackgroundWhileTalking: true };
+    const body = `window.TALKTOME_DEFAULT_CLIENT_SETTINGS = ${JSON.stringify({ targetAppearance })};`;
+    expect(parseDefaultClientSettingsScript(body)).toEqual({ targetAppearance });
+  });
+
   it('returns empty defaults for old servers or bad payloads', () => {
     expect(parseDefaultClientSettingsScript('')).toEqual({});
     expect(parseDefaultClientSettingsScript('Cannot GET /default-client-settings.js')).toEqual({});

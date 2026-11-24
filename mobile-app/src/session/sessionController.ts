@@ -1034,10 +1034,11 @@ export class SessionController {
     useSessionStore.setState({ statusMessage: 'Reconnecting…' });
     try {
       const identity = useSessionStore.getState().identity;
-      if (!identity || !this.signaling) {
+      const signaling = this.signaling;
+      if (!identity || !signaling) {
         return;
       }
-      let register = await this.signaling.register(
+      let register = await signaling.register(
         identity,
         false,
         useSessionStore.getState().productionId,
@@ -1049,7 +1050,7 @@ export class SessionController {
           await this.logout('Could not re-register after reconnect.');
           return;
         }
-        register = await this.signaling.register(
+        register = await signaling.register(
           identity,
           true,
           useSessionStore.getState().productionId,
@@ -1080,6 +1081,7 @@ export class SessionController {
       await this.mediaCoordinator.rebuildMediaAfterReconnect();
       this.reconnectFailures = 0;
       this.announceConnectionRecovery();
+      this.refreshTargetAppearanceAfterReconnect(signaling);
     } catch (error) {
       if (useSessionStore.getState().identity?.kind === 'user' && this.pendingPassword) {
         try {
@@ -1101,6 +1103,17 @@ export class SessionController {
     } finally {
       this.reconnecting = false;
     }
+  }
+
+  private refreshTargetAppearanceAfterReconnect(signaling: SignalingClient): void {
+    const api = this.api;
+    const socketId = signaling.socketId;
+    if (!api || this.signaling !== signaling) return;
+    void api.defaultClientSettings().then(({ targetAppearance }) => {
+      if (this.api !== api || this.signaling !== signaling || signaling.socketId !== socketId) return;
+      this.serverClientDefaults = { ...this.serverClientDefaults, targetAppearance };
+      useSessionStore.setState({ targetAppearance: targetAppearance ?? initialState.targetAppearance });
+    });
   }
 
   private async reauthenticateUser(): Promise<void> {
@@ -1332,7 +1345,10 @@ export class SessionController {
   private async refreshServerClientDefaults(): Promise<void> {
     this.serverClientDefaults = (await this.api?.defaultClientSettings()) ?? {};
     const defaults = this.serverClientDefaults;
-    useSessionStore.setState({ tapToLock: defaults.tapToLock !== false });
+    useSessionStore.setState({
+      tapToLock: defaults.tapToLock !== false,
+      targetAppearance: defaults.targetAppearance ?? initialState.targetAppearance,
+    });
     const operatorAudio = resolveOperatorAudio(this.operatorAudioOverrides, defaults);
     useSessionStore.setState({ operatorAudio });
     this.media?.setOperatorAudio(operatorAudio);

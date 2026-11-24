@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { Animated, findNodeHandle, ScrollView, StyleSheet, Text, View, type GestureResponderEvent } from 'react-native';
 
 import { talkTargetIdentity, type TalkTarget } from '../protocol';
+import { targetColorForeground } from '../protocol/clientDefaults';
 import { session, useSessionStore } from '../session/store';
 import { moveTargetOrder } from '../session/targetOrder';
 import { PaletteIcon, TrashIcon } from './icons';
@@ -32,6 +33,7 @@ export function ArrangeTargetsPage() {
   const allowAddRemove = useSessionStore(state => state.allowTargetAddRemove);
   const profileId = useSessionStore(state => state.activeProfileId);
   const productionId = useSessionStore(state => state.productionId);
+  const colorOverrides = useSessionStore(state => state.targetAppearance?.colors);
   const styles = useSettingsStyles();
   const { palette } = useSettingsTheme();
   const [message, setMessage] = useState('');
@@ -250,6 +252,8 @@ export function ArrangeTargetsPage() {
             {targets.map((target, index) => {
               const key = talkTargetIdentity(target);
               const disabled = busy || colorTargetKey !== null || targets.length < 2;
+              const override = target.color && colorOverrides?.[target.color];
+              const buttonColor = override ?? target.color;
               return (
                 <Fragment key={key}>
                   <Animated.View
@@ -290,10 +294,10 @@ export function ArrangeTargetsPage() {
                       <Text style={styles.orderName} numberOfLines={1}>{target.label}</Text>
                       <Text style={styles.orderKind}>{arrangeKind(target)}</Text>
                     </View>
-                    <SettingsButton style={[styles.orderButton, localStyles.paletteButton, target.color && { backgroundColor: target.color }]}
+                    <SettingsButton style={[styles.orderButton, localStyles.paletteButton, buttonColor && { backgroundColor: buttonColor }]}
                       accessibilityLabel={colorTargetKey === key ? `Close colors for ${target.label}` : `Change color for ${target.label}`}
                       disabled={busy || dragged !== null} onPress={() => void toggleColors(target)}>
-                      <PaletteIcon color={target.color ? '#f1f5f9' : palette.link} />
+                      <PaletteIcon color={override ? targetColorForeground(override) : target.color ? '#f1f5f9' : palette.link} />
                     </SettingsButton>
                     {allowAddRemove ? (
                       <SettingsButton style={styles.orderButton} accessibilityLabel={`Remove ${target.label}`}
@@ -304,16 +308,21 @@ export function ArrangeTargetsPage() {
                   </Animated.View>
                   {colorTargetKey === key ? (
                     <View style={localStyles.colors}>
-                      {colors ? [{ name: 'None', value: null }, ...colors].map(({ name, value }) => (
-                        <SettingsButton key={name} disabled={busy}
-                          accessibilityLabel={`${name}${(target.color ?? null) === value ? ', selected' : ''}`}
-                          style={[localStyles.colorOption, { backgroundColor: value ?? '#1f2937' }]}
-                          onPress={() => void saveColor(target, value)}>
-                          <Text accessible={false} style={[localStyles.colorLabel, value === null && target.color != null && localStyles.noneLabel]}>
-                            {(target.color ?? null) === value ? '✓' : value === null ? name : ''}
-                          </Text>
-                        </SettingsButton>
-                      )) : <SettingsFootnote>Loading colors…</SettingsFootnote>}
+                      {colors ? [{ name: 'None', value: null }, ...colors].map(({ name, value }) => {
+                        const color = value && colorOverrides?.[value];
+                        const selected = (target.color ?? null) === value;
+                        return (
+                          <SettingsButton key={name} disabled={busy}
+                            accessibilityLabel={`${name}${selected ? ', selected' : ''}`}
+                            style={[localStyles.colorOption, { backgroundColor: color ?? value ?? '#1f2937' }]}
+                            onPress={() => void saveColor(target, value)}>
+                            <Text accessible={false} style={[localStyles.colorLabel, value === null && !selected && localStyles.noneLabel,
+                              color && { color: targetColorForeground(color) }]}>
+                              {selected ? '✓' : value === null ? name : ''}
+                            </Text>
+                          </SettingsButton>
+                        );
+                      }) : <SettingsFootnote>Loading colors…</SettingsFootnote>}
                     </View>
                   ) : null}
                 </Fragment>

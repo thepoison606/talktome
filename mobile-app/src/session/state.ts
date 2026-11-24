@@ -13,6 +13,7 @@ import type {
   TalkTarget,
 } from '../protocol';
 import { EMPTY_CAMERA_TALLY, type CameraTallyState } from '../protocol';
+import { DEFAULT_TARGET_APPEARANCE, type TargetAppearance } from '../protocol/clientDefaults';
 import { EMPTY_CONFERENCE_LISTEN, type ConferenceListenState } from './conferenceListen';
 import { DEFAULT_OPERATOR_AUDIO, type OperatorAudioSettings } from './operatorAudio';
 import { emptyAudioRouteSnapshot, type AudioRoute } from '../audio/routes';
@@ -32,6 +33,7 @@ export type SessionUiState = {
   leftHanded: boolean;
   lockMultipleTargets: boolean;
   tapToLock: boolean;
+  targetAppearance: TargetAppearance;
   /** Empty string means Reply. A talk-target identity pins the bottom button. */
   mainButtonTargets: Record<string, string>;
   watchTargetSelections: WatchTargetSelections;
@@ -133,6 +135,7 @@ export const initialState: SessionUiState = {
   leftHanded: false,
   lockMultipleTargets: false,
   tapToLock: true,
+  targetAppearance: DEFAULT_TARGET_APPEARANCE,
   mainButtonTargets: {},
   watchTargetSelections: {},
   bigMainButton: false,

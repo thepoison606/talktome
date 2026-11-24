@@ -13,7 +13,7 @@ button.target-color-button,
 button.target-color-button:hover {
   border: 1px solid #8794a7;
   background: var(--target-color, #1f2937);
-  color: #f1f5f9;
+  color: var(--target-foreground, #f1f5f9);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
@@ -75,13 +75,40 @@ button.target-color-button:hover {
   border: 1px solid #a3afc2;
   border-radius: .4rem;
   background: var(--target-color, #1f2937);
-  color: #f1f5f9;
+  color: var(--target-foreground, #f1f5f9);
   font-size: .875rem;
   forced-color-adjust: none;
 }
 
 .target-color-dialog button.target-color-swatch:hover {
   background: var(--target-color, #1f2937);
+}
+
+.target-color-dialog input[type="color"],
+.target-color-none {
+  box-sizing: border-box;
+  inline-size: 100%;
+  block-size: 3.25rem;
+  min-inline-size: 0;
+  padding: 0;
+  border: 1px solid #a3afc2;
+  border-radius: .4rem;
+  background: #1f2937;
+}
+
+.target-color-dialog input[type="color"] {
+  cursor: pointer;
+  forced-color-adjust: none;
+}
+
+.target-color-dialog input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+.target-color-dialog input[type="color"]::-webkit-color-swatch { border: 0; border-radius: .35rem; }
+.target-color-dialog input[type="color"]::-moz-color-swatch { border: 0; border-radius: .35rem; }
+
+.target-color-none {
+  display: grid;
+  place-items: center;
+  font-size: .875rem;
 }
 
 .target-color-swatch::after {
@@ -107,9 +134,9 @@ button.target-color-button:hover {
   display: none;
 }
 
-.target-color-button:focus-visible,
+:is(.target-color-button, .target-appearance-button):focus-visible,
 .target-color-dialog.client-dialog button:focus-visible,
-.target-color-dialog--admin button:focus-visible {
+.target-color-dialog--admin :is(button, input):focus-visible {
   outline: 2px solid #60a5fa;
   outline-offset: 2px;
 }
@@ -120,7 +147,7 @@ button.target-color-button:hover {
 }
 
 @media (forced-colors: active) {
-  .target-color-dialog button.target-color-swatch:focus-visible {
+  .target-color-dialog :is(button.target-color-swatch, input[type="color"]):focus-visible {
     outline-color: Highlight;
   }
 }

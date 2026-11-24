@@ -23,6 +23,7 @@ import {
   isCompactOperatorScreen,
   isTabletOperatorScreen,
   operatorLayout,
+  operatorViewport,
   shouldOfferHeaderCollapse,
 } from './layers';
 import { openSessionSheet } from './sessionSheetState';
@@ -53,8 +54,7 @@ export function OperatorScreen() {
   const store = useSessionStore();
   const window = useWindowDimensions();
   const [measured, setMeasured] = useState({ width: 0, height: 0 });
-  const width = measured.width || window.width;
-  const height = measured.height || window.height;
+  const { width, height } = operatorViewport(window, measured);
   const compact = isCompactOperatorScreen(width, height);
   const tablet = isTabletOperatorScreen(width, height);
   const [layerIndex, setLayerIndex] = useState(0);

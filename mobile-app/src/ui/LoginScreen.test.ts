@@ -7,12 +7,14 @@ const f = vi.hoisted(() => ({
     rememberPassword: true, conflictName: undefined as string | undefined, openLoginScanner: false,
     pendingCertificate: null, error: null, statusMessage: '', setField: vi.fn() },
   tokenLogin: vi.fn(async (_input: unknown) => {}), takeOver: vi.fn(async () => {}), login: vi.fn(),
+  openURL: vi.fn(async (_url: string) => {}),
 }));
 vi.mock('react', async original => ({ ...await original<typeof import('react')>(),
   useState: (initial: unknown) => [initial, vi.fn()], useEffect: vi.fn(),
 }));
 vi.mock('react-native', () => ({
   Image: 'Image', KeyboardAvoidingView: 'KeyboardAvoidingView', Platform: { OS: 'ios' },
+  Linking: { openURL: f.openURL },
   Pressable: 'Pressable', ScrollView: 'ScrollView', Switch: 'Switch', Text: 'Text', TextInput: 'TextInput', View: 'View',
   StyleSheet: { create: (styles: object) => styles }, useWindowDimensions: () => ({ width: 430, height: 932 }),
 }));
@@ -47,7 +49,15 @@ function takeOverButton(tree: unknown): Element {
     && elements(element.props.children).some(child => child.props.children === 'Take over other session'))!;
 }
 beforeEach(() => {
-  f.login.mockClear(); f.tokenLogin.mockClear(); f.takeOver.mockClear(); f.state.conflictName = undefined;
+  f.login.mockClear(); f.tokenLogin.mockClear(); f.takeOver.mockClear(); f.openURL.mockClear(); f.state.conflictName = undefined;
+});
+
+it('opens the GitHub server setup guide from the login screen', () => {
+  const link = elements(LoginScreen()).find(element => element.props.accessibilityRole === 'link')!;
+  expect(elements(link).map(element => element.props.children)).toContain('Server setup on GitHub');
+  (link.props.onPress as () => void)();
+  expect(f.openURL).toHaveBeenCalledWith('https://github.com/thepoison606/talktome#quick-start');
+  expect(f.login).not.toHaveBeenCalled();
 });
 
 describe('login session takeover', () => {

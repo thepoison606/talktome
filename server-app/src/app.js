@@ -18,6 +18,10 @@ const mdnsHost = document.getElementById("mdns-host");
 const mdnsEnabled = document.getElementById("mdns-enabled");
 const rtcPortStart = document.getElementById("rtc-port-start");
 const rtcPortCount = document.getElementById("rtc-port-count");
+const rtcSharedPort = document.getElementById("rtc-shared-port");
+const rtcSharedPortEnabled = document.getElementById("rtc-shared-port-enabled");
+const rtcPortTooltip = document.getElementById("rtc-port-tooltip");
+const rtcPortToggle = rtcPortTooltip.parentElement;
 const mediaNetworkMode = document.getElementById("media-network-mode");
 const interfaceRow = document.getElementById("interface-row");
 const mediaInterfaceName = document.getElementById("media-interface-name");
@@ -67,6 +71,14 @@ function syncMediaNetworkRows() {
   manualAddressRow.hidden = mode !== "manual";
 }
 
+function syncRtcPortFields() {
+  const shared = rtcSharedPortEnabled.checked;
+  rtcSharedPort.disabled = !shared;
+  rtcSharedPort.closest("label").hidden = !shared;
+  document.getElementById("rtc-port-start-label").textContent = shared ? "Plain RTP start port" : "RTC start port";
+  document.getElementById("rtc-port-count-label").textContent = shared ? "Plain RTP port count" : "RTC port count";
+}
+
 function renderMediaInterfaceOptions(container, interfaces, selectedName) {
   const selected = new Set(String(selectedName || '').split(',').map(name => name.trim()).filter(Boolean));
   const entries = new Map();
@@ -113,6 +125,9 @@ function applyConfig(config, configured) {
   mdnsHost.disabled = !mdnsEnabled.checked;
   rtcPortStart.value = config.rtcPortStart ?? 40000;
   rtcPortCount.value = config.rtcPortCount ?? 10000;
+  rtcSharedPort.value = config.webRtcSharedPort ?? rtcSharedPort.defaultValue;
+  rtcSharedPortEnabled.checked = config.webRtcSharedPort != null;
+  syncRtcPortFields();
   mediaNetworkMode.value = config.mediaNetworkMode || "auto";
   renderMediaInterfaceOptions(mediaInterfaceName, config.availableMediaInterfaces, config.mediaInterfaceName || "");
   mediaAnnouncedAddress.value = config.mediaAnnouncedAddress || "";
@@ -121,12 +136,14 @@ function applyConfig(config, configured) {
 
 function readConfig() {
   const mode = mediaNetworkMode.value || "auto";
+  const shared = rtcSharedPortEnabled.checked;
   return {
     httpsPort: parsePortInput(httpsPort, 8443),
     mdnsHost: mdnsEnabled.checked ? mdnsHost.value.trim() || "intercom.local" : "off",
     httpPort: "off",
     rtcPortStart: parsePortInput(rtcPortStart, 40000),
     rtcPortCount: parsePortInput(rtcPortCount, 10000),
+    webRtcSharedPort: shared ? Number(rtcSharedPort.value || rtcSharedPort.defaultValue) : null,
     mediaNetworkMode: mode,
     mediaInterfaceName:
       mode === "interface" ? Array.from(mediaInterfaceName.querySelectorAll("input:checked"), input => input.value).join(",") || null : null,
@@ -335,6 +352,7 @@ toggleServer.addEventListener("click", async () => {
 });
 
 saveConfig.addEventListener("click", async () => {
+  if (![rtcPortStart, rtcPortCount, rtcSharedPort].every(input => input.reportValidity())) return;
   saveConfig.disabled = true;
   try {
     configTouched = false;
@@ -383,6 +401,8 @@ runAtLogin.addEventListener("change", async () => {
   mdnsEnabled,
   rtcPortStart,
   rtcPortCount,
+  rtcSharedPort,
+  rtcSharedPortEnabled,
   mediaNetworkMode,
   mediaInterfaceName,
   mediaAnnouncedAddress,
@@ -390,6 +410,7 @@ runAtLogin.addEventListener("change", async () => {
   input.addEventListener("input", () => {
     configTouched = true;
     if (input === mdnsEnabled) mdnsHost.disabled = !mdnsEnabled.checked;
+    if (input === rtcSharedPortEnabled) syncRtcPortFields();
     syncMediaNetworkRows();
     requestWindowResize();
   });
@@ -415,6 +436,14 @@ refreshStatus();
 refreshAutostart();
 installWindowFocusSuppressionForControls();
 installWindowAutoResize();
+for (const event of ["pointerenter", "focusin"]) {
+  rtcPortToggle.addEventListener(event, () => rtcPortToggle.removeAttribute("data-tip-dismissed"));
+}
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && getComputedStyle(rtcPortTooltip).visibility === "visible") {
+    rtcPortToggle.setAttribute("data-tip-dismissed", "");
+  }
+});
 refreshTimer = window.setInterval(refreshStatus, 1000);
 
 window.addEventListener("beforeunload", () => {

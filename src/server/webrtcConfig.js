@@ -124,6 +124,15 @@ function resolveClientIceConfig(env = process.env) {
   return { iceServers, iceTransportPolicy };
 }
 
+function normalizeWebRtcSharedPort(value) {
+  if (value == null || (typeof value === "string" && !value.trim())) return null;
+  const port = typeof value === "number" || typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("Shared WebRTC port must be a whole number between 1 and 65535.");
+  }
+  return port;
+}
+
 function buildWebRtcListenInfos({ mediaRoute, env = process.env } = {}) {
   const announcedAddress = String(mediaRoute?.announcedAddress ?? "").trim();
   if (!announcedAddress) {
@@ -163,5 +172,6 @@ function buildWebRtcListenInfos({ mediaRoute, env = process.env } = {}) {
 module.exports = {
   buildWebRtcListenInfos,
   normalizeIceServer,
+  normalizeWebRtcSharedPort,
   resolveClientIceConfig,
 };

@@ -54,13 +54,25 @@
               <input id="mdns-host" value="intercom.local" spellcheck="false" />
             </div>
           </div>
+          <div class="rtc-port-toggle">
+            <label class="switch-row" for="rtc-shared-port-enabled">
+              <input id="rtc-shared-port-enabled" type="checkbox" role="switch" aria-controls="rtc-shared-port-field" aria-describedby="rtc-port-tooltip" />
+              <span class="switch-track" aria-hidden="true"></span>
+              <span class="switch-label">Shared WebRTC port</span>
+            </label>
+            <div id="rtc-port-tooltip" class="rtc-port-tooltip" role="tooltip">WebRTC clients share one port over UDP and TCP. Bridges keep using the saved UDP range for plain RTP.</div>
+          </div>
           <label>
-            <span>RTC start port</span>
+            <span id="rtc-port-start-label">RTC start port</span>
             <input id="rtc-port-start" type="number" min="1" max="65535" value="40000" />
           </label>
           <label>
-            <span>RTC port count</span>
+            <span id="rtc-port-count-label">RTC port count</span>
             <input id="rtc-port-count" type="number" min="1" max="65535" value="10000" />
+          </label>
+          <label id="rtc-shared-port-field" hidden>
+            <span>Port number</span>
+            <input id="rtc-shared-port" name="webRtcSharedPort" type="number" min="1" max="65535" step="1" value="40000" disabled />
           </label>
           <label>
             <span>Media network</span>

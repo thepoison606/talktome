@@ -3721,16 +3721,53 @@ function formatRtcPortRange(start, end) {
   return `${startNumber}-${endNumber}`;
 }
 
+const rtcPortsForm = document.getElementById('rtc-ports-form');
+const rtcSharedPortEnabled = document.getElementById('rtc-shared-port-enabled');
+const rtcPortTooltip = document.getElementById('rtc-port-tooltip');
+const rtcPortMode = rtcPortTooltip?.parentElement;
+
+function syncRtcPortFields() {
+  const shared = rtcSharedPortEnabled.checked;
+  const sharedField = document.getElementById('rtc-shared-port-field');
+  sharedField.hidden = !shared;
+  sharedField.querySelector('input').disabled = !shared;
+  document.getElementById('rtc-port-start-label').textContent = shared ? 'Plain RTP start port' : 'Range start port';
+  document.getElementById('rtc-port-count-label').textContent = shared ? 'Plain RTP port count' : 'Number of ports';
+}
+
+rtcSharedPortEnabled?.addEventListener('change', syncRtcPortFields);
+for (const event of ['pointerenter', 'focusin']) {
+  rtcPortMode?.addEventListener(event, () => rtcPortMode.removeAttribute('data-tip-dismissed'));
+}
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && rtcPortTooltip && getComputedStyle(rtcPortTooltip).visibility === 'visible') {
+    rtcPortMode.setAttribute('data-tip-dismissed', '');
+  }
+});
+
 async function loadRtcPortSettings() {
   const payload = await fetchJSON('/admin/settings/rtc-ports');
+  const activeWebRtcEl = document.getElementById('rtc-ports-active-webrtc');
   const activeRangeEl = document.getElementById('rtc-ports-active-range');
+  const sharedPortInput = document.getElementById('rtc-shared-port');
   const startInput = document.getElementById('rtc-port-start');
   const countInput = document.getElementById('rtc-port-count');
   const restartHintEl = document.getElementById('rtc-ports-restart-hint');
   const overrideHintEl = document.getElementById('rtc-ports-override-hint');
 
+  const activeRange = formatRtcPortRange(payload?.activeRtcPortStart, payload?.activeRtcPortEnd);
+  if (activeWebRtcEl) {
+    activeWebRtcEl.textContent = payload?.activeWebRtcSharedPort
+      ? `${payload.activeWebRtcSharedPort} (UDP/TCP, shared)`
+      : `${activeRange} (per transport)`;
+  }
   if (activeRangeEl) {
-    activeRangeEl.textContent = formatRtcPortRange(payload?.activeRtcPortStart, payload?.activeRtcPortEnd);
+    activeRangeEl.textContent = activeRange;
+  }
+  if (sharedPortInput) {
+    sharedPortInput.value = payload?.webRtcSharedPort ?? sharedPortInput.defaultValue;
+    rtcSharedPortEnabled.checked = payload?.webRtcSharedPort != null;
+    syncRtcPortFields();
   }
   if (startInput) {
     startInput.value = payload?.rtcPortStart ?? '';
@@ -3739,13 +3776,9 @@ async function loadRtcPortSettings() {
     countInput.value = payload?.rtcPortCount ?? '';
   }
   if (restartHintEl) {
-    if (payload?.environmentOverride) {
-      restartHintEl.textContent = 'An environment override is currently active for RTC ports.';
-    } else {
-      restartHintEl.textContent = payload?.restartRequired
-        ? 'Saved. Restart the server to apply the new RTC port range.'
-        : 'Current RTC port range matches the saved setting.';
-    }
+    restartHintEl.textContent = payload?.restartRequired
+      ? 'Saved. Restart the server to apply the RTC port changes.'
+      : 'Changes require a server restart to take effect.';
   }
   if (overrideHintEl) {
     overrideHintEl.classList.toggle('is-hidden', !payload?.environmentOverride);
@@ -3772,6 +3805,9 @@ async function loadGuestLoginSettings() {
 async function loadDefaultClientSettings() {
   const payload = await fetchJSON('/admin/settings/default-client');
   const settings = payload?.settings || {};
+  window.targetEditor.setTargetColors(settings.targetAppearance?.colors);
+  const keepTargetBackground = document.getElementById('default-client-keep-target-background');
+  if (keepTargetBackground) keepTargetBackground.checked = settings.targetAppearance?.keepBackgroundWhileTalking === true;
   if (defaultClientAudioProfile) defaultClientAudioProfile.value = settings.audioProfile || 'ultra-low';
   if (defaultClientDimAmount) defaultClientDimAmount.value = String(settings.dimAmountDb ?? -15);
   if (defaultClientDimSelf) defaultClientDimSelf.checked = settings.dimFeedsWhileSpeaking === true;
@@ -4975,19 +5011,17 @@ document.getElementById('media-network-form')?.addEventListener('submit', async 
   }
 });
 
-document.getElementById('rtc-ports-form')?.addEventListener('submit', async (e) => {
+rtcPortsForm?.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const rtcPortStart = document.getElementById('rtc-port-start')?.value?.trim() || '';
-  const rtcPortCount = document.getElementById('rtc-port-count')?.value?.trim() || '';
+  const settings = Object.fromEntries(new FormData(rtcPortsForm));
+  const portInput = rtcPortsForm.elements.webRtcSharedPort;
+  settings.webRtcSharedPort = portInput.disabled ? null : portInput.value || portInput.defaultValue;
 
   try {
     const res = await authedFetch('/admin/settings/rtc-ports', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        rtcPortStart,
-        rtcPortCount,
-      }),
+      body: JSON.stringify(settings),
     });
 
     if (!res.ok) {
@@ -4999,11 +5033,11 @@ document.getElementById('rtc-ports-form')?.addEventListener('submit', async (e) 
     const payload = await res.json();
     await loadRtcPortSettings();
     showMessage(
-      payload.environmentOverride
-        ? '✅ RTC port range saved. An environment override is currently active.'
-        : payload.restartRequired
-          ? '✅ RTC port range saved. Restart the server to apply it.'
-          : '✅ RTC port range saved.',
+      payload.restartRequired
+        ? '✅ RTC ports saved. Restart the server to apply the changes.'
+        : payload.environmentOverride
+          ? '✅ RTC ports saved. The active range is set by environment variables.'
+          : '✅ RTC ports saved.',
       'success',
       'config'
     );
@@ -5063,26 +5097,40 @@ function readDefaultClientSettings() {
   };
 }
 if (defaultClientSettingsForm) {
+  const appearancePath = '/admin/settings/target-appearance';
+  const appearanceContainer = document.getElementById('default-client-target-appearance');
+  const keepTargetBackground = document.getElementById('default-client-keep-target-background');
+  if (appearanceContainer) {
+    appearanceContainer.append(window.targetEditor.createAppearanceButton(appearancePath, async () => {
+      const { settings } = await fetchJSON('/admin/settings/default-client');
+      return settings.targetAppearance;
+    }, async appearance => {
+      const { targetAppearance } = await saveAdminJson(appearancePath, appearance);
+      window.targetEditor.setTargetColors(targetAppearance.colors);
+      showMessage('Colors saved.', 'success', 'config');
+    }));
+  }
   const keys = ['dimFeedsWhileSpeaking', 'dimWhenAddressed', 'audioAutoProcessing', 'playConnectionSounds', 'showIncomingLevels', 'leftHandMode', 'bigMainButton', 'lockMultipleTargets', 'tapToLock', 'allowTargetRearrange', 'allowTargetAddRemove', 'allowFeedVideo'];
   const applyButtons = new Map();
   const saver = globalThis.TalktomeAdminAutoSave.create({
     render: (text, retry) => renderAutoSaveFeedback('defaults-auto-save-status', text, retry),
     async save(key, value) {
       if (key === 'settings') return saveAdminJson('/admin/settings/default-client', { ...value, applyToAll: [] });
+      if (key === 'keep-target-background') return saveAdminJson(appearancePath, { keepBackgroundWhileTalking: value });
       const entry = applyButtons.get(value.key);
       try {
         return await saveAdminJson('/admin/settings/default-client', { ...readDefaultClientSettings(), [value.key]: value.value, applyToAll: [value.key] });
       } finally { if (entry) { entry.input.disabled = false; entry.button.disabled = false; } }
     },
     async onSaved(key, value) {
-      if (key === 'settings') return;
+      if (!key.startsWith('apply:')) return;
       const entry = applyButtons.get(value.key);
       if (entry) { entry.original = entry.input.checked; entry.button.hidden = true; }
       saver.request('settings', readDefaultClientSettings);
       await refreshAdminLists({ users: true, feeds: true });
     },
   });
-  defaultClientSettingsForm.querySelectorAll('.default-client-setting-toggle').forEach((row, index) => {
+  defaultClientSettingsForm.querySelectorAll('div.default-client-setting-toggle').forEach((row, index) => {
     const input = row.querySelector('input[role="switch"]'), text = row.querySelector('span:first-child');
     text.id = `${input.id}-label`; input.setAttribute('aria-labelledby', text.id);
     const controls = document.createElement('span'); controls.className = 'default-client-setting-controls';
@@ -5105,7 +5153,13 @@ if (defaultClientSettingsForm) {
   defaultClientSettingsForm.addEventListener('defaults-loaded', () => {
     for (const entry of applyButtons.values()) { entry.original = entry.input.checked; entry.button.hidden = true; }
   });
-  defaultClientSettingsForm.addEventListener('change', () => saver.request('settings', readDefaultClientSettings));
+  defaultClientSettingsForm.addEventListener('change', event => {
+    if (event.target === keepTargetBackground) {
+      saver.request('keep-target-background', () => keepTargetBackground.checked);
+    } else {
+      saver.request('settings', readDefaultClientSettings);
+    }
+  });
   defaultClientSettingsForm.addEventListener('submit', event => { event.preventDefault(); saver.request('settings', readDefaultClientSettings); });
 }
 

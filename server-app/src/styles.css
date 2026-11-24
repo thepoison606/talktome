@@ -242,11 +242,41 @@ select {
   display: block;
 }
 
-.server-grid .mdns-toggle {
+.server-grid .mdns-toggle,
+.server-grid .rtc-port-toggle .switch-row {
   align-items: center;
   display: inline-flex;
   gap: 0.35rem;
   justify-self: start;
+}
+
+.rtc-port-toggle {
+  position: relative;
+}
+
+.rtc-port-tooltip {
+  position: absolute;
+  inset-block-end: 100%;
+  inset-inline-end: 0;
+  z-index: 2;
+  inline-size: min(19rem, calc(100vw - 2.5rem));
+  padding: 0.55rem 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: #242428;
+  color: #f7fafc;
+  font-size: 0.8rem;
+  visibility: hidden;
+}
+
+.rtc-port-toggle:not([data-tip-dismissed]):has(input:focus-visible) .rtc-port-tooltip {
+  visibility: visible;
+}
+
+@media (hover: hover) {
+  .rtc-port-toggle:not([data-tip-dismissed]):hover .rtc-port-tooltip {
+    visibility: visible;
+  }
 }
 
 .server-grid span,
