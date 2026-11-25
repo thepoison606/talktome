@@ -34,8 +34,11 @@ Choose one way to run the application:
 - **[Docker](https://hub.docker.com/r/thepoison606/talktome)**
 - **Source:** for development
 
-The macOS and Windows releases contain the Talktome server installer and the
-optional Talktome Bridge app.
+On Windows, one setup installs Talktome Server, Talktome Bridge, or both.
+Choose a per-user or system-wide installation for new components. To upgrade,
+quit the selected apps from their tray menus and run the new setup. Existing
+components keep their installation scope and location. On macOS, the server
+and optional Talktome Bridge are separate downloads.
 
 ### First Start
 
@@ -292,9 +295,17 @@ when an HTTP quota is reached; Socket.IO messages are outside these HTTP limits.
 State is stored in SQLite `app.db`; config, certificates and generated API keys live in the same app data directory.
 
 - macOS: `~/Library/Application Support/talktome`
-- Windows: `%LOCALAPPDATA%\talktome`
+- Windows: `%LOCALAPPDATA%\talktome` for personal data or
+  `%ProgramData%\Talktome Server` for a shared server instance
 - Linux: `$XDG_DATA_HOME/talktome` or `~/.local/share/talktome`
 - Override: `TALKTOME_DATA_DIR=/path/to/data`
+
+Windows setup can copy a stopped server's personal data into the shared
+location. The original is retained. By default, the setup account, local
+administrators and SYSTEM have access to the shared folder. To start the same
+instance from another Windows account, an administrator can grant that account
+Modify access to the shared folder and its contents. Run only one server
+instance against the shared data directory.
 
 Back up this directory before upgrades if you need to preserve accounts and routing.
 

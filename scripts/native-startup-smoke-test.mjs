@@ -251,6 +251,10 @@ async function main() {
   }
 
   const executable = path.resolve(requireArgument("--executable"));
+  const sharedWindowsData = process.argv.includes("--windows-shared-data");
+  if (sharedWindowsData && (process.platform !== "win32" || mode !== "tray")) {
+    throw new Error("--windows-shared-data requires the installed Windows tray app");
+  }
   const timeoutSeconds = Number(readArgument("--timeout-seconds") || 120);
   const expectedVersion = readArgument("--expected-version");
   if (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 5) {
@@ -261,7 +265,10 @@ async function main() {
   }
 
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), `talktome-${mode}-smoke-`));
-  const dataDir = path.join(tempRoot, "data");
+  const programData = path.join(tempRoot, "program-data");
+  const dataDir = sharedWindowsData
+    ? path.join(programData, "Talktome Server")
+    : path.join(tempRoot, "data");
   const localAppData = path.join(tempRoot, "local-app-data");
   await mkdir(dataDir, { recursive: true });
   await mkdir(localAppData, { recursive: true });
@@ -323,6 +330,12 @@ async function main() {
     APPDATA: path.join(tempRoot, "app-data"),
   };
   delete environment.PORT;
+  if (sharedWindowsData) {
+    for (const key of Object.keys(environment)) {
+      if (["PROGRAMDATA", "TALKTOME_DATA_DIR"].includes(key.toUpperCase())) delete environment[key];
+    }
+    environment.ProgramData = programData;
+  }
   await mkdir(environment.APPDATA, { recursive: true });
 
   const output = [];
@@ -374,6 +387,9 @@ async function main() {
       const healthReady = await requestHealth(httpsPort, expectedVersion);
 
       if (routerReady && healthReady) {
+        if (sharedWindowsData && !fs.existsSync(path.join(dataDir, ".talktome-server.lock"))) {
+          throw new Error("The Windows tray app did not lock the shared data directory.");
+        }
         await verifyStaticAssets(httpsPort);
         console.log(
           `${mode === "tray" ? "Tray app" : "Server binary"} started successfully: `

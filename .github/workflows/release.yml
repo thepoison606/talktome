@@ -41,6 +41,13 @@ on:
       - "scripts/verify-build-node.js"
       - "scripts/upload-release-asset.sh"
       - "server-app/**"
+      - "bridge-client/**"
+      - "vendor/tray-icon/**"
+      - "scripts/talktome-windows-installer.nsi"
+      - "scripts/install-talktome-windows.ps1"
+      - "scripts/windows-component-installer.json"
+      - "scripts/build-windows-installer.ps1"
+      - "scripts/test-windows-installer.ps1"
 
 concurrency:
   group: release-builds-${{ github.workflow }}-${{ github.ref }}
@@ -92,8 +99,8 @@ jobs:
             build_script: build:win64
             server_build_script: build:release:windows
             executable_name: talktome_win64.exe
-            artifact_prefix: talktome_server_windows_x64
-            artifact_glob: server-app/src-tauri/target/release/bundle/nsis/*.exe
+            artifact_prefix: talktome_windows_x64
+            artifact_glob: release-artifacts/talktome-setup.exe
           - name: macOS arm64
             os: macos-15
             build_script: build:mac_arm64
@@ -150,7 +157,9 @@ jobs:
       - name: Restore Rust build cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: server-app/src-tauri
+          workspaces: |
+            server-app/src-tauri
+            bridge-client/src-tauri
 
       - name: Install server app dependencies
         working-directory: server-app
@@ -169,36 +178,71 @@ jobs:
           echo "TRAY_EXECUTABLE=${GITHUB_WORKSPACE}/server-app/src-tauri/target/release/bundle/macos/Talktome Server.app/Contents/MacOS/talktome-server-app"
           >> "$GITHUB_ENV"
 
-      - name: Install Windows tray app
+      - name: Install Windows Bridge build dependencies
+        if: matrix.os == 'windows-latest'
+        working-directory: bridge-client
+        run: |
+          npm ci
+          node ../scripts/resolve-build-version.js --tauri-config tauri.release-version.json
+
+      - name: Restore Windows LGPL FFmpeg sidecar
+        if: matrix.os == 'windows-latest'
+        id: windows-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: bridge-client/.ffmpeg-sidecars/ffmpeg-x86_64-pc-windows-msvc.exe
+          key: ffmpeg-${{ runner.os }}-${{ hashFiles('bridge-client/scripts/build-ffmpeg-lgpl-*.sh') }}
+
+      - name: Setup MSYS2
+        if: matrix.os == 'windows-latest' && steps.windows-ffmpeg.outputs.cache-hit != 'true'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            diffutils
+            tar
+            gzip
+            xz
+            curl
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-make
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-nasm
+
+      - name: Build LGPL FFmpeg sidecar from source
+        if: matrix.os == 'windows-latest' && steps.windows-ffmpeg.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        working-directory: bridge-client
+        run: scripts/build-ffmpeg-lgpl-mingw.sh --release
+
+      - name: Build Bridge with source-built FFmpeg
+        if: matrix.os == 'windows-latest'
+        working-directory: bridge-client
+        env:
+          FFMPEG_SIDECAR_SOURCE: ${{ github.workspace }}/bridge-client/.ffmpeg-sidecars/ffmpeg-x86_64-pc-windows-msvc.exe
+        run: |
+          npm run prepare:ffmpeg -- --release --force
+          npm run prepare:omt -- --release --force
+          npm exec tauri build -- --no-bundle --config tauri.release-version.json
+
+      - name: Verify Windows Bridge version
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          $installers = @(Get-ChildItem "server-app/src-tauri/target/release/bundle/nsis/*.exe")
-          if ($installers.Count -ne 1) {
-            throw "Expected exactly one NSIS installer, found $($installers.Count)."
+          $binary = Get-Item "bridge-client/src-tauri/target/release/talktome-bridge-client.exe"
+          $actualVersion = $binary.VersionInfo.ProductVersion
+          if (-not $actualVersion.StartsWith($env:APP_VERSION)) {
+            throw "Expected Bridge version $env:APP_VERSION, found $actualVersion"
           }
 
-          $installer = $installers[0]
-          $install = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -PassThru
-          if ($install.ExitCode -notin @(0, 3010)) {
-            throw "Silent NSIS installation failed with exit code $($install.ExitCode)."
-          }
-
-          $installRoot = Join-Path $env:LOCALAPPDATA "Talktome Server"
-          $executables = @(
-            Get-ChildItem $installRoot -Recurse -File -Filter "*.exe" -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -in @("Talktome Server.exe", "talktome-server-app.exe") }
-          )
-          if ($executables.Count -ne 1) {
-            $found = if ($executables.Count) {
-              ($executables.FullName -join ", ")
-            } else {
-              "none"
-            }
-            throw "Expected exactly one installed tray executable below $installRoot, found: $found"
-          }
-
-          "TRAY_EXECUTABLE=$($executables[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Package and test the combined Windows installer
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          ./scripts/build-windows-installer.ps1
+          ./scripts/test-windows-installer.ps1
 
       - name: Start and verify bundled tray app
         shell: bash
@@ -208,6 +252,7 @@ jobs:
           --executable "$TRAY_EXECUTABLE"
           --expected-version "$APP_VERSION"
           --timeout-seconds 120
+          ${{ matrix.os == 'windows-latest' && '--windows-shared-data' || '' }}
 
       - name: Sign and notarize macOS Server
         if: matrix.os == 'macos-15' && vars.MACOS_SIGNING_ENABLED == 'true'

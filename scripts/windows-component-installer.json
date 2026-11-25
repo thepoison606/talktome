@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "windows": {
+      "allowDowngrades": false,
+      "nsis": {
+        "installMode": "both"
+      }
+    }
+  }
+}

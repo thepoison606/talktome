@@ -39,6 +39,8 @@ const WINDOW_FOCUS_HIDE_DELAY: Duration = Duration::from_millis(150);
 #[derive(Default)]
 struct ServerManager {
     child: Option<Child>,
+    #[cfg(target_os = "windows")]
+    data_lock: Option<fs::File>,
     starting: bool,
     logs: VecDeque<String>,
     started_at: Option<Instant>,
@@ -195,6 +197,10 @@ impl ServerManager {
                         self.push_log(format!("Server exited with status {status}."));
                     }
                     self.child = None;
+                    #[cfg(target_os = "windows")]
+                    {
+                        self.data_lock = None;
+                    }
                     self.starting = false;
                     self.started_at = None;
                     changed = true;
@@ -204,6 +210,10 @@ impl ServerManager {
                     self.last_error = Some(format!("failed to read server status: {err}"));
                     self.restart_requested = false;
                     self.child = None;
+                    #[cfg(target_os = "windows")]
+                    {
+                        self.data_lock = None;
+                    }
                     self.starting = false;
                     self.started_at = None;
                     changed = true;
@@ -271,6 +281,14 @@ impl Default for ServerRuntimeConfig {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn uses_shared_server_data() -> bool {
+    env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("server-data.shared")))
+        .is_some_and(|marker| marker.is_file())
+}
+
 fn talktome_data_dir() -> PathBuf {
     if let Ok(override_dir) = env::var("TALKTOME_DATA_DIR") {
         let trimmed = override_dir.trim();
@@ -291,6 +309,12 @@ fn talktome_data_dir() -> PathBuf {
 
     #[cfg(target_os = "windows")]
     {
+        if uses_shared_server_data() {
+            return env::var_os("ProgramData")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+                .join("Talktome Server");
+        }
         if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
             return PathBuf::from(local_app_data).join(APP_DATA_DIR_NAME);
         }
@@ -863,6 +887,23 @@ fn start_server_internal(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
+    let data_dir = talktome_data_dir();
+    #[cfg(target_os = "windows")]
+    let data_lock = if uses_shared_server_data() {
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(data_dir.join(".talktome-server.lock"))
+            .map_err(|err| format!("Cannot open the shared server data directory: {err}"))?;
+        lock.try_lock()
+            .map_err(|err| format!("Cannot lock the shared server data directory: {err}"))?;
+        Some(lock)
+    } else {
+        None
+    };
+
     state.starting = true;
     state.last_error = None;
     state.restart_requested = false;
@@ -874,7 +915,7 @@ fn start_server_internal(app: &AppHandle) -> Result<(), String> {
         .env("TALKTOME_NO_WIZARD", "1")
         .env("TALKTOME_MANAGED_SERVER", "1")
         .env("TALKTOME_VERSION", &app_version)
-        .env("TALKTOME_DATA_DIR", talktome_data_dir())
+        .env("TALKTOME_DATA_DIR", data_dir)
         .current_dir(binary.parent().unwrap_or_else(|| Path::new(".")))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -904,6 +945,10 @@ fn start_server_internal(app: &AppHandle) -> Result<(), String> {
     state.push_log(format!("Started Talktome server pid {pid}."));
     state.last_error = None;
     state.started_at = Some(Instant::now());
+    #[cfg(target_os = "windows")]
+    {
+        state.data_lock = data_lock;
+    }
     state.child = Some(child);
     drop(state);
 
@@ -929,6 +974,10 @@ fn stop_server_internal(app: &AppHandle) -> Result<(), String> {
         let _ = child.kill();
         let _ = child.wait();
         state.push_log(format!("Stopped Talktome server pid {pid}."));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        state.data_lock = None;
     }
     state.starting = false;
     state.started_at = None;
