@@ -1937,9 +1937,18 @@ function renderAdminStatus(payload = {}) {
             : feed.configuredAsBridge
               ? 'Bridge configured'
               : '-';
+          const missingRtp = feed.missingRtp || [];
+          const missingTracks = missingRtp.map(kind => kind === 'video' ? 'Video' : 'Audio').join(', ');
+          const rtpWarning = missingRtp.length > 0;
+          const warningLabel = `Online · No RTP received (${missingTracks})`;
+          const direction = feed.connectionType === 'bridge' ? 'Bridge → Server' : 'Client → Server';
+          const portLines = (feed.mediaPorts || []).map(({ kind, protocol, port }) => {
+            const track = kind === 'video' ? 'Video' : 'Audio';
+            return `<div>${escapeHtml(`${track} · ${String(protocol).toUpperCase()} ${port}`)}</div>`;
+          }).join('');
           return `
             <tr>
-              <td>${statusIndicatorHtml(feed)}</td>
+              <td class="${rtpWarning ? 'status-feed-rtp-warning' : ''}">${statusIndicatorHtml({ ...feed, warning: rtpWarning, warningLabel })}</td>
               <td><button type="button" class="status-primary status-user-link" onclick="openFeedFromStatus(${Number(feed.id)})" title="Open settings for ${escapeHtml(feed.name)}">${escapeHtml(feed.name)}</button></td>
               ${showProductionColumn ? '<td class="status-production-spacer" aria-hidden="true"></td>' : ''}
               <td class="status-client" title="${escapeHtml(clientLabel)}">${escapeHtml(clientLabel)}</td>
@@ -1952,10 +1961,11 @@ function renderAdminStatus(payload = {}) {
               <td title="${feed.connectionType === 'bridge' ? (feed.networkStats?.packetLossScope === 'bridge' ? 'RTP packet loss across this Bridge instance; this port has no current packet measurement' : 'RTP packet loss for this Bridge port') : 'WebRTC audio packet loss reported by this client'}">${formatStatusPacketLoss(feed.networkStats)}</td>
               <td>${feed.online ? statusTimeHtml(feed.connectedAt, { suffix: false, empty: '-' }) : '-'}</td>
               <td>${feed.online ? 'Now' : statusTimeHtml(feed.lastSeenAt, { empty: 'Never' })}</td>
+              <td class="status-feed-media-ports">${portLines ? `<div class="status-feed-media-direction">${direction}</div>${portLines}` : '-'}</td>
             </tr>
           `;
         }).join('')
-      : `<tr><td colspan="${showProductionColumn ? 13 : 12}" class="status-empty">No feeds configured.</td></tr>`;
+      : `<tr><td colspan="${showProductionColumn ? 14 : 13}" class="status-empty">No feeds configured.</td></tr>`;
   }
 
   if (statusBridgesBody) {

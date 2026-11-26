@@ -26,6 +26,7 @@ const {
 const { normalizeRegisteredClientType, normalizeClientVersion, normalizeClientBuild, describeStatusClient, statusRemoteAddress } = require("./statusClient");
 const { getFreshClientDeviceStatus, recordClientDeviceStatus, normalizeClientDeviceStatus } = require('./clientDeviceStatus');
 const { resetPeerMediaTransportStatus, updatePeerMediaTransportStatus, describePeerMediaStatus } = require("./mediaStatus");
+const { describeFeedRtp, sampleFeedProducer } = require("./feedRtpStatus");
 const { buildGuestLoginUrl, buildLoginUrl, buildMediaNetworkQrTargets, normalizeConnectUrl, selectAdminQrUrl } = require("./qrConnectUrl");
 const { buildWebRtcListenInfos, normalizeWebRtcSharedPort, resolveClientIceConfig } = require("./webrtcConfig");
 const { normalizeWebAccess, resolveWebAccess, createWebServer, requestConnectOrigin } = require("./webAccess");
@@ -4221,6 +4222,7 @@ function buildAdminStatusSnapshot() {
       name: feed.name,
       online,
       connectionType: online ? (isBridge ? "bridge" : "browser") : null,
+      ...describeFeedRtp(peer, now),
       configuredAsBridge: Boolean(feed.bridge_enabled),
       bridgePortStatus: buildBridgePortStatus(feed, "feed", now),
       bridgeName: bridge?.name || (isBridge ? peer.bridgeId : null),
@@ -4312,10 +4314,30 @@ function buildAdminStatusSnapshot() {
   };
 }
 
-app.get("/admin/status", requireAdmin, (req, res) => {
+app.get("/admin/status", requireAdmin, async (req, res) => {
+  await sampleBridgeFeedRtp();
   res.setHeader("Cache-Control", "no-store");
   res.json(buildAdminStatusSnapshot());
 });
+
+let pendingFeedRtpSample = null;
+function sampleBridgeFeedRtp() {
+  if (pendingFeedRtpSample) return pendingFeedRtpSample;
+  const now = Date.now();
+  const producers = [...bridgeControlSessions.values()]
+    .filter(session => session.kind === "feed")
+    .flatMap(session => [...session.peer.producers.values()]);
+  pendingFeedRtpSample = Promise.all(producers.map(producer => sampleFeedProducer(producer, now)))
+    .then(changes => {
+      if (changes.some(Boolean)) scheduleAdminStatusBroadcast("feed-rtp-updated");
+    })
+    .finally(() => { pendingFeedRtpSample = null; });
+  return pendingFeedRtpSample;
+}
+
+setInterval(() => {
+  if (adminStatusStreams.size) void sampleBridgeFeedRtp();
+}, 3000).unref();
 
 async function forceStopUserTransmission(userId) {
   const found = findUserPeerByUserId(userId);
@@ -5879,7 +5901,9 @@ app.post(
       peer.plainSendTransport = transport;
       transport.observer.on("close", () => {
         if (peer.plainSendTransport === transport) peer.plainSendTransport = null;
+        if (peer.kind === "feed") scheduleAdminStatusBroadcast("feed-rtp-transport-closed");
       });
+      if (peer.kind === "feed") scheduleAdminStatusBroadcast("feed-rtp-transport-created");
       res.json({
         id: transport.id,
         ip: mediaAddress,
@@ -5936,7 +5960,9 @@ app.post('/api/v1/bridge/sessions/:sessionId/video-send-transport',
       transport.appData.ssrc = (0x56494400 + Number(session.feedId)) >>> 0 || 1;
       transport.observer.on('close', () => {
         if (req.bridgePeer.plainVideoSendTransport === transport) req.bridgePeer.plainVideoSendTransport = null;
+        scheduleAdminStatusBroadcast("feed-rtp-transport-closed");
       });
+      scheduleAdminStatusBroadcast("feed-rtp-transport-created");
       res.json({ id: transport.id, ip, port: transport.tuple.localPort,
         payloadType: 102, ssrc: transport.appData.ssrc, cname: `talktome-bridge-feed-${session.feedId}` });
     } catch (error) {
@@ -5976,11 +6002,17 @@ app.post('/api/v1/bridge/sessions/:sessionId/video-producer',
       producer.observer.on('close', () => {
         peer.producers.delete(producer.id);
         emitFeedVideoClosed(producer, session.id);
+        scheduleAdminStatusBroadcast("feed-video-closed");
       });
       producer.observer.on('resume', () => {
+        producer.__startedAt = Date.now();
+        scheduleAdminStatusBroadcast("feed-video-resumed");
         announceProducerToRecipients({ producerId: producer.id, appData: producer.appData, speakerSocketId: session.id });
       });
-      producer.observer.on('pause', () => emitFeedVideoClosed(producer, session.id));
+      producer.observer.on('pause', () => {
+        emitFeedVideoClosed(producer, session.id);
+        scheduleAdminStatusBroadcast("feed-video-paused");
+      });
       res.json({ id: producer.id });
     } catch (error) {
       producer?.close();

@@ -193,7 +193,7 @@ test('server ICE/DTLS changes broadcast status, while events from replaced trans
 test('admin snapshots expose user/feed media health while preserving signaling online counts', () => {
   const source = fs.readFileSync(require.resolve('../src/server/serverCore'), 'utf8');
   const peer = { kind: 'user', userId: 1, mediaTransportStates: { send: { connectionState: 'failed' } } };
-  const feed = { kind: 'feed', feedId: 2, mediaTransportStates: { receive: { connectionState: 'disconnected' } } };
+  const feed = { kind: 'feed', feedId: 2, producers: new Map(), mediaTransportStates: { receive: { connectionState: 'disconnected' } } };
   const context = vm.createContext({
     areMultipleProductionsEnabled: () => false,
     buildBridgePortStatus: () => null,
@@ -204,7 +204,8 @@ test('admin snapshots expose user/feed media health while preserving signaling o
     normalizeRuntimeTalkTargets: () => [], getFreshBrowserMediaStats: () => null,
     getFreshClientDeviceStatus: () => null,
     statusIsoTimestamp: () => null, describeStatusClient: () => 'Browser', statusRemoteAddress: () => '127.0.0.1',
-    describePeerMediaStatus, companionUserState: new Map(), getBridgeRegistrySnapshot: () => [],
+    describePeerMediaStatus, describeFeedRtp: require('../src/server/feedRtpStatus').describeFeedRtp,
+    companionUserState: new Map(), getBridgeRegistrySnapshot: () => [],
     companionNamespace: null, peers: new Map([['user', peer], ['feed', feed]]),
     SERVER_APP_VERSION: 'test', SERVER_STARTED_AT: 0,
     isRunningInContainer: () => false, isServerRestartSupported: () => false, WEB_ACCESS: {},

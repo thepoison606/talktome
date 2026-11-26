@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -191,9 +191,7 @@ pub fn save_document(
     stored: Option<&Value>,
     running: &Value,
 ) -> Result<()> {
-    if !document.is_object() {
-        bail!("configuration must be a JSON object");
-    }
+    config::validate_document_structure(&document)?;
     if let Some(stored) = stored {
         document = config::merge_missing_top_level(stored, document);
     }
@@ -400,15 +398,21 @@ mod tests {
     #[test]
     fn invalid_documents_are_rejected_and_file_untouched() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cam1.json");
-        config::write_document(&path, &base_document()).unwrap();
-        let before = std::fs::read_to_string(&path).unwrap();
         let mut bad = base_document();
         bad["server"]["url"] = json!("not a url");
+        let nested = (0..128).fold(Value::Null, |child, _| Value::Array(vec![child]));
+        let too_deep = json!({ "server": nested });
         let running =
             serde_json::to_value(config::from_document(base_document()).unwrap()).unwrap();
-        assert!(save_document(&path, bad, None, &running).is_err());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        for name in ["cam1.json", "cam1.toml"] {
+            let path = dir.path().join(name);
+            config::write_document(&path, &base_document()).unwrap();
+            let before = std::fs::read_to_string(&path).unwrap();
+            assert!(save_document(&path, bad.clone(), None, &running).is_err());
+            let error = save_document(&path, too_deep.clone(), None, &running).unwrap_err();
+            assert!(error.to_string().contains("nested too deeply"));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        }
     }
 
     #[test]

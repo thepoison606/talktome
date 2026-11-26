@@ -214,6 +214,11 @@ Function ShowScope
       ${NSD_Check} $ScopeMachineRadio
     ${EndIf}
   ${EndIf}
+  ${If} $2 != ""
+    ${OrIf} $3 != ""
+    ${NSD_CreateLabel} 0 92u 100% 30u "To change the install location or scope of an existing component, uninstall it in Windows Settings > Apps > Installed apps, then reinstall it."
+    Pop $0
+  ${EndIf}
   nsDialogs::Show
 FunctionEnd
 

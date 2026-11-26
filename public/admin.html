@@ -3294,6 +3294,12 @@
       .status-col--loss { width: 4%; }
       .status-col--connected { width: 7.5%; }
       .status-col--last-seen { width: 7%; }
+      .status-table--feeds .status-col--client { width: 11%; }
+      .status-table--feeds .status-col--output { width: 6%; }
+      .status-table--feeds .status-col--version { width: 6%; }
+      .status-table--feeds .status-col--media-ports { width: 12%; }
+      .status-feed-media-direction { color: var(--muted); }
+      .status-feed-rtp-warning .status-indicator { white-space: normal; }
 
       .status-table--with-production .status-col--status { width: 14%; }
       .status-table--with-production .status-col--name { width: 9.5%; }
@@ -3715,6 +3721,8 @@
         .status-table--with-production td:nth-child(11)::before { content: 'Loss'; }
         .status-table--with-production td:nth-child(12)::before { content: 'Connected'; }
         .status-table--with-production td:nth-child(13)::before { content: 'Last seen'; }
+
+        .status-table--feeds .status-feed-media-ports::before { content: 'Media ports'; }
 
         .status-table--with-production .status-production-spacer {
           display: none;
@@ -4264,6 +4272,7 @@
                   <col class="status-col--loss">
                   <col class="status-col--connected">
                   <col class="status-col--last-seen">
+                  <col class="status-col--media-ports">
                 </colgroup>
                 <thead>
                   <tr>
@@ -4280,10 +4289,11 @@
                     <th title="Browser: WebRTC audio packet loss. Bridge: input RTP packet loss to the server.">Loss</th>
                     <th>Connected</th>
                     <th>Last seen</th>
+                    <th scope="col" title="Server-side ports for incoming audio and video">Media ports</th>
                   </tr>
                 </thead>
                 <tbody id="status-feeds-body">
-                  <tr><td colspan="8" class="status-empty">No feeds configured.</td></tr>
+                  <tr><td colspan="13" class="status-empty">No feeds configured.</td></tr>
                 </tbody>
               </table>
             </div>
