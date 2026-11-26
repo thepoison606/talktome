@@ -8,6 +8,8 @@ $bridge = Join-Path $env:ProgramFiles 'Talktome Bridge'
 $personalData = Join-Path $env:LOCALAPPDATA 'talktome'
 $sharedData = Join-Path $env:ProgramData 'Talktome Server'
 $registry = 'Software\Microsoft\Windows\CurrentVersion\Uninstall'
+# Match Windows clients on which script execution is restricted by default.
+$env:PSExecutionPolicyPreference = 'Restricted'
 $env:TALKTOME_INSTALLER_TEST_LOG = Join-Path $env:RUNNER_TEMP 'talktome-installer-test.log'
 
 function Invoke-Setup([string] $Installer, [string] $Arguments) {

@@ -56,7 +56,7 @@ Section -Install
   ${EndIf}
 
 retry_install:
-  nsExec::ExecToLog '"$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -File "$PLUGINSDIR\install-talktome-windows.ps1" -Server $ServerChoice -Bridge $BridgeChoice -Scope $Scope -ServerData $ServerData'
+  nsExec::ExecToLog '"$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File "$PLUGINSDIR\install-talktome-windows.ps1" -Server $ServerChoice -Bridge $BridgeChoice -Scope $Scope -ServerData $ServerData'
   Pop $0
   ${If} $0 == 2
     MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "Quit the selected Talktome apps using their tray menus and stop any standalone server before continuing." /SD IDCANCEL IDRETRY retry_install
