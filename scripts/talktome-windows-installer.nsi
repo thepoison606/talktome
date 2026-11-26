@@ -171,31 +171,56 @@ Function ValidateComponents
 FunctionEnd
 
 Function ShowScope
-  ${If} $ServerChoice == "no"
-    ${OrIf} $ExistingServer != ""
-    ${If} $BridgeChoice == "no"
-      ${OrIf} $ExistingBridge != ""
-      Abort
+  StrCpy $ScopeMachineRadio ""
+  StrCpy $1 ""
+  StrCpy $2 ""
+  StrCpy $3 ""
+  ${If} $ServerChoice == "yes"
+    ${If} $ExistingServer == ""
+      StrCpy $1 "Talktome Server"
+    ${Else}
+      StrCpy $2 "Server: update at the existing location."
     ${EndIf}
   ${EndIf}
-  !insertmacro MUI_HEADER_TEXT "Installation scope" "Choose who can use newly installed components."
+  ${If} $BridgeChoice == "yes"
+    ${If} $ExistingBridge == ""
+      ${If} $1 == ""
+        StrCpy $1 "Talktome Bridge"
+      ${Else}
+        StrCpy $1 "Talktome Server and Bridge"
+      ${EndIf}
+    ${Else}
+      StrCpy $3 "Bridge: update at the existing location."
+    ${EndIf}
+  ${EndIf}
+
+  !insertmacro MUI_HEADER_TEXT "Installation details" "Review which components will be updated or newly installed."
   nsDialogs::Create 1018
   Pop $0
-  ${NSD_CreateLabel} 0 0 100% 28u "Existing components keep their current installation location and scope."
+  ${NSD_CreateLabel} 0 0 100% 12u "$2"
   Pop $0
-  ${NSD_CreateRadioButton} 0 35u 100% 12u "Only for me (Local AppData)"
+  ${NSD_CreateLabel} 0 14u 100% 12u "$3"
   Pop $0
-  ${NSD_CreateRadioButton} 0 55u 100% 12u "For all users (Program Files)"
-  Pop $ScopeMachineRadio
-  ${If} $Scope == "user"
-    ${NSD_Check} $0
-  ${Else}
-    ${NSD_Check} $ScopeMachineRadio
+  ${If} $1 != ""
+    ${NSD_CreateLabel} 0 34u 100% 14u "New installation: $1"
+    Pop $0
+    ${NSD_CreateRadioButton} 0 53u 100% 12u "Only for me (Local AppData)"
+    Pop $0
+    ${NSD_CreateRadioButton} 0 72u 100% 12u "For all users (Program Files)"
+    Pop $ScopeMachineRadio
+    ${If} $Scope == "user"
+      ${NSD_Check} $0
+    ${Else}
+      ${NSD_Check} $ScopeMachineRadio
+    ${EndIf}
   ${EndIf}
   nsDialogs::Show
 FunctionEnd
 
 Function SaveScope
+  ${If} $ScopeMachineRadio == ""
+    Return
+  ${EndIf}
   ${NSD_GetState} $ScopeMachineRadio $0
   ${If} $0 == ${BST_CHECKED}
     StrCpy $Scope "machine"
