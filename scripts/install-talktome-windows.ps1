@@ -165,7 +165,7 @@ function Initialize-SharedData([string] $Destination, [Security.Principal.Securi
     # Stage the copy under ProgramData with a private ACL. Publish the completed
     # directory with a rename so a failed migration leaves the source untouched.
     $stage = Join-Path (Split-Path -Parent $Destination) ("Talktome-Setup-" + [guid]::NewGuid())
-    New-Item -ItemType Directory -Path $stage | Out-Null
+    $stageDirectory = [IO.Directory]::CreateDirectory($stage)
     try {
         $acl = New-Object Security.AccessControl.DirectorySecurity
         $acl.SetAccessRuleProtection($true, $false)
@@ -174,7 +174,7 @@ function Initialize-SharedData([string] $Destination, [Security.Principal.Securi
                 [Security.Principal.SecurityIdentifier] $id, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
             $acl.AddAccessRule($rule)
         }
-        Set-Acl -LiteralPath $stage -AclObject $acl
+        $stageDirectory.SetAccessControl($acl)
 
         if ($hasSourceData) {
             Write-Host "Copying the personal server data into ProgramData. The source will be retained."
@@ -190,7 +190,7 @@ function Initialize-SharedData([string] $Destination, [Security.Principal.Securi
         $rule = New-Object Security.AccessControl.FileSystemAccessRule(
             $Owner, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
         $acl.AddAccessRule($rule)
-        Set-Acl -LiteralPath $stage -AclObject $acl
+        $stageDirectory.SetAccessControl($acl)
         [IO.Directory]::Move($stage, $Destination)
     } finally {
         if (Test-Path -LiteralPath $stage) {
