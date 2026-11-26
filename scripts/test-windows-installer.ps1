@@ -8,10 +8,16 @@ $bridge = Join-Path $env:ProgramFiles 'Talktome Bridge'
 $personalData = Join-Path $env:LOCALAPPDATA 'talktome'
 $sharedData = Join-Path $env:ProgramData 'Talktome Server'
 $registry = 'Software\Microsoft\Windows\CurrentVersion\Uninstall'
+$env:TALKTOME_INSTALLER_TEST_LOG = Join-Path $env:RUNNER_TEMP 'talktome-installer-test.log'
 
 function Invoke-Setup([string] $Installer, [string] $Arguments) {
     $process = Start-Process -FilePath $Installer -ArgumentList $Arguments -Wait -PassThru
-    if ($process.ExitCode -ne 0) { throw "Setup failed ($($process.ExitCode)): $Installer $Arguments" }
+    if ($process.ExitCode -ne 0) {
+        if (Test-Path -LiteralPath $env:TALKTOME_INSTALLER_TEST_LOG) {
+            Get-Content -LiteralPath $env:TALKTOME_INSTALLER_TEST_LOG
+        }
+        throw "Setup failed ($($process.ExitCode)): $Installer $Arguments"
+    }
 }
 
 function Assert-Installed([string] $Key, [string] $Directory, [string] $Executable) {

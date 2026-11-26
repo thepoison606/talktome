@@ -8,6 +8,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $uninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall'
 $sharedMarker = 'server-data.shared'
+if ($env:TALKTOME_INSTALLER_TEST_LOG) {
+    Start-Transcript -LiteralPath $env:TALKTOME_INSTALLER_TEST_LOG -Append | Out-Null
+}
 
 function Get-Installation([string] $Name, [string] $Hive, [string] $Prefix = '') {
     foreach ($view in 'Registry64', 'Registry32') {
@@ -235,6 +238,8 @@ try {
     }
     exit 0
 } catch {
-    Write-Host $_.Exception.Message
+    Write-Host ($_ | Out-String)
     exit 1
+} finally {
+    if ($env:TALKTOME_INSTALLER_TEST_LOG) { Stop-Transcript | Out-Null }
 }
