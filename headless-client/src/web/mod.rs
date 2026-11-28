@@ -815,6 +815,7 @@ mod tests {
             .timeout(Duration::from_secs(3))
             .build()
             .unwrap();
+        // Deliberately weak fixtures must keep even the login endpoint disabled.
         for password in ["", " \t", "admin"] {
             let config = Config::default();
             let (shutdown, _) = watch::channel(false);
