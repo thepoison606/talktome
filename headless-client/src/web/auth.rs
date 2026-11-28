@@ -208,7 +208,8 @@ mod tests {
     fn login_sessions_and_throttle() {
         let password = test_password();
         let mut auth = AuthState::new(password.clone(), false);
-        assert!(auth.login("wrong").is_none());
+        let wrong_password = &password[..password.len() - 1];
+        assert!(auth.login(wrong_password).is_none());
         let token = auth.login(&password).unwrap();
         assert_eq!(token.len(), 64);
         assert!(auth.validate(&token));
@@ -216,7 +217,7 @@ mod tests {
         assert!(!auth.validate(&token));
 
         for _ in 0..MAX_FAILURES {
-            assert!(auth.login("nope").is_none());
+            assert!(auth.login(wrong_password).is_none());
         }
         assert!(auth.throttled().is_some());
         let password = test_password();

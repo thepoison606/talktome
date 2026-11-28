@@ -841,7 +841,7 @@ pub fn parse_document(path: &Path, text: &str) -> Result<Value> {
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
-    match extension.as_str() {
+    let document = match extension.as_str() {
         "json" => serde_json::from_str(text)
             .with_context(|| format!("invalid JSON in {}", path.display())),
         "toml" => {
@@ -853,7 +853,9 @@ pub fn parse_document(path: &Path, text: &str) -> Result<Value> {
             "unsupported configuration extension {other:?} for {} (use .json or .toml)",
             path.display()
         ),
-    }
+    }?;
+    validate_document_structure(&document)?;
+    Ok(document)
 }
 
 /// Applies `TALKTOME_<SECTION>_<KEY>` overrides onto a JSON document.
@@ -987,8 +989,32 @@ fn apply_network_preset(doc: &mut Value) {
 }
 
 pub fn from_document(mut doc: Value) -> Result<Config> {
+    validate_document_structure(&doc)?;
     migrate_document(&mut doc);
     serde_json::from_value(doc).map_err(|e| anyhow!("invalid configuration: {e}"))
+}
+
+/// Apply the JSON parser's nesting limit to documents from other entry points
+/// before walking or converting them.
+pub fn validate_document_structure(doc: &Value) -> Result<()> {
+    if !doc.is_object() {
+        bail!("configuration must be a JSON object");
+    }
+    fn check_depth(value: &Value, remaining: usize) -> Result<()> {
+        let children: &mut dyn Iterator<Item = &Value> = match value {
+            Value::Object(map) => &mut map.values(),
+            Value::Array(items) => &mut items.iter(),
+            _ => return Ok(()),
+        };
+        if remaining == 0 {
+            bail!("configuration is nested too deeply");
+        }
+        for child in children {
+            check_depth(child, remaining - 1)?;
+        }
+        Ok(())
+    }
+    check_depth(doc, 128)
 }
 
 /// Serializes a configuration document in the format implied by `path`.
@@ -1001,8 +1027,7 @@ pub fn render_document(path: &Path, doc: &Value) -> Result<String> {
     match extension.as_str() {
         "json" => Ok(format!("{}\n", serde_json::to_string_pretty(doc)?)),
         "toml" => {
-            let value: toml::Value =
-                serde_json::from_value(doc.clone()).context("converting configuration to TOML")?;
+            let value = toml::Value::try_from(doc).context("converting configuration to TOML")?;
             toml::to_string_pretty(&value).context("serializing TOML")
         }
         other => bail!("unsupported configuration extension {other:?} (use .json or .toml)"),
@@ -1113,6 +1138,7 @@ fn config_io_error(op: &str, path: &Path, error: std::io::Error) -> anyhow::Erro
 /// Writes the document atomically (temp file + rename), keeping the file mode
 /// restrictive because it contains credentials.
 pub fn write_document(path: &Path, doc: &Value) -> Result<()> {
+    validate_document_structure(doc)?;
     let mut doc = doc.clone();
     strip_nulls(&mut doc);
     let text = render_document(path, &doc)?;
@@ -1696,10 +1722,12 @@ mod tests {
         assert_eq!(config.web.port, 8080);
         assert!(config.web.password.is_empty());
         config.validate().unwrap();
+        // Deliberately weak fixtures. The test requires these values to be rejected.
         for password in ["", " \t", "admin", " admin "] {
             assert!(validate_web_password(password).is_err());
         }
-        config.web.password = "custom-passphrase".into();
+        use rand::distr::{Alphanumeric, SampleString};
+        config.web.password = Alphanumeric.sample_string(&mut rand::rng(), 32);
         validate_web_password(&config.web.password).unwrap();
         assert_eq!(config.redacted().web.password, REDACTED);
         config.web.port = 0;
